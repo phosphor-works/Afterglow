@@ -37,7 +37,9 @@
 # reads only the archives, so the lock files need not be copied with them.
 #
 # Bumping a pin: change its VERSION, URL, FILE and SHA256 together, with the
-# hash taken from a download that you checked against a second source.
+# hash taken from a download that you checked against a second source. The
+# Nix package fetches the same archives: change nix/package.nix with it, and
+# with a phosphor-libs pin also the Luau and valijson archives of that commit.
 
 include_guard(GLOBAL)
 

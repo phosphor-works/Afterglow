@@ -103,7 +103,10 @@ struct PaneValues
     bool operator==(const PaneValues&) const = default;
     /// No title and no command. An entry that keeps the command still goes
     /// on the wire.
-    bool empty() const { return title.empty() && command.empty(); }
+    bool empty() const
+    {
+        return title.empty() && command.empty();
+    }
     /// The bytes of the title and the arguments.
     std::size_t bytes() const;
 };
@@ -114,17 +117,26 @@ bool validPaneCommand(const std::vector<std::string>& command);
 
 /// Where a pane goes beside another one (`afterglow ctl split` and
 /// `move-pane`).
-enum class Side : std::uint8_t { Right, Down, Left, Up };
+enum class Side : std::uint8_t {
+    Right,
+    Down,
+    Left,
+    Up
+};
 
 /// The name of @p side, as the placements of the daemon's calls and a
 /// window's placePane say it.
 inline const char* sideName(Side side)
 {
     switch (side) {
-    case Side::Right: return "right";
-    case Side::Down: return "down";
-    case Side::Left: return "left";
-    case Side::Up: return "up";
+    case Side::Right:
+        return "right";
+    case Side::Down:
+        return "down";
+    case Side::Left:
+        return "left";
+    case Side::Up:
+        return "up";
     }
     return "right";
 }

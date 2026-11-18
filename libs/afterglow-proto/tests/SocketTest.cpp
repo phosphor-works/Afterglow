@@ -25,7 +25,8 @@ EnvironmentLookup environment(std::map<std::string, std::string> values)
 std::vector<std::string> paths(const MuxSockets& sockets)
 {
     std::vector<std::string> list;
-    for (const MuxSocket& socket : sockets.candidates) list.push_back(socket.path);
+    for (const MuxSocket& socket : sockets.candidates)
+        list.push_back(socket.path);
     return list;
 }
 
@@ -145,9 +146,8 @@ TEST(Socket, ThePathCheckNamesWhatIsWrong)
 
 TEST(Socket, MuxSocketsAreTheRuntimeAndTheStateDirectory)
 {
-    const auto env = environment({{"XDG_RUNTIME_DIR", "/run/user/1000/"},
-                                  {"XDG_STATE_HOME", "/home/u/state/"},
-                                  {"HOME", "/home/u"}});
+    const auto env = environment(
+        {{"XDG_RUNTIME_DIR", "/run/user/1000/"}, {"XDG_STATE_HOME", "/home/u/state/"}, {"HOME", "/home/u"}});
     const MuxSockets sockets = muxSockets(env);
     ASSERT_EQ(sockets.candidates.size(), 2u) << sockets.error;
     EXPECT_TRUE(sockets.error.empty()) << sockets.error;
@@ -182,7 +182,8 @@ TEST(Socket, MuxSocketsWithoutARuntimeDirectoryHaveTheStateOne)
     EXPECT_NE(none.error.find("XDG_RUNTIME_DIR is not set"), std::string::npos) << none.error;
     EXPECT_NE(none.error.find("neither XDG_STATE_HOME nor HOME is an absolute path"), std::string::npos) << none.error;
     // Without a state directory, the runtime one alone.
-    EXPECT_EQ(paths(muxSockets(environment({{"XDG_RUNTIME_DIR", "/r"}}))), std::vector<std::string>{"/r/aglow-mux/socket"});
+    EXPECT_EQ(paths(muxSockets(environment({{"XDG_RUNTIME_DIR", "/r"}}))),
+              std::vector<std::string>{"/r/aglow-mux/socket"});
 }
 
 TEST(Socket, AMuxSocketOverTheLimitIsLeftOutAlone)
@@ -246,21 +247,26 @@ TEST(Socket, ARelativeSocketOfThePaneIsAnError)
 
 TEST(Socket, ASessionPaneIsOneWithTheSocketAndTheSession)
 {
-    EXPECT_TRUE(findSocket(environment({{"AFTERGLOW_SOCKET", "/r/aglow-mux/socket"}, {"AFTERGLOW_SESSION", "s"}})).session);
+    EXPECT_TRUE(
+        findSocket(environment({{"AFTERGLOW_SOCKET", "/r/aglow-mux/socket"}, {"AFTERGLOW_SESSION", "s"}})).session);
     EXPECT_FALSE(findSocket(environment({{"AFTERGLOW_SOCKET", "/r/aglow-mux/socket"}})).session);
     EXPECT_FALSE(findSocket(environment({{"AFTERGLOW_SESSION", "s"}, {"XDG_RUNTIME_DIR", "/r"}})).session);
 }
 
 TEST(Socket, TheMessagesNameWhoListensAtTheSocket)
 {
-    const auto lookup = [](std::map<std::string, std::string> values) { return findSocket(environment(std::move(values))); };
+    const auto lookup = [](std::map<std::string, std::string> values) {
+        return findSocket(environment(std::move(values)));
+    };
     const std::string missing = "/nonexistent-afterglow-test/aglow-mux/socket";
     const SocketLookup display = lookup({{"XDG_RUNTIME_DIR", "/nonexistent-afterglow-test"}});
     const SocketLookup pane = lookup({{"AFTERGLOW_SOCKET", missing}, {"AFTERGLOW_PANE_ID", "3"}});
     const SocketLookup named = lookup({{"AFTERGLOW_SOCKET", missing}});
-    const SocketLookup gone = lookup({{"AFTERGLOW_SOCKET", missing}, {"AFTERGLOW_PANE_ID", "3"}, {"AFTERGLOW_SESSION", "s"}});
+    const SocketLookup gone =
+        lookup({{"AFTERGLOW_SOCKET", missing}, {"AFTERGLOW_PANE_ID", "3"}, {"AFTERGLOW_SESSION", "s"}});
     // A file that is there, and that nobody listens on.
-    const SocketLookup exited = lookup({{"AFTERGLOW_SOCKET", "/"}, {"AFTERGLOW_PANE_ID", "3"}, {"AFTERGLOW_SESSION", "s"}});
+    const SocketLookup exited =
+        lookup({{"AFTERGLOW_SOCKET", "/"}, {"AFTERGLOW_PANE_ID", "3"}, {"AFTERGLOW_SESSION", "s"}});
     EXPECT_EQ(socketOwner(display), "the Afterglow of this display");
     EXPECT_EQ(socketOwner(pane), "the Afterglow that runs this pane");
     EXPECT_EQ(socketOwner(named), "the Afterglow at $AFTERGLOW_SOCKET");
@@ -268,7 +274,8 @@ TEST(Socket, TheMessagesNameWhoListensAtTheSocket)
     EXPECT_EQ(noServerReason(display), "no running Afterglow on this display");
     EXPECT_EQ(noServerReason(pane), "the Afterglow that runs this pane has exited");
     EXPECT_EQ(noServerReason(named), "no Afterglow at $AFTERGLOW_SOCKET");
-    EXPECT_EQ(noServerReason(gone), "the socket of the mux daemon of this session pane is gone: $AFTERGLOW_SOCKET names no file");
+    EXPECT_EQ(noServerReason(gone),
+              "the socket of the mux daemon of this session pane is gone: $AFTERGLOW_SOCKET names no file");
     EXPECT_EQ(noServerReason(exited), "the mux daemon of this session pane has exited");
 }
 

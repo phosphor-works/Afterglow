@@ -36,9 +36,18 @@ public:
     /// at its maximum size and full.
     bool allocate(int w, int h, int& x, int& y);
 
-    QImage& image() noexcept { return m_image; }
-    const QImage& image() const noexcept { return m_image; }
-    int size() const noexcept { return m_image.width(); }
+    QImage& image() noexcept
+    {
+        return m_image;
+    }
+    const QImage& image() const noexcept
+    {
+        return m_image;
+    }
+    int size() const noexcept
+    {
+        return m_image.width();
+    }
 
     /// Regions changed since the last takeDirty(); empty when nothing
     /// changed. Kept apart so an upload covers the new glyphs, not the
@@ -108,12 +117,27 @@ public:
 
     void reset();
     /// Bumped by reset(): glyph entries from before are gone.
-    std::uint64_t epoch() const noexcept { return m_epoch; }
+    std::uint64_t epoch() const noexcept
+    {
+        return m_epoch;
+    }
 
-    AtlasPage& grayPage(std::size_t page = 0) noexcept { return *m_gray[page]; }
-    AtlasPage& colorPage(std::size_t page = 0) noexcept { return *m_color[page]; }
-    std::size_t grayPageCount() const noexcept { return m_gray.size(); }
-    std::size_t colorPageCount() const noexcept { return m_color.size(); }
+    AtlasPage& grayPage(std::size_t page = 0) noexcept
+    {
+        return *m_gray[page];
+    }
+    AtlasPage& colorPage(std::size_t page = 0) noexcept
+    {
+        return *m_color[page];
+    }
+    std::size_t grayPageCount() const noexcept
+    {
+        return m_gray.size();
+    }
+    std::size_t colorPageCount() const noexcept
+    {
+        return m_color.size();
+    }
     /// Called once per render of any window that shares the cache. Over the
     /// byte budget, a page no render has used for StaleAfter discards the
     /// whole cache (every page and entry) and bumps epoch(). @p now is the
@@ -127,14 +151,19 @@ public:
 private:
     void rasterize(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, int scale16, bool allowSubpixel,
                    GlyphEntry& out);
-    void rasterizeIcon(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, bool allowSubpixel, GlyphEntry& out);
+    void rasterizeIcon(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, bool allowSubpixel,
+                       GlyphEntry& out);
     /// Stores FreeType coverage; @p scale resizes it first (bitmap-only fonts
     /// at a scaled size).
-    void storeBitmap(const FT_Bitmap& bitmap, const FontSet& fonts, int left, int top, GlyphEntry& out, float scale = 1.0f);
+    void storeBitmap(const FT_Bitmap& bitmap, const FontSet& fonts, int left, int top, GlyphEntry& out,
+                     float scale = 1.0f);
     /// Copies an 8-bit coverage bitmap into the gray atlas.
     void storeGray(const unsigned char* pixels, int width, int height, int pitch, int left, int top, GlyphEntry& out);
     /// Whether one entry of @p width by @p height fits on a GPU texture.
-    bool fits(int width, int height) const noexcept { return width < m_textureLimit && height < m_textureLimit; }
+    bool fits(int width, int height) const noexcept
+    {
+        return width < m_textureLimit && height < m_textureLimit;
+    }
 
     AtlasPage& allocate(bool color, int width, int height, int& x, int& y, std::uint32_t& page);
     std::vector<std::unique_ptr<AtlasPage>> m_gray;

@@ -18,7 +18,8 @@ namespace {
 std::optional<std::string> stringOf(std::string_view json)
 {
     const auto value = Json::parse(json);
-    if (!value || !value->isString()) return std::nullopt;
+    if (!value || !value->isString())
+        return std::nullopt;
     return value->toString();
 }
 
@@ -63,8 +64,11 @@ TEST(Json, ReadsEveryKindOfValue)
 
 TEST(Json, WritesWhatItReads)
 {
-    const Json::Value value = Json::Object{{"type", "call"}, {"id", std::int64_t(1) << 40}, {"args", Json::Array{"x", 1.5, nullptr}},
-                                           {"empty", Json::Object{}}, {"flag", false}};
+    const Json::Value value = Json::Object{{"type", "call"},
+                                           {"id", std::int64_t(1) << 40},
+                                           {"args", Json::Array{"x", 1.5, nullptr}},
+                                           {"empty", Json::Object{}},
+                                           {"flag", false}};
     const std::string text = Json::write(value);
     EXPECT_EQ(text, R"({"type":"call","id":1099511627776,"args":["x",1.5,null],"empty":{},"flag":false})");
     EXPECT_EQ(Json::parse(text), value);
@@ -111,14 +115,15 @@ TEST(Json, ConstructorsPickTheTypeOfTheArgument)
 
 TEST(Json, StringsRoundTrip)
 {
-    const std::string text = std::string("quote \" backslash \\ tab \t nl \n cr \r bell \x07 nul ") + '\0'
-        + " é 漢 😀 / end \xFF";
+    const std::string text =
+        std::string("quote \" backslash \\ tab \t nl \n cr \r bell \x07 nul ") + '\0' + " é 漢 😀 / end \xFF";
     const std::string written = Json::write(Json::Value(text));
     EXPECT_EQ(written.find('\n'), std::string::npos); // one line on the wire
     // The pieces cost what the writer writes.
     std::size_t size = 2;
     std::size_t at = 0;
-    while (const std::size_t piece = Json::nextStringPiece(text, at)) size += piece;
+    while (const std::size_t piece = Json::nextStringPiece(text, at))
+        size += piece;
     EXPECT_EQ(at, text.size());
     EXPECT_EQ(size, written.size());
     const auto read = Json::parse(written);
@@ -130,27 +135,39 @@ TEST(Json, ReadsEscapesAndSurrogatePairs)
 {
     EXPECT_EQ(stringOf(R"("\u00e9\ud83d\ude00\/\b\f")"), "é😀/\b\f");
     // A lone surrogate is not text: it reads as U+FFFD.
-    EXPECT_EQ(stringOf(R"("a\ud800b")"), "a\xEF\xBF\xBD" "b");
-    EXPECT_EQ(stringOf(R"("\udc00\u0041")"), "\xEF\xBF\xBD" "A");
+    EXPECT_EQ(stringOf(R"("a\ud800b")"),
+              "a\xEF\xBF\xBD"
+              "b");
+    EXPECT_EQ(stringOf(R"("\udc00\u0041")"),
+              "\xEF\xBF\xBD"
+              "A");
     // A high surrogate before an escape that is no low one: the escape is
     // read again on its own.
-    EXPECT_EQ(stringOf(R"("\ud800\u0041")"), "\xEF\xBF\xBD" "A");
-    EXPECT_EQ(stringOf(R"("\ud800\ud83d\ude00")"), "\xEF\xBF\xBD" "😀");
+    EXPECT_EQ(stringOf(R"("\ud800\u0041")"),
+              "\xEF\xBF\xBD"
+              "A");
+    EXPECT_EQ(stringOf(R"("\ud800\ud83d\ude00")"),
+              "\xEF\xBF\xBD"
+              "😀");
     EXPECT_FALSE(stringOf(R"("\ud800\u12")"));
 }
 
 TEST(Json, WritesInvalidUtf8AsReplacement)
 {
-    EXPECT_EQ(stringOf(Json::write(Json::Value(std::string("a\xFF" "b\xC3")))), "a\xEF\xBF\xBD" "b\xEF\xBF\xBD");
+    EXPECT_EQ(stringOf(Json::write(Json::Value(std::string("a\xFF"
+                                                           "b\xC3")))),
+              "a\xEF\xBF\xBD"
+              "b\xEF\xBF\xBD");
     // Two keys that differ in such bytes only come out alike.
     EXPECT_EQ(Json::write(Json::Object{{"a\xFF", 1}, {"a\xFE", 2}}), "{\"a\xEF\xBF\xBD\":1,\"a\xEF\xBF\xBD\":2}");
 }
 
 TEST(Json, RefusesWhatIsNotJson)
 {
-    for (const char* text : {"", " ", "{", "[1,]", "[1 2]", "{\"a\":1,}", "{\"a\" 1}", "01", "-01", "1.", ".5", "1.e3", "-", "1e",
-                             "1e+", "+1", "nan", "Infinity", "0x10", "\"\x01\"", "\"\\x\"", "\"\xFF\"", "\"\xC3\"", "[1] 2",
-                             "tru", "{1:2}", "1e999", "-1e999", "\"\\u12\"", "\"abc"}) {
+    for (const char* text : {"",    " ",        "{",     "[1,]",     "[1 2]",     "{\"a\":1,}", "{\"a\" 1}", "01",
+                             "-01", "1.",       ".5",    "1.e3",     "-",         "1e",         "1e+",       "+1",
+                             "nan", "Infinity", "0x10",  "\"\x01\"", "\"\\x\"",   "\"\xFF\"",   "\"\xC3\"",  "[1] 2",
+                             "tru", "{1:2}",    "1e999", "-1e999",   "\"\\u12\"", "\"abc"}) {
         std::string error;
         EXPECT_FALSE(Json::parse(text, &error)) << text;
         EXPECT_FALSE(error.empty()) << text;
@@ -203,7 +220,8 @@ TEST(Json, LimitsTheValues)
 {
     // The array is a value too.
     std::string fits = "[0";
-    for (std::size_t i = 2; i < Json::MaxValues; ++i) fits += ",0";
+    for (std::size_t i = 2; i < Json::MaxValues; ++i)
+        fits += ",0";
     fits += ']';
     EXPECT_TRUE(Json::parse(fits));
     fits.insert(1, "0,");
@@ -223,6 +241,7 @@ TEST(Json, EqualityIsOfTypeValueAndOrder)
 {
     EXPECT_EQ(Json::Value(1), Json::Value(1.0));
     EXPECT_NE(Json::Value(1), Json::Value("1"));
-    EXPECT_NE(Json::Value(std::numeric_limits<double>::quiet_NaN()), Json::Value(std::numeric_limits<double>::quiet_NaN()));
+    EXPECT_NE(Json::Value(std::numeric_limits<double>::quiet_NaN()),
+              Json::Value(std::numeric_limits<double>::quiet_NaN()));
     EXPECT_NE((Json::Value(Json::Object{{"a", 1}, {"b", 2}})), (Json::Value(Json::Object{{"b", 2}, {"a", 1}})));
 }

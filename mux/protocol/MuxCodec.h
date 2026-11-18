@@ -29,10 +29,22 @@ public:
         : m_s(s)
     {
     }
-    bool ok() const { return m_ok; }
-    bool done() const { return m_at == m_s.size(); }
-    std::size_t left() const { return m_s.size() - m_at; }
-    void fail() { m_ok = false; }
+    bool ok() const
+    {
+        return m_ok;
+    }
+    bool done() const
+    {
+        return m_at == m_s.size();
+    }
+    std::size_t left() const
+    {
+        return m_s.size() - m_at;
+    }
+    void fail()
+    {
+        m_ok = false;
+    }
     std::uint8_t byte()
     {
         if (m_at >= m_s.size()) {
@@ -50,10 +62,12 @@ public:
             const std::uint64_t part = b & 0x7f;
             // The tenth byte holds the 64th bit only. A last byte of 0 after
             // the first is a longer form of a shorter number.
-            if ((shift == 63 && part > 1) || (!(b & 0x80) && shift > 0 && part == 0)) break;
+            if ((shift == 63 && part > 1) || (!(b & 0x80) && shift > 0 && part == 0))
+                break;
             v |= part << shift;
             if (!(b & 0x80)) {
-                if (v > max) m_ok = false;
+                if (v > max)
+                    m_ok = false;
                 return m_ok ? v : 0;
             }
         }
@@ -71,7 +85,10 @@ public:
         m_at += n;
         return r;
     }
-    std::string_view rest() { return take(left()); }
+    std::string_view rest()
+    {
+        return take(left());
+    }
 
 private:
     std::string_view m_s;

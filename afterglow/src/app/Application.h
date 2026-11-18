@@ -108,13 +108,17 @@ public:
     /// window of a mux session waits for its daemon, over ssh for another
     /// host, off the GUI thread: @p done runs later, unless this object
     /// goes first. Every other launch ends before this returns.
-    void openLaunch(const QString& workingDirectory, const QStringList& command, const QVariantMap& options, LaunchDone done);
+    void openLaunch(const QString& workingDirectory, const QStringList& command, const QVariantMap& options,
+                    LaunchDone done);
     /// An error message, empty on success.
     QString toggleQuickTerminal();
     /// The control of the windows, as `afterglow ctl` reaches it. Only the
     /// native window tests call it: the application itself reaches Control
     /// through its own members.
-    Control& control() { return m_control; }
+    Control& control()
+    {
+        return m_control;
+    }
 
 protected:
     /// Sees the application's QEvent::Quit before Qt closes the windows.
@@ -150,7 +154,8 @@ private:
     /// Shows session @p session in a new window of @p window once its attach
     /// (@p attached) answered, and brings it to the front with the
     /// activation token of @p options: an error message, empty on success.
-    QString showAttached(const QString& session, SessionAttached& attached, WindowOptions window, const QVariantMap& options);
+    QString showAttached(const QString& session, SessionAttached& attached, WindowOptions window,
+                         const QVariantMap& options);
     /// Shows @p window, made with @p options, as a launch does.
     QString showLaunch(const WindowOptions& window, const QVariantMap& options);
     /// The window of this process that shows session @p session of @p host,

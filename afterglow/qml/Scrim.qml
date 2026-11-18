@@ -9,7 +9,7 @@ Rectangle {
     id: scrim
 
     required property QtObject controller
-    signal dismissed()
+    signal dismissed
 
     anchors.fill: parent
     color: controller.scrimColor

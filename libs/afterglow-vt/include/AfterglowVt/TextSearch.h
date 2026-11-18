@@ -23,8 +23,14 @@ struct TextCell
     std::int32_t col = 0;
     std::int32_t lastCol = 0;
 
-    SelectionPoint start() const { return {row, col}; }
-    SelectionPoint end() const { return {row, lastCol}; }
+    SelectionPoint start() const
+    {
+        return {row, col};
+    }
+    SelectionPoint end() const
+    {
+        return {row, lastCol};
+    }
 };
 
 /// A logical line: the text of soft-wrapped rows, each code point mapped to

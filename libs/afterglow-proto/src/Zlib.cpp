@@ -18,7 +18,8 @@ ZlibStream::ZlibStream(Mode mode)
     : m_state(std::make_unique<State>())
 {
     m_state->mode = mode;
-    m_state->valid = (mode == Mode::Inflate ? inflateInit(&m_state->z) : deflateInit(&m_state->z, Z_DEFAULT_COMPRESSION)) == Z_OK;
+    m_state->valid =
+        (mode == Mode::Inflate ? inflateInit(&m_state->z) : deflateInit(&m_state->z, Z_DEFAULT_COMPRESSION)) == Z_OK;
 }
 
 ZlibStream::~ZlibStream()
@@ -57,7 +58,8 @@ ZlibStream::Result ZlibStream::step(char* out, std::size_t capacity, std::size_t
     auto& z = m_state->z;
     z.next_out = reinterpret_cast<Bytef*>(out);
     z.avail_out = uInt(capacity);
-    const int result = m_state->mode == Mode::Inflate ? inflate(&z, Z_NO_FLUSH) : deflate(&z, finish ? Z_FINISH : Z_NO_FLUSH);
+    const int result =
+        m_state->mode == Mode::Inflate ? inflate(&z, Z_NO_FLUSH) : deflate(&z, finish ? Z_FINISH : Z_NO_FLUSH);
     produced = capacity - z.avail_out;
     return result == Z_STREAM_END ? Result::End : result == Z_OK ? Result::Ok : Result::Error;
 }
@@ -90,7 +92,9 @@ std::string zlibCompress(std::string_view in)
 {
     std::string out(compressBound(uLong(in.size())), '\0');
     uLongf size = uLongf(out.size());
-    if (compress(reinterpret_cast<Bytef*>(out.data()), &size, reinterpret_cast<const Bytef*>(in.data()), uLong(in.size())) != Z_OK) {
+    if (compress(reinterpret_cast<Bytef*>(out.data()), &size, reinterpret_cast<const Bytef*>(in.data()),
+                 uLong(in.size()))
+        != Z_OK) {
         return {};
     }
     out.resize(size);

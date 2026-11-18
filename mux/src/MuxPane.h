@@ -82,16 +82,25 @@ public:
     MuxPane(const MuxPane&) = delete;
     MuxPane& operator=(const MuxPane&) = delete;
 
-    std::uint32_t id() const { return m_id; }
+    std::uint32_t id() const
+    {
+        return m_id;
+    }
     bool start(AfterglowPty::SpawnOptions options, std::string launchedProgram, std::string* error);
     /// The wait status of the program, once exited().
-    int exitStatus() const { return m_exitStatus.load(); }
+    int exitStatus() const
+    {
+        return m_exitStatus.load();
+    }
     /// Whether something for the next frame came since the last call: output,
     /// a host call, a change of the daemon (a resize, a reset, new terminal
     /// values, a clear), or a frame that waited for a decode. No call, as
     /// while no window is attached, wakes the daemon no more: the next
     /// window's first frame carries everything.
-    bool takeChanged() { return m_changed.exchange(false); }
+    bool takeChanged()
+    {
+        return m_changed.exchange(false);
+    }
     /// What input() did.
     enum class Input : std::uint8_t {
         Written,
@@ -137,7 +146,10 @@ public:
     /// window shows the result with the next frame.
     void setOptions(const AfterglowVt::TerminalOptions& options);
     /// The program exited, or start() failed.
-    bool exited() const { return m_exited.load(); }
+    bool exited() const
+    {
+        return m_exited.load();
+    }
     /// The next frame of @p writer (StateWriter::update), with the region
     /// scrolls since the frame before it. None while an image decodes: the
     /// pane is changed again, and @p wake runs when the decode's feed ends.
@@ -215,7 +227,14 @@ public:
     /// not look at the panes to find what changed.
     struct WatchEvent
     {
-        enum class Kind { Bell, UserVar, CommandStarted, CommandFinished, Title, Status };
+        enum class Kind {
+            Bell,
+            UserVar,
+            CommandStarted,
+            CommandFinished,
+            Title,
+            Status
+        };
         Kind kind = Kind::Bell;
         std::string name{}; ///< UserVar: its name. Status: the state.
         std::string text{}; ///< UserVar: its value. A command, a title, a status: its text.
@@ -232,7 +251,8 @@ public:
     std::vector<WatchEvent> takeWatchEvents();
     /// The text of @p scope, for `afterglow ctl get-text`. Nothing while an
     /// image decodes.
-    std::optional<std::string> text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::TextFormat& format = {}) const;
+    std::optional<std::string> text(AfterglowVt::Terminal::TextScope scope,
+                                    const AfterglowVt::TextFormat& format = {}) const;
     /// The most bytes of text() and firstOutputOnScreen(), as the
     /// terminal reads by default and a window's pane reads.
     static constexpr std::size_t MaxText = 1024 * 1024;
@@ -259,10 +279,16 @@ public:
     Colors applyColors(const std::vector<std::string>& payloads);
     /// Sets a user variable as the program would (`afterglow ctl set-user-var`).
     /// False when the pane has MaxUserVars others, and ignores a new name.
-    bool setUserVar(const std::string& name, const std::string& value) { return keepUserVar(name, value); }
+    bool setUserVar(const std::string& name, const std::string& value)
+    {
+        return keepUserVar(name, value);
+    }
     /// Sends @p signal to the foreground process group of the program. On
     /// false, errno is kill(2)'s when it failed (Pty::signalForeground).
-    bool signalProgram(int signal) const { return m_pty && !m_exited && m_pty->signalForeground(signal); }
+    bool signalProgram(int signal) const
+    {
+        return m_pty && !m_exited && m_pty->signalForeground(signal);
+    }
 
     /// The window that shows the pane, by Attachment::serial(), or 0 for
     /// none. The calls of its terminal to its host (MuxHost.h) wait for that
@@ -353,7 +379,10 @@ public:
     // IPtyListener
     void ptyData(std::string_view bytes) override;
     void ptyClosed(int status) override;
-    void ptyWritable() override { m_wake(); }
+    void ptyWritable() override
+    {
+        m_wake();
+    }
 
 private:
     /// userVarChanged() and setUserVar(): false when MaxUserVars refuses a
@@ -383,7 +412,10 @@ private:
     /// download's data may go on: the queue is down to half of its bound.
     /// The pause comes past the bound, so the reader does not pause and go
     /// on again for each call of data. m_hostMutex held.
-    bool downloadRoomLocked() const { return m_downloadFull && m_hostBytes <= m_hostLimit / 2; }
+    bool downloadRoomLocked() const
+    {
+        return m_downloadFull && m_hostBytes <= m_hostLimit / 2;
+    }
     /// Runs @p decode on the reader thread with m_mutex let go, as a decode
     /// can take seconds.
     bool outsideLock(const std::function<bool()>& decode);
@@ -453,7 +485,10 @@ private:
     /// most, and one for each name of a user variable (MaxUserVars). So does
     /// the CommandStarted that a new window gets (setWindow()), and the
     /// notifications that the pane kept for it (setKeptNotifications()).
-    enum class Fit : std::uint8_t { Queue, Always };
+    enum class Fit : std::uint8_t {
+        Queue,
+        Always
+    };
     enum class Forward : std::uint8_t {
         Queued,
         NoWindow, ///< the caller answers as a pane that no window shows

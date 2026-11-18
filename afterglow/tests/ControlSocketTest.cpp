@@ -75,20 +75,30 @@ protected:
     {
         const QString path = m_dir.filePath(QStringLiteral("config.json"));
         QFile file(path);
-        if (!file.open(QIODevice::WriteOnly)) return false;
+        if (!file.open(QIODevice::WriteOnly))
+            return false;
         file.write(config);
         file.close();
         m_settings = std::make_unique<SettingsStore>(path);
-        m_control = std::make_unique<Control>(*m_settings, [](const QString&, const QStringList&, bool) { return nullptr; });
+        m_control = std::make_unique<Control>(*m_settings, [](const QString&, const QStringList&, bool) {
+            return nullptr;
+        });
         m_instance = std::make_unique<InstanceSocket>();
-        if (m_instance->listen(socketPath()) != InstanceSocket::Listen::Listening) return false;
+        if (m_instance->listen(socketPath()) != InstanceSocket::Listen::Listening)
+            return false;
         m_socket = std::make_unique<ControlSocket>(*m_control, *m_settings, m_instance->router());
         return true;
     }
 
-    QString socketPath() const { return m_runtime + QStringLiteral("/afterglow-test.sock"); }
+    QString socketPath() const
+    {
+        return m_runtime + QStringLiteral("/afterglow-test.sock");
+    }
 
-    QTimer* dueTimer() const { return m_socket->findChild<QTimer*>(QStringLiteral("eventIntervalTimer")); }
+    QTimer* dueTimer() const
+    {
+        return m_socket->findChild<QTimer*>(QStringLiteral("eventIntervalTimer"));
+    }
     /// Whether the timer of the merged events runs. A failure when there is none.
     bool dueTimerActive() const
     {
@@ -103,7 +113,8 @@ protected:
         QElapsedTimer clock;
         clock.start();
         while (!done()) {
-            if (clock.elapsed() > timeoutMs) return false;
+            if (clock.elapsed() > timeoutMs)
+                return false;
             QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
             QThread::msleep(1);
         }
@@ -113,7 +124,9 @@ protected:
     bool connect(QLocalSocket& client)
     {
         client.connectToServer(socketPath());
-        return waitFor([&client] { return client.state() == QLocalSocket::ConnectedState; });
+        return waitFor([&client] {
+            return client.state() == QLocalSocket::ConnectedState;
+        });
     }
 
     static void request(QLocalSocket& client, const QJsonObject& frame)
@@ -123,16 +136,24 @@ protected:
 
     static std::optional<QJsonObject> next(QLocalSocket& client, int timeoutMs = 3000)
     {
-        if (!waitFor([&client] { return client.canReadLine(); }, timeoutMs)) return std::nullopt;
+        if (!waitFor(
+                [&client] {
+                    return client.canReadLine();
+                },
+                timeoutMs))
+            return std::nullopt;
         return QJsonDocument::fromJson(client.readLine()).object();
     }
 
     QJsonObject call(QLocalSocket& client, const QString& fn, const QJsonArray& args = {})
     {
         const qint64 id = ++m_id;
-        request(client, {{QStringLiteral("type"), QStringLiteral("call")}, {QStringLiteral("id"), id},
-                         {QStringLiteral("target"), QStringLiteral("control")}, {QStringLiteral("fn"), fn},
-                         {QStringLiteral("args"), args}});
+        request(client,
+                {{QStringLiteral("type"), QStringLiteral("call")},
+                 {QStringLiteral("id"), id},
+                 {QStringLiteral("target"), QStringLiteral("control")},
+                 {QStringLiteral("fn"), fn},
+                 {QStringLiteral("args"), args}});
         const auto frame = next(client);
         EXPECT_TRUE(frame.has_value()) << qPrintable(fn);
         return frame.value_or(QJsonObject{});
@@ -141,10 +162,14 @@ protected:
     bool subscribe(QLocalSocket& client, const QString& event)
     {
         const qint64 id = ++m_id;
-        request(client, {{QStringLiteral("type"), QStringLiteral("subscribe")}, {QStringLiteral("id"), id},
-                         {QStringLiteral("target"), QStringLiteral("control")}, {QStringLiteral("signal"), event}});
+        request(client,
+                {{QStringLiteral("type"), QStringLiteral("subscribe")},
+                 {QStringLiteral("id"), id},
+                 {QStringLiteral("target"), QStringLiteral("control")},
+                 {QStringLiteral("signal"), event}});
         const auto frame = next(client);
-        if (!frame || frame->value(QStringLiteral("type")).toString() != QLatin1String("reply")) return false;
+        if (!frame || frame->value(QStringLiteral("type")).toString() != QLatin1String("reply"))
+            return false;
         m_events.insert(id, event);
         return true;
     }
@@ -194,7 +219,8 @@ TEST_F(ControlSocketTest, CallsReplyWithResultsOrErrors)
     ASSERT_TRUE(m_socket->enabled());
     EXPECT_EQ(InstanceSocket::processPath(), socketPath());
     // Only the owner can connect.
-    EXPECT_EQ(QFileInfo(socketPath()).permissions() & (QFile::ReadGroup | QFile::WriteGroup | QFile::ReadOther | QFile::WriteOther),
+    EXPECT_EQ(QFileInfo(socketPath()).permissions()
+                  & (QFile::ReadGroup | QFile::WriteGroup | QFile::ReadOther | QFile::WriteOther),
               QFile::Permissions{});
     QLocalSocket client;
     ASSERT_TRUE(connect(client));
@@ -214,12 +240,15 @@ TEST_F(ControlSocketTest, CallsReplyWithResultsOrErrors)
     };
     EXPECT_EQ(failure(QStringLiteral("focusedPane"), {}), QStringLiteral("no focused pane"));
     EXPECT_TRUE(failure(QStringLiteral("sendText"), {7, QStringLiteral("x")}).contains(QLatin1Char('7')));
-    EXPECT_TRUE(failure(QStringLiteral("getText"), {1, QStringLiteral("everything")}).startsWith(QStringLiteral("scope is")));
+    EXPECT_TRUE(
+        failure(QStringLiteral("getText"), {1, QStringLiteral("everything")}).startsWith(QStringLiteral("scope is")));
     // Reading pane text is off by default, and the check comes first.
-    EXPECT_TRUE(failure(QStringLiteral("runAction"), {1, QStringLiteral("copy")}).contains(QStringLiteral("Control.allowReadText")));
+    EXPECT_TRUE(failure(QStringLiteral("runAction"), {1, QStringLiteral("copy")})
+                    .contains(QStringLiteral("Control.allowReadText")));
     // A pane ID that a conversion would wrap or round onto a real pane.
     for (const double bad : {-1.0, 4294967297.0, 1.5}) {
-        EXPECT_TRUE(failure(QStringLiteral("close"), {bad}).startsWith(QStringLiteral("a pane ID is a whole number"))) << bad;
+        EXPECT_TRUE(failure(QStringLiteral("close"), {bad}).startsWith(QStringLiteral("a pane ID is a whole number")))
+            << bad;
     }
     EXPECT_EQ(failure(QStringLiteral("close"), {4294967295.0}), QStringLiteral("no pane 4294967295"));
 
@@ -239,7 +268,8 @@ TEST_F(ControlSocketTest, ScreenshotChecksItsScopeThenFailsWithCodesOfItsOwn)
     const auto failure = [this](QLocalSocket& client, const QJsonArray& args) {
         const QJsonObject frame = call(client, QStringLiteral("screenshot"), args);
         EXPECT_EQ(frame.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
-        return std::make_pair(frame.value(QStringLiteral("code")).toString(), frame.value(QStringLiteral("message")).toString());
+        return std::make_pair(frame.value(QStringLiteral("code")).toString(),
+                              frame.value(QStringLiteral("message")).toString());
     };
     // A picture shows the text: off without Control.allowReadText.
     ASSERT_TRUE(start());
@@ -280,7 +310,8 @@ TEST_F(ControlSocketTest, OverlayChecksItsArgumentsThenFailsWithCodesOfItsOwn)
         return frame.value(QStringLiteral("message")).toString();
     };
     EXPECT_TRUE(refused({7, QJsonArray{}, QJsonObject{}}).contains(QStringLiteral("argv")));
-    EXPECT_TRUE(refused({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("capture"), QStringLiteral("stderr")}}})
+    EXPECT_TRUE(refused({7, QJsonArray{QStringLiteral("fzf")},
+                         QJsonObject{{QStringLiteral("capture"), QStringLiteral("stderr")}}})
                     .startsWith(QStringLiteral("capture must be")));
     EXPECT_TRUE(refused({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("shell"), true}}})
                     .contains(QStringLiteral("shell")));
@@ -289,8 +320,9 @@ TEST_F(ControlSocketTest, OverlayChecksItsArgumentsThenFailsWithCodesOfItsOwn)
               QStringLiteral("cwd must name an existing absolute directory"));
     // Qt takes a resource path for absolute, and its root for a directory:
     // the spec refuses it before the directory check.
-    EXPECT_EQ(refused({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("cwd"), QStringLiteral(":/")}}}),
-              QStringLiteral("cwd must be an absolute path, ~ or a path that starts with ~/"));
+    EXPECT_EQ(
+        refused({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("cwd"), QStringLiteral(":/")}}}),
+        QStringLiteral("cwd must be an absolute path, ~ or a path that starts with ~/"));
     // A new tab looks for its pane first: the pane's host decides which
     // directories it takes (a session of another host takes none).
     const QJsonObject tab = call(client, QStringLiteral("newTab"), {7, QStringLiteral(":/"), QJsonArray{}});
@@ -301,11 +333,13 @@ TEST_F(ControlSocketTest, OverlayChecksItsArgumentsThenFailsWithCodesOfItsOwn)
     // Qt takes ":/" for absolute, and no program starts in it.
     const QJsonObject window = call(client, QStringLiteral("newWindow"), {QStringLiteral(":/"), QJsonArray{}});
     EXPECT_EQ(window.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
-    EXPECT_EQ(window.value(QStringLiteral("message")).toString(), QStringLiteral("cwd must name an existing absolute directory"));
+    EXPECT_EQ(window.value(QStringLiteral("message")).toString(),
+              QStringLiteral("cwd must name an existing absolute directory"));
     // A project directory reaches the directory check itself.
     const QJsonObject project = call(client, QStringLiteral("openDirectory"), {QStringLiteral(":/"), QString()});
     EXPECT_EQ(project.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
-    EXPECT_EQ(project.value(QStringLiteral("message")).toString(), QStringLiteral("project directory must be absolute or start with ~/"));
+    EXPECT_EQ(project.value(QStringLiteral("message")).toString(),
+              QStringLiteral("project directory must be absolute or start with ~/"));
     // Past the checks, a failure has its own code: here no pane, also for
     // the focused pane when there is none. ~ is the home directory, which
     // exists.
@@ -316,20 +350,27 @@ TEST_F(ControlSocketTest, OverlayChecksItsArgumentsThenFailsWithCodesOfItsOwn)
         return frame.value(QStringLiteral("message")).toString();
     };
     EXPECT_TRUE(noPane({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{}}).contains(QLatin1Char('7')));
-    EXPECT_TRUE(noPane({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("cwd"), QStringLiteral("~")}}})
-                    .contains(QLatin1Char('7')));
+    EXPECT_TRUE(
+        noPane({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("cwd"), QStringLiteral("~")}}})
+            .contains(QLatin1Char('7')));
     EXPECT_EQ(noPane({0, QJsonArray{QStringLiteral("fzf")}, QJsonObject{}}), QStringLiteral("no focused pane"));
     // A popup's shape, by the rules of the effect: cells as a JSON integer, a percentage as text.
     const QJsonArray fzf{QStringLiteral("fzf")};
-    EXPECT_TRUE(refused({7, fzf, QJsonObject{{QStringLiteral("width"), 0}}}).startsWith(QStringLiteral("width must be")));
-    EXPECT_TRUE(refused({7, fzf, QJsonObject{{QStringLiteral("height"), QStringLiteral("150%")}}}).startsWith(QStringLiteral("height must be")));
-    EXPECT_TRUE(refused({7, fzf, QJsonObject{{QStringLiteral("width"), QStringLiteral("40")}}}).startsWith(QStringLiteral("width must be")));
+    EXPECT_TRUE(
+        refused({7, fzf, QJsonObject{{QStringLiteral("width"), 0}}}).startsWith(QStringLiteral("width must be")));
+    EXPECT_TRUE(refused({7, fzf, QJsonObject{{QStringLiteral("height"), QStringLiteral("150%")}}})
+                    .startsWith(QStringLiteral("height must be")));
+    EXPECT_TRUE(refused({7, fzf, QJsonObject{{QStringLiteral("width"), QStringLiteral("40")}}})
+                    .startsWith(QStringLiteral("width must be")));
     EXPECT_TRUE(refused({7, fzf, QJsonObject{{QStringLiteral("position"), QStringLiteral("middle")}}})
                     .startsWith(QStringLiteral("position must be")));
-    EXPECT_TRUE(refused({7, fzf, QJsonObject{{QStringLiteral("border"), QStringLiteral("no")}}}).startsWith(QStringLiteral("border must be")));
+    EXPECT_TRUE(refused({7, fzf, QJsonObject{{QStringLiteral("border"), QStringLiteral("no")}}})
+                    .startsWith(QStringLiteral("border must be")));
     EXPECT_TRUE(noPane({7, fzf,
-                        QJsonObject{{QStringLiteral("width"), 60}, {QStringLiteral("height"), QStringLiteral("60%")},
-                                    {QStringLiteral("position"), QStringLiteral("top-right")}, {QStringLiteral("border"), false}}})
+                        QJsonObject{{QStringLiteral("width"), 60},
+                                    {QStringLiteral("height"), QStringLiteral("60%")},
+                                    {QStringLiteral("position"), QStringLiteral("top-right")},
+                                    {QStringLiteral("border"), false}}})
                     .contains(QLatin1Char('7')));
 }
 
@@ -351,13 +392,17 @@ TEST_F(ControlSocketTest, OverlayInputComesInPartsAndBelongsToItsConnection)
     const QString part(512 * 1024, QLatin1Char('x'));
     for (int i = 0; i < 4; ++i)
         EXPECT_TRUE(call(client, QStringLiteral("overlayInput"), {QStringLiteral("list"), part, false})
-                        .value(QStringLiteral("result")).toBool());
-    EXPECT_TRUE(call(client, QStringLiteral("overlayInput"), {QStringLiteral("list"), part, true}).value(QStringLiteral("result")).toBool());
+                        .value(QStringLiteral("result"))
+                        .toBool());
+    EXPECT_TRUE(call(client, QStringLiteral("overlayInput"), {QStringLiteral("list"), part, true})
+                    .value(QStringLiteral("result"))
+                    .toBool());
     EXPECT_EQ(overlay(QStringLiteral("list")).value(QStringLiteral("code")).toString(), QStringLiteral("no_pane"));
     // The call took it, whatever it decided.
     EXPECT_EQ(error(overlay(QStringLiteral("list"))), QStringLiteral("no complete input list for this client"));
     const auto accepted = [&](QLocalSocket& on, const QString& name, const QString& chunk, bool eof) {
-        return call(on, QStringLiteral("overlayInput"), {name, chunk, eof}).value(QStringLiteral("result")) == QJsonValue(true);
+        return call(on, QStringLiteral("overlayInput"), {name, chunk, eof}).value(QStringLiteral("result"))
+            == QJsonValue(true);
     };
     // An input that has not ended is not complete, and goes with the call too.
     ASSERT_TRUE(accepted(client, QStringLiteral("open"), QStringLiteral("a"), false));
@@ -369,27 +414,33 @@ TEST_F(ControlSocketTest, OverlayInputComesInPartsAndBelongsToItsConnection)
     // stdin and input exclude each other.
     EXPECT_EQ(error(call(client, QStringLiteral("overlay"),
                          {7, QJsonArray{QStringLiteral("fzf")},
-                          QJsonObject{{QStringLiteral("input"), QStringLiteral("done")}, {QStringLiteral("stdin"), QStringLiteral("x")}}})),
+                          QJsonObject{{QStringLiteral("input"), QStringLiteral("done")},
+                                      {QStringLiteral("stdin"), QStringLiteral("x")}}})),
               QStringLiteral("the overlay options stdin and input exclude each other"));
     // The overlay's limit, 4 MiB: one byte more drops the input.
     const QString limit(int(OverlaySpec::MaxInput), QLatin1Char('y'));
     for (qsizetype at = 0; at < limit.size(); at += part.size())
-        EXPECT_TRUE(call(client, QStringLiteral("overlayInput"), {QStringLiteral("big"), limit.mid(at, part.size()), false})
-                        .value(QStringLiteral("result")).toBool());
+        EXPECT_TRUE(
+            call(client, QStringLiteral("overlayInput"), {QStringLiteral("big"), limit.mid(at, part.size()), false})
+                .value(QStringLiteral("result"))
+                .toBool());
     EXPECT_EQ(error(call(client, QStringLiteral("overlayInput"), {QStringLiteral("big"), QStringLiteral("z"), true})),
               QStringLiteral("the overlay's stdin is over 4 MiB"));
     EXPECT_EQ(error(overlay(QStringLiteral("big"))), QStringLiteral("no complete input big for this client"));
     // A bad name, and at most four inputs that wait on one connection.
-    EXPECT_FALSE(error(call(client, QStringLiteral("overlayInput"), {QStringLiteral("a b"), QString(), true})).isEmpty());
+    EXPECT_FALSE(
+        error(call(client, QStringLiteral("overlayInput"), {QStringLiteral("a b"), QString(), true})).isEmpty());
     static_assert(ControlApi::MaxWaitingInputs == 4);
-    for (int i = 1; i <= ControlApi::MaxWaitingInputs; ++i) ASSERT_TRUE(accepted(client, QStringLiteral("w%1").arg(i), QStringLiteral("a"), true)) << i;
+    for (int i = 1; i <= ControlApi::MaxWaitingInputs; ++i)
+        ASSERT_TRUE(accepted(client, QStringLiteral("w%1").arg(i), QStringLiteral("a"), true)) << i;
     EXPECT_EQ(error(call(client, QStringLiteral("overlayInput"), {QStringLiteral("w5"), QStringLiteral("a"), true})),
               QStringLiteral("4 inputs wait for their overlay already"));
     // Another connection has inputs of its own: it does not see these.
     QLocalSocket other;
     ASSERT_TRUE(connect(other));
-    const QJsonObject elsewhere = call(other, QStringLiteral("overlay"),
-                                       {7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("input"), QStringLiteral("w1")}}});
+    const QJsonObject elsewhere =
+        call(other, QStringLiteral("overlay"),
+             {7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("input"), QStringLiteral("w1")}}});
     EXPECT_EQ(error(elsewhere), QStringLiteral("no complete input w1 for this client"));
 }
 
@@ -399,15 +450,19 @@ TEST_F(ControlSocketTest, AnOverlayTakesItsInputForABadPaneAndControlOffDropsThe
     QLocalSocket client;
     ASSERT_TRUE(connect(client));
     const auto input = [&](const QString& name) {
-        return call(client, QStringLiteral("overlayInput"), {name, QStringLiteral("a"), true}).value(QStringLiteral("result")).toBool();
+        return call(client, QStringLiteral("overlayInput"), {name, QStringLiteral("a"), true})
+            .value(QStringLiteral("result"))
+            .toBool();
     };
     const auto overlay = [&](double pane, const QString& name) {
-        return call(client, QStringLiteral("overlay"), {pane, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("input"), name}}})
+        return call(client, QStringLiteral("overlay"),
+                    {pane, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("input"), name}}})
             .value(QStringLiteral("message"))
             .toString();
     };
     ASSERT_TRUE(input(QStringLiteral("bad")));
-    EXPECT_TRUE(overlay(-1, QStringLiteral("bad")).startsWith(QLatin1String("a pane ID is"))) << qPrintable(overlay(-1, QStringLiteral("bad")));
+    EXPECT_TRUE(overlay(-1, QStringLiteral("bad")).startsWith(QLatin1String("a pane ID is")))
+        << qPrintable(overlay(-1, QStringLiteral("bad")));
     EXPECT_EQ(overlay(7, QStringLiteral("bad")), QStringLiteral("no complete input bad for this client"));
 
     // No overlay call can take an input while control is off: it goes.
@@ -441,15 +496,19 @@ TEST_F(ControlSocketTest, WaitingOverlayInputHasACapForAllConnectionsThatAClosed
     // The cap holds for a connection with none of its own.
     QLocalSocket late;
     ASSERT_TRUE(connect(late));
-    const QJsonObject refused = call(late, QStringLiteral("overlayInput"), {QStringLiteral("one"), QStringLiteral("a"), true});
+    const QJsonObject refused =
+        call(late, QStringLiteral("overlayInput"), {QStringLiteral("one"), QStringLiteral("a"), true});
     EXPECT_EQ(refused.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
     EXPECT_EQ(refused.value(QStringLiteral("message")).toString(),
               QStringLiteral("afterglow keeps at most 64 MiB of input for overlays that have not started"));
     // A connection that closes gives its bytes back.
     full.front()->disconnectFromServer();
-    ASSERT_TRUE(waitFor([&] { return full.front()->state() == QLocalSocket::UnconnectedState; }));
+    ASSERT_TRUE(waitFor([&] {
+        return full.front()->state() == QLocalSocket::UnconnectedState;
+    }));
     EXPECT_TRUE(waitFor([&] {
-        return call(late, QStringLiteral("overlayInput"), {QStringLiteral("one"), QStringLiteral("a"), true}).value(QStringLiteral("result"))
+        return call(late, QStringLiteral("overlayInput"), {QStringLiteral("one"), QStringLiteral("a"), true})
+                   .value(QStringLiteral("result"))
             == QJsonValue(true);
     }));
 }
@@ -474,7 +533,8 @@ bool runBlocking(Work work, const std::function<void()>& cancel, int timeoutMs =
         }
     };
     pump(timeoutMs);
-    if (thread->wait(QDeadlineTimer(1000))) return true;
+    if (thread->wait(QDeadlineTimer(1000)))
+        return true;
     cancel();
     pump(5000);
     thread->wait();
@@ -491,27 +551,31 @@ TEST_F(ControlSocketTest, ClientCallsAndReadsTheServersErrors)
         std::optional<QJsonValue> projects, part, tooLong, after;
         IpcClient::Error partError, tooLongError;
     } outcome;
-    ASSERT_TRUE(runBlocking([&] {
-        IpcClient client;
-        IpcClient::Error error;
-        outcome.connected = client.connectTo(socketPath(), 3000, &error);
-        if (!outcome.connected) return;
-        outcome.peer = client.peerPid();
-        outcome.projects = client.call(QStringLiteral("control"), QStringLiteral("projects"), {}, 3000, &error);
-        // The most text that a send-text part holds, each unit a control
-        // character that JSON writes as six bytes, fits in a request.
-        const QString part(CtlTextPart, QChar(0x01));
-        outcome.part = client.call(QStringLiteral("control"), QStringLiteral("sendText"), {1, part}, 3000, &outcome.partError);
-        // A request over the router's line limit is not sent: the connection
-        // stays, where the router would have closed it.
-        const QString tooLong(IpcClient::MaxLineBytes / 4, QChar(0x01));
-        outcome.tooLong =
-            client.call(QStringLiteral("control"), QStringLiteral("sendText"), {1, tooLong}, 3000, &outcome.tooLongError);
-        outcome.after = client.call(QStringLiteral("control"), QStringLiteral("projects"), {}, 3000, &error);
-    }, [this] {
-        m_socket.reset();
-        m_instance.reset();
-    }));
+    ASSERT_TRUE(runBlocking(
+        [&] {
+            IpcClient client;
+            IpcClient::Error error;
+            outcome.connected = client.connectTo(socketPath(), 3000, &error);
+            if (!outcome.connected)
+                return;
+            outcome.peer = client.peerPid();
+            outcome.projects = client.call(QStringLiteral("control"), QStringLiteral("projects"), {}, 3000, &error);
+            // The most text that a send-text part holds, each unit a control
+            // character that JSON writes as six bytes, fits in a request.
+            const QString part(CtlTextPart, QChar(0x01));
+            outcome.part =
+                client.call(QStringLiteral("control"), QStringLiteral("sendText"), {1, part}, 3000, &outcome.partError);
+            // A request over the router's line limit is not sent: the connection
+            // stays, where the router would have closed it.
+            const QString tooLong(IpcClient::MaxLineBytes / 4, QChar(0x01));
+            outcome.tooLong = client.call(QStringLiteral("control"), QStringLiteral("sendText"), {1, tooLong}, 3000,
+                                          &outcome.tooLongError);
+            outcome.after = client.call(QStringLiteral("control"), QStringLiteral("projects"), {}, 3000, &error);
+        },
+        [this] {
+            m_socket.reset();
+            m_instance.reset();
+        }));
     ASSERT_TRUE(outcome.connected);
     EXPECT_EQ(outcome.peer, getpid());
     ASSERT_TRUE(outcome.projects.has_value());
@@ -535,21 +599,27 @@ TEST_F(ControlSocketTest, ClientTakesAnErrorWithNoIdAsTheAnswer)
         QObject::connect(peer, &QLocalSocket::readyRead, peer, [peer] {
             while (peer->canReadLine()) {
                 peer->readLine();
-                peer->write(R"({"type":"error","code":"MALFORMED_REQUEST","message":"unreadable"})" "\n");
+                peer->write(R"({"type":"error","code":"MALFORMED_REQUEST","message":"unreadable"})"
+                            "\n");
             }
         });
     });
     std::optional<QJsonValue> result;
     IpcClient::Error error;
     qint64 took = 0;
-    ASSERT_TRUE(runBlocking([&] {
-        IpcClient client;
-        if (!client.connectTo(path, 3000, &error)) return;
-        QElapsedTimer clock;
-        clock.start();
-        result = client.call(QStringLiteral("control"), QStringLiteral("projects"), {}, 5000, &error);
-        took = clock.elapsed();
-    }, [&server] { qDeleteAll(server.findChildren<QLocalSocket*>()); }));
+    ASSERT_TRUE(runBlocking(
+        [&] {
+            IpcClient client;
+            if (!client.connectTo(path, 3000, &error))
+                return;
+            QElapsedTimer clock;
+            clock.start();
+            result = client.call(QStringLiteral("control"), QStringLiteral("projects"), {}, 5000, &error);
+            took = clock.elapsed();
+        },
+        [&server] {
+            qDeleteAll(server.findChildren<QLocalSocket*>());
+        }));
     EXPECT_FALSE(result.has_value());
     EXPECT_EQ(error.code, QStringLiteral("MALFORMED_REQUEST"));
     EXPECT_EQ(error.message, QStringLiteral("unreadable"));
@@ -570,7 +640,8 @@ TEST_F(ControlSocketTest, FollowsControlEnabled)
 
     ASSERT_TRUE(m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), true));
     ASSERT_TRUE(m_socket->enabled());
-    EXPECT_EQ(call(client, QStringLiteral("listPanes")).value(QStringLiteral("type")).toString(), QStringLiteral("reply"));
+    EXPECT_EQ(call(client, QStringLiteral("listPanes")).value(QStringLiteral("type")).toString(),
+              QStringLiteral("reply"));
     ASSERT_TRUE(subscribe(client, QStringLiteral("titleChanged")));
     const qint64 subscription = m_id;
 
@@ -599,7 +670,8 @@ TEST_F(ControlSocketTest, FollowsControlEnabled)
     EXPECT_EQ(event->value(QStringLiteral("subscriptionId")).toInteger(), renewed);
     EXPECT_EQ(event->value(QStringLiteral("args")).toArray(), (QJsonArray{1, QStringLiteral("again")}));
     // And the old one does not hear that title either.
-    EXPECT_EQ(call(client, QStringLiteral("listPanes")).value(QStringLiteral("type")).toString(), QStringLiteral("reply"));
+    EXPECT_EQ(call(client, QStringLiteral("listPanes")).value(QStringLiteral("type")).toString(),
+              QStringLiteral("reply"));
 }
 
 TEST_F(ControlSocketTest, OneProcessListensOnAPath)
@@ -624,9 +696,11 @@ bool makeStaleSocket(const QString& path)
 {
     const QByteArray name = QFile::encodeName(path);
     sockaddr_un address{};
-    if (std::size_t(name.size()) >= sizeof(address.sun_path)) return false;
+    if (std::size_t(name.size()) >= sizeof(address.sun_path))
+        return false;
     const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) return false;
+    if (fd < 0)
+        return false;
     address.sun_family = AF_UNIX;
     std::memcpy(address.sun_path, name.constData(), std::size_t(name.size()));
     const bool bound = ::bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
@@ -661,12 +735,17 @@ TEST_F(ControlSocketTest, AHeldLockKeepsAStaleSocketFromTheNextLaunch)
     struct Lock
     {
         int fd = -1;
-        ~Lock() { release(); }
+        ~Lock()
+        {
+            release();
+        }
         void release()
         {
-            if (fd >= 0) ::close(std::exchange(fd, -1));
+            if (fd >= 0)
+                ::close(std::exchange(fd, -1));
         }
-    } held{::open(QFile::encodeName(socketPath() + QStringLiteral(".lock")).constData(), O_RDWR | O_CREAT | O_CLOEXEC, 0600)};
+    } held{::open(QFile::encodeName(socketPath() + QStringLiteral(".lock")).constData(), O_RDWR | O_CREAT | O_CLOEXEC,
+                  0600)};
     ASSERT_GE(held.fd, 0);
     ASSERT_EQ(::flock(held.fd, LOCK_EX | LOCK_NB), 0);
     InstanceSocket second;
@@ -742,9 +821,11 @@ TEST_F(ControlSocketTest, MergesFastStateEventsOfAPane)
     Q_EMIT m_control->titleChanged(1, QStringLiteral("c"));
     // Another pane has its own interval.
     Q_EMIT m_control->titleChanged(2, QStringLiteral("x"));
-    for (int i = 0; i < 50; ++i) Q_EMIT m_control->bell(1);
-    EXPECT_EQ(events(client, 3), (QStringList{QStringLiteral("titleChanged:1:a"), QStringLiteral("titleChanged:2:x"),
-                                             QStringLiteral("bell:1")}));
+    for (int i = 0; i < 50; ++i)
+        Q_EMIT m_control->bell(1);
+    EXPECT_EQ(events(client, 3),
+              (QStringList{QStringLiteral("titleChanged:1:a"), QStringLiteral("titleChanged:2:x"),
+                           QStringLiteral("bell:1")}));
     // Events that wait for the same moment have no order between them.
     QStringList merged = events(client, 2);
     merged.sort();
@@ -753,7 +834,11 @@ TEST_F(ControlSocketTest, MergesFastStateEventsOfAPane)
     // With nothing left to send, the timer stops.
     QTimer* due = dueTimer();
     ASSERT_NE(due, nullptr);
-    EXPECT_TRUE(waitFor([due] { return !due->isActive(); }, 2000));
+    EXPECT_TRUE(waitFor(
+        [due] {
+            return !due->isActive();
+        },
+        2000));
     // An event after a quiet interval goes at once again.
     Q_EMIT m_control->titleChanged(1, QStringLiteral("d"));
     EXPECT_EQ(events(client, 1), QStringList{QStringLiteral("titleChanged:1:d")});
@@ -771,8 +856,9 @@ TEST_F(ControlSocketTest, WhatWaitsGoesBeforeTheNextEventOfThePane)
     Q_EMIT m_control->titleChanged(3, QStringLiteral("last"));
     // A client that reads the state at the end of a command sees it current.
     Q_EMIT m_control->commandFinished(3, QStringLiteral("make"), 0, 10);
-    EXPECT_EQ(events(client, 3), (QStringList{QStringLiteral("titleChanged:3:old"), QStringLiteral("titleChanged:3:last"),
-                                             QStringLiteral("commandFinished:3::0:10")}));
+    EXPECT_EQ(events(client, 3),
+              (QStringList{QStringLiteral("titleChanged:3:old"), QStringLiteral("titleChanged:3:last"),
+                           QStringLiteral("commandFinished:3::0:10")}));
     // The title that went out still counts for the interval.
     Q_EMIT m_control->titleChanged(3, QStringLiteral("next"));
     EXPECT_TRUE(events(client, 0, 100).isEmpty());
@@ -783,7 +869,8 @@ TEST_F(ControlSocketTest, WhatWaitsGoesBeforeTheNextEventOfThePane)
     Q_EMIT m_control->userVarChanged(3, QStringLiteral("a"), QStringLiteral("2"));
     Q_EMIT m_control->userVarChanged(3, QStringLiteral("b"), QStringLiteral("3"));
     // Values stay empty without Control.allowReadText.
-    EXPECT_EQ(events(client, 2), (QStringList{QStringLiteral("userVarChanged:3:a:"), QStringLiteral("userVarChanged:3:b:")}));
+    EXPECT_EQ(events(client, 2),
+              (QStringList{QStringLiteral("userVarChanged:3:a:"), QStringLiteral("userVarChanged:3:b:")}));
     Q_EMIT m_control->paneClosed(3);
     QStringList closing = events(client, 3);
     ASSERT_EQ(closing.size(), 3) << qPrintable(closing.join(QLatin1Char(' ')));
@@ -807,7 +894,8 @@ TEST_F(ControlSocketTest, ReadAccessCountsWhenTheValueGoesOut)
     // The value waits. The user takes read access away before it goes.
     ASSERT_TRUE(m_settings->write(QStringLiteral("Control"), QStringLiteral("allowReadText"), false));
     Q_EMIT m_control->paneClosed(1);
-    EXPECT_EQ(events(client, 2), (QStringList{QStringLiteral("userVarChanged:1:token:"), QStringLiteral("paneClosed:1")}));
+    EXPECT_EQ(events(client, 2),
+              (QStringList{QStringLiteral("userVarChanged:1:token:"), QStringLiteral("paneClosed:1")}));
 }
 
 TEST_F(ControlSocketTest, ZeroIntervalSendsEveryChangeAndCommandsFollowReadAccess)
@@ -823,8 +911,9 @@ TEST_F(ControlSocketTest, ZeroIntervalSendsEveryChangeAndCommandsFollowReadAcces
     Q_EMIT m_control->commandStarted(1, QStringLiteral("make"));
     ASSERT_TRUE(m_settings->write(QStringLiteral("Control"), QStringLiteral("allowReadText"), false));
     Q_EMIT m_control->commandStarted(1, QStringLiteral("secret"));
-    EXPECT_EQ(events(client, 4), (QStringList{QStringLiteral("titleChanged:1:a"), QStringLiteral("titleChanged:1:b"),
-                                             QStringLiteral("commandStarted:1:make"), QStringLiteral("commandStarted:1:")}));
+    EXPECT_EQ(events(client, 4),
+              (QStringList{QStringLiteral("titleChanged:1:a"), QStringLiteral("titleChanged:1:b"),
+                           QStringLiteral("commandStarted:1:make"), QStringLiteral("commandStarted:1:")}));
 }
 
 TEST_F(ControlSocketTest, IntervalTurnedToZeroSendsWhatWaitsFirst)
@@ -838,8 +927,9 @@ TEST_F(ControlSocketTest, IntervalTurnedToZeroSendsWhatWaitsFirst)
     ASSERT_TRUE(m_settings->write(QStringLiteral("Control"), QStringLiteral("eventInterval"), 0));
     Q_EMIT m_control->titleChanged(1, QStringLiteral("new"));
     // The client ends on the newest title.
-    EXPECT_EQ(events(client, 3), (QStringList{QStringLiteral("titleChanged:1:a"), QStringLiteral("titleChanged:1:old"),
-                                             QStringLiteral("titleChanged:1:new")}));
+    EXPECT_EQ(events(client, 3),
+              (QStringList{QStringLiteral("titleChanged:1:a"), QStringLiteral("titleChanged:1:old"),
+                           QStringLiteral("titleChanged:1:new")}));
     EXPECT_TRUE(events(client, 0, 100).isEmpty());
     EXPECT_FALSE(dueTimerActive());
 }
@@ -854,10 +944,12 @@ TEST(ControlEvents, AreTheSignalsOfTheControlTarget)
     QStringList signalNames;
     const QMetaObject& api = ControlApi::staticMetaObject;
     for (int i = QObject::staticMetaObject.methodCount(); i < api.methodCount(); ++i) {
-        if (api.method(i).methodType() == QMetaMethod::Signal) signalNames << QString::fromLatin1(api.method(i).name());
+        if (api.method(i).methodType() == QMetaMethod::Signal)
+            signalNames << QString::fromLatin1(api.method(i).name());
     }
     QStringList daemon;
-    for (const std::string_view event : AfterglowMux::ControlEvents) daemon << QString::fromLatin1(event.data(), qsizetype(event.size()));
+    for (const std::string_view event : AfterglowMux::ControlEvents)
+        daemon << QString::fromLatin1(event.data(), qsizetype(event.size()));
     signalNames.sort();
     daemon.sort();
     EXPECT_EQ(signalNames, daemon);

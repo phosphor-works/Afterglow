@@ -19,8 +19,14 @@ struct CellWalker
     long long abs;
     int col;
 
-    const Screen& screen() const { return *scr; }
-    const Row& row() const { return scr->absoluteRow(std::size_t(abs)); }
+    const Screen& screen() const
+    {
+        return *scr;
+    }
+    const Row& row() const
+    {
+        return scr->absoluteRow(std::size_t(abs));
+    }
     char32_t cp() const
     {
         const Cell& c = row().at(col);
@@ -29,7 +35,10 @@ struct CellWalker
     // A spacer head (the blank a wrapped wide character left in the last
     // column) is not a cell of the line, as text() and reflow agree: the
     // walk steps over it.
-    bool spacer() const { return row().at(col).isSpacerHead(); }
+    bool spacer() const
+    {
+        return row().at(col).isSpacerHead();
+    }
     bool prev()
     {
         do {
@@ -180,7 +189,8 @@ Selection::Range Selection::range(const Screen& screen, std::u32string_view boun
         // trimmed since: the key does not see that, so check the rows.
         if (m_word.screen == &screen && m_word.epoch == screen.layoutEpoch() && m_word.anchor == anchor
             && m_word.head == head && m_word.boundaries == boundaries
-            && screen.absoluteIndexOf(m_word.range.start.row) >= 0 && screen.absoluteIndexOf(m_word.range.end.row) >= 0) {
+            && screen.absoluteIndexOf(m_word.range.start.row) >= 0
+            && screen.absoluteIndexOf(m_word.range.end.row) >= 0) {
             return m_word.range;
         }
         CellWalker s{&screen, screen.absoluteIndexOf(r.start.row), r.start.col};
@@ -213,7 +223,8 @@ Selection::Range Selection::range(const Screen& screen, std::u32string_view boun
     }
     // A wide character is selected whole.
     if (const long long a = screen.absoluteIndexOf(r.start.row); a >= 0 && r.start.col > 0) {
-        if (screen.absoluteRow(std::size_t(a)).at(r.start.col).isTail()) --r.start.col;
+        if (screen.absoluteRow(std::size_t(a)).at(r.start.col).isTail())
+            --r.start.col;
     }
     if (const long long a = screen.absoluteIndexOf(r.end.row); a >= 0 && r.end.col + 1 <= lastCol) {
         if (screen.absoluteRow(std::size_t(a)).at(r.end.col + 1).isTail()) {
@@ -226,9 +237,11 @@ Selection::Range Selection::range(const Screen& screen, std::u32string_view boun
     return r;
 }
 
-std::string Selection::text(const Screen& screen, std::u32string_view boundaries, std::size_t maxBytes, bool* truncated) const
+std::string Selection::text(const Screen& screen, std::u32string_view boundaries, std::size_t maxBytes,
+                            bool* truncated) const
 {
-    if (truncated) *truncated = false;
+    if (truncated)
+        *truncated = false;
     if (!validFor(screen)) {
         return {};
     }
@@ -255,13 +268,13 @@ std::string Selection::text(const Screen& screen, std::u32string_view boundaries
                 c1 = r.end.col;
             }
         }
-        if (c0 > 0 && row.at(c0).isTail()) --c0;
+        if (c0 > 0 && row.at(c0).isTail())
+            --c0;
         std::string line;
         for (int x = c0; x <= c1; ++x) {
             const Cell& c = row.at(x);
             // A multicell block's text belongs to its top-left cell only.
-            if (c.isTail() || c.isSpacerHead()
-                || (c.isMulticell() && (c.multicellDx() != 0 || c.multicellDy() != 0))) {
+            if (c.isTail() || c.isSpacerHead() || (c.isMulticell() && (c.multicellDx() != 0 || c.multicellDy() != 0))) {
                 continue;
             }
             detail::appendUtf8(line, c.isEmpty() ? U' ' : c.codepoint());
@@ -277,14 +290,20 @@ std::string Selection::text(const Screen& screen, std::u32string_view boundaries
         }
         if (line.size() > maxBytes - out.size()) {
             auto bytes = maxBytes - out.size();
-            while (bytes && bytes < line.size() && (static_cast<unsigned char>(line[bytes]) & 0xc0) == 0x80) --bytes;
+            while (bytes && bytes < line.size() && (static_cast<unsigned char>(line[bytes]) & 0xc0) == 0x80)
+                --bytes;
             out.append(line, 0, bytes);
-            if (truncated) *truncated = true;
+            if (truncated)
+                *truncated = true;
             return out;
         }
         out += line;
         if (a < last && !joinsNext) {
-            if (out.size() == maxBytes) { if (truncated) *truncated = true; return out; }
+            if (out.size() == maxBytes) {
+                if (truncated)
+                    *truncated = true;
+                return out;
+            }
             out += '\n';
         }
     }
@@ -301,23 +320,33 @@ SelectionPoint moveSelectionCursor(const Screen& screen, SelectionPoint point, i
     point.row = std::clamp(point.row, first, last);
     point.row = std::uint64_t(std::clamp(std::int64_t(point.row) + dy, std::int64_t(first), std::int64_t(last)));
     point.col = std::clamp(point.col, 0, screen.cols() - 1);
-    const auto tail = [&](SelectionPoint p) { return screen.absoluteRow(std::size_t(p.row - first)).at(p.col).isTail(); };
+    const auto tail = [&](SelectionPoint p) {
+        return screen.absoluteRow(std::size_t(p.row - first)).at(p.col).isTail();
+    };
     if (dx) {
         const int step = dx > 0 ? 1 : -1;
         do {
             const auto before = point;
             point.col += step;
             if (point.col >= screen.cols()) {
-                if (point.row < last) { ++point.row; point.col = 0; }
-                else point.col = screen.cols() - 1;
+                if (point.row < last) {
+                    ++point.row;
+                    point.col = 0;
+                } else
+                    point.col = screen.cols() - 1;
             } else if (point.col < 0) {
-                if (point.row > first) { --point.row; point.col = screen.cols() - 1; }
-                else point.col = 0;
+                if (point.row > first) {
+                    --point.row;
+                    point.col = screen.cols() - 1;
+                } else
+                    point.col = 0;
             }
-            if (point == before) break;
+            if (point == before)
+                break;
         } while (tail(point));
     }
-    while (point.col > 0 && tail(point)) --point.col;
+    while (point.col > 0 && tail(point))
+        --point.col;
     return point;
 }
 }

@@ -35,7 +35,8 @@ static_assert(std::size(Names) == std::size_t(Error::Length) + 1, "a name for ea
 std::optional<std::unordered_set<std::string>> boundPaths()
 {
     std::ifstream file("/proc/net/unix");
-    if (!file) return std::nullopt;
+    if (!file)
+        return std::nullopt;
     std::unordered_set<std::string> paths;
     std::string line;
     // Num RefCount Protocol Flags Type St Inode Path, the path only for a bound socket.
@@ -44,11 +45,14 @@ std::optional<std::unordered_set<std::string>> boundPaths()
         std::size_t at = 0;
         for (int field = 0; field < 7 && at != std::string::npos; ++field) {
             at = line.find_first_not_of(' ', at);
-            if (at != std::string::npos) at = line.find(' ', at);
+            if (at != std::string::npos)
+                at = line.find(' ', at);
         }
-        if (at != std::string::npos && at + 1 < line.size()) paths.insert(line.substr(at + 1));
+        if (at != std::string::npos && at + 1 < line.size())
+            paths.insert(line.substr(at + 1));
     }
-    if (file.bad()) return std::nullopt;
+    if (file.bad())
+        return std::nullopt;
     return paths;
 }
 
@@ -56,11 +60,13 @@ std::optional<std::unordered_set<std::string>> boundPaths()
 bool refused(const std::string& path)
 {
     sockaddr_un address{};
-    if (path.size() >= sizeof address.sun_path) return false;
+    if (path.size() >= sizeof address.sun_path)
+        return false;
     address.sun_family = AF_UNIX;
     std::memcpy(address.sun_path, path.data(), path.size());
     const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-    if (fd < 0) return false;
+    if (fd < 0)
+        return false;
     int result;
     do {
         result = ::connect(fd, reinterpret_cast<const sockaddr*>(&address), sizeof address);
@@ -81,7 +87,8 @@ std::string_view errorName(Error error)
 std::optional<Error> errorFromName(std::string_view name)
 {
     for (std::size_t i = 0; i < std::size(Names); ++i) {
-        if (Names[i] == name) return Error(i);
+        if (Names[i] == name)
+            return Error(i);
     }
     return std::nullopt;
 }
@@ -119,12 +126,14 @@ std::optional<Answer> parseReply(std::string_view payload)
 {
     if (payload.starts_with(PathKey)) {
         const std::string_view path = payload.substr(PathKey.size());
-        if (!validPath(path)) return std::nullopt;
+        if (!validPath(path))
+            return std::nullopt;
         return Answer{std::string(path), Error::Off};
     }
     if (payload.starts_with(ErrorKey)) {
         const auto error = errorFromName(payload.substr(ErrorKey.size()));
-        if (!error) return std::nullopt;
+        if (!error)
+            return std::nullopt;
         return Answer{{}, *error};
     }
     return std::nullopt;
@@ -132,7 +141,8 @@ std::optional<Answer> parseReply(std::string_view payload)
 
 std::optional<std::string_view> oscPayload(std::string_view osc)
 {
-    if (!osc.starts_with(Prefix)) return std::nullopt;
+    if (!osc.starts_with(Prefix))
+        return std::nullopt;
     return osc.substr(Prefix.size());
 }
 
@@ -141,7 +151,8 @@ std::string tmuxPassthrough(std::string_view sequences)
     std::string out = "\x1bPtmux;";
     for (const char c : sequences) {
         out += c;
-        if (c == '\x1b') out += '\x1b';
+        if (c == '\x1b')
+            out += '\x1b';
     }
     out += "\x1b\\";
     return out;
@@ -150,7 +161,8 @@ std::string tmuxPassthrough(std::string_view sequences)
 std::string socketPath(std::string_view directory, std::string_view token)
 {
     std::string path(directory);
-    if (!path.ends_with('/')) path += '/';
+    if (!path.ends_with('/'))
+        path += '/';
     return path + std::string(token) + ".sock";
 }
 
@@ -167,9 +179,11 @@ Pruned prune(const std::string& directory, uid_t owner)
     while (true) {
         errno = 0;
         const dirent* entry = ::readdir(dir);
-        if (!entry) break;
+        if (!entry)
+            break;
         const std::string_view name = entry->d_name;
-        if (name.size() > 5 && name.ends_with(".sock")) names.emplace_back(name);
+        if (name.size() > 5 && name.ends_with(".sock"))
+            names.emplace_back(name);
     }
     if (errno != 0) {
         // A part of the listing is no proof that the rest is gone: remove nothing.
@@ -180,14 +194,19 @@ Pruned prune(const std::string& directory, uid_t owner)
     const auto bound = boundPaths();
     for (const std::string& name : names) {
         struct stat info{};
-        if (::fstatat(fd, name.c_str(), &info, AT_SYMLINK_NOFOLLOW) != 0) continue;
-        if (!S_ISSOCK(info.st_mode) || info.st_uid != owner) continue;
+        if (::fstatat(fd, name.c_str(), &info, AT_SYMLINK_NOFOLLOW) != 0)
+            continue;
+        if (!S_ISSOCK(info.st_mode) || info.st_uid != owner)
+            continue;
         const std::string path = socketPath(directory, name.substr(0, name.size() - 5));
         // Listed: a process holds it, and a connection would only open a
         // channel to a live session.
-        if (bound && bound->contains(path)) continue;
-        if (!refused(path)) continue;
-        if (::unlinkat(fd, name.c_str(), 0) == 0) result.removed.push_back(name);
+        if (bound && bound->contains(path))
+            continue;
+        if (!refused(path))
+            continue;
+        if (::unlinkat(fd, name.c_str(), 0) == 0)
+            result.removed.push_back(name);
     }
     ::closedir(dir);
     return result;

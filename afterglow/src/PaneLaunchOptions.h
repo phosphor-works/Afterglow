@@ -6,7 +6,8 @@
 #include <optional>
 #include <string>
 namespace Afterglow {
-struct PaneLaunchOptions {
+struct PaneLaunchOptions
+{
     QString cwd;
     QStringList command;
     QVariantMap environment; ///< String values override; false removes inherited entries.

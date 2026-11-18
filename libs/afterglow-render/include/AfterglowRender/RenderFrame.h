@@ -26,12 +26,21 @@ class RenderFrame
 {
 public:
     RenderFrame(QRhiCommandBuffer* commands, std::function<void()> end)
-        : m_commands(commands), m_end(std::move(end)) {}
-    ~RenderFrame() { finish(); }
+        : m_commands(commands)
+        , m_end(std::move(end))
+    {
+    }
+    ~RenderFrame()
+    {
+        finish();
+    }
     RenderFrame(const RenderFrame&) = delete;
     RenderFrame& operator=(const RenderFrame&) = delete;
 
-    QRhiCommandBuffer* commands() const { return m_commands; }
+    QRhiCommandBuffer* commands() const
+    {
+        return m_commands;
+    }
     /// Holds @p updates until a pass begins with it, and submits it if the
     /// frame ends first. Returns @p updates; one batch is held at a time.
     QRhiResourceUpdateBatch* stage(QRhiResourceUpdateBatch* updates)
@@ -45,11 +54,11 @@ public:
         m_staged = updates;
         return updates;
     }
-    void beginPass(QRhiRenderTarget* target, const QColor& clear,
-                   const QRhiDepthStencilClearValue& depth,
+    void beginPass(QRhiRenderTarget* target, const QColor& clear, const QRhiDepthStencilClearValue& depth,
                    QRhiResourceUpdateBatch* updates = nullptr)
     {
-        if (updates == m_staged) m_staged = nullptr;
+        if (updates == m_staged)
+            m_staged = nullptr;
         m_commands->beginPass(target, clear, depth, updates);
         m_passActive = true;
     }
@@ -60,9 +69,12 @@ public:
     }
     void finish()
     {
-        if (std::exchange(m_finished, true)) return;
-        if (m_passActive) endPass();
-        if (m_staged) m_commands->resourceUpdate(std::exchange(m_staged, nullptr));
+        if (std::exchange(m_finished, true))
+            return;
+        if (m_passActive)
+            endPass();
+        if (m_staged)
+            m_commands->resourceUpdate(std::exchange(m_staged, nullptr));
         m_end();
     }
 

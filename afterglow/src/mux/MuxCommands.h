@@ -79,7 +79,8 @@ public:
 
     /// @p writer is the window's Attach::CommandsChannel. @p written runs
     /// after a write, so that the stream sends it.
-    MuxCommands(QString session, PhosphorChannel::StreamWriter* writer, std::function<void()> written, QObject* parent = nullptr);
+    MuxCommands(QString session, PhosphorChannel::StreamWriter* writer, std::function<void()> written,
+                QObject* parent = nullptr);
     ~MuxCommands() override;
 
     /// The connections that opened before it serve once it comes, but those
@@ -90,7 +91,10 @@ public:
     void bound(std::uint32_t pane);
     /// The session runs on @p host: its programs get only the commands that
     /// a script marks remote, with @p host as ev.remote.host.
-    void setRemoteHost(QString host) { m_remoteHost = std::move(host); }
+    void setRemoteHost(QString host)
+    {
+        m_remoteHost = std::move(host);
+    }
 
     /// A frame of the daemon. False for one that does not apply: a relay
     /// that opens twice. The bytes of a relay that the window refused or
@@ -117,8 +121,9 @@ public:
     /// it, pane 0 stays: an endpoint of RemoteSockets reads it as the
     /// client's own pane.
     static std::optional<std::string> forWindow(const std::string& line, std::string_view target,
-                                                const std::function<std::optional<quint32>(std::uint32_t)>& pane, const QString& session,
-                                                std::string* error, const std::function<std::optional<quint32>()>* focused = nullptr);
+                                                const std::function<std::optional<quint32>(std::uint32_t)>& pane,
+                                                const QString& session, std::string* error,
+                                                const std::function<std::optional<quint32>()>* focused = nullptr);
 
 private:
     struct Relay

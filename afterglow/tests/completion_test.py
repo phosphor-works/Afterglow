@@ -131,7 +131,7 @@ def ctl_branches(source, command):
     """The bodies of the branches of runCtl in Ctl.cpp whose condition names COMMAND. The first such branch is the one
     of the options that take a value, which takes none."""
     branches = [body for condition, body in
-                re.findall(r'^    (?:\} else )?if \(([^\n]*)\) \{\n(.*?)(?=^    \})', source, re.M | re.S)
+                re.findall(r'^    (?:\} else )?if \((.*?)\) \{\n(.*?)(?=^    \})', source, re.M | re.S)
                 if f'QLatin1String("{command}")' in condition]
     if not branches:
         raise SystemExit(f'FAIL: no {command} branch in {CTL}')
@@ -153,7 +153,7 @@ def ctl_options(source, command, nonempty=True):
         found |= take_calls(body)
         for group in ctl_groups(source, command):
             found |= group
-        for takes_reads, takes_focus in re.findall(r'takeLaunch\((true|false), (true|false),', body):
+        for takes_reads, takes_focus in re.findall(r'takeLaunch\((true|false),\s*(true|false),', body):
             found |= launch - focus - reads
             found |= focus if takes_focus == 'true' else set()
             found |= reads if takes_reads == 'true' else set()
@@ -167,7 +167,7 @@ def signal_names():
     match = re.search(r'Names\[\] = \{(.*?)\};', PTY.read_text(), re.S)
     if not match:
         raise SystemExit(f'FAIL: no signal names in {PTY}')
-    return set(re.findall(r'\{"([A-Z0-9]+)", SIG', match.group(1)))
+    return set(re.findall(r'\{\s*"([A-Z0-9]+)",\s*SIG', match.group(1)))
 
 
 def key_name_parses(name):
@@ -179,8 +179,8 @@ def key_name_parses(name):
         raise SystemExit(f'FAIL: no modifierNamed in {KEY_NAMES}')
     modifiers = set(re.findall(r'name == "([a-z]+)"', named.group(0)))
     # The keys of the table, and the characters named in words (characterNamed).
-    keys = set(re.findall(r'\{"([^"]+)", Key::', source))
-    keys |= set(re.findall(r'name == "([a-z]+)"\) return U', source))
+    keys = set(re.findall(r'\{\s*"([^"]+)",\s*Key::', source))
+    keys |= set(re.findall(r'name == "([a-z]+)"\)\s*return U', source))
     if not modifiers or not keys:
         raise SystemExit(f'FAIL: no modifiers or keys in {KEY_NAMES}')
     *mods, key = [re.sub(r'[_-]', '', word) for word in name.lower().split('+')]
@@ -202,7 +202,7 @@ def mux_commands():
     run = re.search(r'^int runMux\(.*?^\}', source, re.M | re.S)
     if not run:
         raise SystemExit(f'FAIL: no runMux in {MUX}')
-    commands = {c: f for c, f in re.findall(r'command == "([a-z]+)"\) return (\w+)\(', run.group(0)) if f != 'fail'}
+    commands = {c: f for c, f in re.findall(r'command == "([a-z]+)"\)\s*return (\w+)\(', run.group(0)) if f != 'fail'}
     if not commands:
         raise SystemExit(f'FAIL: no commands in runMux in {MUX}')
     options = {}
@@ -223,13 +223,13 @@ def keybind_actions():
     match = re.search(r'const ActionInfo Actions\[\] = \{(.*?)\n\};', KEYBINDS.read_text(), re.S)
     if not match:
         raise SystemExit(f'FAIL: no Actions table in {KEYBINDS}')
-    return re.findall(r'\{Action::\w+, "([a-z0-9_]+)"', match.group(1))
+    return re.findall(r'\{\s*Action::\w+,\s*"([a-z0-9_]+)"', match.group(1))
 
 
 def aglow_option_table(command):
     """(names, kind) of each entry in the option table of tools/aglow/COMMAND.cpp."""
     path = AGLOW / AGLOW_COMMANDS[command]
-    entries = re.findall(r'^\s*\{ "(-[^"]+)", Cli::Option::Kind::(\w+)', path.read_text(), re.M)
+    entries = re.findall(r'\{\s*"(-[^"]+)",\s*Cli::Option::Kind::(\w+)', path.read_text())
     if not entries:
         raise SystemExit(f'FAIL: no options in {path}')
     return entries
@@ -238,7 +238,8 @@ def aglow_option_table(command):
 def aglow_choices(command, option):
     """The choices of OPTION in the option table of tools/aglow/COMMAND.cpp."""
     path = AGLOW / AGLOW_COMMANDS[command]
-    match = re.search(r'\{ "%s", Cli::Option::Kind::Choice, "[^"]*", \{([^}]*)\}' % re.escape(option), path.read_text())
+    match = re.search(r'\{\s*"%s",\s*Cli::Option::Kind::Choice,\s*"[^"]*",\s*\{([^}]*)\}' % re.escape(option),
+                      path.read_text())
     if not match:
         raise SystemExit(f'FAIL: no choices of {option} in {path}')
     return set(re.findall(r'"([^"]+)"', match.group(1)))
@@ -388,11 +389,22 @@ class Shells:
         (bash_dir / 'ssh').write_text('_stub_ssh() { COMPREPLY=(ssh-marker); }\ncomplete -F _stub_ssh ssh\n')
         (self.fish_dir / 'ssh.fish').write_text('complete -c ssh -f -a ssh-marker\n')
         (self.zsh_functions / '_ssh').write_text('#compdef ssh\ncompadd ssh-marker\n')
-        # Only the stubs, the shells' directories and /usr/bin and /bin, not the rest of the user's PATH: an
-        # afterglow, aglow or aglow-mux of the user there would run by mistake, and a completion that falls back
-        # on one would pass.
-        shell_dirs = [str(Path(found).parent) for found in map(shutil.which, ('bash', 'fish', 'zsh')) if found]
-        path = ':'.join(dict.fromkeys([str(self.bin), *shell_dirs, '/usr/bin', '/bin']))
+        # The stubs, then every program of the user's PATH but an afterglow, aglow or aglow-mux, as links in a
+        # directory of the test: one of the user's would run by mistake, and a completion that falls back on one
+        # would pass. The others stay for the shells and the programs that the completions run (readlink), which
+        # a system need not keep in /usr/bin or /bin (NixOS), where an installed afterglow can be too.
+        tools = tmp / 'tools'
+        tools.mkdir()
+        for directory in os.environ.get('PATH', '/usr/bin:/bin').split(':'):
+            if not directory or not os.path.isdir(directory):
+                continue
+            for entry in os.scandir(directory):
+                target = tools / entry.name
+                if entry.name in ('afterglow', 'aglow', 'aglow-mux') or os.path.lexists(target):
+                    continue
+                if os.access(entry.path, os.X_OK) and not entry.is_dir():
+                    target.symlink_to(entry.path)
+        path = f'{self.bin}:{tools}'
         self.env = dict(os.environ, PATH=path,
                         STUB_LOG=str(self.log), STUB_IDS='nav\nscene', HOME=str(tmp),
                         XDG_CONFIG_HOME=str(tmp / '.config'), XDG_DATA_HOME=str(tmp / '.local/share'),

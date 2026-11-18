@@ -54,7 +54,8 @@ bool waitFor(const std::function<bool()>& done, int ms = 10000)
 {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
     while (!done()) {
-        if (std::chrono::steady_clock::now() >= deadline) return false;
+        if (std::chrono::steady_clock::now() >= deadline)
+            return false;
         QEventLoop loop;
         QTimer::singleShot(5, &loop, &QEventLoop::quit);
         loop.exec();
@@ -90,30 +91,37 @@ struct Shown
 Shown show(MuxTest::TestDaemon& daemon, const std::string& name, AfterglowMux::SessionOptions* made = nullptr)
 {
     Shown shown;
-    const AfterglowMux::SessionOptions options = daemon.options({"/bin/cat"}, name);
-    if (made) *made = options;
+    const AfterglowMux::SessionOptions options = daemon.options({MuxTest::programInPath("cat")}, name);
+    if (made)
+        *made = options;
     EXPECT_TRUE(daemon.newSession(options)) << daemon.lastError();
     QString error;
-    shown.client = MuxClient::attach(QString::fromStdString(name), false, &error, AfterglowMux::Route{daemon.sockets(), {}, {}}, std::size_t(1) << 20, 1000);
+    shown.client = MuxClient::attach(QString::fromStdString(name), false, &error,
+                                     AfterglowMux::Route{daemon.sockets(), {}, {}}, std::size_t(1) << 20, 1000);
     EXPECT_TRUE(shown.client) << error.toStdString();
-    if (!shown.client) return shown;
+    if (!shown.client)
+        return shown;
     const std::vector<std::uint32_t> panes = shown.client->layout().panes();
     EXPECT_EQ(panes.size(), 1u);
-    if (panes.size() != 1) return shown;
+    if (panes.size() != 1)
+        return shown;
     shown.first = std::make_unique<Pane>(AfterglowVt::TerminalOptions{});
     shown.first->showSession(shown.client, panes.front());
-    EXPECT_TRUE(waitFor([&] { return shown.first->sessionSynced(); }));
+    EXPECT_TRUE(waitFor([&] {
+        return shown.first->sessionSynced();
+    }));
     return shown;
 }
 
 /// A new pane of the session, bound, that showed its first frame.
-std::unique_ptr<Pane> newPane(MuxClient& client, const std::shared_ptr<MuxClient>& shared, std::vector<std::string> argv,
-                              std::string launchedProgram = {})
+std::unique_ptr<Pane> newPane(MuxClient& client, const std::shared_ptr<MuxClient>& shared,
+                              std::vector<std::string> argv, std::string launchedProgram = {})
 {
     QString error;
     const auto id = client.newPane(launchOf(std::move(argv), std::move(launchedProgram)), Size, &error);
     EXPECT_TRUE(id) << error.toStdString();
-    if (!id) return nullptr;
+    if (!id)
+        return nullptr;
     auto pane = std::make_unique<Pane>(AfterglowVt::TerminalOptions{});
     pane->showSession(shared, *id);
     return pane;
@@ -133,11 +141,14 @@ TEST(MuxClient, AWindowShowsMorePanesThanTheDefaultChannels)
     EXPECT_TRUE(shown.client->environment() == made.environment);
     std::vector<std::unique_ptr<Pane>> panes;
     for (int i = 0; i < 99; ++i) {
-        panes.push_back(newPane(*shown.client, shown.client, {"/bin/cat"}));
+        panes.push_back(newPane(*shown.client, shown.client, {MuxTest::programInPath("cat")}));
         ASSERT_TRUE(panes.back()) << i;
     }
     for (std::size_t i = 0; i < panes.size(); ++i) {
-        ASSERT_TRUE(waitFor([&] { return panes[i]->sessionSynced(); })) << "pane " << i << " " << daemon.errors();
+        ASSERT_TRUE(waitFor([&] {
+            return panes[i]->sessionSynced();
+        })) << "pane "
+            << i << " " << daemon.errors();
     }
     EXPECT_TRUE(shown.client->showing());
 }
@@ -151,18 +162,26 @@ TEST(MuxClient, ADetachLeavesThePanesWithoutAnExit)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     Shown shown = show(daemon, "left");
     ASSERT_TRUE(shown.client && shown.first);
-    std::unique_ptr<Pane> second = newPane(*shown.client, shown.client, {"/bin/cat"});
+    std::unique_ptr<Pane> second = newPane(*shown.client, shown.client, {MuxTest::programInPath("cat")});
     ASSERT_TRUE(second);
-    ASSERT_TRUE(waitFor([&] { return second->sessionSynced(); })) << daemon.errors();
+    ASSERT_TRUE(waitFor([&] {
+        return second->sessionSynced();
+    })) << daemon.errors();
     int closed = 0;
     int left = 0;
     QObject context; // ends before the counters
     for (Pane* pane : {shown.first.get(), second.get()}) {
-        QObject::connect(pane, &Pane::closed, &context, [&closed] { ++closed; });
-        QObject::connect(pane, &Pane::sessionLeft, &context, [&left] { ++left; });
+        QObject::connect(pane, &Pane::closed, &context, [&closed] {
+            ++closed;
+        });
+        QObject::connect(pane, &Pane::sessionLeft, &context, [&left] {
+            ++left;
+        });
     }
     ASSERT_TRUE(daemon.call(AfterglowMux::Fn::Detach, MuxTest::Json::Array{"left"})) << daemon.lastError();
-    EXPECT_TRUE(waitFor([&] { return left == 2; }));
+    EXPECT_TRUE(waitFor([&] {
+        return left == 2;
+    }));
     EXPECT_FALSE(shown.client->showing());
     EXPECT_TRUE(shown.first->leftSession());
     EXPECT_TRUE(second->leftSession());
@@ -171,14 +190,22 @@ TEST(MuxClient, ADetachLeavesThePanesWithoutAnExit)
     // a close that it queued runs before a call queued after it.
     ASSERT_TRUE(waitFor([&] {
         for (const AfterglowMux::SessionInfo& s : daemon.sessions()) {
-            if (s.name == "left") return !s.attached;
+            if (s.name == "left")
+                return !s.attached;
         }
         return false;
     }));
     QCoreApplication::processEvents();
     bool drained = false;
-    QMetaObject::invokeMethod(&context, [&drained] { drained = true; }, Qt::QueuedConnection);
-    ASSERT_TRUE(waitFor([&] { return drained; }));
+    QMetaObject::invokeMethod(
+        &context,
+        [&drained] {
+            drained = true;
+        },
+        Qt::QueuedConnection);
+    ASSERT_TRUE(waitFor([&] {
+        return drained;
+    }));
     EXPECT_EQ(closed, 0);
 }
 
@@ -197,7 +224,7 @@ TEST(MuxClient, PanesThatGoFreeTheirChannels)
         {
             // The window closes it at once, maybe before its PaneOpened came:
             // its program ends, and its frames are read and dropped.
-            std::unique_ptr<Pane> pane = newPane(*shown.client, shown.client, {"/bin/cat"});
+            std::unique_ptr<Pane> pane = newPane(*shown.client, shown.client, {MuxTest::programInPath("cat")});
             ASSERT_TRUE(pane) << i;
         }
         // Its exit comes whole (its last frame and PaneClosed) before the
@@ -205,17 +232,23 @@ TEST(MuxClient, PanesThatGoFreeTheirChannels)
         // of the panes before it too.
         std::unique_ptr<Pane> pane = newPane(*shown.client, shown.client, {"/bin/sh", "-c", "exit 3"});
         ASSERT_TRUE(pane) << i;
-        ASSERT_TRUE(waitFor([&] { return !pane->showsSession(QStringLiteral("cycle")); })) << "pane " << i << " " << daemon.errors();
+        ASSERT_TRUE(waitFor([&] {
+            return !pane->showsSession(QStringLiteral("cycle"));
+        })) << "pane "
+            << i << " " << daemon.errors();
         ASSERT_TRUE(shown.client->showing()) << i;
     }
-    std::unique_ptr<Pane> last = newPane(*shown.client, shown.client, {"/bin/cat"});
+    std::unique_ptr<Pane> last = newPane(*shown.client, shown.client, {MuxTest::programInPath("cat")});
     ASSERT_TRUE(last);
-    EXPECT_TRUE(waitFor([&] { return last->sessionSynced(); })) << daemon.errors();
+    EXPECT_TRUE(waitFor([&] {
+        return last->sessionSynced();
+    })) << daemon.errors();
     EXPECT_TRUE(shown.client->showing());
     // Only the two panes that the window shows run on.
     EXPECT_TRUE(waitFor([&] {
         for (const AfterglowMux::SessionInfo& s : daemon.sessions()) {
-            if (s.name == "cycle") return s.panes == 2;
+            if (s.name == "cycle")
+                return s.panes == 2;
         }
         return false;
     }));
@@ -230,10 +263,12 @@ TEST(MuxClient, TheJobsOfPanesComeTogether)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     Shown shown = show(daemon, "jobs");
     ASSERT_TRUE(shown.client && shown.first);
-    std::unique_ptr<Pane> first = newPane(*shown.client, shown.client, {"/bin/cat"}, "reader");
-    std::unique_ptr<Pane> second = newPane(*shown.client, shown.client, {"/bin/cat"}, "writer");
+    std::unique_ptr<Pane> first = newPane(*shown.client, shown.client, {MuxTest::programInPath("cat")}, "reader");
+    std::unique_ptr<Pane> second = newPane(*shown.client, shown.client, {MuxTest::programInPath("cat")}, "writer");
     ASSERT_TRUE(first && second);
-    ASSERT_TRUE(waitFor([&] { return first->sessionSynced() && second->sessionSynced(); })) << daemon.errors();
+    ASSERT_TRUE(waitFor([&] {
+        return first->sessionSynced() && second->sessionSynced();
+    })) << daemon.errors();
     const std::vector<std::uint32_t> ids{first->sessionPaneId(), 0xfffffff0u, second->sessionPaneId()};
     const std::vector<std::optional<QString>> jobs = shown.client->paneJobs(ids);
     ASSERT_EQ(jobs.size(), 3u);
@@ -252,7 +287,8 @@ TEST(MuxClient, TheJobsOfPanesComeTogether)
     const auto waited = std::chrono::steady_clock::now() - start;
     ASSERT_TRUE(signalDaemon(daemon.pid(), SIGCONT));
     ASSERT_EQ(unanswered.size(), 3u);
-    for (const std::optional<QString>& job : unanswered) EXPECT_FALSE(job.has_value()) << job->toStdString();
+    for (const std::optional<QString>& job : unanswered)
+        EXPECT_FALSE(job.has_value()) << job->toStdString();
     EXPECT_LT(waited, std::chrono::milliseconds(2 * AfterglowMux::CallTimeoutMs + 1000));
 }
 
@@ -267,20 +303,31 @@ TEST(MuxClient, AReadOfAHiddenPaneGivesItsCurrentText)
     Shown shown = show(daemon, "hidden");
     ASSERT_TRUE(shown.client && shown.first);
     Pane& pane = *shown.first;
-    const auto replica = [&pane] { return pane.withTerminal([](Terminal& t) { return t.text(Terminal::TextScope::Screen); }); };
+    const auto replica = [&pane] {
+        return pane.withTerminal([](Terminal& t) {
+            return t.text(Terminal::TextScope::Screen);
+        });
+    };
     pane.setSessionVisible(false);
     EXPECT_TRUE(pane.sessionScreensHeld());
     // cat prints the title sequence that it reads: the title comes, and the
     // text before it is held.
     ASSERT_TRUE(pane.sendInput("hidden text\n\x1b]2;one\x07\n"));
-    ASSERT_TRUE(waitFor([&] { return pane.title() == QStringLiteral("one"); })) << daemon.errors();
+    ASSERT_TRUE(waitFor([&] {
+        return pane.title() == QStringLiteral("one");
+    })) << daemon.errors();
     EXPECT_EQ(replica().find("hidden text"), std::string::npos) << replica();
     EXPECT_TRUE(pane.text(Terminal::TextScope::Screen).contains(QStringLiteral("hidden text")));
-    EXPECT_TRUE(pane.readText(Terminal::TextScope::All, 4096).value(QStringLiteral("text")).toString().contains(QStringLiteral("hidden text")));
+    EXPECT_TRUE(pane.readText(Terminal::TextScope::All, 4096)
+                    .value(QStringLiteral("text"))
+                    .toString()
+                    .contains(QStringLiteral("hidden text")));
     // Still hidden: the next read asks again.
     EXPECT_TRUE(pane.sessionScreensHeld());
     ASSERT_TRUE(pane.sendInput("more text\n\x1b]2;two\x07\n"));
-    ASSERT_TRUE(waitFor([&] { return pane.title() == QStringLiteral("two"); })) << daemon.errors();
+    ASSERT_TRUE(waitFor([&] {
+        return pane.title() == QStringLiteral("two");
+    })) << daemon.errors();
     EXPECT_EQ(replica().find("more text"), std::string::npos) << replica();
     EXPECT_TRUE(pane.text(Terminal::TextScope::Screen).contains(QStringLiteral("more text")));
     // Seen again, the screens come, and a read after one refresh needs none.
@@ -288,7 +335,9 @@ TEST(MuxClient, AReadOfAHiddenPaneGivesItsCurrentText)
     pane.refreshSession();
     EXPECT_FALSE(pane.sessionScreensHeld());
     ASSERT_TRUE(pane.sendInput("seen text\n"));
-    EXPECT_TRUE(waitFor([&] { return replica().find("seen text") != std::string::npos; })) << replica();
+    EXPECT_TRUE(waitFor([&] {
+        return replica().find("seen text") != std::string::npos;
+    })) << replica();
 }
 
 // A window binds its panes before it shows: the daemon hears that the user
@@ -302,30 +351,53 @@ TEST(MuxClient, APaneThatShowsAfterItsFirstFramesHasTheWindowsSize)
     using AfterglowVt::Terminal;
     MuxTest::TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
-    ASSERT_TRUE(daemon.newSession(daemon.options({"/bin/cat"}, "late"))) << daemon.lastError();
+    ASSERT_TRUE(daemon.newSession(daemon.options({MuxTest::programInPath("cat")}, "late"))) << daemon.lastError();
     QString error;
-    const auto client = MuxClient::attach(QStringLiteral("late"), false, &error, AfterglowMux::Route{daemon.sockets(), {}, {}}, std::size_t(1) << 20, 1000);
+    const auto client = MuxClient::attach(QStringLiteral("late"), false, &error,
+                                          AfterglowMux::Route{daemon.sockets(), {}, {}}, std::size_t(1) << 20, 1000);
     ASSERT_TRUE(client) << error.toStdString();
     ASSERT_EQ(client->layout().panes().size(), 1u);
     Pane pane(AfterglowVt::TerminalOptions{});
     pane.showSession(client, client->layout().panes().front());
     pane.setSessionVisible(false);
     pane.resize(40, 10, 8, 16);
-    ASSERT_TRUE(waitFor([&] { return pane.sessionSynced(); })) << daemon.errors();
+    ASSERT_TRUE(waitFor([&] {
+        return pane.sessionSynced();
+    })) << daemon.errors();
     pane.setSessionVisible(true);
-    EXPECT_TRUE(waitFor([&] { return pane.cols() == 40 && pane.rows() == 10; }, 5000)) << pane.cols() << "x" << pane.rows();
-    const auto replica = [&pane] { return pane.withTerminal([](Terminal& t) { return t.text(Terminal::TextScope::Screen); }); };
+    EXPECT_TRUE(waitFor(
+        [&] {
+            return pane.cols() == 40 && pane.rows() == 10;
+        },
+        5000))
+        << pane.cols() << "x" << pane.rows();
+    const auto replica = [&pane] {
+        return pane.withTerminal([](Terminal& t) {
+            return t.text(Terminal::TextScope::Screen);
+        });
+    };
     ASSERT_TRUE(pane.sendInput("first\n"));
-    EXPECT_TRUE(waitFor([&] { return replica().find("first") != std::string::npos; }, 5000)) << replica();
+    EXPECT_TRUE(waitFor(
+        [&] {
+            return replica().find("first") != std::string::npos;
+        },
+        5000))
+        << replica();
 
     // A split: a new pane that the user sees from the start.
-    auto split = newPane(*client, client, {"/bin/cat"});
+    auto split = newPane(*client, client, {MuxTest::programInPath("cat")});
     ASSERT_TRUE(split);
     split->setSessionVisible(true);
-    ASSERT_TRUE(waitFor([&] { return split->sessionSynced(); })) << daemon.errors();
+    ASSERT_TRUE(waitFor([&] {
+        return split->sessionSynced();
+    })) << daemon.errors();
     EXPECT_FALSE(split->sessionScreensHeld());
     ASSERT_TRUE(split->sendInput("second\n"));
-    EXPECT_TRUE(waitFor([&] { return split->text(Terminal::TextScope::Screen).contains(QStringLiteral("second")); }, 5000));
+    EXPECT_TRUE(waitFor(
+        [&] {
+            return split->text(Terminal::TextScope::Screen).contains(QStringLiteral("second"));
+        },
+        5000));
 }
 
 // A pane that shows again asks for the screens that the daemon held, as the
@@ -340,10 +412,16 @@ TEST(MuxClient, APaneThatShowsAgainAsksForItsScreensWithoutAWait)
     Shown shown = show(daemon, "again");
     ASSERT_TRUE(shown.client && shown.first);
     Pane& pane = *shown.first;
-    const auto replica = [&pane] { return pane.withTerminal([](Terminal& t) { return t.text(Terminal::TextScope::Screen); }); };
+    const auto replica = [&pane] {
+        return pane.withTerminal([](Terminal& t) {
+            return t.text(Terminal::TextScope::Screen);
+        });
+    };
     pane.setSessionVisible(false);
     ASSERT_TRUE(pane.sendInput("hidden text\n\x1b]2;one\x07\n"));
-    ASSERT_TRUE(waitFor([&] { return pane.title() == QStringLiteral("one"); })) << daemon.errors();
+    ASSERT_TRUE(waitFor([&] {
+        return pane.title() == QStringLiteral("one");
+    })) << daemon.errors();
     EXPECT_EQ(replica().find("hidden text"), std::string::npos) << replica();
 
     pane.setSessionVisible(true);
@@ -353,7 +431,9 @@ TEST(MuxClient, APaneThatShowsAgainAsksForItsScreensWithoutAWait)
     EXPECT_TRUE(pane.sessionScreensHeld());
     // A read meanwhile waits for the same Refresh.
     EXPECT_EQ(pane.askSessionRefresh(), ticket);
-    ASSERT_TRUE(waitFor([&] { return !pane.sessionScreensHeld(); })) << daemon.errors();
+    ASSERT_TRUE(waitFor([&] {
+        return !pane.sessionScreensHeld();
+    })) << daemon.errors();
     EXPECT_NE(replica().find("hidden text"), std::string::npos) << replica();
     EXPECT_EQ(pane.askSessionRefresh(), 0u);
 
@@ -376,9 +456,11 @@ TEST(MuxClient, EachPaneHearsOfItsOwnRefresh)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     Shown shown = show(daemon, "each");
     ASSERT_TRUE(shown.client && shown.first);
-    std::unique_ptr<Pane> other = newPane(*shown.client, shown.client, {"/bin/cat"});
+    std::unique_ptr<Pane> other = newPane(*shown.client, shown.client, {MuxTest::programInPath("cat")});
     ASSERT_TRUE(other);
-    ASSERT_TRUE(waitFor([&] { return other->sessionSynced(); })) << daemon.errors();
+    ASSERT_TRUE(waitFor([&] {
+        return other->sessionSynced();
+    })) << daemon.errors();
     for (Pane* p : {shown.first.get(), other.get()}) {
         p->setSessionVisible(false);
         p->setSessionVisible(true);
@@ -387,10 +469,13 @@ TEST(MuxClient, EachPaneHearsOfItsOwnRefresh)
     const std::uint64_t ticket = shown.first->askSessionRefresh();
     ASSERT_NE(ticket, 0u);
     // A ticket of the other pane that the daemon never answers: nobody asked.
-    EXPECT_FALSE(shown.client->waitRefreshed({{shown.first->sessionPaneId(), ticket}, {other->sessionPaneId(), 1000}}, 500));
+    EXPECT_FALSE(
+        shown.client->waitRefreshed({{shown.first->sessionPaneId(), ticket}, {other->sessionPaneId(), 1000}}, 500));
     // The first pane hears of its answer when the window reads it, whether
     // or not it came inside that wait.
-    EXPECT_TRUE(waitFor([&] { return !shown.first->sessionScreensHeld(); })) << daemon.errors();
+    EXPECT_TRUE(waitFor([&] {
+        return !shown.first->sessionScreensHeld();
+    })) << daemon.errors();
     EXPECT_TRUE(other->sessionScreensHeld());
 }
 
@@ -413,7 +498,8 @@ TEST(MuxClient, AnAnswerThatWaitsIsNoOldLayout)
         // More input than the stream lets go to a daemon that reads nothing:
         // the answer waits behind it.
         const std::string chunk(std::size_t(64) << 10, 'a');
-        for (int i = 0; i < 96; ++i) shown.first->sendInput(chunk);
+        for (int i = 0; i < 96; ++i)
+            shown.first->sendInput(chunk);
         // After the answer queued: a newer layout.
         QTimer::singleShot(0, shown.client.get(), [&] {
             AfterglowMux::Layout layout = shown.client->layout();
@@ -431,10 +517,15 @@ TEST(MuxClient, AnAnswerThatWaitsIsNoOldLayout)
             && connection.call(AfterglowMux::Target, AfterglowMux::Fn::SelectSession,
                                MuxTest::Json::Array{AfterglowMux::ProtocolVersion, "busy"}, 5000, &error)
             && connection.call("control", "setTitle", MuxTest::Json::Array{std::int64_t(paneId), "t"}, 30000, &error);
-        if (!ok) ADD_FAILURE() << error.code << " " << error.message;
+        if (!ok)
+            ADD_FAILURE() << error.code << " " << error.message;
         answered = ok ? 1 : 0;
     });
-    const bool done = waitFor([&] { return answered >= 0; }, 40000);
+    const bool done = waitFor(
+        [&] {
+            return answered >= 0;
+        },
+        40000);
     signalDaemon(daemon.pid(), SIGCONT);
     ctl.join();
     EXPECT_TRUE(done);
@@ -455,17 +546,19 @@ TEST(MuxClient, ADetachSendsTheLayoutThatWaitsBeforeTheInputAndTheAnswers)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_GT(daemon.pid(), 0);
     const AfterglowMux::SessionOptions options =
-        daemon.options({"/bin/sh", "-c", "stty raw -echo; printf ready; exec /bin/sleep 600"}, "detaching");
+        daemon.options({"/bin/sh", "-c", "stty raw -echo; printf ready; exec sleep 600"}, "detaching");
     ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
     QString error;
     std::shared_ptr<MuxClient> client =
-        MuxClient::attach(QStringLiteral("detaching"), false, &error, AfterglowMux::Route{daemon.sockets(), {}, {}}, std::size_t(1) << 20, 1000);
+        MuxClient::attach(QStringLiteral("detaching"), false, &error, AfterglowMux::Route{daemon.sockets(), {}, {}},
+                          std::size_t(1) << 20, 1000);
     ASSERT_TRUE(client) << error.toStdString();
     ASSERT_EQ(client->layout().panes().size(), 1u);
     auto pane = std::make_unique<Pane>(AfterglowVt::TerminalOptions{});
     pane->showSession(client, client->layout().panes().front());
-    ASSERT_TRUE(waitFor([&] { return pane->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("ready")); }))
-        << daemon.errors();
+    ASSERT_TRUE(waitFor([&] {
+        return pane->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("ready"));
+    })) << daemon.errors();
     const std::uint32_t paneId = pane->sessionPaneId();
     bool asked = false;
     bool released = false;
@@ -476,7 +569,8 @@ TEST(MuxClient, ADetachSendsTheLayoutThatWaitsBeforeTheInputAndTheAnswers)
         // reads nothing: the answer waits behind it.
         const std::string chunk(std::size_t(64) << 10, 'a');
         std::size_t sent = 0;
-        while (sent < 2 * MuxClient::MaxWaitingInput && pane->sendInput(chunk, false)) sent += chunk.size();
+        while (sent < 2 * MuxClient::MaxWaitingInput && pane->sendInput(chunk, false))
+            sent += chunk.size();
         // The premise: the window's queue filled, so the layout waits behind
         // input, and only the rotate of release() sends it first.
         EXPECT_GE(sent + chunk.size(), MuxClient::MaxWaitingInput) << sent;
@@ -504,14 +598,19 @@ TEST(MuxClient, ADetachSendsTheLayoutThatWaitsBeforeTheInputAndTheAnswers)
             connection.call("control", "setTitle", MuxTest::Json::Array{std::int64_t(paneId), "t"}, 30000, &error);
         }
     });
-    const bool done = waitFor([&] { return released; }, 40000);
+    const bool done = waitFor(
+        [&] {
+            return released;
+        },
+        40000);
     signalDaemon(daemon.pid(), SIGCONT);
     ctl.join();
     ASSERT_TRUE(done);
     EXPECT_TRUE(asked);
     // The next window gets the layout of the window that went.
     std::shared_ptr<MuxClient> next =
-        MuxClient::attach(QStringLiteral("detaching"), true, &error, AfterglowMux::Route{daemon.sockets(), {}, {}}, std::size_t(1) << 20, 1000);
+        MuxClient::attach(QStringLiteral("detaching"), true, &error, AfterglowMux::Route{daemon.sockets(), {}, {}},
+                          std::size_t(1) << 20, 1000);
     ASSERT_TRUE(next) << error.toStdString();
     ASSERT_FALSE(next->layout().tabs.empty());
     EXPECT_EQ(next->layout().tabs.front().title, "newer") << daemon.errors();
@@ -537,27 +636,36 @@ TEST(MuxClient, AnAttachAsksForTheWindowsScrollbackUpToMaxHistory)
         Attached attached;
         QString error;
         attached.client =
-            MuxClient::attach(QStringLiteral("history"), true, &error, AfterglowMux::Route{daemon.sockets(), {}, {}}, std::size_t(1) << 20, history);
+            MuxClient::attach(QStringLiteral("history"), true, &error, AfterglowMux::Route{daemon.sockets(), {}, {}},
+                              std::size_t(1) << 20, history);
         EXPECT_TRUE(attached.client) << error.toStdString() << " " << daemon.errors();
-        if (!attached.client || attached.client->layout().panes().size() != 1) return attached;
+        if (!attached.client || attached.client->layout().panes().size() != 1)
+            return attached;
         attached.pane = std::make_unique<Pane>(AfterglowVt::TerminalOptions{});
         attached.pane->showSession(attached.client, attached.client->layout().panes().front());
         Pane& pane = *attached.pane;
         EXPECT_TRUE(waitFor([&pane] {
-            return pane.sessionSynced() && pane.text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("200"));
+            return pane.sessionSynced()
+                && pane.text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("200"));
         })) << daemon.errors();
         return attached;
     };
     const auto historyRows = [](Pane& pane) {
-        return pane.withTerminal([](AfterglowVt::Terminal& t) { return t.primaryScreen().historySize(); });
+        return pane.withTerminal([](AfterglowVt::Terminal& t) {
+            return t.primaryScreen().historySize();
+        });
     };
     const auto replicaText = [](Pane& pane) {
-        return pane.withTerminal([](AfterglowVt::Terminal& t) { return t.text(AfterglowVt::Terminal::TextScope::All); });
+        return pane.withTerminal([](AfterglowVt::Terminal& t) {
+            return t.text(AfterglowVt::Terminal::TextScope::All);
+        });
     };
     // Past MaxHistory: the daemon gets MaxHistory, and sends every row.
     Attached large = attach(std::size_t(AfterglowMux::MaxHistory) + 1000);
     ASSERT_TRUE(large.client && large.pane);
-    EXPECT_TRUE(waitFor([&] { return replicaText(*large.pane).starts_with("1\n2\n3\n"); })) << replicaText(*large.pane);
+    EXPECT_TRUE(waitFor([&] {
+        return replicaText(*large.pane).starts_with("1\n2\n3\n");
+    })) << replicaText(*large.pane);
     // All 200 rows are in the daemon's terminal now: a window that keeps 3
     // gets the newest 3, and no older one.
     Attached small = attach(3);
@@ -578,7 +686,9 @@ TEST(MuxClient, AReadAfterALateRefreshDoesNotWaitAgain)
     Pane& pane = *shown.first;
     pane.setSessionVisible(false);
     ASSERT_TRUE(signalDaemon(daemon.pid(), SIGSTOP));
-    const auto resume = qScopeGuard([&daemon] { signalDaemon(daemon.pid(), SIGCONT); });
+    const auto resume = qScopeGuard([&daemon] {
+        signalDaemon(daemon.pid(), SIGCONT);
+    });
     const std::uint64_t ticket = pane.askSessionRefresh();
     ASSERT_NE(ticket, 0u);
     EXPECT_FALSE(shown.client->waitRefreshed({{pane.sessionPaneId(), ticket}}, 300));
@@ -617,10 +727,10 @@ TEST(MuxClient, ASearchWaitsForTheHistoryOfASession)
     MuxTest::TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_GT(daemon.pid(), 0);
-    AfterglowMux::SessionOptions options = daemon.options(
-        {"/bin/sh", "-c",
-         "echo late-marker; base64 -w 319 /dev/urandom | head -n 40000; printf 'newest-line\\n\\033]2;done\\007'; exec cat"},
-        "history");
+    AfterglowMux::SessionOptions options = daemon.options({"/bin/sh", "-c",
+                                                           "echo late-marker; base64 -w 319 /dev/urandom | head -n "
+                                                           "40000; printf 'newest-line\\n\\033]2;done\\007'; exec cat"},
+                                                          "history");
     options.size.cols = 320;
     options.terminal.maxScrollback = Scrollback;
     ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
@@ -633,11 +743,17 @@ TEST(MuxClient, ASearchWaitsForTheHistoryOfASession)
     ASSERT_EQ(first->layout().panes().size(), 1u);
     Pane early(AfterglowVt::TerminalOptions{});
     early.showSession(first, first->layout().panes().front());
-    ASSERT_TRUE(waitFor([&] { return early.title() == QStringLiteral("done"); }, 30000)) << daemon.errors();
+    ASSERT_TRUE(waitFor(
+        [&] {
+            return early.title() == QStringLiteral("done");
+        },
+        30000))
+        << daemon.errors();
 
     // From here on, the event loop does not run until the daemon stopped:
     // only waitForHostCalls() reads the stream.
-    const auto shown = MuxClient::attach(QStringLiteral("history"), true, &error, route, std::size_t(1) << 20, Scrollback);
+    const auto shown =
+        MuxClient::attach(QStringLiteral("history"), true, &error, route, std::size_t(1) << 20, Scrollback);
     ASSERT_TRUE(shown) << error.toStdString();
     ASSERT_EQ(shown->layout().panes().size(), 1u);
     AfterglowVt::TerminalOptions keepAll;
@@ -645,13 +761,17 @@ TEST(MuxClient, ASearchWaitsForTheHistoryOfASession)
     Pane pane(keepAll);
     pane.showSession(shown, shown->layout().panes().front());
     const auto replica = [&pane](Terminal::TextScope scope) {
-        return pane.withTerminal([scope](Terminal& t) { return t.text(scope, std::size_t(64) << 20); });
+        return pane.withTerminal([scope](Terminal& t) {
+            return t.text(scope, std::size_t(64) << 20);
+        });
     };
-    ASSERT_TRUE(shown->waitForHostCalls(10000, [&] { return replica(Terminal::TextScope::Screen).find("newest-line") != std::string::npos; }))
-        << daemon.errors();
+    ASSERT_TRUE(shown->waitForHostCalls(10000, [&] {
+        return replica(Terminal::TextScope::Screen).find("newest-line") != std::string::npos;
+    })) << daemon.errors();
     bool stopped = signalDaemon(daemon.pid(), SIGSTOP);
     const auto resume = qScopeGuard([&] {
-        if (stopped) signalDaemon(daemon.pid(), SIGCONT);
+        if (stopped)
+            signalDaemon(daemon.pid(), SIGCONT);
     });
     ASSERT_TRUE(stopped);
     // Stopped for certain before the window returns what it read: the state
@@ -670,7 +790,9 @@ TEST(MuxClient, ASearchWaitsForTheHistoryOfASession)
 
     QObject listener;
     QStringList statuses;
-    QObject::connect(&pane, &Pane::searchStatusChanged, &listener, [&](const QString& status) { statuses << status; });
+    QObject::connect(&pane, &Pane::searchStatusChanged, &listener, [&](const QString& status) {
+        statuses << status;
+    });
     const QString searching = QStringLiteral("Searching…");
     const QString arrivingNotice = QStringLiteral("Older lines are still arriving");
     // The window reads what the socket holds meanwhile, which is less than
@@ -678,16 +800,26 @@ TEST(MuxClient, ASearchWaitsForTheHistoryOfASession)
     // started. Its text has a limit (searchText), which the history passes:
     // the notice can follow "Limited results".
     pane.search(QStringLiteral("late-marker"), 0, false);
-    ASSERT_TRUE(waitFor([&] { return !statuses.isEmpty() && statuses.last() != searching; }, 15000));
-    EXPECT_TRUE(statuses.last().startsWith(QStringLiteral("No matches"))) << statuses.join(QLatin1Char('|')).toStdString();
-    EXPECT_TRUE(statuses.last().contains(arrivingNotice, Qt::CaseInsensitive)) << statuses.join(QLatin1Char('|')).toStdString();
+    ASSERT_TRUE(waitFor(
+        [&] {
+            return !statuses.isEmpty() && statuses.last() != searching;
+        },
+        15000));
+    EXPECT_TRUE(statuses.last().startsWith(QStringLiteral("No matches")))
+        << statuses.join(QLatin1Char('|')).toStdString();
+    EXPECT_TRUE(statuses.last().contains(arrivingNotice, Qt::CaseInsensitive))
+        << statuses.join(QLatin1Char('|')).toStdString();
     // Once all of it came, the same search starts again, and finds it.
     ASSERT_TRUE(signalDaemon(daemon.pid(), SIGCONT));
     stopped = false;
-    EXPECT_TRUE(waitFor([&] {
-        if (statuses.last() != searching) pane.search(QStringLiteral("late-marker"), 1, false);
-        return statuses.last().startsWith(QStringLiteral("1 of 1"));
-    }, 30000)) << statuses.join(QLatin1Char('|')).toStdString();
+    EXPECT_TRUE(waitFor(
+        [&] {
+            if (statuses.last() != searching)
+                pane.search(QStringLiteral("late-marker"), 1, false);
+            return statuses.last().startsWith(QStringLiteral("1 of 1"));
+        },
+        30000))
+        << statuses.join(QLatin1Char('|')).toStdString();
     EXPECT_FALSE(statuses.last().contains(arrivingNotice, Qt::CaseInsensitive)) << statuses.last().toStdString();
     // The history came from the newest row back: the oldest came last.
     (void)pane.text(Terminal::TextScope::All, {}, &arriving);
@@ -711,12 +843,13 @@ TEST(MuxClient, NewPaneLaterKeepsAPaneWhosePaneOpenedCameFirst)
         QString error;
     };
     const auto outcome = std::make_shared<Outcome>();
-    const QString refused = shown.client->newPaneLater(launchOf({"/bin/cat"}), Size,
-                                                       [outcome](std::optional<std::uint32_t> pane, const QString& error) {
-                                                           outcome->called = true;
-                                                           outcome->pane = pane;
-                                                           outcome->error = error;
-                                                       });
+    const QString refused =
+        shown.client->newPaneLater(launchOf({MuxTest::programInPath("cat")}), Size,
+                                   [outcome](std::optional<std::uint32_t> pane, const QString& error) {
+                                       outcome->called = true;
+                                       outcome->pane = pane;
+                                       outcome->error = error;
+                                   });
     EXPECT_TRUE(refused.isEmpty()) << refused.toStdString();
     EXPECT_FALSE(outcome->called);
     // The daemon starts the pane, answers and sends PaneOpened meanwhile.
@@ -726,23 +859,35 @@ TEST(MuxClient, NewPaneLaterKeepsAPaneWhosePaneOpenedCameFirst)
     ASSERT_TRUE(MuxTest::waitFor([&] {
         for (std::uint32_t id = 1; id <= 64 && !started; ++id) {
             AfterglowProto::IpcConnection::Error error;
-            const auto session = daemon.call(AfterglowMux::Fn::PaneSession, MuxTest::Json::Array{std::int64_t(id)}, &error);
-            if (session && session->toString() == "later" && id != shown.first->sessionPaneId()) started = id;
+            const auto session =
+                daemon.call(AfterglowMux::Fn::PaneSession, MuxTest::Json::Array{std::int64_t(id)}, &error);
+            if (session && session->toString() == "later" && id != shown.first->sessionPaneId())
+                started = id;
         }
         return started != 0;
     })) << daemon.errors();
-    ASSERT_TRUE(shown.client->waitForHostCalls(5000, [&] { return shown.client->heard(started).opened; })) << daemon.errors();
+    ASSERT_TRUE(shown.client->waitForHostCalls(5000, [&] {
+        return shown.client->heard(started).opened;
+    })) << daemon.errors();
     EXPECT_FALSE(outcome->called);
-    ASSERT_TRUE(waitFor([&] { return outcome->called; })) << daemon.errors();
+    ASSERT_TRUE(waitFor([&] {
+        return outcome->called;
+    })) << daemon.errors();
     ASSERT_TRUE(outcome->pane) << outcome->error.toStdString();
     EXPECT_EQ(*outcome->pane, started);
     EXPECT_TRUE(outcome->error.isEmpty()) << outcome->error.toStdString();
     // The daemon kept its program: it echoes.
     Pane pane(AfterglowVt::TerminalOptions{});
     pane.showSession(shown.client, *outcome->pane);
-    ASSERT_TRUE(waitFor([&] { return pane.sessionSynced(); })) << daemon.errors();
+    ASSERT_TRUE(waitFor([&] {
+        return pane.sessionSynced();
+    })) << daemon.errors();
     ASSERT_TRUE(pane.sendInput("echoed\n"));
-    EXPECT_TRUE(waitFor([&] { return pane.text(Terminal::TextScope::Screen).contains(QStringLiteral("echoed")); }, 5000));
+    EXPECT_TRUE(waitFor(
+        [&] {
+            return pane.text(Terminal::TextScope::Screen).contains(QStringLiteral("echoed"));
+        },
+        5000));
 }
 
 // A pane that newPaneLater() gave and that the window does not place (it
@@ -760,15 +905,18 @@ TEST(MuxClient, APaneThatTheWindowDoesNotPlaceEnds)
         std::optional<std::uint32_t> pane;
     };
     const auto outcome = std::make_shared<Outcome>();
-    const QString refused = shown.client->newPaneLater(launchOf({"/bin/cat"}), Size,
-                                                       [outcome, client = std::weak_ptr<MuxClient>(shown.client)](std::optional<std::uint32_t> pane,
-                                                                                                                const QString&) {
-                                                           outcome->called = true;
-                                                           outcome->pane = pane;
-                                                           if (const auto shared = client.lock(); shared && pane) shared->endUnbound(*pane);
-                                                       });
+    const QString refused = shown.client->newPaneLater(
+        launchOf({MuxTest::programInPath("cat")}), Size,
+        [outcome, client = std::weak_ptr<MuxClient>(shown.client)](std::optional<std::uint32_t> pane, const QString&) {
+            outcome->called = true;
+            outcome->pane = pane;
+            if (const auto shared = client.lock(); shared && pane)
+                shared->endUnbound(*pane);
+        });
     EXPECT_TRUE(refused.isEmpty()) << refused.toStdString();
-    ASSERT_TRUE(waitFor([&] { return outcome->called; })) << daemon.errors();
+    ASSERT_TRUE(waitFor([&] {
+        return outcome->called;
+    })) << daemon.errors();
     ASSERT_TRUE(outcome->pane) << daemon.errors();
     EXPECT_TRUE(waitFor([&] {
         const auto session = MuxTest::sessionNamed(daemon, "unplaced");
@@ -781,7 +929,11 @@ TEST(MuxClient, APaneThatTheWindowDoesNotPlaceEnds)
     QCoreApplication::processEvents();
     EXPECT_TRUE(shown.client->showing());
     EXPECT_TRUE(shown.first->sendInput("still\n"));
-    EXPECT_TRUE(waitFor([&] { return shown.first->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("still")); }, 5000));
+    EXPECT_TRUE(waitFor(
+        [&] {
+            return shown.first->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("still"));
+        },
+        5000));
 }
 
 // A pane that breakOutLater() moves to a new session: the PaneClosed of -1
@@ -793,14 +945,20 @@ TEST(MuxClient, BreakOutLaterHoldsTheExitOfAPaneThatMoved)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     Shown shown = show(daemon, "whole");
     ASSERT_TRUE(shown.client && shown.first);
-    std::unique_ptr<Pane> second = newPane(*shown.client, shown.client, {"/bin/cat"});
+    std::unique_ptr<Pane> second = newPane(*shown.client, shown.client, {MuxTest::programInPath("cat")});
     ASSERT_TRUE(second);
-    ASSERT_TRUE(waitFor([&] { return second->sessionSynced(); })) << daemon.errors();
+    ASSERT_TRUE(waitFor([&] {
+        return second->sessionSynced();
+    })) << daemon.errors();
     int closed = 0;
     int left = 0;
     QObject context; // ends before the counters
-    QObject::connect(second.get(), &Pane::closed, &context, [&closed] { ++closed; });
-    QObject::connect(second.get(), &Pane::sessionLeft, &context, [&left] { ++left; });
+    QObject::connect(second.get(), &Pane::closed, &context, [&closed] {
+        ++closed;
+    });
+    QObject::connect(second.get(), &Pane::sessionLeft, &context, [&left] {
+        ++left;
+    });
     struct Outcome
     {
         bool called = false;
@@ -810,11 +968,12 @@ TEST(MuxClient, BreakOutLaterHoldsTheExitOfAPaneThatMoved)
     const auto outcome = std::make_shared<Outcome>();
     AfterglowMux::Layout layout;
     layout.addTab(second->sessionPaneId());
-    const QString refused = shown.client->breakOutLater(layout, [outcome](std::optional<QString> session, const QString& error) {
-        outcome->called = true;
-        outcome->session = session;
-        outcome->error = error;
-    });
+    const QString refused =
+        shown.client->breakOutLater(layout, [outcome](std::optional<QString> session, const QString& error) {
+            outcome->called = true;
+            outcome->session = session;
+            outcome->error = error;
+        });
     EXPECT_TRUE(refused.isEmpty()) << refused.toStdString();
     // The PaneClosed and the end of the pane's channel come before the
     // window runs the posted answer: a read of the stream runs no posted
@@ -825,7 +984,9 @@ TEST(MuxClient, BreakOutLaterHoldsTheExitOfAPaneThatMoved)
         return heard.exited && heard.channelEnded;
     })) << daemon.errors();
     EXPECT_FALSE(outcome->called);
-    ASSERT_TRUE(waitFor([&] { return outcome->called; })) << daemon.errors();
+    ASSERT_TRUE(waitFor([&] {
+        return outcome->called;
+    })) << daemon.errors();
     ASSERT_TRUE(outcome->session) << outcome->error.toStdString();
     QCoreApplication::processEvents();
     // The program runs on in the new session: the pane heard of no exit,
@@ -835,7 +996,8 @@ TEST(MuxClient, BreakOutLaterHoldsTheExitOfAPaneThatMoved)
     const std::string name = outcome->session->toStdString();
     EXPECT_TRUE(waitFor([&] {
         for (const AfterglowMux::SessionInfo& s : daemon.sessions()) {
-            if (s.name == name) return s.panes == 1;
+            if (s.name == name)
+                return s.panes == 1;
         }
         return false;
     })) << name;
@@ -868,12 +1030,15 @@ TEST(MuxClient, ARefusalWithoutWordsNamesTheCall)
                 AfterglowProto::IpcRequest request;
                 for (AfterglowProto::IpcServerConnection::Read read;
                      (read = connection->nextRequest(request)) != AfterglowProto::IpcServerConnection::Read::None;) {
-                    if (read != AfterglowProto::IpcServerConnection::Read::Request) continue;
+                    if (read != AfterglowProto::IpcServerConnection::Read::Request)
+                        continue;
                     if (request.fn == AfterglowMux::Fn::Version) {
                         connection->send(AfterglowProto::ipcReply(
-                            request.id.value_or(0), MuxTest::Json::Object{{"version", "0"}, {"protocol", AfterglowMux::ProtocolVersion}}));
+                            request.id.value_or(0),
+                            MuxTest::Json::Object{{"version", "0"}, {"protocol", AfterglowMux::ProtocolVersion}}));
                     } else {
-                        connection->send(AfterglowProto::ipcError(request.id, AfterglowProto::IpcErrorCode::CallFailed, ""));
+                        connection->send(
+                            AfterglowProto::ipcError(request.id, AfterglowProto::IpcErrorCode::CallFailed, ""));
                     }
                 }
                 connection->flush();
@@ -883,7 +1048,8 @@ TEST(MuxClient, ARefusalWithoutWordsNamesTheCall)
     AfterglowProto::MuxSockets sockets;
     sockets.candidates.push_back({path, dir});
     QString why;
-    EXPECT_FALSE(MuxClient::attach(QStringLiteral("s"), false, &why, AfterglowMux::Route{sockets, {}, {}}, std::size_t(1) << 20, 1000));
+    EXPECT_FALSE(MuxClient::attach(QStringLiteral("s"), false, &why, AfterglowMux::Route{sockets, {}, {}},
+                                   std::size_t(1) << 20, 1000));
     EXPECT_EQ(why, QStringLiteral("the mux daemon refused attach (CALL_FAILED)"));
 }
 
@@ -898,15 +1064,20 @@ TEST(MuxClient, AnUploadsAnswerReachesTheProgramWhole)
     ASSERT_TRUE(shown.client && shown.first);
     // Base64 lines over two parts of an answer.
     std::string answer = "ok\n";
-    while (answer.size() < 2 * AfterglowMux::Attach::ControlReplyPartBytes + 1000) answer += "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=\n";
+    while (answer.size() < 2 * AfterglowMux::Attach::ControlReplyPartBytes + 1000)
+        answer += "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=\n";
     const std::string out = daemon.dir() + "/upload";
-    const std::string script = "stty raw -echo; printf '\\033]1337;RequestUpload=format=tgz\\a'; head -c " + std::to_string(answer.size())
-        + " > " + out;
+    const std::string script = "stty raw -echo; printf '\\033]1337;RequestUpload=format=tgz\\a'; head -c "
+        + std::to_string(answer.size()) + " > " + out;
     auto pane = newPane(*shown.client, shown.client, {"/bin/sh", "-c", script});
     ASSERT_TRUE(pane);
     bool asked = false;
-    QObject::connect(pane.get(), &Pane::uploadAsked, [&asked] { asked = true; });
-    ASSERT_TRUE(waitFor([&] { return asked; })) << daemon.errors();
+    QObject::connect(pane.get(), &Pane::uploadAsked, [&asked] {
+        asked = true;
+    });
+    ASSERT_TRUE(waitFor([&] {
+        return asked;
+    })) << daemon.errors();
     ASSERT_TRUE(pane->answerUpload(answer));
     std::string got;
     ASSERT_TRUE(waitFor(
@@ -933,29 +1104,50 @@ TEST(MuxClient, HeldEventsWaitWhileTheFramesCome)
     // No echo: the bell comes only from what cat writes.
     auto pane = newPane(*shown.client, shown.client, {"/bin/sh", "-c", "stty -echo; exec cat"});
     ASSERT_TRUE(pane);
-    ASSERT_TRUE(waitFor([&] { return pane->sessionSynced(); })) << daemon.errors();
-    const auto replica = [&pane] { return pane->readTerminal([](const Terminal& t) { return t.text(Terminal::TextScope::Screen); }); };
+    ASSERT_TRUE(waitFor([&] {
+        return pane->sessionSynced();
+    })) << daemon.errors();
+    const auto replica = [&pane] {
+        return pane->readTerminal([](const Terminal& t) {
+            return t.text(Terminal::TextScope::Screen);
+        });
+    };
     int bells = 0;
-    QObject::connect(pane.get(), &Pane::bellRang, [&bells] { ++bells; });
+    QObject::connect(pane.get(), &Pane::bellRang, [&bells] {
+        ++bells;
+    });
     // The shell may not have turned the echo off yet: wait for cat. Its
     // bell, which no hold stops, says how long one takes on this machine.
     QElapsedTimer free;
     free.start();
     ASSERT_TRUE(pane->sendInput("ready\a\n"));
-    ASSERT_TRUE(waitFor([&] { return replica().find("ready") != std::string::npos && bells == 1; })) << bells << daemon.errors();
+    ASSERT_TRUE(waitFor([&] {
+        return replica().find("ready") != std::string::npos && bells == 1;
+    })) << bells
+        << daemon.errors();
     const qint64 oneBell = free.elapsed();
 
     const std::uint32_t id = pane->sessionPaneId();
     shown.client->holdEvents(id, true);
     ASSERT_TRUE(pane->sendInput("before\aafter\n"));
-    ASSERT_TRUE(waitFor([&] { return replica().find("beforeafter") != std::string::npos; })) << replica() << daemon.errors();
+    ASSERT_TRUE(waitFor([&] {
+        return replica().find("beforeafter") != std::string::npos;
+    })) << replica()
+        << daemon.errors();
     // Three times what the free bell took, were the events read. A check
     // that nothing came can only miss a fault, never fail on a slow run.
-    waitFor([] { return false; }, int(std::max<qint64>(300, 3 * oneBell)));
+    waitFor(
+        [] {
+            return false;
+        },
+        int(std::max<qint64>(300, 3 * oneBell)));
     EXPECT_EQ(bells, 1);
 
     shown.client->holdEvents(id, false);
-    EXPECT_TRUE(waitFor([&] { return bells == 2; })) << bells << daemon.errors();
+    EXPECT_TRUE(waitFor([&] {
+        return bells == 2;
+    })) << bells
+        << daemon.errors();
 }
 
 // The settings that a window sends its session: the variables of
@@ -974,7 +1166,8 @@ TEST(MuxSessionSettings, TakesTheUpdatedVariablesOfThisProcess)
     const AfterglowMux::SessionSettings local = Afterglow::sessionSettings(settings, true);
     EXPECT_EQ(local.keptNotifications, 5);
     EXPECT_TRUE(local.environment
-                == (std::vector<std::pair<std::string, std::optional<std::string>>>{{"AG_TEST_SET", "value"}, {"AG_TEST_UNSET", std::nullopt}}));
+                == (std::vector<std::pair<std::string, std::optional<std::string>>>{{"AG_TEST_SET", "value"},
+                                                                                    {"AG_TEST_UNSET", std::nullopt}}));
     EXPECT_EQ(local.control.eventInterval, 250);
     EXPECT_EQ(local.control.enabled, settings.control.enabled);
     EXPECT_TRUE(local.control.allowReadText);
@@ -994,10 +1187,12 @@ TEST(MuxSessions, LocalLaunchReadsTheInheritedEnvironment)
     // bash, which the shell integration names in argv: a shell that it
     // leaves alone stays out of argv, and the daemon starts the SHELL of the
     // launch's environment.
-    if (::access("/bin/bash", X_OK) != 0) GTEST_SKIP() << "no /bin/bash";
+    if (::access("/bin/bash", X_OK) != 0)
+        GTEST_SKIP() << "no /bin/bash";
     const Afterglow::InheritedEnvironment inherited{{"SHELL", "/bin/bash"}, {"HOME", dir.toStdString()}};
     const AfterglowMux::Launch launch = Afterglow::localLaunch(settings, dir, {}, &inherited);
-    for (const std::string& word : launch.argv) EXPECT_NE(word, "/no/such/shell-of-this-process");
+    for (const std::string& word : launch.argv)
+        EXPECT_NE(word, "/no/such/shell-of-this-process");
     ASSERT_FALSE(launch.argv.empty());
     EXPECT_EQ(launch.argv.front(), "/bin/bash");
     for (const auto& [name, value] : launch.environment) {
@@ -1005,8 +1200,11 @@ TEST(MuxSessions, LocalLaunchReadsTheInheritedEnvironment)
             EXPECT_NE(value, "/no/such/shell-of-this-process");
         }
     }
-    const AfterglowMux::Launch withOwn = Afterglow::localLaunch(settings, dir, {}, &inherited, {{QStringLiteral("FOO"), QStringLiteral("bar")}});
-    const auto foo = std::find_if(withOwn.environment.begin(), withOwn.environment.end(), [](const auto& kv) { return kv.first == "FOO"; });
+    const AfterglowMux::Launch withOwn =
+        Afterglow::localLaunch(settings, dir, {}, &inherited, {{QStringLiteral("FOO"), QStringLiteral("bar")}});
+    const auto foo = std::find_if(withOwn.environment.begin(), withOwn.environment.end(), [](const auto& kv) {
+        return kv.first == "FOO";
+    });
     ASSERT_NE(foo, withOwn.environment.end());
     EXPECT_EQ(foo->second, "bar");
 }

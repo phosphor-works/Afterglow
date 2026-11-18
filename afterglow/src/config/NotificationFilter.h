@@ -33,9 +33,15 @@ public:
     static std::optional<NotificationFilter> parse(const QString& text, QString* error);
 
     bool matches(const Fields& fields) const;
-    const QString& text() const { return m_text; }
+    const QString& text() const
+    {
+        return m_text;
+    }
     /// Two rules of one text are the same rule.
-    bool operator==(const NotificationFilter& other) const { return m_text == other.m_text; }
+    bool operator==(const NotificationFilter& other) const
+    {
+        return m_text == other.m_text;
+    }
 
     struct Node;
 

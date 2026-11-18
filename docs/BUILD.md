@@ -19,6 +19,8 @@ To build `aglow` and `aglow-mux` alone, without Qt, see [build aglow and aglow-m
 - GTest, unless you configure with `-DBUILD_TESTING=OFF`.
 - The static C and C++ runtime libraries (`libc.a` and `libstdc++.a`), for `aglow`.
   Fedora puts them in the packages `glibc-static` and `libstdc++-static`.
+  When the compiler does not search their directories, give them in `-DAFTERGLOW_STATIC_RUNTIME_DIRS`, separated by `;`.
+  Only the link of `aglow` searches these directories.
   Without them, the configuration stops with a message.
   To build without `aglow`, configure with `-DAFTERGLOW_BUILD_AGLOW=OFF`.
   Then `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` show an error and exit with status 127.
@@ -151,6 +153,17 @@ To use a phosphor-libs checkout instead, add this option to the configuration co
 ```
 
 Use this option to build against a change to phosphor-libs before the pin moves to it.
+
+## Build with Nix
+
+The flake builds Afterglow on `x86_64-linux` and `aarch64-linux`.
+It fetches the archives that `cmake/AfterglowDependencies.cmake` pins, and the archives of the pinned phosphor-libs commit.
+
+| Command | Result |
+| --- | --- |
+| `nix build .#default` | Builds the package into `result` |
+| `nix flake check` | Builds the package and runs the tests in the sandbox. The sandbox has no Wayland display, so the tests that draw with Vulkan report Skipped. |
+| `nix develop` | Opens a shell with the build dependencies, `ccache` and `clang-tools` |
 
 ## Build aglow and aglow-mux alone
 

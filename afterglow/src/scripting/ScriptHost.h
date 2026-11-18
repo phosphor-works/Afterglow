@@ -69,7 +69,8 @@ public:
         std::function<EffectResult(const QVariantMap& effect)> apply;
         /// Owned UI/override operations, and effects whose result can come
         /// later. Completion is used only when deferred=true.
-        std::function<EffectResult(const QString& owner, const QVariantMap&, std::function<void(EffectResult)>)> applyOwned;
+        std::function<EffectResult(const QString& owner, const QVariantMap&, std::function<void(EffectResult)>)>
+            applyOwned;
         std::function<void(const QString& owner)> cleanup;
         /// A handler of the owner failed: whatever it holds must not trap the user.
         std::function<void(const QString& owner)> failed;
@@ -104,7 +105,10 @@ public:
         std::function<void(int status)> finished;
         /// Whether text for stderr (@p error) or stdout goes to a client: a
         /// run with no client drops its stdout and keeps its stderr.
-        bool toClient(bool error) const { return finished && (error ? this->error : output); }
+        bool toClient(bool error) const
+        {
+            return finished && (error ? this->error : output);
+        }
     };
 
     struct CommandRequest
@@ -190,7 +194,10 @@ public:
     static constexpr int MaxReadTextBytes = 1024 * 1024;
     /// The refusal of a max_bytes that is not a whole number from 1 to
     /// MaxReadTextBytes, in the same words wherever it is checked.
-    static QString maxBytesError() { return QStringLiteral("max_bytes must be a whole number from 1 to %1").arg(MaxReadTextBytes); }
+    static QString maxBytesError()
+    {
+        return QStringLiteral("max_bytes must be a whole number from 1 to %1").arg(MaxReadTextBytes);
+    }
     /// The version of the terminal snapshot in ev.terminal, not of package state.
     static constexpr int SnapshotVersion = 1;
     static constexpr std::size_t MemoryCapBytes = 16u * 1024 * 1024;
@@ -204,7 +211,10 @@ public:
     void setStateDirectory(const QString& directory);
     void setSearchPaths(const QStringList& dirs);
     void setEnabled(bool enabled);
-    bool isEnabled() const { return m_enabled; }
+    bool isEnabled() const
+    {
+        return m_enabled;
+    }
     /// Rescans the search path now instead of waiting for a file change.
     /// A test hook: the application relies on the file watches.
     void reload();
@@ -217,12 +227,24 @@ public:
     /// The commands of the running scripts: by script, and in a script
     /// the manifest's by name, then those of set_commands by name.
     QList<ScriptCommand> commands() const;
-    void setCommandLimits(const CommandLimits& limits) { m_limits = limits; }
-    const CommandLimits& commandLimits() const { return m_limits; }
+    void setCommandLimits(const CommandLimits& limits)
+    {
+        m_limits = limits;
+    }
+    const CommandLimits& commandLimits() const
+    {
+        return m_limits;
+    }
     /// Scripts.cpuBudget, in ms of handler time in each second.
-    void setCpuBudget(int ms) { m_cpuBudgetMs = ms; }
+    void setCpuBudget(int ms)
+    {
+        m_cpuBudgetMs = ms;
+    }
     /// The shader directories of loaded packages, by package ID.
-    QMap<QString, QString> packageShaders() const { return m_packageShaders; }
+    QMap<QString, QString> packageShaders() const
+    {
+        return m_packageShaders;
+    }
     /// Shader settings loaded packages suggest: {package, key, ref}.
     QVariantList packageSuggestions() const;
 
@@ -242,7 +264,8 @@ public:
     void dispatch(const QString& handler, quint32 pane, QVariantMap event = {});
     /// Calls @p handler in the script instance @p owner only (on_key). With
     /// @p limited, the call counts toward the callback limit like any event.
-    void dispatchTo(const QString& owner, const QString& handler, quint32 pane, QVariantMap event = {}, bool limited = false);
+    void dispatchTo(const QString& owner, const QString& handler, quint32 pane, QVariantMap event = {},
+                    bool limited = false);
 
 Q_SIGNALS:
     void commandsChanged();
@@ -274,14 +297,14 @@ private:
     void applyEffect(const ScriptPtr& script, const QVariantMap& effect, quint32 eventPane);
     QVariantMap state() const;
     /// @p counted: whether it counts toward MaxResultsPerSecond.
-    void queueResult(const ScriptPtr& script, const QString& request, const QString& kind,
-                     const EffectResult& result, quint32 eventPane, int timeoutMs, bool counted = true);
+    void queueResult(const ScriptPtr& script, const QString& request, const QString& kind, const EffectResult& result,
+                     quint32 eventPane, int timeoutMs, bool counted = true);
     /// Where a deferred effect's completion goes: counted, then queued as its result.
     /// @p logged: whether a failure also reaches the log, as one of the window's
     /// effects does. A task's failure (an exec that exits non-zero) is a result
     /// that scripts expect, and only counts.
-    std::function<void(EffectResult)> completion(const ScriptPtr& script, const QString& request,
-                                                 const QString& kind, quint32 eventPane, bool logged);
+    std::function<void(EffectResult)> completion(const ScriptPtr& script, const QString& request, const QString& kind,
+                                                 quint32 eventPane, bool logged);
     bool withinBudget(Script& script, const QString& kind, bool structural);
     /// Counts a handler call against the script's callback budget: the one
     /// for events, or for @p task the one for its timers and watchers. An
@@ -290,7 +313,10 @@ private:
     bool admitCallback(Script& script, bool task = false);
     /// The script's handler time in the last second, in ns.
     qint64 cpuUsed(Script& script) const;
-    bool cpuRoom(Script& script) const { return cpuUsed(script) < qint64(m_cpuBudgetMs) * 1000000; }
+    bool cpuRoom(Script& script) const
+    {
+        return cpuUsed(script) < qint64(m_cpuBudgetMs) * 1000000;
+    }
     /// Runs @p work now, or once the script is within its CPU budget again,
     /// after the calls that wait before it.
     /// @p work learns whether it waited: its event's snapshot is old then.

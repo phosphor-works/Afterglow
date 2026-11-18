@@ -53,13 +53,21 @@ cmsHPROFILE cicpProfile(const ColorSpace& s)
 {
     // RGB samples of the full range only: the matrices of YCbCr and the
     // narrow range belong to video.
-    if (s.matrix != 0 || !s.fullRange) return nullptr;
+    if (s.matrix != 0 || !s.fullRange)
+        return nullptr;
     cmsCIExyYTRIPLE primaries;
     switch (s.primaries) {
-    case 1: primaries = {{0.64, 0.33, 1}, {0.30, 0.60, 1}, {0.15, 0.06, 1}}; break; // BT.709, sRGB
-    case 9: primaries = {{0.708, 0.292, 1}, {0.170, 0.797, 1}, {0.131, 0.046, 1}}; break; // BT.2020
-    case 12: primaries = {{0.680, 0.320, 1}, {0.265, 0.690, 1}, {0.150, 0.060, 1}}; break; // Display P3
-    default: return nullptr;
+    case 1:
+        primaries = {{0.64, 0.33, 1}, {0.30, 0.60, 1}, {0.15, 0.06, 1}};
+        break; // BT.709, sRGB
+    case 9:
+        primaries = {{0.708, 0.292, 1}, {0.170, 0.797, 1}, {0.131, 0.046, 1}};
+        break; // BT.2020
+    case 12:
+        primaries = {{0.680, 0.320, 1}, {0.265, 0.690, 1}, {0.150, 0.060, 1}};
+        break; // Display P3
+    default:
+        return nullptr;
     }
     cmsToneCurve* curve = nullptr;
     switch (s.transfer) {
@@ -69,12 +77,20 @@ cmsHPROFILE cicpProfile(const ColorSpace& s)
         curve = cmsBuildParametricToneCurve(nullptr, 4, sRGB);
         break;
     }
-    case 8: curve = cmsBuildGamma(nullptr, 1.0); break;
-    case 16: curve = tabulated(pq); break;
-    case 18: curve = tabulated(hlg); break;
-    default: return nullptr;
+    case 8:
+        curve = cmsBuildGamma(nullptr, 1.0);
+        break;
+    case 16:
+        curve = tabulated(pq);
+        break;
+    case 18:
+        curve = tabulated(hlg);
+        break;
+    default:
+        return nullptr;
     }
-    if (!curve) return nullptr;
+    if (!curve)
+        return nullptr;
     const cmsCIExyY d65{0.3127, 0.3290, 1};
     cmsToneCurve* curves[3] = {curve, curve, curve};
     cmsHPROFILE profile = cmsCreateRGBProfile(&d65, &primaries, curves);
@@ -85,11 +101,13 @@ cmsHPROFILE cicpProfile(const ColorSpace& s)
 cmsHPROFILE iccProfile(const std::string& icc)
 {
     cmsHPROFILE profile = cmsOpenProfileFromMem(icc.data(), cmsUInt32Number(icc.size()));
-    if (!profile) return nullptr;
+    if (!profile)
+        return nullptr;
     // RGB data only: the decoders give RGB, also of a grey or CMYK file.
     const cmsProfileClassSignature kind = cmsGetDeviceClass(profile);
     if (cmsGetColorSpace(profile) != cmsSigRgbData
-        || (kind != cmsSigInputClass && kind != cmsSigDisplayClass && kind != cmsSigOutputClass && kind != cmsSigColorSpaceClass)) {
+        || (kind != cmsSigInputClass && kind != cmsSigDisplayClass && kind != cmsSigOutputClass
+            && kind != cmsSigColorSpaceClass)) {
         cmsCloseProfile(profile);
         return nullptr;
     }
@@ -112,7 +130,8 @@ bool keepsSrgb(cmsHTRANSFORM transform)
     std::vector<unsigned char> out(in.size());
     cmsDoTransform(transform, in.data(), out.data(), cmsUInt32Number(in.size() / 4));
     for (std::size_t i = 0; i < in.size(); ++i) {
-        if (std::abs(int(in[i]) - int(out[i])) > 1) return false;
+        if (std::abs(int(in[i]) - int(out[i])) > 1)
+            return false;
     }
     return true;
 }
@@ -129,23 +148,30 @@ SrgbConverter::SrgbConverter(const ColorSpace& space)
             m_known = true;
             return;
         }
-        if (cmsHPROFILE profile = cicpProfile(space)) use(profile);
-        if (m_known) return;
+        if (cmsHPROFILE profile = cicpProfile(space))
+            use(profile);
+        if (m_known)
+            return;
     }
     // An RGB profile on grey samples is an error of the file: libpng drops
     // it from a grey PNG, and so does this for each format.
     if (!space.icc.empty() && !space.grey) {
-        if (cmsHPROFILE profile = iccProfile(space.icc)) use(profile);
+        if (cmsHPROFILE profile = iccProfile(space.icc))
+            use(profile);
     }
 }
 
 void SrgbConverter::use(void* profile)
 {
     cmsHPROFILE out = cmsCreate_sRGBProfile();
-    cmsHTRANSFORM transform = out ? cmsCreateTransform(profile, TYPE_RGBA_8, out, TYPE_RGBA_8, INTENT_PERCEPTUAL, cmsFLAGS_COPY_ALPHA) : nullptr;
-    if (out) cmsCloseProfile(out);
+    cmsHTRANSFORM transform = out
+        ? cmsCreateTransform(profile, TYPE_RGBA_8, out, TYPE_RGBA_8, INTENT_PERCEPTUAL, cmsFLAGS_COPY_ALPHA)
+        : nullptr;
+    if (out)
+        cmsCloseProfile(out);
     cmsCloseProfile(profile);
-    if (!transform) return;
+    if (!transform)
+        return;
     m_known = true;
     if (keepsSrgb(transform)) {
         cmsDeleteTransform(transform);
@@ -156,7 +182,8 @@ void SrgbConverter::use(void* profile)
 
 SrgbConverter::~SrgbConverter()
 {
-    if (m_transform) cmsDeleteTransform(static_cast<cmsHTRANSFORM>(m_transform));
+    if (m_transform)
+        cmsDeleteTransform(static_cast<cmsHTRANSFORM>(m_transform));
 }
 
 void SrgbConverter::convert(const unsigned char* in, unsigned char* out, std::size_t pixels) const

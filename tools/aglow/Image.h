@@ -20,17 +20,32 @@ class Image
 public:
     int width = 0;
     int height = 0;
-    int frameCount() const { return int(m_frames.size()); }
+    int frameCount() const
+    {
+        return int(m_frames.size());
+    }
     /// Milliseconds that frame @p index shows, for an animation. 0 for a
     /// frame that shows with the next one, with no time of its own.
-    int delay(int index) const { return m_delays[std::size_t(index)]; }
+    int delay(int index) const
+    {
+        return m_delays[std::size_t(index)];
+    }
     /// Frame @p index, as RGBA bytes.
-    const std::string& frame(int index) const { return m_frames[std::size_t(index)]; }
+    const std::string& frame(int index) const
+    {
+        return m_frames[std::size_t(index)];
+    }
     /// Frame @p index moved out of the image, which keeps an empty one: a
     /// frame that is sent once is not copied.
-    std::string takeFrame(int index) { return std::exchange(m_frames[std::size_t(index)], {}); }
+    std::string takeFrame(int index)
+    {
+        return std::exchange(m_frames[std::size_t(index)], {});
+    }
     /// Why an animation has fewer frames than its file: empty when it has all of them.
-    const std::string& warning() const { return m_warning; }
+    const std::string& warning() const
+    {
+        return m_warning;
+    }
 
 private:
     friend std::optional<Image> decodeImage(std::string_view, std::size_t, std::string&, std::size_t);
@@ -73,7 +88,10 @@ class Resizer
 public:
     Resizer(int width, int height, int newWidth, int newHeight);
     /// Whether the sizes are the same: then a frame needs no scaling.
-    bool identity() const { return m_width == m_newWidth && m_height == m_newHeight; }
+    bool identity() const
+    {
+        return m_width == m_newWidth && m_height == m_newHeight;
+    }
     std::string operator()(const std::string& rgba) const;
 
 private:

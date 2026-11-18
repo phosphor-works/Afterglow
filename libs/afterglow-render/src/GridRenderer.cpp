@@ -67,7 +67,8 @@ public:
 
 void recoverFailedWaylandFrame(QWindow* window)
 {
-    if (qstrcmp(qVersion(), "6.12.0") != 0 || !window) return;
+    if (qstrcmp(qVersion(), "6.12.0") != 0 || !window)
+        return;
     auto* platform = dynamic_cast<QtWaylandClient::QWaylandWindow*>(window->handle());
     if (platform && WaylandFrameState::active(platform)) {
         platform->endFrame();
@@ -75,7 +76,6 @@ void recoverFailedWaylandFrame(QWindow* window)
     }
 }
 #endif
-
 
 StyleSlot slotFor(std::uint16_t attrs)
 {
@@ -120,7 +120,8 @@ QRectF cursorBox(const PaneSnapshot& s, const FontMetrics& m, std::optional<QPoi
 QShader loadShader(const QString& path)
 {
     static QHash<QString, QShader> loaded;
-    if (auto it = loaded.constFind(path); it != loaded.cend()) return *it;
+    if (auto it = loaded.constFind(path); it != loaded.cend())
+        return *it;
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly)) {
         throw std::runtime_error("missing shader " + path.toStdString());
@@ -149,8 +150,8 @@ std::size_t FrameBuilder::ShapeKeyHash::operator()(const ShapeKey& k) const noex
         ^ (std::size_t(k.rtl) << 2) ^ (std::size_t(k.script) << 3);
 }
 
-const std::vector<FrameBuilder::ShapedGlyph>& FrameBuilder::shape(FontSet& fonts, int face, int slot,
-                                                                  const std::u32string& text, bool rtl, std::uint32_t script)
+const std::vector<FrameBuilder::ShapedGlyph>&
+FrameBuilder::shape(FontSet& fonts, int face, int slot, const std::u32string& text, bool rtl, std::uint32_t script)
 {
     if (m_shapeFont != fonts.identity()) {
         m_shapeCache.clear();
@@ -173,7 +174,8 @@ const std::vector<FrameBuilder::ShapedGlyph>& FrameBuilder::shape(FontSet& fonts
                         int(text.size()));
     hb_buffer_guess_segment_properties(m_hbBuffer);
     hb_buffer_set_direction(m_hbBuffer, rtl ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
-    if (script) hb_buffer_set_script(m_hbBuffer, hb_script_t(script));
+    if (script)
+        hb_buffer_set_script(m_hbBuffer, hb_script_t(script));
     hb_buffer_set_cluster_level(m_hbBuffer, HB_BUFFER_CLUSTER_LEVEL_MONOTONE_GRAPHEMES);
     const auto& features = fonts.features();
     hb_shape(fonts.face(face).hb, m_hbBuffer, features.data(), unsigned(features.size()));
@@ -206,7 +208,10 @@ bool directionControl(char32_t cp)
     return cp == 0x061c || cp == 0x200e || cp == 0x200f || (cp >= 0x202a && cp <= 0x202e)
         || (cp >= 0x2066 && cp <= 0x2069);
 }
-char32_t displayCodepoint(char32_t cp) { return directionControl(cp) ? U'\u25c7' : cp; }
+char32_t displayCodepoint(char32_t cp)
+{
+    return directionControl(cp) ? U'\u25c7' : cp;
+}
 std::uint32_t strongScript(char32_t cp)
 {
     const auto script = hb_unicode_script(hb_unicode_funcs_get_default(), cp);
@@ -217,7 +222,8 @@ std::uint32_t strongScript(char32_t cp)
 /// powerline and box shapes drawn as sprites.
 bool isIcon(char32_t cp)
 {
-    const bool pua = (cp >= 0xE000 && cp <= 0xF8FF) || (cp >= 0xF0000 && cp <= 0xFFFFD) || (cp >= 0x100000 && cp <= 0x10FFFD);
+    const bool pua =
+        (cp >= 0xE000 && cp <= 0xF8FF) || (cp >= 0xF0000 && cp <= 0xFFFFD) || (cp >= 0x100000 && cp <= 0x10FFFD);
     return pua && !Sprites::isSprite(cp);
 }
 
@@ -259,35 +265,46 @@ void FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
     // index: a few entries, looked up by binary search.
     std::vector<std::pair<std::size_t, std::uint32_t>> extraBlocks;
     if (drawExtraCursors) {
-        for (const auto& c : s.extraCursors) if (c.shape == AfterglowVt::CursorShape::Block && c.x >= 0 && c.x < s.cols && c.y >= 0 && c.y < s.rows) {
-            const int width = std::max(1, int(s.at(c.x, c.y).width));
-            for (int dx = 0; dx < width && c.x + dx < s.cols; ++dx) extraBlocks.emplace_back(std::size_t(c.y) * s.cols + c.x + dx, c.textColor);
-        }
+        for (const auto& c : s.extraCursors)
+            if (c.shape == AfterglowVt::CursorShape::Block && c.x >= 0 && c.x < s.cols && c.y >= 0 && c.y < s.rows) {
+                const int width = std::max(1, int(s.at(c.x, c.y).width));
+                for (int dx = 0; dx < width && c.x + dx < s.cols; ++dx)
+                    extraBlocks.emplace_back(std::size_t(c.y) * s.cols + c.x + dx, c.textColor);
+            }
         // The first cursor listed for a cell wins, as before.
-        std::stable_sort(extraBlocks.begin(), extraBlocks.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        std::stable_sort(extraBlocks.begin(), extraBlocks.end(), [](const auto& a, const auto& b) {
+            return a.first < b.first;
+        });
     }
     auto extraBlock = [&](int x, int y) -> std::optional<std::uint32_t> {
-        if (extraBlocks.empty() || y >= s.rows || x >= s.cols) return std::nullopt;
+        if (extraBlocks.empty() || y >= s.rows || x >= s.cols)
+            return std::nullopt;
         const std::size_t index = std::size_t(y) * s.cols + x;
-        const auto it = std::lower_bound(extraBlocks.begin(), extraBlocks.end(), index,
-                                         [](const auto& entry, std::size_t i) { return entry.first < i; });
+        const auto it =
+            std::lower_bound(extraBlocks.begin(), extraBlocks.end(), index, [](const auto& entry, std::size_t i) {
+                return entry.first < i;
+            });
         return it != extraBlocks.end() && it->first == index ? std::optional(it->second) : std::nullopt;
     };
     const QRectF box = cursorBox(s, m, p.cursorPosition).translated(ox, oy);
     const float curX = float(box.x()), curY = float(box.y());
     const float curW = float(box.width()), curH = float(box.height());
-    if (cursorInGrid && (s.lineSize(s.cursorY) != AfterglowVt::LineSize::Single
-                        || s.at(s.cursorX, s.cursorY).mcScale != 0)) {
+    if (cursorInGrid
+        && (s.lineSize(s.cursorY) != AfterglowVt::LineSize::Single || s.at(s.cursorX, s.cursorY).mcScale != 0)) {
         recolorUnderCursor = false;
     }
     // The colour of text and decorations in cell (x, y), which a settled block
     // cursor or an extra block cursor replaces.
     auto colorAt = [&](int x, int y, std::uint32_t color) {
-        if (recolorUnderCursor && y == s.cursorY && x >= s.cursorX && x < s.cursorX + cursorSpan) return s.cursorTextColor;
-        if (const auto extra = extraBlock(x, y)) return *extra;
+        if (recolorUnderCursor && y == s.cursorY && x >= s.cursorX && x < s.cursorX + cursorSpan)
+            return s.cursorTextColor;
+        if (const auto extra = extraBlock(x, y))
+            return *extra;
         return color;
     };
-    auto hidden = [&](const SnapshotCell& cell) { return hideBlinking && (cell.attrs & BlinkAttr); };
+    auto hidden = [&](const SnapshotCell& cell) {
+        return hideBlinking && (cell.attrs & BlinkAttr);
+    };
 
     // Pushes a glyph quad clipped vertically to [top, bottom), its texture
     // coordinates cut to match (double-height halves).
@@ -373,7 +390,8 @@ void FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
     };
 
     auto background = [&](const SnapshotCell& cell) {
-        return cell.backgroundUsesWindowOpacity ? (cell.bg & 0x00ffffffu) | (std::uint32_t(p.backgroundAlpha) << 24) : cell.bg;
+        return cell.backgroundUsesWindowOpacity ? (cell.bg & 0x00ffffffu) | (std::uint32_t(p.backgroundAlpha) << 24)
+                                                : cell.bg;
     };
     // Backgrounds, merged into horizontal runs.
     for (int y = 0; y < drawRows; ++y) {
@@ -396,7 +414,8 @@ void FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                 continue;
             }
             int end = x + 1;
-            while (end < s.cols && background(s.at(end, y)) == bg && s.at(end, y).backgroundOverride == s.at(x, y).backgroundOverride) {
+            while (end < s.cols && background(s.at(end, y)) == bg
+                   && s.at(end, y).backgroundOverride == s.at(x, y).backgroundOverride) {
                 ++end;
             }
             solid(ox + float(x * cw), rowTop, float((end - x) * cw), float(ch), bg);
@@ -471,8 +490,8 @@ void FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                         const GlyphEntry* e = glyphs.sprite(fonts, c.cp, c.mcScale * c.mcWidth, c.mcScale);
                         if (!e->empty && alphaOf(c.fg) != 0) {
                             out.push_back({bx, by, float(e->width), float(e->height), float(e->u), float(e->v),
-                                           float(e->u + e->width), float(e->v + e->height), c.fg,
-                                           spriteKind(c.cp), e->page});
+                                           float(e->u + e->width), float(e->v + e->height), c.fg, spriteKind(c.cp),
+                                           e->page});
                         }
                     } else {
                         drawScaled(face, slot, cellText(c), ax, ay + float(m.baseline) * f, scale16, 1.0f, c.fg,
@@ -488,8 +507,8 @@ void FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                     if (!e->empty) {
                         const float sx = ox + float(x * cw);
                         out.push_back({sx, baseline - float(e->top), float(e->width), float(e->height), float(e->u),
-                                       float(e->v), float(e->u + e->width), float(e->v + e->height), colorAt(x, y, c.fg),
-                                       spriteKind(c.cp), e->page});
+                                       float(e->v), float(e->u + e->width), float(e->v + e->height),
+                                       colorAt(x, y, c.fg), spriteKind(c.cp), e->page});
                     }
                 }
                 ++x;
@@ -508,8 +527,10 @@ void FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
             auto script = strongScript(c.cp);
             for (int probe = x + 1; !script && probe < s.cols; ++probe) {
                 const auto& next = s.at(probe, y);
-                if (next.width == 0) continue;
-                if (endsRun(next) || directionControl(next.cp)) break;
+                if (next.width == 0)
+                    continue;
+                if (endsRun(next) || directionControl(next.cp))
+                    break;
                 script = strongScript(next.cp);
             }
 
@@ -524,27 +545,33 @@ void FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                     continue;
                 }
                 if (endsRun(n)
-                    || (end != x && (faceOf(n, n.width) != face || directionControl(c.cp) || directionControl(n.cp)
-                        || (strongScript(n.cp) && script && strongScript(n.cp) != script)))) {
+                    || (end != x
+                        && (faceOf(n, n.width) != face || directionControl(c.cp) || directionControl(n.cp)
+                            || (strongScript(n.cp) && script && strongScript(n.cp) != script)))) {
                     break;
                 }
                 m_columns.push_back(end);
                 ++end;
             }
-            if (rtl) std::reverse(m_columns.begin(), m_columns.end());
+            if (rtl)
+                std::reverse(m_columns.begin(), m_columns.end());
             for (int column : m_columns) {
                 const auto& cell = s.at(column, y);
                 m_runText.push_back(displayCodepoint(cell.cp));
                 m_runColumns.push_back(column);
                 if (cell.grapheme) {
-                    for (char32_t cp : s.graphemes[cell.grapheme - 1]) { m_runText.push_back(cp); m_runColumns.push_back(column); }
+                    for (char32_t cp : s.graphemes[cell.grapheme - 1]) {
+                        m_runText.push_back(cp);
+                        m_runColumns.push_back(column);
+                    }
                 }
             }
 
             const auto& shaped = shape(fonts, face, int(slot), m_runText, rtl, script);
             auto& clusters = m_clusters;
             clusters.clear();
-            for (const auto& glyph : shaped) clusters.push_back(glyph.cluster);
+            for (const auto& glyph : shaped)
+                clusters.push_back(glyph.cluster);
             clusters.push_back(std::uint32_t(m_runText.size()));
             std::sort(clusters.begin(), clusters.end());
             clusters.erase(std::unique(clusters.begin(), clusters.end()), clusters.end());
@@ -572,7 +599,8 @@ void FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                 // is often as wide as the emoji: it is fitted to its cell.
                 const bool narrowed = cell.grapheme != 0 && cell.width == 1
                     && AfterglowVt::Unicode::props(cell.cp).narrowsWithVs15
-                    && s.graphemes[cell.grapheme - 1].find(AfterglowVt::Unicode::VariationSelector15) != std::u32string::npos;
+                    && s.graphemes[cell.grapheme - 1].find(AfterglowVt::Unicode::VariationSelector15)
+                        != std::u32string::npos;
                 const bool icon = (cell.grapheme == 0 && isIcon(cell.cp)) || narrowed;
                 int span = rtl ? clusterRight - col : std::max<int>(1, cell.width);
                 if (icon && !narrowed && span == 1 && col + 1 < s.cols) {
@@ -588,19 +616,23 @@ void FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                 }
                 const float cellX = ox + float(col * cw);
                 if (icon && !e->color) {
-                    out.push_back({std::round(cellX + float(e->left)), std::round(baseline - float(e->top)), float(e->width),
-                                   float(e->height), float(e->u), float(e->v), float(e->u + e->width),
-                                   float(e->v + e->height), color, std::uint32_t(e->subpixel ? InstanceKind::SubpixelGlyph : InstanceKind::GrayGlyph), e->page});
+                    out.push_back({std::round(cellX + float(e->left)), std::round(baseline - float(e->top)),
+                                   float(e->width), float(e->height), float(e->u), float(e->v), float(e->u + e->width),
+                                   float(e->v + e->height), color,
+                                   std::uint32_t(e->subpixel ? InstanceKind::SubpixelGlyph : InstanceKind::GrayGlyph),
+                                   e->page});
                 } else if (e->color) {
                     out.push_back({cellX + float(e->left), baseline - float(e->top), float(e->width), float(e->height),
                                    float(e->u), float(e->v), float(e->u + e->width), float(e->v + e->height),
-                                   withAlpha(0xFFFFFFu, alphaOf(color)), std::uint32_t(InstanceKind::ColorGlyph), e->page});
+                                   withAlpha(0xFFFFFFu, alphaOf(color)), std::uint32_t(InstanceKind::ColorGlyph),
+                                   e->page});
                 } else {
                     const float gx = std::round(cellX + float(m.glyphOffsetX) + g.xOffset + float(e->left));
                     const float gy = std::round(baseline - float(e->top) - g.yOffset);
                     out.push_back({gx, gy, float(e->width), float(e->height), float(e->u), float(e->v),
                                    float(e->u + e->width), float(e->v + e->height), color,
-                                   std::uint32_t(e->subpixel ? InstanceKind::SubpixelGlyph : InstanceKind::GrayGlyph), e->page});
+                                   std::uint32_t(e->subpixel ? InstanceKind::SubpixelGlyph : InstanceKind::GrayGlyph),
+                                   e->page});
                 }
             }
             x = end;
@@ -697,17 +729,25 @@ void FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
     ranges.cursorStart = out.size();
     ranges.cursorBelowText = blockCursor;
     auto extraCursor = [&](const PaneSnapshot::ExtraCursor& c) {
-        if (c.x < 0 || c.x >= s.cols || c.y < 0 || c.y >= s.rows) return;
+        if (c.x < 0 || c.x >= s.cols || c.y < 0 || c.y >= s.rows)
+            return;
         const float xs = s.lineSize(c.y) == AfterglowVt::LineSize::Single ? 1.f : 2.f;
         const float x = ox + c.x * cw * xs, y = oy + c.y * ch;
         const float w = std::max(1, int(s.at(c.x, c.y).width)) * cw * xs;
         const float thickness = std::max(1.f, std::round(dpr));
-        if (c.shape == AfterglowVt::CursorShape::Block) solid(x, y, w, ch, c.color);
-        else if (c.shape == AfterglowVt::CursorShape::Bar) solid(x, y, std::max(thickness, std::round(cw * .12f)), ch, c.color);
-        else { const float h = std::max(thickness, std::round(ch * .08f)); solid(x, y + ch - h, w, h, c.color); }
+        if (c.shape == AfterglowVt::CursorShape::Block)
+            solid(x, y, w, ch, c.color);
+        else if (c.shape == AfterglowVt::CursorShape::Bar)
+            solid(x, y, std::max(thickness, std::round(cw * .12f)), ch, c.color);
+        else {
+            const float h = std::max(thickness, std::round(ch * .08f));
+            solid(x, y + ch - h, w, h, c.color);
+        }
     };
-    if (drawExtraCursors) for (const auto& c : s.extraCursors)
-        if ((c.shape == AfterglowVt::CursorShape::Block) == blockCursor) extraCursor(c);
+    if (drawExtraCursors)
+        for (const auto& c : s.extraCursors)
+            if ((c.shape == AfterglowVt::CursorShape::Block) == blockCursor)
+                extraCursor(c);
     if (blockCursor) {
         solid(curX, curY, curW, curH, s.cursorColor);
     }
@@ -730,8 +770,10 @@ void FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
         }
     }
     ranges.cursorOtherStart = out.size();
-    if (drawExtraCursors) for (const auto& c : s.extraCursors)
-        if ((c.shape == AfterglowVt::CursorShape::Block) != blockCursor) extraCursor(c);
+    if (drawExtraCursors)
+        for (const auto& c : s.extraCursors)
+            if ((c.shape == AfterglowVt::CursorShape::Block) != blockCursor)
+                extraCursor(c);
 }
 
 // --- WindowRenderer --------------------------------------------------------
@@ -794,16 +836,20 @@ WindowRenderer::~WindowRenderer()
 
 bool WindowRenderer::hasPointerMaps() const
 {
-    if (!m_post) return false;
+    if (!m_post)
+        return false;
     const ShaderChains& chains = m_post->chains();
-    auto mapped = [](const ShaderProgramPtr& p) { return p && p->hasPointerMap(); };
+    auto mapped = [](const ShaderProgramPtr& p) {
+        return p && p->hasPointerMap();
+    };
     return std::any_of(chains.pane.begin(), chains.pane.end(), mapped)
         || std::any_of(chains.window.begin(), chains.window.end(), mapped);
 }
 
 QPointF WindowRenderer::windowContentPoint(const QPointF& windowPixel)
 {
-    if (!m_pointerMaps) return windowPixel;
+    if (!m_pointerMaps)
+        return windowPixel;
     // A readback of an offscreen frame (renderToImage) completes when the
     // frame ends, with no later frame to take it.
     m_pointerMaps->collect();
@@ -812,7 +858,8 @@ QPointF WindowRenderer::windowContentPoint(const QPointF& windowPixel)
 
 QPointF WindowRenderer::paneContentPoint(const QPointF& windowPixel, std::uint32_t pane)
 {
-    if (!m_pointerMaps || pane == 0) return windowPixel;
+    if (!m_pointerMaps || pane == 0)
+        return windowPixel;
     m_pointerMaps->collect();
     return m_pointerMaps->unwarp(pane, windowPixel);
 }
@@ -842,7 +889,8 @@ QImage WindowRenderer::readbackImage(QRhiReadbackResult& readback, bool yUp, boo
         break;
     case QRhiTexture::BGRA8:
         // The bytes B, G, R, A are one ARGB word on a little-endian host only.
-        format = Q_BYTE_ORDER == Q_LITTLE_ENDIAN ? QImage::Format_ARGB32_Premultiplied : QImage::Format_RGBA8888_Premultiplied;
+        format = Q_BYTE_ORDER == Q_LITTLE_ENDIAN ? QImage::Format_ARGB32_Premultiplied
+                                                 : QImage::Format_RGBA8888_Premultiplied;
         break;
     case QRhiTexture::RGB10A2: // VK_FORMAT_A2B10G10R10_UNORM_PACK32
         format = QImage::Format_A2BGR30_Premultiplied;
@@ -865,8 +913,12 @@ QImage WindowRenderer::readbackImage(QRhiReadbackResult& readback, bool yUp, boo
     }
     // The image owns the bytes: a 4K frame is not copied once more.
     auto* bytes = new QByteArray(std::move(readback.data));
-    QImage image(reinterpret_cast<uchar*>(bytes->data()), size.width(), size.height(), stride, format,
-                 [](void* info) { delete static_cast<QByteArray*>(info); }, bytes);
+    QImage image(
+        reinterpret_cast<uchar*>(bytes->data()), size.width(), size.height(), stride, format,
+        [](void* info) {
+            delete static_cast<QByteArray*>(info);
+        },
+        bytes);
     if (bytesPerPixel != 4 || format == QImage::Format_A2BGR30_Premultiplied) {
         image = std::move(image).convertToFormat(QImage::Format_ARGB32_Premultiplied);
     } else if (readback.format == QRhiTexture::BGRA8 && format == QImage::Format_RGBA8888_Premultiplied) {
@@ -901,7 +953,9 @@ std::uint64_t WindowRenderer::captureNextFrame(CaptureDone done)
 
 void WindowRenderer::cancelCapture(std::uint64_t ticket)
 {
-    std::erase_if(m_captures, [ticket](const Capture& capture) { return capture.ticket == ticket; });
+    std::erase_if(m_captures, [ticket](const Capture& capture) {
+        return capture.ticket == ticket;
+    });
 }
 
 bool WindowRenderer::ensureSwapChain()
@@ -979,7 +1033,8 @@ void WindowRenderer::setShaderChains(ShaderChains chains)
         m_scrollbackSettling = false;
     }
     // Maps of the old chains, and pipelines made for their programs.
-    if (m_pointerMaps) m_pointerMaps->clear();
+    if (m_pointerMaps)
+        m_pointerMaps->clear();
     if (chains.empty()) {
         m_post.reset();
         m_postWasActive = false;
@@ -1006,7 +1061,8 @@ bool WindowRenderer::overviewShowing() const
 
 void WindowRenderer::ensureBindings(FontResources& res)
 {
-    if (!m_pageBindings.empty() && m_boundTextureGeneration == res.textureGeneration) return;
+    if (!m_pageBindings.empty() && m_boundTextureGeneration == res.textureGeneration)
+        return;
     const auto count = std::max(res.grayTextures.size(), res.colorTextures.size());
     m_pageBindings.clear();
     const auto stages = QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage;
@@ -1015,11 +1071,14 @@ void WindowRenderer::ensureBindings(FontResources& res)
         binding->setBindings({
             QRhiShaderResourceBinding::uniformBuffer(0, stages, m_uniforms.get()),
             QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage,
-                res.grayTextures[i < res.grayTextures.size() ? i : 0], m_device.atlasSampler()),
+                                                      res.grayTextures[i < res.grayTextures.size() ? i : 0],
+                                                      m_device.atlasSampler()),
             QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage,
-                res.colorTextures[i < res.colorTextures.size() ? i : 0], m_device.atlasSampler()),
+                                                      res.colorTextures[i < res.colorTextures.size() ? i : 0],
+                                                      m_device.atlasSampler()),
         });
-        if (!binding->create()) throw std::runtime_error("glyph atlas binding allocation failed");
+        if (!binding->create())
+            throw std::runtime_error("glyph atlas binding allocation failed");
         m_pageBindings.push_back(std::move(binding));
     }
     m_boundTextureGeneration = res.textureGeneration;
@@ -1029,9 +1088,11 @@ void WindowRenderer::initResources(FontResources& res)
 {
     QRhi* rhi = m_device.rhi();
     m_uniforms.reset(rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 16));
-    if (!m_uniforms->create()) throw std::runtime_error("grid uniform buffer allocation failed");
+    if (!m_uniforms->create())
+        throw std::runtime_error("grid uniform buffer allocation failed");
     m_instances.reset(rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer, sizeof(Instance) * 8192));
-    if (!m_instances->create()) throw std::runtime_error("grid instance buffer allocation failed");
+    if (!m_instances->create())
+        throw std::runtime_error("grid instance buffer allocation failed");
     ensureBindings(res);
 }
 
@@ -1099,7 +1160,8 @@ QRhiShaderResourceBindings* WindowRenderer::imageBindings(QRhiTexture* texture, 
             QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, texture,
                                                       m_device.imageSampler()),
         });
-        if (!b.srb->create()) throw std::runtime_error("image binding allocation failed");
+        if (!b.srb->create())
+            throw std::runtime_error("image binding allocation failed");
     }
     b.lastUsed = m_frameCounter;
     return b.srb.get();
@@ -1110,10 +1172,14 @@ namespace {
 const char* frameOpName(QRhi::FrameOpResult result)
 {
     switch (result) {
-    case QRhi::FrameOpSuccess: return "success";
-    case QRhi::FrameOpError: return "error";
-    case QRhi::FrameOpSwapChainOutOfDate: return "swapchain out of date";
-    case QRhi::FrameOpDeviceLost: return "device lost";
+    case QRhi::FrameOpSuccess:
+        return "success";
+    case QRhi::FrameOpError:
+        return "error";
+    case QRhi::FrameOpSwapChainOutOfDate:
+        return "swapchain out of date";
+    case QRhi::FrameOpDeviceLost:
+        return "device lost";
     }
     return "unknown";
 }
@@ -1128,14 +1194,20 @@ QRect dockedContent(QRect area, const std::vector<WindowRenderer::Pane::Dock>& d
         peeled = false;
         for (const WindowRenderer::Pane::Dock& dock : docks) {
             const QRect r = dock.rect.intersected(area);
-            if (r.isEmpty()) continue;
+            if (r.isEmpty())
+                continue;
             const bool across = r.left() == area.left() && r.right() == area.right();
             const bool along = r.top() == area.top() && r.bottom() == area.bottom();
-            if (across && r.top() == area.top()) area.setTop(r.bottom() + 1);
-            else if (across && r.bottom() == area.bottom()) area.setBottom(r.top() - 1);
-            else if (along && r.left() == area.left()) area.setLeft(r.right() + 1);
-            else if (along && r.right() == area.right()) area.setRight(r.left() - 1);
-            else continue;
+            if (across && r.top() == area.top())
+                area.setTop(r.bottom() + 1);
+            else if (across && r.bottom() == area.bottom())
+                area.setBottom(r.top() - 1);
+            else if (along && r.left() == area.left())
+                area.setLeft(r.right() + 1);
+            else if (along && r.right() == area.right())
+                area.setRight(r.left() - 1);
+            else
+                continue;
             peeled = true;
         }
     }
@@ -1153,19 +1225,24 @@ QRect dockedContent(QRect area, const std::vector<WindowRenderer::Pane::Dock>& d
 void resolveOverlays(std::vector<WindowRenderer::Pane>& panes, std::vector<WindowRenderer::Pane>* hosts = nullptr,
                      std::vector<float>* progress = nullptr)
 {
-    if (progress) progress->assign(panes.size(), -1.0f);
+    if (progress)
+        progress->assign(panes.size(), -1.0f);
     for (std::size_t i = 0; i < panes.size(); ++i) {
         WindowRenderer::Pane& pane = panes[i];
-        if (!pane.overlay) continue;
+        if (!pane.overlay)
+            continue;
         WindowRenderer::Pane::Overlay overlay = *std::exchange(pane.overlay, std::nullopt);
-        if (!overlay.snapshot) continue;
+        if (!overlay.snapshot)
+            continue;
         const float fade = std::isfinite(overlay.progress) ? std::clamp(overlay.progress, 0.0f, 1.0f) : 1.0f;
         const bool blends = hosts && fade > 0.0f && fade < 1.0f;
         if (blends) {
             hosts->push_back(pane);
-            if (progress) (*progress)[i] = fade;
+            if (progress)
+                (*progress)[i] = fade;
         }
-        if (!blends && fade < 0.5f) continue;
+        if (!blends && fade < 0.5f)
+            continue;
         if (overlay.popup) {
             overlay.progress = 1.0f;
             pane.overlay = std::move(overlay);
@@ -1212,7 +1289,8 @@ void forEachAround(const QRect& area, const QRect& hole, Fn&& fn)
 {
     const QRect h = hole.intersected(area);
     if (h.isEmpty()) {
-        if (!area.isEmpty()) fn(area);
+        if (!area.isEmpty())
+            fn(area);
         return;
     }
     const QRect parts[] = {
@@ -1222,7 +1300,8 @@ void forEachAround(const QRect& area, const QRect& hole, Fn&& fn)
         QRect(QPoint(h.right() + 1, h.top()), QPoint(area.right(), h.bottom())),
     };
     for (const QRect& part : parts) {
-        if (!part.isEmpty()) fn(part);
+        if (!part.isEmpty())
+            fn(part);
     }
 }
 
@@ -1235,10 +1314,12 @@ const PaneSnapshot& WindowRenderer::popupFrame(const Pane::Overlay& overlay, int
     frame.seenFrame = m_frameCounter + 1;
     const std::uint32_t background = overlay.snapshot->defaultBg;
     if (frame.snapshot && frame.cols == cols && frame.rows == rows && frame.title == popup.title
-        && frame.roundedCorners == popup.roundedCorners && frame.bidi == popup.bidi && frame.borderColor == popup.borderColor
-        && frame.titleColor == popup.titleColor && frame.background == background)
+        && frame.roundedCorners == popup.roundedCorners && frame.bidi == popup.bidi
+        && frame.borderColor == popup.borderColor && frame.titleColor == popup.titleColor
+        && frame.background == background)
         return *frame.snapshot;
-    if (!frame.snapshot) frame.snapshot = std::make_unique<PaneSnapshot>();
+    if (!frame.snapshot)
+        frame.snapshot = std::make_unique<PaneSnapshot>();
     frame.cols = cols;
     frame.rows = rows;
     frame.title = popup.title;
@@ -1262,7 +1343,8 @@ const PaneSnapshot& WindowRenderer::popupFrame(const Pane::Overlay& overlay, int
     s.defaultBg = background;
     s.defaultFg = popup.borderColor | 0xff000000u;
     for (int y = 0; y < s.rows; ++y) {
-        for (int x = 0; x < s.cols; ++x) s.cells[std::size_t(y) * std::size_t(s.cols) + std::size_t(x)].logicalColumn = x;
+        for (int x = 0; x < s.cols; ++x)
+            s.cells[std::size_t(y) * std::size_t(s.cols) + std::size_t(x)].logicalColumn = x;
     }
     auto put = [&s](int x, int y, char32_t cp, std::uint32_t color) {
         SnapshotCell& cell = s.cells[std::size_t(y) * std::size_t(s.cols) + std::size_t(x)];
@@ -1300,12 +1382,14 @@ const PaneSnapshot& WindowRenderer::popupFrame(const Pane::Overlay& overlay, int
         std::vector<Cluster> clusters;
         AfterglowVt::Unicode::GraphemeSegmenter segmenter;
         for (const char32_t cp : QString::fromStdString(popup.title).toStdU32String()) {
-            if (cp < 0x20 || (cp >= 0x7F && cp < 0xA0)) continue;
+            if (cp < 0x20 || (cp >= 0x7F && cp < 0xA0))
+                continue;
             const AfterglowVt::Unicode::Props props = AfterglowVt::Unicode::props(cp);
             if (segmenter.breaksBefore(props) || clusters.empty()) {
                 // A zero-width character with nothing to join (a format
                 // character, a lone mark) would take a blank cell.
-                if (props.width == 0) continue;
+                if (props.width == 0)
+                    continue;
                 clusters.push_back({std::u32string(1, cp), std::clamp(int(props.width), 1, 2)});
             } else {
                 clusters.back().text += cp;
@@ -1315,13 +1399,16 @@ const PaneSnapshot& WindowRenderer::popupFrame(const Pane::Overlay& overlay, int
             }
         }
         int width = 0;
-        for (const Cluster& c : clusters) width += c.width;
-        if (clusters.empty()) room = 0;
+        for (const Cluster& c : clusters)
+            width += c.width;
+        if (clusters.empty())
+            room = 0;
         else if (width > room) {
             // Keep what fits beside the ellipsis.
             int kept = 0;
             std::size_t count = 0;
-            while (count < clusters.size() && kept + clusters[count].width <= room - 1) kept += clusters[count++].width;
+            while (count < clusters.size() && kept + clusters[count].width <= room - 1)
+                kept += clusters[count++].width;
             clusters.resize(count);
             clusters.push_back({std::u32string(1, U'\u2026'), 1});
         }
@@ -1330,7 +1417,8 @@ const PaneSnapshot& WindowRenderer::popupFrame(const Pane::Overlay& overlay, int
             // PaneSnapshot::applyBidi places a pane's.
             const auto count = FriBidiStrIndex(clusters.size());
             std::vector<FriBidiChar> characters;
-            for (const Cluster& c : clusters) characters.push_back(FriBidiChar(c.text.front()));
+            for (const Cluster& c : clusters)
+                characters.push_back(FriBidiChar(c.text.front()));
             std::vector<FriBidiCharType> types(clusters.size());
             std::vector<FriBidiBracketType> brackets(clusters.size());
             std::vector<FriBidiLevel> levels(clusters.size());
@@ -1339,18 +1427,20 @@ const PaneSnapshot& WindowRenderer::popupFrame(const Pane::Overlay& overlay, int
             fribidi_get_bidi_types(characters.data(), count, types.data());
             fribidi_get_bracket_types(characters.data(), count, types.data(), brackets.data());
             FriBidiParType direction = popup.bidi == AfterglowVt::BidiMode::LeftToRight ? FRIBIDI_PAR_LTR
-                : popup.bidi == AfterglowVt::BidiMode::RightToLeft                       ? FRIBIDI_PAR_RTL
-                                                                                         : FRIBIDI_PAR_ON;
+                : popup.bidi == AfterglowVt::BidiMode::RightToLeft                      ? FRIBIDI_PAR_RTL
+                                                                                        : FRIBIDI_PAR_ON;
             if (fribidi_get_par_embedding_levels_ex(types.data(), brackets.data(), count, &direction, levels.data())
                 && fribidi_reorder_line(0, types.data(), count, 0, direction, levels.data(), nullptr, map.data())) {
                 std::vector<Cluster> visual;
                 visual.reserve(clusters.size());
-                for (const FriBidiStrIndex logical : map) visual.push_back(std::move(clusters[std::size_t(logical)]));
+                for (const FriBidiStrIndex logical : map)
+                    visual.push_back(std::move(clusters[std::size_t(logical)]));
                 clusters = std::move(visual);
             }
         }
         int x = 3;
-        if (room > 0) put(2, 0, U' ', popup.borderColor);
+        if (room > 0)
+            put(2, 0, U' ', popup.borderColor);
         for (const Cluster& c : clusters) {
             SnapshotCell* cell = put(x, 0, c.text.front(), popup.titleColor);
             cell->width = std::uint8_t(c.width);
@@ -1358,10 +1448,12 @@ const PaneSnapshot& WindowRenderer::popupFrame(const Pane::Overlay& overlay, int
                 s.graphemes.emplace_back(c.text.substr(1));
                 cell->grapheme = std::uint32_t(s.graphemes.size());
             }
-            if (c.width == 2) put(x + 1, 0, 0, popup.titleColor)->width = 0;
+            if (c.width == 2)
+                put(x + 1, 0, 0, popup.titleColor)->width = 0;
             x += c.width;
         }
-        if (room > 0) put(x, 0, U' ', popup.borderColor);
+        if (room > 0)
+            put(x, 0, U' ', popup.borderColor);
     }
     ++s.version;
     return s;
@@ -1372,7 +1464,8 @@ const PaneSnapshot& WindowRenderer::popupFrame(const Pane::Overlay& overlay, int
 // switch at once.
 void WindowRenderer::setOverview(Overview overview)
 {
-    for (OverviewTab& tab : overview.otherTabs) resolveOverlays(tab.panes);
+    for (OverviewTab& tab : overview.otherTabs)
+        resolveOverlays(tab.panes);
     m_overview = std::move(overview);
 }
 
@@ -1393,9 +1486,9 @@ void WindowRenderer::setPaneEffects(PaneEffects effects)
 }
 
 WindowRenderer::FrameResult WindowRenderer::render(const std::vector<Pane>& panes,
-                                                  const std::vector<std::pair<QRect, std::uint32_t>>& overlays,
-                                                  std::uint32_t clearColor, QRhiTexture* overlayTexture,
-                                                  std::uint64_t overlaySerial)
+                                                   const std::vector<std::pair<QRect, std::uint32_t>>& overlays,
+                                                   std::uint32_t clearColor, QRhiTexture* overlayTexture,
+                                                   std::uint64_t overlaySerial)
 {
     // Taken first: a frame that fails before it draws forgets them too, so
     // no pointer to a dock outlives the call.
@@ -1448,10 +1541,13 @@ WindowRenderer::FrameResult WindowRenderer::render(const std::vector<Pane>& pane
         }
         target.size = m_swapChain->currentPixelSize();
         auto* cb = m_swapChain->currentFrameCommandBuffer();
-        if (m_gpuTimingEnabled) m_completedGpuSeconds = cb->lastCompletedGpuTime();
+        if (m_gpuTimingEnabled)
+            m_completedGpuSeconds = cb->lastCompletedGpuTime();
         return cb;
     };
-    target.renderTarget = [this] { return m_swapChain->currentFrameRenderTarget(); };
+    target.renderTarget = [this] {
+        return m_swapChain->currentFrameRenderTarget();
+    };
     target.renderPass = m_renderPass.get();
     target.pipelines = &m_swapPipelines;
     target.end = [this, rhi, &result, &failed] {
@@ -1478,7 +1574,8 @@ WindowRenderer::FrameResult WindowRenderer::render(const std::vector<Pane>& pane
     QRhiReadbackResult* readback = captures.empty() ? nullptr : new QRhiReadbackResult;
     bool queued = false;
     const auto release = qScopeGuard([&readback, &queued] {
-        if (!queued) delete readback;
+        if (!queued)
+            delete readback;
     });
     if (readback) {
         target.finalUpdates = [rhi, readback, &queued] {
@@ -1497,10 +1594,13 @@ WindowRenderer::FrameResult WindowRenderer::render(const std::vector<Pane>& pane
         if (result == FrameResult::Presented) {
             const bool read = !readback->data.isEmpty();
             const auto format = readback->format;
-            if (read) image = readbackImage(*readback, rhi->isYUpInFramebuffer(), !m_translucent);
+            if (read)
+                image = readbackImage(*readback, rhi->isYUpInFramebuffer(), !m_translucent);
             if (image.isNull() && !std::exchange(m_readbackFailureLogged, true)) {
-                if (read) qCWarning(lcRender, "A screenshot cannot use the swapchain format %d", int(format));
-                else qCWarning(lcRender, "A screenshot cannot read the swapchain back on this GPU driver");
+                if (read)
+                    qCWarning(lcRender, "A screenshot cannot use the swapchain format %d", int(format));
+                else
+                    qCWarning(lcRender, "A screenshot cannot read the swapchain back on this GPU driver");
             }
         }
         delete std::exchange(readback, nullptr);
@@ -1511,7 +1611,8 @@ WindowRenderer::FrameResult WindowRenderer::render(const std::vector<Pane>& pane
         m_captures.insert(m_captures.begin(), std::make_move_iterator(captures.begin()),
                           std::make_move_iterator(captures.end()));
     } else {
-        for (const auto& capture : captures) capture.done(image);
+        for (const auto& capture : captures)
+            capture.done(image);
     }
     return result;
 }
@@ -1527,15 +1628,18 @@ QImage WindowRenderer::renderToImage(const QSize& size, const std::vector<Pane>&
         m_offscreenTarget.reset();
         // Pipelines made for the old descriptor must not match a new one at
         // the same address.
-        if (m_post && m_offscreenPass) m_post->forgetPass(m_offscreenPass.get());
+        if (m_post && m_offscreenPass)
+            m_post->forgetPass(m_offscreenPass.get());
         m_offscreenPass.reset();
-        m_offscreenTexture.reset(
-            rhi->newTexture(QRhiTexture::RGBA8, size, 1, QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
-        if (!m_offscreenTexture->create()) throw std::runtime_error("offscreen texture allocation failed");
+        m_offscreenTexture.reset(rhi->newTexture(QRhiTexture::RGBA8, size, 1,
+                                                 QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
+        if (!m_offscreenTexture->create())
+            throw std::runtime_error("offscreen texture allocation failed");
         m_offscreenTarget.reset(rhi->newTextureRenderTarget({m_offscreenTexture.get()}));
         m_offscreenPass.reset(m_offscreenTarget->newCompatibleRenderPassDescriptor());
         m_offscreenTarget->setRenderPassDescriptor(m_offscreenPass.get());
-        if (!m_offscreenTarget->create()) throw std::runtime_error("offscreen target allocation failed");
+        if (!m_offscreenTarget->create())
+            throw std::runtime_error("offscreen target allocation failed");
     }
     QRhiReadbackResult readback;
     QRhiCommandBuffer* cb = nullptr;
@@ -1544,7 +1648,9 @@ QImage WindowRenderer::renderToImage(const QSize& size, const std::vector<Pane>&
     target.begin = [rhi, &cb]() -> QRhiCommandBuffer* {
         return rhi->beginOffscreenFrame(&cb) == QRhi::FrameOpSuccess ? cb : nullptr;
     };
-    target.renderTarget = [this] { return m_offscreenTarget.get(); };
+    target.renderTarget = [this] {
+        return m_offscreenTarget.get();
+    };
     target.renderPass = m_offscreenPass.get();
     target.pipelines = &m_offscreenPipelines;
     target.finalUpdates = [this, rhi, &readback] {
@@ -1553,7 +1659,9 @@ QImage WindowRenderer::renderToImage(const QSize& size, const std::vector<Pane>&
         return u;
     };
     // An offscreen frame completes, readbacks included, when it ends.
-    target.end = [rhi] { rhi->endOffscreenFrame(); };
+    target.end = [rhi] {
+        rhi->endOffscreenFrame();
+    };
     renderTo(target, panes, docks, overlays, clearColor, nullptr, 0);
     return readbackImage(readback, false, false);
 }
@@ -1568,7 +1676,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
     // the pane under it in the tab image: not while the overview, a tab
     // switch or a closing pane has that image.
     const bool tabImageTaken = (overviewShowing() && !m_overview.otherTabs.empty())
-        || (transitionShowing() && !m_transition.from.panes.empty()) || (paneEffectsShowing() && m_effects.closing.has_value());
+        || (transitionShowing() && !m_transition.from.panes.empty())
+        || (paneEffectsShowing() && m_effects.closing.has_value());
     const bool overlayTransitions = m_post && m_post->hasOverlayTransition() && !tabImageTaken;
     std::vector<Pane> resolvedPanes;
     std::vector<Pane> overlayHosts; ///< the panes under fading overlays, as they show without them
@@ -1595,7 +1704,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
     // Readbacks of pointer maps complete when a frame begins: take them in
     // every frame, also one whose chains have no map any more, so that the
     // maps stop asking for frames (animating()).
-    if (m_pointerMaps) m_pointerMaps->collect();
+    if (m_pointerMaps)
+        m_pointerMaps->collect();
     FontResources& res = fonts();
     if (m_fontEpoch != m_device.fontEpoch()) {
         m_builder.clearShapeCache();
@@ -1624,10 +1734,13 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         combined = panes;
         TabSlice slice{transition ? m_transition.from.index : m_overview.currentTab, combined.size(), 0, true};
         slice.card = false;
-        if (transition) combined.insert(combined.end(), m_transition.from.panes.begin(), m_transition.from.panes.end());
-        else combined.push_back(*m_effects.closing);
+        if (transition)
+            combined.insert(combined.end(), m_transition.from.panes.begin(), m_transition.from.panes.end());
+        else
+            combined.push_back(*m_effects.closing);
         slice.end = combined.size();
-        if (transition) slice.overlays = &m_transition.from.overlays;
+        if (transition)
+            slice.overlays = &m_transition.from.overlays;
         slices.push_back(slice);
     } else if (otherTabs) {
         combined = panes;
@@ -1639,7 +1752,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
                 slice.sharp |= pane.params.highlighted;
             }
             slice.end = combined.size();
-            if (slice.end > slice.begin) slices.push_back(slice);
+            if (slice.end > slice.begin)
+                slices.push_back(slice);
         }
     }
     // The panes under fading overlays go after the others: drawn first, with
@@ -1647,7 +1761,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
     // other tabs have that image (overlayTransitions).
     std::size_t hostBegin = 0;
     if (!overlayHosts.empty()) {
-        if (!otherTabs) combined = panes;
+        if (!otherTabs)
+            combined = panes;
         hostBegin = combined.size();
         combined.insert(combined.end(), overlayHosts.begin(), overlayHosts.end());
     }
@@ -1657,19 +1772,23 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
     std::size_t glyphBound = 0;
     auto countGlyphs = [&glyphBound](const PaneSnapshot& snapshot) {
         glyphBound += snapshot.cells.size();
-        for (const auto& extra : snapshot.graphemes) glyphBound += extra.size();
+        for (const auto& extra : snapshot.graphemes)
+            glyphBound += extra.size();
     };
     for (const auto& pane : drawn) {
         countGlyphs(*pane.snapshot);
-        for (const auto& dock : pane.docks) countGlyphs(*dock.snapshot);
+        for (const auto& dock : pane.docks)
+            countGlyphs(*dock.snapshot);
         if (const Pane::Overlay* popup = popupOver(pane)) {
             countGlyphs(*popup->snapshot);
             // Its border: the edges, and the title in the top one.
-            glyphBound += 2 * std::size_t(popup->snapshot->cols + popup->snapshot->rows) + 8 + popup->popup->title.size();
+            glyphBound +=
+                2 * std::size_t(popup->snapshot->cols + popup->snapshot->rows) + 8 + popup->popup->title.size();
         }
     }
     // A window dock's own docks are not drawn (setDocks).
-    for (const auto& dock : docks) countGlyphs(*dock.snapshot);
+    for (const auto& dock : docks)
+        countGlyphs(*dock.snapshot);
     res.glyphs.beginFrame(glyphBound, rhi->resourceLimit(QRhi::TextureSizeMax));
     // Which chains run this frame, before anything reads active(): the panes
     // below choose subpixel text by it, and prepare() sizes for it.
@@ -1703,23 +1822,27 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         FrameBuilder::PaneParams pp = pane.params;
         // A popup that runs over the pane has its keyboard: the pane's cursor
         // shows unfocused.
-        if (const Pane::Overlay* popup = popupOver(pane); popup && popup->running) pp.focused = false;
-        pp.allowSubpixel = pp.allowSubpixel && subpixelTarget
-            && pp.backgroundAlpha == 255 && !pane.snapshot->hasTransparentBackgrounds;
+        if (const Pane::Overlay* popup = popupOver(pane); popup && popup->running)
+            pp.focused = false;
+        pp.allowSubpixel = pp.allowSubpixel && subpixelTarget && pp.backgroundAlpha == 255
+            && !pane.snapshot->hasTransparentBackgrounds;
         // Blink phases that cannot change what is drawn do not rebuild the pane.
         const bool cursorBlinks = pp.cursorBlinkOverride < 0 ? pane.snapshot->cursorBlink : pp.cursorBlinkOverride != 0;
-        if (!pp.focused || !cursorBlinks) pp.cursorBlinkOn = true;
-        if (!pane.snapshot->hasBlinkingText) pp.textBlinkOn = true;
+        if (!pp.focused || !cursorBlinks)
+            pp.cursorBlinkOn = true;
+        if (!pane.snapshot->hasBlinkingText)
+            pp.textBlinkOn = true;
         const std::uint64_t identity = pane.snapshot->identity.value();
         const auto seen = m_paneCache.find(identity);
         const bool twice = overlayHost && seen != m_paneCache.end() && seen->second.seenFrame == m_frameCounter + 1;
         PaneCache& cache = (twice ? m_hostPaneCache : m_paneCache)[identity];
         const bool reusable = cache.snapshotVersion == pane.snapshot->version && cache.fontEpoch == m_fontEpoch
-            && cache.glyphEpoch == res.glyphs.epoch() && cache.fontIdentity == res.fonts->identity() && cache.rect == pp.rect
-            && cache.origin == pp.contentOrigin && cache.focused == pp.focused && cache.blinkOn == pp.cursorBlinkOn && cache.textBlinkOn == pp.textBlinkOn
-            && cache.cursorBlinkOverride == pp.cursorBlinkOverride
-            && cache.cursorPosition == pp.cursorPosition && cache.scrollShift == pp.scrollShift
-            && cache.backgroundAlpha == pp.backgroundAlpha && cache.allowSubpixel == pp.allowSubpixel && cache.hoveredLink == pp.hoveredLink
+            && cache.glyphEpoch == res.glyphs.epoch() && cache.fontIdentity == res.fonts->identity()
+            && cache.rect == pp.rect && cache.origin == pp.contentOrigin && cache.focused == pp.focused
+            && cache.blinkOn == pp.cursorBlinkOn && cache.textBlinkOn == pp.textBlinkOn
+            && cache.cursorBlinkOverride == pp.cursorBlinkOverride && cache.cursorPosition == pp.cursorPosition
+            && cache.scrollShift == pp.scrollShift && cache.backgroundAlpha == pp.backgroundAlpha
+            && cache.allowSubpixel == pp.allowSubpixel && cache.hoveredLink == pp.hoveredLink
             && cache.hoverRow == pp.hoverRow && cache.hoverColStart == pp.hoverColStart
             && cache.hoverColEnd == pp.hoverColEnd;
         if (!reusable) {
@@ -1749,9 +1872,15 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         }
         cache.seenFrame = m_frameCounter + 1;
         m_frame.insert(m_frame.end(), cache.instances.begin(), cache.instances.end());
-        return {first, first + std::uint32_t(cache.ranges.textStart),
-                first + std::uint32_t(cache.ranges.cursorStart), first + std::uint32_t(cache.ranges.cursorOtherStart), std::uint32_t(m_frame.size()),
-                cache.ranges.cursorBelowText, pp.rect, pp.rect, {}};
+        return {first,
+                first + std::uint32_t(cache.ranges.textStart),
+                first + std::uint32_t(cache.ranges.cursorStart),
+                first + std::uint32_t(cache.ranges.cursorOtherStart),
+                std::uint32_t(m_frame.size()),
+                cache.ranges.cursorBelowText,
+                pp.rect,
+                pp.rect,
+                {}};
     };
     m_frame.clear();
     m_ranges.clear();
@@ -1783,7 +1912,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             if (popup->popup->border && m.cellWidth > 0 && m.cellHeight > 0) {
                 whole = whole.adjusted(-m.cellWidth, -m.cellHeight, m.cellWidth, m.cellHeight);
                 Pane border;
-                border.snapshot = &popupFrame(*popup, inside.width() / m.cellWidth + 2, inside.height() / m.cellHeight + 2);
+                border.snapshot =
+                    &popupFrame(*popup, inside.width() / m.cellWidth + 2, inside.height() / m.cellHeight + 2);
                 border.params.rect = whole;
                 border.params.contentOrigin = whole.topLeft();
                 border.params.backgroundAlpha = pane.params.backgroundAlpha;
@@ -1803,8 +1933,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             if (post && m_post->layered()) {
                 const QRect pane = range.scissor;
                 range.popupClear = std::uint32_t(m_frame.size());
-                m_frame.push_back({float(pane.x()), float(pane.y()), float(pane.width()), float(pane.height()), 0, 0, 0, 0, 0,
-                                   std::uint32_t(InstanceKind::Solid)});
+                m_frame.push_back({float(pane.x()), float(pane.y()), float(pane.width()), float(pane.height()), 0, 0, 0,
+                                   0, 0, std::uint32_t(InstanceKind::Solid)});
             }
             const float dim = std::isfinite(popup->popup->dim) ? std::clamp(popup->popup->dim, 0.0f, 1.0f) : 0.0f;
             if (dim > 0) {
@@ -1812,18 +1942,22 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
                 range.dim = std::uint32_t(m_frame.size());
                 const QRect r = range.scissor;
                 m_frame.push_back({float(r.x()), float(r.y()), float(r.width()), float(r.height()), 0, 0, 0, 0,
-                                   packRgba(0, 0, 0, std::uint8_t(std::lround(dim * 255))), std::uint32_t(InstanceKind::Solid)});
+                                   packRgba(0, 0, 0, std::uint8_t(std::lround(dim * 255))),
+                                   std::uint32_t(InstanceKind::Solid)});
             }
         }
         m_ranges.push_back(std::move(range));
     }
     // Docks go straight into the window, after every chain.
     m_dockRanges.clear();
-    for (const Pane& dock : docks) m_dockRanges.push_back(appendPane(dock, !m_translucent));
+    for (const Pane& dock : docks)
+        m_dockRanges.push_back(appendPane(dock, !m_translucent));
     for (const auto& instance : m_frame) {
-        if (instance.kind == std::uint32_t(InstanceKind::GrayGlyph) || instance.kind == std::uint32_t(InstanceKind::LinearGlyph))
+        if (instance.kind == std::uint32_t(InstanceKind::GrayGlyph)
+            || instance.kind == std::uint32_t(InstanceKind::LinearGlyph))
             res.glyphs.touchPage(false, instance.atlasPage);
-        if (instance.kind == std::uint32_t(InstanceKind::ColorGlyph) || instance.kind == std::uint32_t(InstanceKind::SubpixelGlyph))
+        if (instance.kind == std::uint32_t(InstanceKind::ColorGlyph)
+            || instance.kind == std::uint32_t(InstanceKind::SubpixelGlyph))
             res.glyphs.touchPage(true, instance.atlasPage);
     }
     // Image quads go after all grid instances; each is drawn with its own texture.
@@ -1855,7 +1989,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         appendImages(*docks[i].snapshot, docks[i].params.contentOrigin, docks[i].params.scrollShift, m_dockRanges[i]);
     // Other tabs' overlays (dividers, dimming) go with their panes.
     for (const TabSlice& slice : slices) {
-        if (!slice.overlays || slice.overlays->empty() || slice.begin == slice.end) continue;
+        if (!slice.overlays || slice.overlays->empty() || slice.begin == slice.end)
+            continue;
         DrawRange& last = m_ranges[slice.end - 1];
         last.overlayFirst = std::uint32_t(m_frame.size());
         for (const auto& [rect, color] : *slice.overlays) {
@@ -1875,10 +2010,9 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
     std::uint32_t chromeInstance = 0;
     if (overlayTexture) {
         chromeInstance = std::uint32_t(m_frame.size());
-        m_frame.push_back({0, 0, float(framePx.width()), float(framePx.height()), 0, 0, 1, 1, packRgba(255, 255, 255),
-                           1u});
+        m_frame.push_back(
+            {0, 0, float(framePx.width()), float(framePx.height()), 0, 0, 1, 1, packRgba(255, 255, 255), 1u});
     }
-
 
     // Staged with the frame: if it fails before the first pass, these uploads
     // (already taken from the atlases and the image cache) still happen.
@@ -1893,7 +2027,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
     // A range, then its pane's docks, which have no docks of their own.
     auto forEachDrawn = [](const DrawRange& range, const auto& fn) {
         fn(range);
-        for (const DrawRange& dock : range.docks) fn(dock);
+        for (const DrawRange& dock : range.docks)
+            fn(dock);
     };
     auto uploadImages = [&](const DrawRange& range) {
         for (const ImageDraw& draw : range.images) {
@@ -1904,8 +2039,10 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             }
         }
     };
-    for (const DrawRange& range : m_ranges) forEachDrawn(range, uploadImages);
-    for (const DrawRange& range : m_dockRanges) uploadImages(range);
+    for (const DrawRange& range : m_ranges)
+        forEachDrawn(range, uploadImages);
+    for (const DrawRange& range : m_dockRanges)
+        uploadImages(range);
     if (!m_uniforms) {
         initResources(res);
     }
@@ -1917,7 +2054,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
     // Shrunk tabs share the atlas in a grid of equal tiles.
     int tiles = 0;
     for (TabSlice& slice : slices) {
-        if (!slice.sharp) slice.tile = tiles++;
+        if (!slice.sharp)
+            slice.tile = tiles++;
     }
     const int atlasColumns = std::max(1, int(std::ceil(std::sqrt(double(tiles)))));
     const int atlasRows = std::max(1, (tiles + atlasColumns - 1) / atlasColumns);
@@ -1939,7 +2077,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
     const auto bytes = quint32(m_frame.size() * sizeof(Instance));
     if (bytes > m_instances->size()) {
         m_instances.reset(rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer, bytes + bytes / 2));
-        if (!m_instances->create()) throw std::runtime_error("grid instance buffer allocation failed");
+        if (!m_instances->create())
+            throw std::runtime_error("grid instance buffer allocation failed");
     }
     if (bytes > 0) {
         updates->updateDynamicBuffer(m_instances.get(), 0, bytes, m_frame.data());
@@ -1970,7 +2109,9 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
 
     const QColor clear = premultipliedClear(clearColor);
     const QRhiCommandBuffer::VertexInput input(m_instances.get(), 0);
-    auto scissor = [&px](const QRect& rc) { return scissorFor(rc, px); };
+    auto scissor = [&px](const QRect& rc) {
+        return scissorFor(rc, px);
+    };
     auto bindGrid = [&] {
         cb->setGraphicsPipeline(gridPipelines->grid.get());
         cb->setViewport({0, 0, float(px.width()), float(px.height())});
@@ -2048,8 +2189,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
     };
     std::vector<Card> cards;
     auto toUv = [&px](const QRect& r) {
-        return QRectF(double(r.x()) / px.width(), double(r.y()) / px.height(),
-                      double(r.width()) / px.width(), double(r.height()) / px.height());
+        return QRectF(double(r.x()) / px.width(), double(r.y()) / px.height(), double(r.width()) / px.width(),
+                      double(r.height()) / px.height());
     };
     if (post) {
         const double now = m_clockOverride.value_or(double(m_clock.nsecsElapsed()) / 1e9);
@@ -2058,13 +2199,16 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         // history is stale: start both again.
         const bool resumed = m_lastPostFrame + 1 != m_frameCounter;
         m_lastPostFrame = m_frameCounter;
-        if (resumed) m_cursorTracks.clear();
+        if (resumed)
+            m_cursorTracks.clear();
         double delta = m_shaderFrame > 0 && !resumed ? now - m_lastFrameTime : 0.0;
         // The wall clock can stall (a hidden window, a slow frame); preview
         // clocks step exactly as asked.
-        if (!m_clockOverride) delta = std::clamp(delta, 0.0, 0.1);
+        if (!m_clockOverride)
+            delta = std::clamp(delta, 0.0, 0.1);
         time = ShaderFrameTime{now, float(delta), m_shaderFrame};
-        if (m_shaderFrame < INT_MAX) ++m_shaderFrame;
+        if (m_shaderFrame < INT_MAX)
+            ++m_shaderFrame;
         if (m_dateOverride) {
             time.date = *m_dateOverride;
         } else {
@@ -2094,7 +2238,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
                 m_easedScrollbackLines += (combinedLines - m_easedScrollbackLines) * blend;
             }
             m_scrollbackSettling = std::abs(combinedLines - m_easedScrollbackLines) > 0.5;
-            if (!m_scrollbackSettling) m_easedScrollbackLines = combinedLines;
+            if (!m_scrollbackSettling)
+                m_easedScrollbackLines = combinedLines;
         }
         windowState.rect = QRect(QPoint(0, 0), px);
         // A pane's inputs, and its cursor's history: empty off the target.
@@ -2105,9 +2250,11 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             st.rect = pane.params.rect.intersected(QRect(QPoint(), px));
             // Spring animations can overshoot the surface during resize.
             // Shader inputs must only copy pixels that exist in the target.
-            if (st.rect.isEmpty()) return st;
+            if (st.rect.isEmpty())
+                return st;
             st.snapshot = &snap;
-            if (const Pane::Overlay* popup = popupOver(pane)) st.popup = popup->popup->rect;
+            if (const Pane::Overlay* popup = popupOver(pane))
+                st.popup = popup->popup->rect;
             st.scrollback = {float(scrollback.scrollbackLines), float(combinedLines), float(m_easedScrollbackLines)};
             st.cellSize = QSizeF(m.cellWidth, m.cellHeight);
             st.backgroundOpacity = float(pane.params.backgroundAlpha) / 255.0f;
@@ -2121,10 +2268,10 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             // Tracked before the scroll shift, so smooth scrolling is not a cursor move.
             const QRectF cursor = cursorBox(typed, m).translated(typedOrigin);
             const QPointF shift(0, -double(typedShift));
-            const int style = !pane.params.focused                                         ? 1
-                              : typed.cursorShape == AfterglowVt::CursorShape::Bar         ? 2
-                              : typed.cursorShape == AfterglowVt::CursorShape::Underline   ? 3
-                                                                                           : 0;
+            const int style = !pane.params.focused                         ? 1
+                : typed.cursorShape == AfterglowVt::CursorShape::Bar       ? 2
+                : typed.cursorShape == AfterglowVt::CursorShape::Underline ? 3
+                                                                           : 0;
             CursorTrack& track = m_cursorTracks[typed.identity.value()];
             const QColor color = toColor(typed.cursorColor);
             if (track.seenFrame == 0) {
@@ -2178,7 +2325,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         // rectangle with its values, and the window with the window chain's.
         PointerMaps* maps = nullptr;
         if (hasPointerMaps()) {
-            if (!m_pointerMaps) m_pointerMaps = std::make_unique<PointerMaps>(m_device);
+            if (!m_pointerMaps)
+                m_pointerMaps = std::make_unique<PointerMaps>(m_device);
             maps = m_pointerMaps.get();
         }
         // The hosts are in the order of their panes, and have their rectangles.
@@ -2192,13 +2340,15 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
                 under = regionOf(*nextHost++, *givenPanes[index].snapshot);
                 under->overlayHost = true;
             }
-            if (st.rect.isEmpty()) continue;
-            cards.push_back({m_overview.currentTab, int(regions.size()), st.rect, 0, toUv(st.rect),
-                             pane.params.focused, pane.params.highlighted, pane.params.openProgress, pane.params.openEdge,
+            if (st.rect.isEmpty())
+                continue;
+            cards.push_back({m_overview.currentTab, int(regions.size()), st.rect, 0, toUv(st.rect), pane.params.focused,
+                             pane.params.highlighted, pane.params.openProgress, pane.params.openEdge,
                              pane.params.context, pane.params.previousContext, pane.params.contextProgress,
                              pane.params.pulseProgress, pane.params.pulseEffect, pane.params.pulseColor});
             regions.push_back(st);
-            if (maps && pane.params.id != 0) maps->show(pane.params.id, st.rect, m_post->chains().pane, st.shaderParameters);
+            if (maps && pane.params.id != 0)
+                maps->show(pane.params.id, st.rect, m_post->chains().pane, st.shaderParameters);
             if (under) {
                 hostRegions.push_back(*under);
                 ShaderRegionState fading = st;
@@ -2218,13 +2368,17 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             maps->show(std::nullopt, windowState.rect, m_post->chains().window, windowState.shaderParameters);
             maps->endRegions();
         }
-        std::erase_if(m_cursorTracks, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });
+        std::erase_if(m_cursorTracks, [this](const auto& kv) {
+            return kv.second.seenFrame != m_frameCounter;
+        });
         for (const TabSlice& slice : slices) {
-            if (!slice.card) continue;
+            if (!slice.card)
+                continue;
             int indexInTab = 0;
             for (std::size_t i = slice.begin; i < slice.end; ++i) {
                 const QRect r = drawn[i].params.rect.intersected(QRect(QPoint(), px));
-                if (r.isEmpty()) continue;
+                if (r.isEmpty())
+                    continue;
                 QRectF uv = toUv(r);
                 if (!slice.sharp) {
                     // The tab is shrunk into its tile: the same place, scaled.
@@ -2239,14 +2393,17 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             }
         }
         // Cards in tab order, then layout order within each tab.
-        std::stable_sort(cards.begin(), cards.end(), [](const Card& a, const Card& b) { return a.tab < b.tab; });
+        std::stable_sort(cards.begin(), cards.end(), [](const Card& a, const Card& b) {
+            return a.tab < b.tab;
+        });
         QSet<int> tabs;
         for (std::size_t i = 0; i < cards.size() && i < std::size_t(MaxShaderPanes); ++i) {
             const Card& card = cards[i];
             const int index = int(i);
             const QRect& r = card.rect;
             const std::array<float, 4> rect{float(r.x()), float(r.y()), float(r.width()), float(r.height())};
-            const std::array<float, 4> source{float(card.uv.x()), float(card.uv.y()), float(card.uv.width()), float(card.uv.height())};
+            const std::array<float, 4> source{float(card.uv.x()), float(card.uv.y()), float(card.uv.width()),
+                                              float(card.uv.height())};
             std::copy(rect.begin(), rect.end(), paneBlock.uPaneRect[index]);
             std::copy(source.begin(), source.end(), paneBlock.uPaneSource[index]);
             paneBlock.uPaneTab[index][0] = card.tab;
@@ -2261,8 +2418,10 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             paneBlock.uPanePulse[index][2] = float(card.pulseColor);
             paneBlock.uPanePulse[index][3] = float(card.previousContext);
             paneBlock.uPaneState[0] = index + 1;
-            if (card.focused) paneBlock.uPaneState[1] = index;
-            if (card.highlighted) paneBlock.uPaneState[2] = index;
+            if (card.focused)
+                paneBlock.uPaneState[1] = index;
+            if (card.highlighted)
+                paneBlock.uPaneState[2] = index;
             tabs.insert(card.tab);
         }
         paneBlock.uTabState[0] = int(tabs.size());
@@ -2280,11 +2439,14 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             paneBlock.uTabTransition[0] = m_transition.progress;
             paneBlock.uTabTransition[1] = m_transition.direction;
             paneBlock.uTabTransition[2] = m_transition.startedAt
-                ? std::chrono::duration<float>(std::chrono::steady_clock::now() - *m_transition.startedAt).count() : 1e6f;
+                ? std::chrono::duration<float>(std::chrono::steady_clock::now() - *m_transition.startedAt).count()
+                : 1e6f;
             paneBlock.uTabTransition[3] = 1.0f;
         }
         const auto wall = std::chrono::steady_clock::now();
-        auto age = [&](const auto& at) { return at ? std::chrono::duration<float>(wall - *at).count() : 1e6f; };
+        auto age = [&](const auto& at) {
+            return at ? std::chrono::duration<float>(wall - *at).count() : 1e6f;
+        };
         paneBlock.uPaneState[3] = m_overview.open ? 1 : 0;
         paneBlock.uOverview[0] = m_overview.amount;
         paneBlock.uOverview[1] = m_overview.position;
@@ -2304,10 +2466,12 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         cb->setScissor(scissor(range.content));
         // Kitty images below INT32_MIN/2 go between the pane fill and the
         // cell backgrounds, which cover them where a cell has its own colour.
-        if (drawImages(range, ImageDraw::Layer::UnderCells)) cb->setGraphicsPipeline(gridPipelines->fill.get());
+        if (drawImages(range, ImageDraw::Layer::UnderCells))
+            cb->setGraphicsPipeline(gridPipelines->fill.get());
         // Cell backgrounds replace the pane fill too, including transparent
         // colors. Blending them over that fill would lose their opacity.
-        if (range.textStart > range.first + 1) cb->draw(4, range.textStart - range.first - 1, 0, range.first + 1);
+        if (range.textStart > range.first + 1)
+            cb->draw(4, range.textStart - range.first - 1, 0, range.first + 1);
     };
     auto drawSpan = [&](std::uint32_t from, std::uint32_t to) {
         // Preserve glyph order (including overlaps and combining marks),
@@ -2317,8 +2481,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             const bool lcd = first.kind == std::uint32_t(InstanceKind::SubpixelGlyph);
             std::uint32_t end = from + 1;
             while (end < to && (m_frame[end].kind == std::uint32_t(InstanceKind::SubpixelGlyph)) == lcd
-                   && m_frame[end].atlasPage == first.atlasPage
-                   && (!lcd || m_frame[end].color == first.color)) {
+                   && m_frame[end].atlasPage == first.atlasPage && (!lcd || m_frame[end].color == first.color)) {
                 ++end;
             }
             if (lcd) {
@@ -2345,20 +2508,26 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
     // The order the layer composite also gives: backgrounds, images below the
     // text, a block cursor, text, other cursors, images above the text.
     auto drawContent = [&](const DrawRange& range) {
-        if (range.scissor.isEmpty()) return;
+        if (range.scissor.isEmpty())
+            return;
         drawBackgrounds(range);
         drawImages(range, ImageDraw::Layer::BelowText);
-        if (range.cursorBelowText) drawSpan(range.cursorStart, range.cursorOtherStart);
-        else drawSpan(range.cursorOtherStart, range.end);
+        if (range.cursorBelowText)
+            drawSpan(range.cursorStart, range.cursorOtherStart);
+        else
+            drawSpan(range.cursorOtherStart, range.end);
         drawSpan(range.textStart, range.cursorStart);
-        if (!range.cursorBelowText) drawSpan(range.cursorStart, range.cursorOtherStart);
-        else drawSpan(range.cursorOtherStart, range.end);
+        if (!range.cursorBelowText)
+            drawSpan(range.cursorStart, range.cursorOtherStart);
+        else
+            drawSpan(range.cursorOtherStart, range.end);
         drawImages(range, ImageDraw::Layer::AboveText);
     };
     // The black layer around a popup, over what is under it. The grid
     // pipeline is bound.
     auto drawDim = [&](const DrawRange& range) {
-        if (!range.dim) return;
+        if (!range.dim)
+            return;
         forEachAround(range.scissor, range.popup, [&](const QRect& part) {
             cb->setScissor(scissor(part));
             cb->draw(4, 1, 0, *range.dim);
@@ -2378,7 +2547,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
     // Each layer into its own texture; the layer chains then run on them and
     // the composite puts them together in the grid target, over @p ranges
     // and their @p states. @p hosts: the panes under fading overlays.
-    auto drawLayered = [&](std::span<const DrawRange> ranges, const std::vector<ShaderRegionState>& states, bool hosts) {
+    auto drawLayered = [&](std::span<const DrawRange> ranges, const std::vector<ShaderRegionState>& states,
+                           bool hosts) {
         const struct
         {
             PostChain::Layer layer;
@@ -2394,11 +2564,18 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
                  drawSpan(range.textStart, range.cursorStart);
                  drawImages(range, ImageDraw::Layer::AboveText);
              }},
-            {PostChain::Layer::Cursor, [&](const DrawRange& range) { drawSpan(range.cursorStart, range.cursorOtherStart); }},
-            {PostChain::Layer::OtherCursor, [&](const DrawRange& range) { drawSpan(range.cursorOtherStart, range.end); }},
+            {PostChain::Layer::Cursor,
+             [&](const DrawRange& range) {
+                 drawSpan(range.cursorStart, range.cursorOtherStart);
+             }},
+            {PostChain::Layer::OtherCursor,
+             [&](const DrawRange& range) {
+                 drawSpan(range.cursorOtherStart, range.end);
+             }},
         };
         for (const auto& [layer, draw] : layers) {
-            frame.beginPass(m_post->layerTarget(layer), Qt::transparent, {1.0f, 0}, std::exchange(firstUpdates, nullptr));
+            frame.beginPass(m_post->layerTarget(layer), Qt::transparent, {1.0f, 0},
+                            std::exchange(firstUpdates, nullptr));
             bindGrid();
             // Each layer is a target of its own, where a dock's background
             // covers nothing of the pane's text and cursors: those keep to
@@ -2407,21 +2584,24 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             // the others, what the pane drew under a popup is cleared before
             // the popup's border and grid draw there.
             auto drawOne = [&](const DrawRange& r) {
-                if (r.scissor.isEmpty()) return;
+                if (r.scissor.isEmpty())
+                    return;
                 cb->setScissor(scissor(r.content));
                 draw(r);
             };
             for (const DrawRange& range : ranges) {
                 const std::size_t own = range.docks.size() - range.popupDocks;
                 drawOne(range);
-                for (std::size_t d = 0; d < own; ++d) drawOne(range.docks[d]);
+                for (std::size_t d = 0; d < own; ++d)
+                    drawOne(range.docks[d]);
                 if (layer != PostChain::Layer::Background && range.popupClear && !range.popup.isEmpty()) {
                     cb->setGraphicsPipeline(gridPipelines->fill.get());
                     cb->setShaderResources(m_pageBindings.front().get());
                     cb->setScissor(scissor(range.popup));
                     cb->draw(4, 1, 0, *range.popupClear);
                 }
-                for (std::size_t d = own; d < range.docks.size(); ++d) drawOne(range.docks[d]);
+                for (std::size_t d = own; d < range.docks.size(); ++d)
+                    drawOne(range.docks[d]);
             }
             frame.endPass();
         }
@@ -2435,24 +2615,29 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             if (!range.scissor.intersected(QRect(QPoint(), px)).isEmpty())
                 cursorBelowText.push_back(range.popupRuns && !range.docks.empty() ? range.docks.back().cursorBelowText
                                                                                   : range.cursorBelowText);
-            forEachDrawn(range, [&](const DrawRange& r) { otherCursors |= r.cursorOtherStart < r.end; });
+            forEachDrawn(range, [&](const DrawRange& r) {
+                otherCursors |= r.cursorOtherStart < r.end;
+            });
         }
         m_post->composite(frame, states, cursorBelowText, time, clear, otherCursors, hosts, hosts ? regions.size() : 0);
         bindGrid();
-        for (const DrawRange& range : ranges) drawDim(range);
+        for (const DrawRange& range : ranges)
+            drawDim(range);
         drawOverlays();
         frame.endPass();
     };
     // The panes under fading overlays first, through the layer and pane
     // chains, into the tab image: the overlay transition blends from them.
-    const std::span<const DrawRange> hostRanges(m_ranges.data() + hostBegin, overlayHosts.empty() ? 0 : m_ranges.size() - hostBegin);
+    const std::span<const DrawRange> hostRanges(m_ranges.data() + hostBegin,
+                                                overlayHosts.empty() ? 0 : m_ranges.size() - hostBegin);
     if (post && !hostRanges.empty()) {
         if (m_post->layered()) {
             drawLayered(hostRanges, hostRegions, true);
         } else {
             frame.beginPass(gridTarget, clear, {1.0f, 0}, std::exchange(firstUpdates, nullptr));
             bindGrid();
-            for (const DrawRange& range : hostRanges) drawRange(range);
+            for (const DrawRange& range : hostRanges)
+                drawRange(range);
             drawOverlays();
             frame.endPass();
         }
@@ -2464,7 +2649,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         // One pass, in drawRange()'s order.
         frame.beginPass(gridTarget, clear, {1.0f, 0}, std::exchange(firstUpdates, nullptr));
         bindGrid();
-        for (const DrawRange& range : visible) drawRange(range);
+        for (const DrawRange& range : visible)
+            drawRange(range);
         drawOverlays();
         if (post) {
             frame.endPass();
@@ -2476,13 +2662,17 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         // turn, then a card's tab is shrunk into its atlas tile. The
         // highlighted pane's tab, or the full-size image, goes last and stays.
         QRhiTextureRenderTarget* tabTarget = m_post->tabImageTarget();
-        std::stable_partition(slices.begin(), slices.end(), [](const TabSlice& slice) { return !slice.sharp; });
+        std::stable_partition(slices.begin(), slices.end(), [](const TabSlice& slice) {
+            return !slice.sharp;
+        });
         for (const TabSlice& slice : slices) {
             frame.beginPass(tabTarget, clear, {1.0f, 0}, nullptr);
             bindGrid();
-            for (std::size_t i = slice.begin; i < slice.end; ++i) drawRange(m_ranges[i]);
+            for (std::size_t i = slice.begin; i < slice.end; ++i)
+                drawRange(m_ranges[i]);
             frame.endPass();
-            if (slice.tile >= 0) m_post->shrinkTabToAtlas(frame, atlasTile(slice.tile));
+            if (slice.tile >= 0)
+                m_post->shrinkTabToAtlas(frame, atlasTile(slice.tile));
         }
     }
     if (post) {
@@ -2496,7 +2686,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         gridPipelines = target.pipelines;
         ensureGridPipelines(*gridPipelines, gridPass);
         bindGrid();
-        for (const DrawRange& range : m_dockRanges) drawRange(range);
+        for (const DrawRange& range : m_dockRanges)
+            drawRange(range);
     }
     drawChrome();
     frame.endPass(target.finalUpdates ? target.finalUpdates() : nullptr);
@@ -2504,15 +2695,24 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         m_post->finishFrame(cb);
     }
     // After the frame's passes: grids that this frame asked for.
-    if (m_pointerMaps) m_pointerMaps->record(frame);
+    if (m_pointerMaps)
+        m_pointerMaps->record(frame);
     frame.finish();
 
     // Panes not drawn this frame (closed, or in another tab) drop their cache.
-    std::erase_if(m_paneCache, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });
-    std::erase_if(m_hostPaneCache, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });
-    std::erase_if(m_popupFrames, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });
+    std::erase_if(m_paneCache, [this](const auto& kv) {
+        return kv.second.seenFrame != m_frameCounter;
+    });
+    std::erase_if(m_hostPaneCache, [this](const auto& kv) {
+        return kv.second.seenFrame != m_frameCounter;
+    });
+    std::erase_if(m_popupFrames, [this](const auto& kv) {
+        return kv.second.seenFrame != m_frameCounter;
+    });
     // Bindings of textures not drawn for a while (deleted or scrolled away).
-    std::erase_if(m_imageBindings, [this](const auto& kv) { return kv.second.lastUsed + 120 < m_frameCounter; });
+    std::erase_if(m_imageBindings, [this](const auto& kv) {
+        return kv.second.lastUsed + 120 < m_frameCounter;
+    });
     m_device.pruneUnused();
 }
 

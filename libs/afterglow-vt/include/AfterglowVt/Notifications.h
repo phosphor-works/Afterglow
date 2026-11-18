@@ -23,7 +23,11 @@ struct NotificationRequest
         Close, ///< close the one with this id
         Alive, ///< report which ids are still open
     };
-    enum class Occasion : std::uint8_t { Always, Unfocused, Invisible };
+    enum class Occasion : std::uint8_t {
+        Always,
+        Unfocused,
+        Invisible
+    };
     /// The most icon names, and the most types, that a request keeps.
     static constexpr std::size_t MaxNames = 16;
     /// The most bytes of title, body and buttons together.
@@ -59,7 +63,12 @@ struct NotificationRequest
 class AFTERGLOWVT_EXPORT NotificationAssembler
 {
 public:
-    enum class Result : std::uint8_t { Pending, Ready, Query, Ignored };
+    enum class Result : std::uint8_t {
+        Pending,
+        Ready,
+        Query,
+        Ignored
+    };
 
     /// Feeds the OSC payload after "99;". On Ready, @p out holds the request;
     /// on Query, @p out.id holds the id to answer with.
@@ -71,7 +80,12 @@ public:
     static std::string queryReply(std::string_view id, std::string_view capabilities);
 
 private:
-    enum class Payload : std::uint8_t { Title, Body, Buttons, Icon };
+    enum class Payload : std::uint8_t {
+        Title,
+        Body,
+        Buttons,
+        Icon
+    };
     struct Pending
     {
         NotificationRequest request;

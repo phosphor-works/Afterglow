@@ -144,7 +144,7 @@ struct Times
     timespec values[2];
     explicit Times(std::int64_t ns)
     {
-        timespec time { time_t(ns / 1000000000), long(ns % 1000000000) };
+        timespec time{time_t(ns / 1000000000), long(ns % 1000000000)};
         if (time.tv_nsec < 0) {
             time.tv_nsec += 1000000000;
             --time.tv_sec;
@@ -167,13 +167,14 @@ bool shouldCompress(std::string_view path, TransferClientOptions::Compress strat
         return true;
     }
     std::string extension = name.substr(dot + 1);
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char c) { return char(c >= 'A' && c <= 'Z' ? c + 32 : c); });
-    static const std::set<std::string, std::less<>> compressed {
-        "zip", "odt", "odp", "ods", "pptx", "docx", "xlsx", "epub", "jar", "apk", "gz", "tgz", "bz2", "xz", "txz",
-        "zst", "lz", "lz4", "lzma", "7z", "rar", "svgz", "png", "jpg", "jpeg", "gif", "webp", "avif", "heic",
-        "heif", "jxl", "bmp", "tif", "tiff", "ico", "mp4", "m4v", "mkv", "webm", "mov", "avi", "mpg", "mpeg",
-        "mp3", "m4a", "ogg", "opus", "flac", "aac",
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) {
+        return char(c >= 'A' && c <= 'Z' ? c + 32 : c);
+    });
+    static const std::set<std::string, std::less<>> compressed{
+        "zip",  "odt",  "odp",  "ods",  "pptx", "docx", "xlsx", "epub", "jar",  "apk", "gz",  "tgz",  "bz2",
+        "xz",   "txz",  "zst",  "lz",   "lz4",  "lzma", "7z",   "rar",  "svgz", "png", "jpg", "jpeg", "gif",
+        "webp", "avif", "heic", "heif", "jxl",  "bmp",  "tif",  "tiff", "ico",  "mp4", "m4v", "mkv",  "webm",
+        "mov",  "avi",  "mpg",  "mpeg", "mp3",  "m4a",  "ogg",  "opus", "flac", "aac",
     };
     return !compressed.contains(extension);
 }
@@ -202,7 +203,7 @@ bool listDirectory(const std::string& path, std::vector<std::string>& names, int
 // mkdir -p: the directories that the user named get the mode of the umask.
 bool makeDirectories(const std::string& path)
 {
-    struct stat st { };
+    struct stat st{};
     if (::stat(path.c_str(), &st) == 0) {
         return S_ISDIR(st.st_mode) || (errno = ENOTDIR, false);
     }
@@ -259,7 +260,10 @@ public:
             m_deflater = std::make_unique<ZlibStream>(ZlibStream::Mode::Deflate);
         }
     }
-    bool valid() const { return !m_deflater || m_deflater->valid(); }
+    bool valid() const
+    {
+        return !m_deflater || m_deflater->valid();
+    }
     bool add(std::string_view raw, bool last)
     {
         // Drop what went out only before more is added: less than one packet moves.
@@ -286,8 +290,14 @@ public:
             }
         }
     }
-    std::string_view ready() const { return std::string_view(m_ready).substr(m_sent); }
-    void consume(std::size_t count) { m_sent += count; }
+    std::string_view ready() const
+    {
+        return std::string_view(m_ready).substr(m_sent);
+    }
+    void consume(std::size_t count)
+    {
+        m_sent += count;
+    }
 
 private:
     std::unique_ptr<ZlibStream> m_deflater;
@@ -312,7 +322,7 @@ bool TransferClient::over() const
 
 void TransferClient::start(std::string_view action, std::string_view count)
 {
-    Fields f { { "ac", action }, { "id", m_id } };
+    Fields f{{"ac", action}, {"id", m_id}};
     if (!count.empty()) {
         f.emplace_back("sz", count);
     }
@@ -420,13 +430,14 @@ void TransferClient::confirm(bool proceed)
 
 void TransferClient::cancel(std::string_view reason)
 {
-    if (m_state == State::Done || m_state == State::Failed || m_state == State::Canceled || m_state == State::Canceling) {
+    if (m_state == State::Done || m_state == State::Failed || m_state == State::Canceled
+        || m_state == State::Canceling) {
         return;
     }
     if (!reason.empty() && m_error.empty()) {
         m_error = std::string(reason);
     }
-    const Fields f { { "ac", "cancel" }, { "id", m_id } };
+    const Fields f{{"ac", "cancel"}, {"id", m_id}};
     queue(encodeTransfer(f));
     m_state = State::Canceling;
 }
@@ -442,13 +453,21 @@ public:
     {
         std::string fid;
         std::string path; // expanded local path
-        struct stat st { };
+        struct stat st{};
         std::string linkData;
         // The file of this transfer that a link names.
         std::size_t linkTarget = SIZE_MAX;
         bool compress = false;
         bool rsyncCapable = false;
-        enum class Phase : std::uint8_t { Unsent, Waiting, Signature, Ready, Sending, Sent, Acked } phase = Phase::Unsent;
+        enum class Phase : std::uint8_t {
+            Unsent,
+            Waiting,
+            Signature,
+            Ready,
+            Sending,
+            Sent,
+            Acked
+        } phase = Phase::Unsent;
         bool metadataSent = false;
         UniqueFd fd;
         std::string signature;
@@ -469,12 +488,18 @@ public:
     }
 
     bool scan(const std::vector<std::string>& args, std::string& error);
-    void begin() { start("send"); }
+    void begin()
+    {
+        start("send");
+    }
 
 protected:
     void onReply(const TransferFields& f) override;
     void produce(std::string& out, std::size_t budget) override;
-    void proceed() override { m_transmitting = true; }
+    void proceed() override
+    {
+        m_transmitting = true;
+    }
 
 private:
     using Phase = File::Phase;
@@ -483,7 +508,10 @@ private:
     void setPhase(std::size_t index, Phase phase);
     void finishItem(std::size_t index, std::string error);
     void releaseData(File& file);
-    bool allAcked() const { return m_metadataSent == m_files.size() && m_acked == m_files.size(); }
+    bool allAcked() const
+    {
+        return m_metadataSent == m_files.size() && m_acked == m_files.size();
+    }
     // Every file that can be named now is named: the others are delta
     // uploads that wait for room.
     bool allNamed() const
@@ -568,7 +596,9 @@ void Sender::addPath(const std::string& local, const std::string& remote, int& c
 
 bool Sender::scan(const std::vector<std::string>& args, std::string& error)
 {
-    if (std::any_of(args.begin(), args.end(), [](const std::string& arg) { return arg.empty(); })) {
+    if (std::any_of(args.begin(), args.end(), [](const std::string& arg) {
+            return arg.empty();
+        })) {
         error = "A path cannot be empty";
         return false;
     }
@@ -604,8 +634,9 @@ bool Sender::scan(const std::vector<std::string>& args, std::string& error)
         // the destination directory (ending in /) and the source's name.
         for (std::size_t i = 0; i + 1 < args.size(); ++i) {
             const auto path = TransferPath::absolute(args[i], m_options.home, m_options.cwd);
-            sources.emplace_back(path,
-                                 remoteBase.ends_with('/') ? TransferPath::join(remoteBase, TransferPath::baseName(path)) : remoteBase);
+            sources.emplace_back(
+                path,
+                remoteBase.ends_with('/') ? TransferPath::join(remoteBase, TransferPath::baseName(path)) : remoteBase);
         }
     }
     int counter = 0;
@@ -649,9 +680,9 @@ bool Sender::scan(const std::vector<std::string>& args, std::string& error)
         file.linkData = "path:" + target;
         // The kernel resolves the link: a lexical join would go wrong when
         // the target passes through another link, or through "..".
-        struct stat st { };
+        struct stat st{};
         if (::stat(file.path.c_str(), &st) == 0) {
-            if (const auto it = inodes.find({ st.st_dev, st.st_ino }); it != inodes.end()) {
+            if (const auto it = inodes.find({st.st_dev, st.st_ino}); it != inodes.end()) {
                 file.linkData = (target.starts_with('/') ? "fid_abs:" : "fid:") + m_files[it->second].fid;
                 file.linkTarget = it->second;
             }
@@ -725,8 +756,8 @@ void Sender::sendMetadata(std::string& out, std::size_t end)
         const auto mtime = nanoseconds(file.st);
         const std::string modified = mtime ? number(*mtime) : std::string();
         const std::string size = number(std::int64_t(item.size));
-        Fields f { { "ac", "file" }, { "id", m_id }, { "fid", file.fid }, { "n", item.remote },
-            { "ft", typeName(item.type) }, { "prm", mode } };
+        Fields f{{"ac", "file"}, {"id", m_id}, {"fid", file.fid}, {"n", item.remote}, {"ft", typeName(item.type)},
+                 {"prm", mode}};
         // A time past the year 2262 does not fit: the terminal keeps its own.
         if (mtime) {
             f.emplace_back("mod", modified);
@@ -917,8 +948,10 @@ bool Sender::pack(std::size_t index, std::string& out, std::size_t budget, std::
         do {
             const auto take = std::min(data.size(), PacketData);
             const bool last = take == data.size();
-            const Fields f { { "ac", last ? "end_data" : "data" }, { "id", m_id }, { "fid", file.fid },
-                { "d", data.substr(0, take) } };
+            const Fields f{{"ac", last ? "end_data" : "data"},
+                           {"id", m_id},
+                           {"fid", file.fid},
+                           {"d", data.substr(0, take)}};
             out += encodeTransfer(f);
             data.remove_prefix(take);
         } while (!data.empty());
@@ -927,7 +960,7 @@ bool Sender::pack(std::size_t index, std::string& out, std::size_t budget, std::
     }
     const auto failFile = [&](std::string error) {
         // The terminal holds the file open: end it there too.
-        const Fields f { { "ac", "end_data" }, { "id", m_id }, { "fid", file.fid } };
+        const Fields f{{"ac", "end_data"}, {"id", m_id}, {"fid", file.fid}};
         out += encodeTransfer(f);
         finishItem(index, std::move(error));
         return true;
@@ -935,7 +968,7 @@ bool Sender::pack(std::size_t index, std::string& out, std::size_t budget, std::
     if (!file.fd.valid()) {
         // O_NONBLOCK: a file that became a pipe since the scan must not block the open.
         file.fd.reset(::open(file.path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
-        struct stat st { };
+        struct stat st{};
         if (!file.fd.valid() || ::fstat(file.fd.get(), &st) != 0) {
             return failFile(errnoText(errno));
         }
@@ -985,7 +1018,7 @@ bool Sender::pack(std::size_t index, std::string& out, std::size_t budget, std::
         const auto ready = file.packer->ready();
         const std::size_t take = std::min(ready.size(), PacketData);
         const bool last = file.inputDone && take == ready.size();
-        Fields f { { "ac", last ? "end_data" : "data" }, { "id", m_id }, { "fid", file.fid } };
+        Fields f{{"ac", last ? "end_data" : "data"}, {"id", m_id}, {"fid", file.fid}};
         if (take) {
             f.emplace_back("d", ready.substr(0, take));
         }
@@ -1057,7 +1090,7 @@ void Sender::produce(std::string& out, std::size_t budget)
     }
     if (m_state == State::Running && !m_finishSent && allAcked()) {
         m_finishSent = true;
-        const Fields f { { "ac", "finish" }, { "id", m_id } };
+        const Fields f{{"ac", "finish"}, {"id", m_id}};
         out += encodeTransfer(f);
         m_state = State::Done;
     }
@@ -1077,8 +1110,8 @@ void Sender::produce(std::string& out, std::size_t budget)
 // A name for an entry: a single path component.
 bool validName(std::string_view name)
 {
-    return !name.empty() && name.size() <= 255 && name != "." && name != ".." && name.find('/') == std::string_view::npos
-        && name.find('\0') == std::string_view::npos;
+    return !name.empty() && name.size() <= 255 && name != "." && name != ".."
+        && name.find('/') == std::string_view::npos && name.find('\0') == std::string_view::npos;
 }
 
 // Creates a new file with a random name in @p dir; it never replaces one.
@@ -1145,7 +1178,10 @@ public:
         Remote(Remote&&) noexcept = default;
         Remote& operator=(Remote&&) = delete;
         // A transfer that ends early, for any reason, leaves no temporary file.
-        ~Remote() { discard(); }
+        ~Remote()
+        {
+            discard();
+        }
         void discard()
         {
             if (!temporary.empty() && dir.valid()) {
@@ -1165,11 +1201,16 @@ public:
     {
     }
 
-    ~Receiver() override { m_remote.clear(); }
+    ~Receiver() override
+    {
+        m_remote.clear();
+    }
 
     bool setUp(const std::vector<std::string>& args, std::string& error)
     {
-        if (std::any_of(args.begin(), args.end(), [](const std::string& arg) { return arg.empty(); })) {
+        if (std::any_of(args.begin(), args.end(), [](const std::string& arg) {
+                return arg.empty();
+            })) {
             error = "A path cannot be empty";
             return false;
         }
@@ -1192,7 +1233,7 @@ public:
         start("receive", number(std::int64_t(m_specs.size())));
         for (std::size_t i = 0; i < m_specs.size(); ++i) {
             const std::string fid = number(std::int64_t(i));
-            const Fields request { { "ac", "file" }, { "id", m_id }, { "fid", fid }, { "n", m_specs[i] } };
+            const Fields request{{"ac", "file"}, {"id", m_id}, {"fid", fid}, {"n", m_specs[i]}};
             queue(encodeTransfer(request));
         }
         return true;
@@ -1201,7 +1242,10 @@ public:
 protected:
     void onReply(const TransferFields& f) override;
     void produce(std::string& out, std::size_t budget) override;
-    void proceed() override { openBases(); }
+    void proceed() override
+    {
+        openBases();
+    }
 
 private:
     struct Base
@@ -1223,7 +1267,10 @@ private:
     void data(std::size_t index, const TransferFields& f, bool end);
     bool inflate(std::size_t index);
     void endData(std::size_t index, bool end, bool ok);
-    bool busy() const override { return m_busy != SIZE_MAX; }
+    bool busy() const override
+    {
+        return m_busy != SIZE_MAX;
+    }
     void resume() override;
     void abandon() override;
     bool write(std::size_t index, std::string_view chunk);
@@ -1403,16 +1450,21 @@ void Receiver::listed(const TransferFields& f)
     remote.mode = parseNumber(f, "prm");
     TransferItem item;
     item.remote = field(f, "n");
-    m_listingBytes += item.remote.size() + remote.remoteId.size() + remote.parentId.size() + remote.targetId.size() + EntryCost;
+    m_listingBytes +=
+        item.remote.size() + remote.remoteId.size() + remote.parentId.size() + remote.targetId.size() + EntryCost;
     if (m_remote.size() >= MaxListing || m_listingBytes > MaxListingBytes) {
         cancel("The terminal listed too many files");
         return;
     }
     const auto type = field(f, "ft");
-    item.type = type == "directory" ? Type::Directory : type == "symlink" ? Type::Symlink : type == "link" ? Type::Link : Type::Regular;
+    item.type = type == "directory" ? Type::Directory
+        : type == "symlink"         ? Type::Symlink
+        : type == "link"            ? Type::Link
+                                    : Type::Regular;
     // The terminal lists absolute paths. Only the last name of each is used here.
     remote.name = TransferPath::baseName(item.remote);
-    if (remote.remoteId.empty() || !item.remote.starts_with('/') || item.remote.size() > MaxPath || !validName(remote.name)) {
+    if (remote.remoteId.empty() || !item.remote.starts_with('/') || item.remote.size() > MaxPath
+        || !validName(remote.name)) {
         cancel("The terminal listed an invalid path: " + item.remote);
         return;
     }
@@ -1434,7 +1486,7 @@ std::size_t Receiver::addBase(const std::string& path)
 {
     const auto [it, added] = m_baseIndex.emplace(path, m_bases.size());
     if (added) {
-        m_bases.push_back({ path });
+        m_bases.push_back({path});
     }
     return it->second;
 }
@@ -1452,7 +1504,8 @@ std::string Receiver::expectedSpec(const std::string& spec) const
     if (spec == "~") {
         return TransferPath::clean(m_remoteHome);
     }
-    return TransferPath::join(m_remoteHome, spec.starts_with("~/") ? std::string_view(spec).substr(2) : std::string_view(spec));
+    return TransferPath::join(m_remoteHome,
+                              spec.starts_with("~/") ? std::string_view(spec).substr(2) : std::string_view(spec));
 }
 
 // Each entry gets its parent, its depth and its link target. The parent
@@ -1562,7 +1615,9 @@ bool Receiver::placeRoots()
             return false;
         }
     }
-    const auto local = [&](const std::string& path) { return TransferPath::absolute(path, m_options.home, m_options.cwd); };
+    const auto local = [&](const std::string& path) {
+        return TransferPath::absolute(path, m_options.home, m_options.cwd);
+    };
     // The local path of each root, by spec.
     std::vector<std::string> where(m_specs.size());
     if (m_options.mode == TransferClientOptions::Mode::Mirror) {
@@ -1572,15 +1627,19 @@ bool Receiver::placeRoots()
             // spec are under the home on both sides: the remote home does
             // not choose where they go.
             where[s] = spec.starts_with('/') ? TransferPath::clean(spec)
-                : spec == "~"                ? TransferPath::clean(m_options.home)
-                                             : TransferPath::join(m_options.home, spec.starts_with("~/") ? std::string_view(spec).substr(2) : std::string_view(spec));
+                : spec == "~" ? TransferPath::clean(m_options.home)
+                              : TransferPath::join(m_options.home,
+                                                   spec.starts_with("~/") ? std::string_view(spec).substr(2)
+                                                                          : std::string_view(spec));
         }
         // Two specs that overlap would write one path twice.
         std::vector<std::size_t> sorted(m_specs.size());
         for (std::size_t s = 0; s < sorted.size(); ++s) {
             sorted[s] = s;
         }
-        std::sort(sorted.begin(), sorted.end(), [&](std::size_t a, std::size_t b) { return where[a] < where[b]; });
+        std::sort(sorted.begin(), sorted.end(), [&](std::size_t a, std::size_t b) {
+            return where[a] < where[b];
+        });
         for (std::size_t k = 1; k < sorted.size(); ++k) {
             const auto& a = where[sorted[k - 1]];
             const auto& b = where[sorted[k]];
@@ -1590,7 +1649,7 @@ bool Receiver::placeRoots()
             }
         }
     } else {
-        struct stat st { };
+        struct stat st{};
         const auto destination = local(m_destination);
         const bool intoDirectory = m_destination.ends_with('/') || m_specs.size() > 1
             || (::stat(destination.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
@@ -1729,15 +1788,20 @@ bool Receiver::request(std::size_t index, std::string& out, std::size_t budget, 
         UniqueFd existing;
         if (m_options.deltas && item.type == Type::Regular) {
             if (const auto dir = openDirectory(index, false); dir.valid()) {
-                existing.reset(::openat(dir.get(), remote.name.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
+                existing.reset(
+                    ::openat(dir.get(), remote.name.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
             }
         }
-        struct stat st { };
+        struct stat st{};
         remote.rsync = existing.valid() && ::fstat(existing.get(), &st) == 0 && S_ISREG(st.st_mode)
             && std::uint64_t(st.st_size) > SmallFile;
-        remote.compressed = item.type == Type::Regular && item.size > SmallFile && shouldCompress(item.remote, m_options.compress);
-        Fields f { { "ac", "file" }, { "id", m_id }, { "fid", remote.fid }, { "n", item.remote },
-            { "tt", remote.rsync ? "rsync" : "simple" } };
+        remote.compressed =
+            item.type == Type::Regular && item.size > SmallFile && shouldCompress(item.remote, m_options.compress);
+        Fields f{{"ac", "file"},
+                 {"id", m_id},
+                 {"fid", remote.fid},
+                 {"n", item.remote},
+                 {"tt", remote.rsync ? "rsync" : "simple"}};
         if (remote.compressed) {
             f.emplace_back("zip", "zlib");
         }
@@ -1768,7 +1832,8 @@ bool Receiver::request(std::size_t index, std::string& out, std::size_t budget, 
             m_block.resize(want);
             std::size_t have = 0;
             while (have < want) {
-                const ssize_t n = ::pread(remote.basis.get(), m_block.data() + have, want - have, off_t(m_signOffset + have));
+                const ssize_t n =
+                    ::pread(remote.basis.get(), m_block.data() + have, want - have, off_t(m_signOffset + have));
                 if (n < 0 && errno == EINTR) {
                     continue;
                 }
@@ -1791,7 +1856,7 @@ bool Receiver::request(std::size_t index, std::string& out, std::size_t budget, 
         const std::string_view pending = std::string_view(m_signBuffer).substr(m_signSent);
         const bool last = m_signOffset >= m_signSize && pending.size() <= PacketData;
         const auto data = pending.substr(0, PacketData);
-        Fields f { { "ac", last ? "end_data" : "data" }, { "id", m_id }, { "fid", remote.fid } };
+        Fields f{{"ac", last ? "end_data" : "data"}, {"id", m_id}, {"fid", remote.fid}};
         if (!data.empty()) {
             f.emplace_back("d", data);
         }
@@ -1839,7 +1904,7 @@ void Receiver::produce(std::string& out, std::size_t budget)
     if (m_state == State::Running && m_outstanding == 0 && !m_finishSent) {
         finalize();
         m_finishSent = true;
-        const Fields f { { "ac", "finish" }, { "id", m_id } };
+        const Fields f{{"ac", "finish"}, {"id", m_id}};
         out += encodeTransfer(f);
         m_state = State::Done;
     }
@@ -1935,7 +2000,8 @@ void Receiver::data(std::size_t index, const TransferFields& f, bool end)
         if (remote.rsync) {
             // The block size and the size of the signature that went out.
             remote.applier = std::make_unique<DeltaApplier>(remote.blockSize, remote.basisSize, MaxLiteral);
-            remote.deltaTarget = std::make_unique<FdDeltaTarget>(remote.basis.get(), remote.out.get(), remote.blockSize, item.size);
+            remote.deltaTarget =
+                std::make_unique<FdDeltaTarget>(remote.basis.get(), remote.out.get(), remote.blockSize, item.size);
             if (!remote.applier->valid()) {
                 done(index, "ENOMEM");
                 return;
@@ -2063,7 +2129,8 @@ void Receiver::endData(std::size_t index, bool end, bool ok)
         committed = ::futimens(remote.out.get(), Times(*remote.mtime).values) == 0;
     }
     committed = committed && ::close(remote.out.release()) == 0;
-    committed = committed && ::renameat(remote.dir.get(), remote.temporary.c_str(), remote.dir.get(), remote.name.c_str()) == 0;
+    committed =
+        committed && ::renameat(remote.dir.get(), remote.temporary.c_str(), remote.dir.get(), remote.name.c_str()) == 0;
     if (!committed) {
         done(index, errnoText(errno));
         return;
@@ -2116,7 +2183,8 @@ bool Receiver::makeLink(std::size_t index, std::string& error)
         return false;
     }
     if (item.type == Type::Link
-        && (m_items[remote.target].type != Type::Regular || !m_items[remote.target].finished || !m_items[remote.target].error.empty())) {
+        && (m_items[remote.target].type != Type::Regular || !m_items[remote.target].finished
+            || !m_items[remote.target].error.empty())) {
         error = "EINVAL:a hard link must name a file of the transfer that arrived";
         return false;
     }
@@ -2182,7 +2250,7 @@ void Receiver::finalize()
         item.finished = true;
         auto& remote = m_remote[i];
         const auto dir = openDirectory(i, true);
-        struct stat st { };
+        struct stat st{};
         if (!dir.valid()) {
             item.error = errnoText(errno);
         } else if (::mkdirat(dir.get(), remote.name.c_str(), 0700) == 0) {
@@ -2216,7 +2284,9 @@ void Receiver::finalize()
             continue;
         }
         const auto dir = openDirectory(i, false);
-        const UniqueFd fd(dir.valid() ? ::openat(dir.get(), remote.name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) : -1);
+        const UniqueFd fd(
+            dir.valid() ? ::openat(dir.get(), remote.name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                        : -1);
         if (!fd.valid()) {
             continue;
         }

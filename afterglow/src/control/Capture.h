@@ -12,7 +12,11 @@ namespace Afterglow {
 
 /// What a screenshot shows: one pane, the panes of its tab (the window
 /// without the tab bar and the window's docked areas), or the whole window.
-enum class CaptureScope { Pane, Tab, Window };
+enum class CaptureScope {
+    Pane,
+    Tab,
+    Window
+};
 
 /// The answer to a screenshot: the image in device pixels, or an error and
 /// its code (not_shown or failed). Called once. It can run inside a frame of

@@ -9,32 +9,38 @@ Item {
     required property QtObject controller
     readonly property bool selector: controller.scriptDialog.kind === "select"
     readonly property var matches: {
-        const needle = input.text.toLowerCase()
-        const items = controller.scriptDialog.items || []
+        const needle = input.text.toLowerCase();
+        const items = controller.scriptDialog.items || [];
         return items.map((item, index) => {
-            const text = item.title.toLowerCase()
-            let at = 0
-            let score = 0
+            const text = item.title.toLowerCase();
+            let at = 0;
+            let score = 0;
             for (let i = 0; i < needle.length; ++i) {
-                const next = text.indexOf(needle[i], at)
-                if (next < 0) return null
-                score += next - at
-                at = next + 1
+                const next = text.indexOf(needle[i], at);
+                if (next < 0)
+                    return null;
+                score += next - at;
+                at = next + 1;
             }
-            return {item: item, score: score, index: index}
-        }).filter(entry => entry !== null).sort((a, b) => a.score - b.score || a.index - b.index).map(entry => entry.item)
+            return {
+                item: item,
+                score: score,
+                index: index
+            };
+        }).filter(entry => entry !== null).sort((a, b) => a.score - b.score || a.index - b.index).map(entry => entry.item);
     }
     function accept() {
-        if (!selector) controller.answerScriptDialog(true, input.text)
+        if (!selector)
+            controller.answerScriptDialog(true, input.text);
         else if (list.currentIndex >= 0 && list.currentIndex < matches.length)
-            controller.answerScriptDialog(true, matches[list.currentIndex].id)
+            controller.answerScriptDialog(true, matches[list.currentIndex].id);
     }
     Component.onCompleted: {
-        input.text = selector ? "" : (controller.scriptDialog.text || "")
-        input.selectAll()
+        input.text = selector ? "" : (controller.scriptDialog.text || "");
+        input.selectAll();
     }
     function takeFocus() {
-        input.forceActiveFocus()
+        input.forceActiveFocus();
     }
     Scrim {
         controller: dialog.controller
@@ -100,8 +106,15 @@ Item {
             }
             RowLayout {
                 Layout.alignment: Qt.AlignRight
-                Button { text: qsTr("Cancel"); onClicked: dialog.controller.answerScriptDialog(false, "") }
-                Button { text: qsTr("Accept"); highlighted: true; onClicked: dialog.accept() }
+                Button {
+                    text: qsTr("Cancel")
+                    onClicked: dialog.controller.answerScriptDialog(false, "")
+                }
+                Button {
+                    text: qsTr("Accept")
+                    highlighted: true
+                    onClicked: dialog.accept()
+                }
             }
         }
         Keys.onEscapePressed: dialog.controller.answerScriptDialog(false, "")

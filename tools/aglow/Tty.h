@@ -51,7 +51,10 @@ public:
     void reset();
     /// The terminal reports keys in kitty's keyboard protocol: the Esc key
     /// arrives as CSI 27 u, so a lone ESC is always the start of an escape code.
-    void setKeysUnambiguous(bool on) { m_unambiguous = on; }
+    void setKeysUnambiguous(bool on)
+    {
+        m_unambiguous = on;
+    }
     /// Takes OSC strings that start with @p prefix up to @p limit bytes.
     /// Every other string is dropped past 1 MiB.
     void allowLongOsc(std::string prefix, std::size_t limit)
@@ -61,10 +64,21 @@ public:
     }
     /// The keyboard protocol flags that the terminal said are on (CSI ?
     /// flags u) since the last call, or -1.
-    int takeKeyboardReply() { return std::exchange(m_keyboardReply, -1); }
+    int takeKeyboardReply()
+    {
+        return std::exchange(m_keyboardReply, -1);
+    }
 
 private:
-    enum class State { Ground, Escape, Csi, Ss3, String, StringEscape, Paste };
+    enum class State {
+        Ground,
+        Escape,
+        Csi,
+        Ss3,
+        String,
+        StringEscape,
+        Paste
+    };
     void flushText(std::vector<Input>& out);
     void endCsi(std::vector<Input>& out);
     State m_state = State::Ground;
@@ -107,12 +121,18 @@ public:
     /// the result of the first. The destructor calls it.
     bool restore();
 
-    void write(std::string_view bytes) { m_out += bytes; }
+    void write(std::string_view bytes)
+    {
+        m_out += bytes;
+    }
     /// Asks the terminal for its primary device attributes (DA1). The answer
     /// comes as Input::Type::Csi "?...c", after the answers to everything
     /// written before. A command asks through here, never with write(), so
     /// that restore() knows which answers are still on their way.
-    void queryAttributes() { query(false); }
+    void queryAttributes()
+    {
+        query(false);
+    }
     /// Sets the modes that a command turns on (@p set) and the bytes that
     /// turn them off (@p reset). restore() writes @p reset, also when the
     /// command ends with an exception. After a stop, the shell may have
@@ -122,7 +142,10 @@ public:
     /// screen that @p resume switches to.
     void enterModes(std::string_view set, std::string reset, std::string resume = {});
     /// The bytes queued and not written yet.
-    std::size_t pending() const { return m_out.size() - m_outAt; }
+    std::size_t pending() const
+    {
+        return m_out.size() - m_outAt;
+    }
     /// Writes what the terminal takes and reads what it sends, for up to
     /// @p timeoutMs (0: once, -1: until something happens). False when the
     /// terminal is gone.
@@ -136,7 +159,10 @@ public:
     /// terminal may still be sending. Without it, restore() reads up to the
     /// answers of the DA1 queries that have none yet. It holds until
     /// restore(): a Tty that opens again starts without it.
-    void drainOnRestore() { m_drain = true; }
+    void drainOnRestore()
+    {
+        m_drain = true;
+    }
     winsize size() const;
     /// Catches SIGINT, SIGTERM, SIGHUP and SIGWINCH without a terminal in
     /// raw mode, so that a command can stop between two writes.
@@ -185,8 +211,8 @@ private:
     unsigned long long m_written = 0; ///< the bytes written since open()
     std::string m_resume;
     bool m_restored = true;
-    termios m_saved { };
-    termios m_rawModes { };
+    termios m_saved{};
+    termios m_rawModes{};
     std::string m_out;
     std::size_t m_outAt = 0; ///< the bytes of m_out before it are written
     std::string m_reset;

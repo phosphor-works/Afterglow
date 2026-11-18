@@ -40,7 +40,7 @@ inline constexpr const char* Target = "mux";
 /// of a session in the daemon, to which `afterglow ctl watch` subscribes.
 /// The application's ControlSocketTest checks that they are ControlApi's.
 inline constexpr std::array<std::string_view, 11> ControlEvents{
-    "paneCreated", "paneMoved",    "paneClosed",   "titleChanged",   "bell",          "commandStarted",
+    "paneCreated",     "paneMoved",     "paneClosed",   "titleChanged",   "bell",          "commandStarted",
     "commandFinished", "statusChanged", "focusChanged", "userVarChanged", "contextChanged"};
 
 /// The text scopes of the getText call of the control target, as the error
@@ -54,7 +54,8 @@ inline constexpr const char* CursorScopeError = "cursor is for the screen, scrol
 
 namespace Fn {
 inline constexpr const char* Version = "version"; ///< () -> {version, protocol}
-inline constexpr const char* NewSession = "newSession"; ///< (protocol, options) -> {name, pane}: pane is its first pane's ID
+inline constexpr const char* NewSession =
+    "newSession"; ///< (protocol, options) -> {name, pane}: pane is its first pane's ID
 inline constexpr const char* ListSessions = "listSessions"; ///< () -> [session]
 inline constexpr const char* KillSession = "killSession"; ///< (name) -> null
 /// (protocol, name, {takeover, eventQueue, history}) -> {name, window,
@@ -310,8 +311,8 @@ struct SessionOptions
 AfterglowProto::Json::Value environmentJson(const std::vector<std::pair<std::string, std::string>>& environment);
 /// nullopt for a value that is not such a list, or that has a name that is
 /// empty or holds '=' or NUL: @p error says why.
-std::optional<std::vector<std::pair<std::string, std::string>>> environmentFrom(const AfterglowProto::Json::Value& value,
-                                                                                 std::string* error);
+std::optional<std::vector<std::pair<std::string, std::string>>>
+environmentFrom(const AfterglowProto::Json::Value& value, std::string* error);
 
 AfterglowProto::Json::Value toJson(const SessionOptions& options);
 /// nullopt for a value that is not a valid options object: @p error says why.

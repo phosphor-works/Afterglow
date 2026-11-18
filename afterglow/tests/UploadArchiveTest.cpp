@@ -17,6 +17,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cerrno>
+#include <cstring>
+
 #include <sys/stat.h>
 #include <sys/time.h>
 
@@ -60,7 +63,8 @@ QStringList unpack(const std::string& archive, const QString& into)
     QDir().mkpath(into);
     runTar(archive, {QStringLiteral("-xzf"), QStringLiteral("-"), QStringLiteral("-C"), into});
     QStringList names;
-    QDirIterator it(into, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDirIterator::Subdirectories);
+    QDirIterator it(into, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
+                    QDirIterator::Subdirectories);
     while (it.hasNext()) {
         const QFileInfo info = it.nextFileInfo();
         const QString name = QDir(into).relativeFilePath(info.filePath());
@@ -98,12 +102,14 @@ QByteArray noise(int size)
 // and modes. A pipe in the directory is left out.
 TEST(UploadArchive, TarReadsWhatItulGets)
 {
-    if (!haveTar()) GTEST_SKIP() << "no tar or gzip";
+    if (!haveTar())
+        GTEST_SKIP() << "no tar or gzip";
     QTemporaryDir temp;
     ASSERT_TRUE(temp.isValid());
     const QString root = temp.filePath(QStringLiteral("project"));
     QByteArray binary;
-    for (int i = 0; i < 70000; ++i) binary.append(char(i * 7 % 256));
+    for (int i = 0; i < 70000; ++i)
+        binary.append(char(i * 7 % 256));
     write(root + QStringLiteral("/a.txt"), "hello\n");
     write(root + QStringLiteral("/sub/b.bin"), binary);
     const QString longName = QString(150, QLatin1Char('n')) + QStringLiteral(".txt");
@@ -112,22 +118,26 @@ TEST(UploadArchive, TarReadsWhatItulGets)
     ASSERT_TRUE(QFile::link(QStringLiteral("sub/") + longName, root + QStringLiteral("/longlink")));
     ASSERT_TRUE(QFile::link(QStringLiteral("sub"), root + QStringLiteral("/dirlink")));
     ASSERT_EQ(::mkfifo(QFile::encodeName(root + QStringLiteral("/fifo")).constData(), 0600), 0);
-    ASSERT_TRUE(QFile::setPermissions(root + QStringLiteral("/a.txt"), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    ASSERT_TRUE(
+        QFile::setPermissions(root + QStringLiteral("/a.txt"), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
 
     QString error;
     auto archive = UploadArchive::build({root}, 16 << 20, error);
     ASSERT_TRUE(archive) << error.toStdString();
     const QString out = temp.filePath(QStringLiteral("out"));
     const QStringList names = unpack(*archive, out);
-    EXPECT_EQ(names, (QStringList{QStringLiteral("project/"), QStringLiteral("project/a.txt"), QStringLiteral("project/dirlink"),
-                                  QStringLiteral("project/link"), QStringLiteral("project/longlink"), QStringLiteral("project/sub/"),
-                                  QStringLiteral("project/sub/b.bin"), QStringLiteral("project/sub/") + longName}))
+    EXPECT_EQ(
+        names,
+        (QStringList{QStringLiteral("project/"), QStringLiteral("project/a.txt"), QStringLiteral("project/dirlink"),
+                     QStringLiteral("project/link"), QStringLiteral("project/longlink"), QStringLiteral("project/sub/"),
+                     QStringLiteral("project/sub/b.bin"), QStringLiteral("project/sub/") + longName}))
         << names.join(QLatin1Char(' ')).toStdString();
     EXPECT_EQ(read(out + QStringLiteral("/project/a.txt")), QByteArray("hello\n"));
     EXPECT_TRUE(read(out + QStringLiteral("/project/sub/b.bin")) == binary);
     EXPECT_EQ(read(out + QStringLiteral("/project/sub/") + longName), QByteArray("long\n"));
     EXPECT_EQ(QFile::symLinkTarget(out + QStringLiteral("/project/link")), out + QStringLiteral("/project/a.txt"));
-    EXPECT_EQ(QFile::symLinkTarget(out + QStringLiteral("/project/longlink")), out + QStringLiteral("/project/sub/") + longName);
+    EXPECT_EQ(QFile::symLinkTarget(out + QStringLiteral("/project/longlink")),
+              out + QStringLiteral("/project/sub/") + longName);
     EXPECT_EQ(QFile::symLinkTarget(out + QStringLiteral("/project/dirlink")), out + QStringLiteral("/project/sub"));
     EXPECT_TRUE(QFile::permissions(out + QStringLiteral("/project/a.txt")) & QFile::ExeOwner);
 
@@ -137,15 +147,17 @@ TEST(UploadArchive, TarReadsWhatItulGets)
     EXPECT_EQ(unpack(*archive, temp.filePath(QStringLiteral("slash"))), names);
 
     // Files of two directories: below the directory that holds both.
-    archive = UploadArchive::build({root + QStringLiteral("/a.txt"), root + QStringLiteral("/sub/b.bin")}, 16 << 20, error);
+    archive =
+        UploadArchive::build({root + QStringLiteral("/a.txt"), root + QStringLiteral("/sub/b.bin")}, 16 << 20, error);
     ASSERT_TRUE(archive) << error.toStdString();
-    EXPECT_EQ(unpack(*archive, temp.filePath(QStringLiteral("two"))), (QStringList{QStringLiteral("a.txt"), QStringLiteral("sub/"),
-                                                                                    QStringLiteral("sub/b.bin")}));
+    EXPECT_EQ(unpack(*archive, temp.filePath(QStringLiteral("two"))),
+              (QStringList{QStringLiteral("a.txt"), QStringLiteral("sub/"), QStringLiteral("sub/b.bin")}));
 
     // A file in a chosen directory, the directory, then a file elsewhere:
     // the last one stays.
     write(temp.filePath(QStringLiteral("other/c.txt")), "c\n");
-    archive = UploadArchive::build({root + QStringLiteral("/a.txt"), root, temp.filePath(QStringLiteral("other/c.txt"))}, 16 << 20, error);
+    archive = UploadArchive::build(
+        {root + QStringLiteral("/a.txt"), root, temp.filePath(QStringLiteral("other/c.txt"))}, 16 << 20, error);
     ASSERT_TRUE(archive) << error.toStdString();
     const QStringList both = unpack(*archive, temp.filePath(QStringLiteral("both")));
     EXPECT_TRUE(both.contains(QStringLiteral("other/c.txt"))) << both.join(QLatin1Char(' ')).toStdString();
@@ -157,14 +169,17 @@ TEST(UploadArchive, TarReadsWhatItulGets)
 // would point at nothing where the program unpacks it.
 TEST(UploadArchive, FollowsAChosenLink)
 {
-    if (!haveTar()) GTEST_SKIP() << "no tar or gzip";
+    if (!haveTar())
+        GTEST_SKIP() << "no tar or gzip";
     QTemporaryDir temp;
     ASSERT_TRUE(temp.isValid());
     write(temp.filePath(QStringLiteral("real/dir/f.txt")), "in dir\n");
     write(temp.filePath(QStringLiteral("real/file.txt")), "file\n");
     QDir().mkpath(temp.filePath(QStringLiteral("chosen")));
-    ASSERT_TRUE(QFile::link(temp.filePath(QStringLiteral("real/dir")), temp.filePath(QStringLiteral("chosen/dirlink"))));
-    ASSERT_TRUE(QFile::link(temp.filePath(QStringLiteral("real/file.txt")), temp.filePath(QStringLiteral("chosen/filelink"))));
+    ASSERT_TRUE(
+        QFile::link(temp.filePath(QStringLiteral("real/dir")), temp.filePath(QStringLiteral("chosen/dirlink"))));
+    ASSERT_TRUE(
+        QFile::link(temp.filePath(QStringLiteral("real/file.txt")), temp.filePath(QStringLiteral("chosen/filelink"))));
 
     QString error;
     auto archive = UploadArchive::build({temp.filePath(QStringLiteral("chosen/dirlink"))}, 1 << 20, error);
@@ -185,7 +200,8 @@ TEST(UploadArchive, FollowsAChosenLink)
 // header. The setuid and setgid bits stay out: tar run as root restores them.
 TEST(UploadArchive, KeepsTimesAndDropsSetuid)
 {
-    if (!haveTar()) GTEST_SKIP() << "no tar or gzip";
+    if (!haveTar())
+        GTEST_SKIP() << "no tar or gzip";
     QTemporaryDir temp;
     ASSERT_TRUE(temp.isValid());
     const QString root = temp.filePath(QStringLiteral("t"));
@@ -202,7 +218,12 @@ TEST(UploadArchive, KeepsTimesAndDropsSetuid)
         || QFileInfo(root + QStringLiteral("/future")).lastModified().toSecsSinceEpoch() != future) {
         GTEST_SKIP() << "the file system keeps no such times";
     }
-    ASSERT_EQ(::chmod(QFile::encodeName(root + QStringLiteral("/setuid")).constData(), 06755), 0);
+    // A system can refuse the bits (the seccomp filter of a Nix build): it
+    // holds no such file to send, and only the times are checked.
+    const bool setuid = ::chmod(QFile::encodeName(root + QStringLiteral("/setuid")).constData(), 06755) == 0;
+    if (!setuid) {
+        ASSERT_EQ(errno, EPERM) << std::strerror(errno);
+    }
 
     QString error;
     const auto archive = UploadArchive::build({root}, 1 << 20, error);
@@ -211,10 +232,13 @@ TEST(UploadArchive, KeepsTimesAndDropsSetuid)
     unpack(*archive, out);
     EXPECT_EQ(QFileInfo(out + QStringLiteral("/t/old")).lastModified().toSecsSinceEpoch(), -86400);
     EXPECT_EQ(QFileInfo(out + QStringLiteral("/t/future")).lastModified().toSecsSinceEpoch(), future);
+    if (!setuid)
+        GTEST_SKIP() << "this system refuses setuid and setgid bits: the times passed, the bits were not tried";
     const QString listing = runTar(*archive, {QStringLiteral("-tvzf"), QStringLiteral("-")});
     bool seen = false;
     for (const QString& line : listing.split(QLatin1Char('\n'))) {
-        if (!line.endsWith(QStringLiteral("/setuid"))) continue;
+        if (!line.endsWith(QStringLiteral("/setuid")))
+            continue;
         seen = true;
         EXPECT_TRUE(line.startsWith(QStringLiteral("-rwxr-xr-x"))) << line.toStdString();
     }
@@ -228,7 +252,9 @@ TEST(UploadArchive, RefusesWhatItCannotSendWhole)
     write(temp.filePath(QStringLiteral("noise.bin")), noise(300000));
     QString error;
     EXPECT_FALSE(UploadArchive::build({temp.filePath(QStringLiteral("noise.bin"))}, 100000, error));
-    EXPECT_EQ(error, QStringLiteral("The files are larger than Terminal.uploadLimit lets through. Send them with aglow transfer."));
+    EXPECT_EQ(
+        error,
+        QStringLiteral("The files are larger than Terminal.uploadLimit lets through. Send them with aglow transfer."));
     EXPECT_FALSE(UploadArchive::build({temp.filePath(QStringLiteral("gone"))}, 1 << 20, error));
     EXPECT_EQ(error, temp.filePath(QStringLiteral("gone")) + QStringLiteral(" does not exist."));
     EXPECT_FALSE(UploadArchive::build({}, 1 << 20, error));
@@ -257,7 +283,8 @@ TEST(UploadArchive, RefusesWhatItCannotSendWhole)
 TEST(UploadArchive, TheAnswerIsWhatItulReads)
 {
     std::string archive;
-    for (int i = 0; i < 1000; ++i) archive += char(i % 251);
+    for (int i = 0; i < 1000; ++i)
+        archive += char(i % 251);
     const std::string answer = UploadArchive::answer(archive);
     ASSERT_TRUE(answer.starts_with("ok\n"));
     ASSERT_TRUE(answer.ends_with("\n\n"));
@@ -278,5 +305,6 @@ TEST(UploadArchive, TheAnswerIsWhatItulReads)
     EXPECT_EQ(decoded, archive);
     EXPECT_EQ(UploadArchive::answerSize(archive.size()), answer.size());
     EXPECT_EQ(UploadArchive::answerSize(0), UploadArchive::answer({}).size());
-    EXPECT_LE(UploadArchive::answerSize(std::size_t(Settings::MaxUploadLimit) << 20), AfterglowPty::Pty::MaxPendingInput);
+    EXPECT_LE(UploadArchive::answerSize(std::size_t(Settings::MaxUploadLimit) << 20),
+              AfterglowPty::Pty::MaxPendingInput);
 }

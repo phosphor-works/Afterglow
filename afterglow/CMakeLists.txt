@@ -161,6 +161,8 @@ target_link_libraries(afterglow_config PUBLIC afterglow_shaders Afterglow::Rende
 # The bounds of the Mux settings are the daemon's (MuxProtocol.h). Colour
 # names are read as the escape codes read them (AfterglowProto/Color.h).
 target_link_libraries(afterglow_config PRIVATE afterglow_mux_protocol Afterglow::Proto)
+# The defaults of the Audio settings are the analyzer's (AudioDefaults.h).
+target_link_libraries(afterglow_config PRIVATE PhosphorAudio::PhosphorAudio)
 
 qt_add_library(afterglow_shell STATIC src/shell/Sibling.cpp src/shell/Sibling.h src/shell/ShellIntegration.cpp
     src/shell/ShellIntegration.h src/shell/Ssh.cpp src/shell/Ssh.h)

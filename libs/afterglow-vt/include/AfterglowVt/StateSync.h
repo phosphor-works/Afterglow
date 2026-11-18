@@ -70,7 +70,10 @@ public:
     /// counts as moved out: the replica's host lets go of what it kept there.
     void add(bool altScreen, const RegionScroll& scroll);
     void clear();
-    bool empty() const { return m_entries.empty() && !m_lost; }
+    bool empty() const
+    {
+        return m_entries.empty() && !m_lost;
+    }
 
 private:
     friend class StateWriter;
@@ -121,7 +124,10 @@ public:
     std::string updateHeld(const Terminal& terminal);
     /// The most history rows that the replica keeps: the writer sends no
     /// older ones. 0 sends none.
-    void setReplicaHistory(std::size_t rows) { m_replicaHistory = rows; }
+    void setReplicaHistory(std::size_t rows)
+    {
+        m_replicaHistory = rows;
+    }
     /// The writer starts over, as a new one does: for a new replica. The
     /// next frame carries everything that it carries (an updateHeld() all
     /// but the screens), and the next update() the screens and the images.
@@ -154,7 +160,10 @@ public:
     /// The terminal changed in an updateHeld() since the last update(), or
     /// no update() ran yet: the screens of the replica are behind until the
     /// next update().
-    bool screensHeld() const { return m_screensHeld || !m_screensStarted; }
+    bool screensHeld() const
+    {
+        return m_screensHeld || !m_screensStarted;
+    }
 
 private:
     /// update() and updateHeld(): @p held leaves the screens for later.
@@ -196,7 +205,8 @@ private:
     /// The visible rows of screen @p which that changed, within @p budget.
     /// @p changed: the terminal changed since the last frame. True when the
     /// screen started over (a reset section).
-    bool writeRows(std::string& out, const Terminal& terminal, int which, ScreenState& state, Budget& budget, bool changed);
+    bool writeRows(std::string& out, const Terminal& terminal, int which, ScreenState& state, Budget& budget,
+                   bool changed);
     /// The history rows that the replica lacks, within @p budget.
     void writeHistory(std::string& out, const Terminal& terminal, int which, ScreenState& state, Budget& budget);
     /// Before the images of a frame: what the replica must drop, and the
@@ -308,9 +318,15 @@ public:
     /// The last frame that applied changed the visible rows, started a
     /// screen over, or changed the images or the placements of the screen
     /// that shows: output of the program, not history that catches up.
-    bool screenChanged() const { return m_screenChanged; }
+    bool screenChanged() const
+    {
+        return m_screenChanged;
+    }
     /// The frames of images that the writer sent and did not drop yet.
-    std::size_t frames() const { return m_frames.size(); }
+    std::size_t frames() const
+    {
+        return m_frames.size();
+    }
     /// Every row of the primary screen from stable id @p first to @p last
     /// that the writer has came: none is a blank place of a row on its way,
     /// and none is an older row that the writer still sends (PrependTag).
@@ -346,7 +362,8 @@ private:
         std::unordered_map<std::uint32_t, Style> styles; ///< the writer's definitions, with the writer's link ids
         std::unordered_map<std::uint32_t, std::pair<std::string, std::string>> links;
         std::unordered_map<std::uint32_t, std::uint32_t> linkCache; ///< the writer's link id to the replica's
-        std::unordered_map<std::uint32_t, std::uint32_t> linkOwner; ///< the replica's link id to the writer's that holds it
+        std::unordered_map<std::uint32_t, std::uint32_t>
+            linkOwner; ///< the replica's link id to the writer's that holds it
     };
     /// The layout epoch of each of the writer's screens, as its last reset
     /// said, for as long as this reader lives: a screen that starts over in
@@ -364,7 +381,10 @@ private:
         std::shared_ptr<ImageFrame> frame;
         std::size_t size = 0;
         std::size_t received = 0;
-        bool complete() const { return received == size; }
+        bool complete() const
+        {
+            return received == size;
+        }
     };
     /// What the writer last sent of an image's animation. The replica runs
     /// the animation on its own clock: it takes the state or the current

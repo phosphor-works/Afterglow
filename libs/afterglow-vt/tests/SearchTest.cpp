@@ -130,7 +130,10 @@ TEST(Search, ContainsIsInclusiveAtBothEnds)
 TEST(TextSearch, RegexSpansSoftWrapsAndPreservesWideGraphemes)
 {
     Term t(6, 4);
-    t.t.feed("ab\xe7\x95\x8c" "e\xcc\x81" "fghi");
+    t.t.feed(
+        "ab\xe7\x95\x8c"
+        "e\xcc\x81"
+        "fghi");
     auto m = search(t, U"界e\\x{301}fgh", true);
     ASSERT_EQ(m.size(), 1u);
     EXPECT_EQ(m[0].start.col, 2);
@@ -206,13 +209,20 @@ TEST(TextSearch, BoundedOutputNeverSplitsUtf8AndReportsMissingMarkers)
 {
     Term t(20, 3);
     EXPECT_FALSE(t.t.hasCommandOutput());
-    t.t.feed("\x1b]133;C\a" "a\xe7\x95\x8c" "bc\x1b]133;D;0\a");
+    t.t.feed(
+        "\x1b]133;C\a"
+        "a\xe7\x95\x8c"
+        "bc\x1b]133;D;0\a");
     EXPECT_TRUE(t.t.hasCommandOutput());
     bool truncated = false;
     EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput, 3, &truncated), "a");
     EXPECT_TRUE(truncated);
-    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput, 5, &truncated), "a\xe7\x95\x8c" "b");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput, 5, &truncated),
+              "a\xe7\x95\x8c"
+              "b");
     EXPECT_TRUE(truncated);
-    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput, 20, &truncated), "a\xe7\x95\x8c" "bc");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput, 20, &truncated),
+              "a\xe7\x95\x8c"
+              "bc");
     EXPECT_FALSE(truncated);
 }

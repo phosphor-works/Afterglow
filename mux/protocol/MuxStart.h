@@ -32,8 +32,8 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::str
 /// connectOrStart() with @p environment in place of this process's, which
 /// the start reads and passes on, its PATH included: for a thread other
 /// than the one that changes the environment.
-Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::string& daemon, const Environment& environment,
-                       std::string* error);
+Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::string& daemon,
+                       const Environment& environment, std::string* error);
 
 /// The systemd user manager as connectOrStart() uses it. A test gives its
 /// own, to run the start through a unit without the user's manager.
@@ -46,7 +46,9 @@ struct UserManager
     /// /dev/null, or its standard output in @p output, up to @p deadline,
     /// when it is killed: its exit status; TimedOut when it was killed at
     /// the deadline; -1 when it did not run or a signal ended it.
-    std::function<int(const std::vector<std::string>& argv, std::chrono::steady_clock::time_point deadline, std::string* output)> run;
+    std::function<int(const std::vector<std::string>& argv, std::chrono::steady_clock::time_point deadline,
+                      std::string* output)>
+        run;
     /// What run() returns for a program that it killed at the deadline: the
     /// user manager did not answer, which tells nothing about the unit.
     static constexpr int TimedOut = -2;
@@ -54,7 +56,7 @@ struct UserManager
 /// The user manager of @p environment, whose programs run in it.
 UserManager userManagerOf(const Environment& environment);
 /// connectOrStart() with @p manager in place of userManagerOf(@p environment).
-Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::string& daemon, const Environment& environment,
-                       const UserManager& manager, std::string* error);
+Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::string& daemon,
+                       const Environment& environment, const UserManager& manager, std::string* error);
 
 } // namespace AfterglowMux

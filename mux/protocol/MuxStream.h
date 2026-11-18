@@ -203,8 +203,8 @@ struct Input
 /// The inputs that come on ActionChannel, and never on the control channel.
 constexpr bool isAction(InputType type)
 {
-    return type == InputType::Kill || type == InputType::ClosePane || type == InputType::Visible || type == InputType::Refresh
-        || type == InputType::PaneForgotten || type == InputType::DownloadAnswer;
+    return type == InputType::Kill || type == InputType::ClosePane || type == InputType::Visible
+        || type == InputType::Refresh || type == InputType::PaneForgotten || type == InputType::DownloadAnswer;
 }
 
 std::string encode(const Input& input);

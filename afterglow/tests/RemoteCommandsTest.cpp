@@ -116,7 +116,8 @@ bool pumpUntil(const std::function<bool()>& done, int timeoutMs = 10000)
     QElapsedTimer clock;
     clock.start();
     while (!done()) {
-        if (clock.elapsed() > timeoutMs) return false;
+        if (clock.elapsed() > timeoutMs)
+            return false;
         QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
         QThread::msleep(2);
     }
@@ -149,11 +150,13 @@ int connectError(const QString& path)
 {
     const QByteArray name = QFile::encodeName(path);
     sockaddr_un address{};
-    if (std::size_t(name.size()) >= sizeof address.sun_path) return ENAMETOOLONG;
+    if (std::size_t(name.size()) >= sizeof address.sun_path)
+        return ENAMETOOLONG;
     address.sun_family = AF_UNIX;
     std::memcpy(address.sun_path, name.constData(), std::size_t(name.size()));
     const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return errno;
+    if (fd < 0)
+        return errno;
     const int result = ::connect(fd, reinterpret_cast<const sockaddr*>(&address), sizeof address);
     const int error = result == 0 ? 0 : errno;
     ::close(fd);
@@ -173,7 +176,8 @@ protected:
         qputenv("HOME", m_dir.filePath(QStringLiteral("home")).toUtf8());
         m_runtime = m_dir.filePath(QStringLiteral("r"));
         ASSERT_TRUE(QDir().mkpath(m_runtime));
-        ASSERT_TRUE(QFile::setPermissions(m_runtime, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+        ASSERT_TRUE(
+            QFile::setPermissions(m_runtime, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
         qputenv("XDG_RUNTIME_DIR", m_runtime.toUtf8());
         qunsetenv("AFTERGLOW_SOCKET");
         qunsetenv("AFTERGLOW_PANE_ID");
@@ -187,7 +191,8 @@ protected:
         // fake-ssh.sh says what it does.
         QFile::remove(fakeSsh());
         ASSERT_TRUE(QFile::copy(QStringLiteral(AFTERGLOW_FAKE_SSH), fakeSsh()));
-        ASSERT_TRUE(QFile(fakeSsh()).setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+        ASSERT_TRUE(
+            QFile(fakeSsh()).setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
     }
 
     void TearDown() override
@@ -196,7 +201,9 @@ protected:
         m_remote.reset();
         // Their cancels run detached, and write to the log in m_dir: they
         // end before the directory goes.
-        EXPECT_TRUE(pumpUntil([this] { return !fakeSshRuns(); }));
+        EXPECT_TRUE(pumpUntil([this] {
+            return !fakeSshRuns();
+        }));
         m_controlSocket.reset();
         m_commands.reset();
         m_scripts.reset();
@@ -204,49 +211,68 @@ protected:
         m_pane.reset();
     }
 
-    QString fakeSsh() const { return m_dir.filePath(QStringLiteral("bin/ssh")); }
-    QString log() const { return m_dir.filePath(QStringLiteral("ssh.log")); }
-    QString socketPath() const { return m_runtime + QStringLiteral("/afterglow-test.sock"); }
+    QString fakeSsh() const
+    {
+        return m_dir.filePath(QStringLiteral("bin/ssh"));
+    }
+    QString log() const
+    {
+        return m_dir.filePath(QStringLiteral("ssh.log"));
+    }
+    QString socketPath() const
+    {
+        return m_runtime + QStringLiteral("/afterglow-test.sock");
+    }
 
     bool start(bool remoteCommands = true)
     {
         const QString path = m_dir.filePath(QStringLiteral("config.json"));
         QFile file(path);
-        if (!file.open(QIODevice::WriteOnly)) return false;
+        if (!file.open(QIODevice::WriteOnly))
+            return false;
         file.write(QJsonDocument(QJsonObject{{QStringLiteral("Terminal"),
                                               QJsonObject{{QStringLiteral("sshRemoteCommands"), remoteCommands}}}})
                        .toJson());
         file.close();
         m_settings = std::make_unique<SettingsStore>(path);
-        m_control = std::make_unique<Control>(*m_settings, [](const QString&, const QStringList&, bool) { return nullptr; });
+        m_control = std::make_unique<Control>(*m_settings, [](const QString&, const QStringList&, bool) {
+            return nullptr;
+        });
         m_instance = std::make_unique<InstanceSocket>();
-        if (m_instance->listen(socketPath()) != InstanceSocket::Listen::Listening) return false;
+        if (m_instance->listen(socketPath()) != InstanceSocket::Listen::Listening)
+            return false;
         m_scripts = std::make_unique<ScriptHost>(scriptCallbacks(*m_control));
         m_scripts->setStateDirectory(m_dir.filePath(QStringLiteral("scriptstate")));
         m_scripts->setSearchPaths({m_dir.filePath(QStringLiteral("scripts"))});
         m_commands = std::make_unique<CommandSocket>(*m_control, *m_scripts, *m_settings, m_instance->router());
         m_controlSocket = std::make_unique<ControlSocket>(*m_control, *m_settings, m_instance->router());
-        m_remote = std::make_unique<RemoteSockets>(*m_control, *m_scripts, *m_settings,
-                                                   [this](quint32 pane, const Remote::Answer& answer,
-                                                          const std::optional<Remote::Answer>& overlay) {
-                                                       if (m_pane && pane == m_pane->id()) m_pane->setRemoteSocket(answer, overlay);
-                                                       else if (pane != FakePane) return false;
-                                                       m_answers.insert(pane, answer);
-                                                       m_overlayAnswers.insert(pane, overlay);
-                                                       return true;
-                                                   });
+        m_remote = std::make_unique<RemoteSockets>(
+            *m_control, *m_scripts, *m_settings,
+            [this](quint32 pane, const Remote::Answer& answer, const std::optional<Remote::Answer>& overlay) {
+                if (m_pane && pane == m_pane->id())
+                    m_pane->setRemoteSocket(answer, overlay);
+                else if (pane != FakePane)
+                    return false;
+                m_answers.insert(pane, answer);
+                m_overlayAnswers.insert(pane, overlay);
+                return true;
+            });
         m_remote->setSsh(fakeSsh());
         m_controlSocket->setRemoteSockets(m_remote.get());
         // The helper's `afterglow ssh` runs in no pane: it plays the one of
         // FakePane (NativeWindow.RemoteSocketsOpenOnlyForTheProcessesOfTheirPane).
         // One in m_pane, which no window holds, runs in its terminal session.
         m_controlSocket->setPaneProcesses([this](quint32 pane, qint64 process, bool) {
-            if (pane == FakePane) return true;
-            if (!m_pane || pane != m_pane->id() || m_pane->programPid() <= 0) return false;
+            if (pane == FakePane)
+                return true;
+            if (!m_pane || pane != m_pane->id() || m_pane->programPid() <= 0)
+                return false;
             for (int up = 0; process > 1 && up < 64; ++up) {
                 const auto stat = AfterglowPty::processStat(pid_t(process));
-                if (!stat) return false;
-                if (stat->session == m_pane->programPid()) return true;
+                if (!stat)
+                    return false;
+                if (stat->session == m_pane->programPid())
+                    return true;
                 process = stat->parent;
             }
             return false;
@@ -261,9 +287,11 @@ protected:
     {
         QFile file(log());
         QList<QStringList> out;
-        if (!file.open(QIODevice::ReadOnly)) return out;
+        if (!file.open(QIODevice::ReadOnly))
+            return out;
         for (const QByteArray& line : file.readAll().split('\n')) {
-            if (line.isEmpty()) continue;
+            if (line.isEmpty())
+                continue;
             QStringList words = QString::fromUtf8(line).split(QChar(0x1f));
             words.removeLast(); // after the last separator
             out << words;
@@ -285,7 +313,8 @@ protected:
         QList<QStringList> out;
         for (const QStringList& run : runs()) {
             const qsizetype at = run.indexOf(word);
-            if (at >= 0 && (next.isEmpty() || run.value(at + 1) == next)) out << run;
+            if (at >= 0 && (next.isEmpty() || run.value(at + 1) == next))
+                out << run;
         }
         return out;
     }
@@ -300,16 +329,24 @@ protected:
         return process;
     }
 
-    RemoteSockets::Request request(qint64 pid, const QString& directory = QStringLiteral("/run/user/1000/afterglow")) const
+    RemoteSockets::Request request(qint64 pid,
+                                   const QString& directory = QStringLiteral("/run/user/1000/afterglow")) const
     {
-        return {FakePane, pid, QStringLiteral("box"), directory, AfterglowProto::ProtocolVersion,
-                {QStringLiteral("-F"), QStringLiteral("/cfg")}, QStringLiteral("prod")};
+        return {FakePane,
+                pid,
+                QStringLiteral("box"),
+                directory,
+                AfterglowProto::ProtocolVersion,
+                {QStringLiteral("-F"), QStringLiteral("/cfg")},
+                QStringLiteral("prod")};
     }
 
     static bool connectTo(QLocalSocket& client, const QString& path)
     {
         client.connectToServer(path);
-        return pumpUntil([&] { return client.state() == QLocalSocket::ConnectedState; });
+        return pumpUntil([&] {
+            return client.state() == QLocalSocket::ConnectedState;
+        });
     }
 
     /// Sends a frame of @p type (call, schema or subscribe) to @p target.
@@ -318,7 +355,9 @@ protected:
                 const QString& type = QStringLiteral("call"))
     {
         const qint64 id = ++m_id;
-        QJsonObject frame{{QStringLiteral("type"), type}, {QStringLiteral("id"), id}, {QStringLiteral("target"), target}};
+        QJsonObject frame{{QStringLiteral("type"), type},
+                          {QStringLiteral("id"), id},
+                          {QStringLiteral("target"), target}};
         if (type == QLatin1String("call")) {
             frame.insert(QStringLiteral("fn"), fn);
             frame.insert(QStringLiteral("args"), args);
@@ -334,15 +373,18 @@ protected:
     static QList<QJsonObject> until(QLocalSocket& client, qint64 id, int timeoutMs = 10000)
     {
         QList<QJsonObject> frames;
-        const bool answered = pumpUntil([&] {
-            while (client.canReadLine()) {
-                frames << QJsonDocument::fromJson(client.readLine()).object();
-                const QJsonObject& frame = frames.last();
-                if (frame.value(QStringLiteral("id")).toInteger() == id && frame.value(QStringLiteral("type")) != QLatin1String("event"))
-                    return true;
-            }
-            return false;
-        }, timeoutMs);
+        const bool answered = pumpUntil(
+            [&] {
+                while (client.canReadLine()) {
+                    frames << QJsonDocument::fromJson(client.readLine()).object();
+                    const QJsonObject& frame = frames.last();
+                    if (frame.value(QStringLiteral("id")).toInteger() == id
+                        && frame.value(QStringLiteral("type")) != QLatin1String("event"))
+                        return true;
+                }
+                return false;
+            },
+            timeoutMs);
         EXPECT_TRUE(answered) << "no answer to " << id;
         return answered ? frames : QList<QJsonObject>{};
     }
@@ -352,7 +394,8 @@ protected:
     {
         QString out;
         for (const QJsonObject& f : frames) {
-            if (f.value(QStringLiteral("type")) == QLatin1String("event") && f.value(QStringLiteral("signal")) == QLatin1String("stdout"))
+            if (f.value(QStringLiteral("type")) == QLatin1String("event")
+                && f.value(QStringLiteral("signal")) == QLatin1String("stdout"))
                 out += f.value(QStringLiteral("args")).toArray().at(1).toString();
         }
         return out;
@@ -376,9 +419,11 @@ protected:
         for (const QString& entry : QDir(QStringLiteral("/proc")).entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
             bool numeric = false;
             entry.toUInt(&numeric);
-            if (!numeric) continue;
+            if (!numeric)
+                continue;
             QFile cmdline(QStringLiteral("/proc/%1/cmdline").arg(entry));
-            if (cmdline.open(QIODevice::ReadOnly) && cmdline.readAll().split('\0').contains(program)) return true;
+            if (cmdline.open(QIODevice::ReadOnly) && cmdline.readAll().split('\0').contains(program))
+                return true;
         }
         return false;
     }
@@ -389,7 +434,9 @@ protected:
     /// ASSERT_NO_FATAL_FAILURE: a fake ssh that does not end stops the test.
     void expectNoCancel()
     {
-        ASSERT_TRUE(pumpUntil([&] { return !fakeSshRuns(); }));
+        ASSERT_TRUE(pumpUntil([&] {
+            return !fakeSshRuns();
+        }));
         EXPECT_TRUE(runsWith(QStringLiteral("cancel")).isEmpty());
     }
 
@@ -399,7 +446,8 @@ protected:
     {
         auto process = std::make_unique<QProcess>();
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-        env.insert(QStringLiteral("PATH"), m_dir.filePath(QStringLiteral("bin")) + QLatin1Char(':') + env.value(QStringLiteral("PATH")));
+        env.insert(QStringLiteral("PATH"),
+                   m_dir.filePath(QStringLiteral("bin")) + QLatin1Char(':') + env.value(QStringLiteral("PATH")));
         env.insert(QStringLiteral("AFTERGLOW_SOCKET"), socketPath());
         env.insert(QStringLiteral("AFTERGLOW_PANE_ID"), QString::number(FakePane));
         env.insert(QStringLiteral("TERM"), QStringLiteral("xterm-256color"));
@@ -408,11 +456,13 @@ protected:
         env.insert(QStringLiteral("FAKE_PROTOCOL"), QString::number(AfterglowProto::ProtocolVersion));
         // In tmux, the helper cannot trust AFTERGLOW_PANE_ID: the test may run
         // in one. Nor in a pane of a mux session, whose socket is the daemon's.
-        for (const QString& name : {QStringLiteral("TMUX"), QStringLiteral("TMUX_PANE"), QStringLiteral("AFTERGLOW_SESSION")})
+        for (const QString& name :
+             {QStringLiteral("TMUX"), QStringLiteral("TMUX_PANE"), QStringLiteral("AFTERGLOW_SESSION")})
             env.remove(name);
         // Nor in an overlay, unless the test asks for one.
         env.remove(QStringLiteral("AFTERGLOW_OVERLAY"));
-        for (auto it = fake.cbegin(); it != fake.cend(); ++it) env.insert(it.key(), it.value());
+        for (auto it = fake.cbegin(); it != fake.cend(); ++it)
+            env.insert(it.key(), it.value());
         process->setProcessEnvironment(env);
         QFile::remove(release());
         QFile::remove(release() + QStringLiteral(".started"));
@@ -422,8 +472,9 @@ protected:
         process->setChildProcessModifier(endWithTheTest);
         process->start(QStringLiteral(AFTERGLOW_BINARY), QStringList{QStringLiteral("ssh")} + args);
         EXPECT_TRUE(process->waitForStarted());
-        EXPECT_TRUE(pumpUntil([&] { return exists(release() + QStringLiteral(".started")); }))
-            << qPrintable(QString::fromUtf8(process->readAllStandardError()));
+        EXPECT_TRUE(pumpUntil([&] {
+            return exists(release() + QStringLiteral(".started"));
+        })) << qPrintable(QString::fromUtf8(process->readAllStandardError()));
         return process;
     }
 
@@ -432,14 +483,21 @@ protected:
     {
         QFile released(release());
         EXPECT_TRUE(released.open(QIODevice::WriteOnly));
-        EXPECT_TRUE(pumpUntil([&] { return process.state() == QProcess::NotRunning; }));
+        EXPECT_TRUE(pumpUntil([&] {
+            return process.state() == QProcess::NotRunning;
+        }));
         m_stderr = QString::fromUtf8(process.readAllStandardError());
         // The session ends when the process that opened it does.
-        EXPECT_TRUE(pumpUntil([&] { return m_remote->tokens().isEmpty(); }));
+        EXPECT_TRUE(pumpUntil([&] {
+            return m_remote->tokens().isEmpty();
+        }));
         return process.exitCode();
     }
 
-    QString release() const { return m_dir.filePath(QStringLiteral("release")); }
+    QString release() const
+    {
+        return m_dir.filePath(QStringLiteral("release"));
+    }
 
     static constexpr quint32 FakePane = 7;
     Saved m_configHome{"XDG_CONFIG_HOME"};
@@ -482,9 +540,10 @@ TEST_F(RemoteCommandsTest, TheRemoteTargetRunsOnlyRemoteCommandsOnTheSessionsPan
     EXPECT_EQ(opened.token.size(), 16);
     EXPECT_EQ(opened.socket, m_runtime + QStringLiteral("/afterglow-remote-%1.sock").arg(opened.token));
     // Only the user can connect.
-    EXPECT_EQ(QFileInfo(opened.socket).permissions() & (QFileDevice::ReadOther | QFileDevice::WriteOther | QFileDevice::ReadGroup
-                                                         | QFileDevice::WriteGroup),
-              QFileDevice::Permissions());
+    EXPECT_EQ(
+        QFileInfo(opened.socket).permissions()
+            & (QFileDevice::ReadOther | QFileDevice::WriteOther | QFileDevice::ReadGroup | QFileDevice::WriteGroup),
+        QFileDevice::Permissions());
     // The path is the answer once its forward came, not before.
     EXPECT_EQ(m_answers.value(FakePane), Remote::Answer{});
     EXPECT_EQ(m_remote->forwarded(opened.token), QString());
@@ -506,9 +565,12 @@ TEST_F(RemoteCommandsTest, TheRemoteTargetRunsOnlyRemoteCommandsOnTheSessionsPan
     EXPECT_EQ(listed, (QStringList{QStringLiteral("echo"), QStringLiteral("slow"), QStringLiteral("there")}));
     // The terminal's own socket lists them all, and says which are remote.
     QHash<QString, QJsonValue> remote;
-    for (const QJsonValue& entry :
-         callOn(socketPath(), QStringLiteral("commands"), QStringLiteral("list"), {}).value(0).value(QStringLiteral("result")).toArray())
-        remote.insert(entry.toObject().value(QStringLiteral("command")).toString(), entry.toObject().value(QStringLiteral("remote")));
+    for (const QJsonValue& entry : callOn(socketPath(), QStringLiteral("commands"), QStringLiteral("list"), {})
+                                       .value(0)
+                                       .value(QStringLiteral("result"))
+                                       .toArray())
+        remote.insert(entry.toObject().value(QStringLiteral("command")).toString(),
+                      entry.toObject().value(QStringLiteral("remote")));
     EXPECT_EQ(remote.size(), 5);
     EXPECT_EQ(remote.value(QStringLiteral("here")), QJsonValue(false));
     EXPECT_EQ(remote.value(QStringLiteral("there")), QJsonValue(true));
@@ -523,16 +585,19 @@ TEST_F(RemoteCommandsTest, TheRemoteTargetRunsOnlyRemoteCommandsOnTheSessionsPan
     };
     QList<QJsonObject> frames = run(QStringLiteral("there"), 0);
     ASSERT_EQ(frames.size(), 2);
-    EXPECT_EQ(frames[0].value(QStringLiteral("args")).toArray().at(1).toString(), QStringLiteral("there remote box 7 word\n"));
+    EXPECT_EQ(frames[0].value(QStringLiteral("args")).toArray().at(1).toString(),
+              QStringLiteral("there remote box 7 word\n"));
     EXPECT_EQ(frames[1].value(QStringLiteral("result")).toObject().value(QStringLiteral("exit")).toInt(), 0);
     // A command without remote does not exist for a remote host.
     frames = run(QStringLiteral("here"), 0);
     EXPECT_EQ(frames.value(0).value(QStringLiteral("code")).toString(), QStringLiteral("NO_SUCH_COMMAND"));
     // The run acts on the session's pane, which the client may name, and on no other.
     frames = run(QStringLiteral("there"), FakePane);
-    EXPECT_EQ(frames.value(0).value(QStringLiteral("args")).toArray().at(1).toString(), QStringLiteral("there remote box 7 word\n"));
+    EXPECT_EQ(frames.value(0).value(QStringLiteral("args")).toArray().at(1).toString(),
+              QStringLiteral("there remote box 7 word\n"));
     frames = run(QStringLiteral("there"), 9);
-    EXPECT_TRUE(frames.value(0).value(QStringLiteral("message")).toString().contains(QLatin1String("pane of its ssh session")));
+    EXPECT_TRUE(
+        frames.value(0).value(QStringLiteral("message")).toString().contains(QLatin1String("pane of its ssh session")));
 }
 
 // The socket that a window gives the clients that a mux daemon passes it
@@ -569,7 +634,8 @@ TEST_F(RemoteCommandsTest, AnEndpointServesTheRemoteCommandsOfItsPaneWithNoForwa
         EXPECT_EQ(callOn(socket, other, QStringLiteral("list"), {}).value(0).value(QStringLiteral("code")).toString(),
                   QStringLiteral("NO_SUCH_TARGET"));
         QStringList listed;
-        for (const QJsonValue& entry : callOn(socket, target, QStringLiteral("list"), {}).value(0).value(QStringLiteral("result")).toArray())
+        for (const QJsonValue& entry :
+             callOn(socket, target, QStringLiteral("list"), {}).value(0).value(QStringLiteral("result")).toArray())
             listed << entry.toObject().value(QStringLiteral("command")).toString();
         listed.sort();
         EXPECT_EQ(listed, (QStringList{QStringLiteral("echo"), QStringLiteral("slow"), QStringLiteral("there")}));
@@ -580,7 +646,8 @@ TEST_F(RemoteCommandsTest, AnEndpointServesTheRemoteCommandsOfItsPaneWithNoForwa
         };
         QList<QJsonObject> frames = run(QStringLiteral("there"), 0);
         EXPECT_EQ(frames.size(), 2);
-        EXPECT_EQ(frames.value(0).value(QStringLiteral("args")).toArray().at(1).toString(), QStringLiteral("there remote box 7 word\n"));
+        EXPECT_EQ(frames.value(0).value(QStringLiteral("args")).toArray().at(1).toString(),
+                  QStringLiteral("there remote box 7 word\n"));
         frames = run(QStringLiteral("here"), 0);
         EXPECT_EQ(frames.value(0).value(QStringLiteral("code")).toString(), QStringLiteral("NO_SUCH_COMMAND"));
         frames = run(QStringLiteral("there"), 9);
@@ -588,9 +655,13 @@ TEST_F(RemoteCommandsTest, AnEndpointServesTheRemoteCommandsOfItsPaneWithNoForwa
         EXPECT_EQ(frames.value(0).value(QStringLiteral("message")).toString(), elsewhere);
     }
     // A session of another host hears that its run acts on its own pane.
-    const QList<QJsonObject> elsewhere = callOn(commands, QStringLiteral("commands"), QStringLiteral("run"),
-                                                {QStringLiteral("r2"), QStringLiteral("far"), QStringLiteral("there"), QJsonArray{}, QString(), 9});
-    EXPECT_TRUE(elsewhere.value(0).value(QStringLiteral("message")).toString().contains(QLatin1String("session of another host")));
+    const QList<QJsonObject> elsewhere =
+        callOn(commands, QStringLiteral("commands"), QStringLiteral("run"),
+               {QStringLiteral("r2"), QStringLiteral("far"), QStringLiteral("there"), QJsonArray{}, QString(), 9});
+    EXPECT_TRUE(elsewhere.value(0)
+                    .value(QStringLiteral("message"))
+                    .toString()
+                    .contains(QLatin1String("session of another host")));
 
     // The pane's answer to the query stays as it was: no ssh session of its own.
     EXPECT_FALSE(m_answers.contains(FakePane));
@@ -628,7 +699,8 @@ TEST_F(RemoteCommandsTest, AnEndpointOfANewHostTakesThePlaceOfAnIdleOne)
     }
     // The first endpoint made room for the last.
     EXPECT_FALSE(exists(sockets.first()));
-    for (qsizetype i = 1; i < sockets.size(); ++i) EXPECT_TRUE(exists(sockets[i])) << i;
+    for (qsizetype i = 1; i < sockets.size(); ++i)
+        EXPECT_TRUE(exists(sockets[i])) << i;
     EXPECT_EQ(m_remote->tokens().size(), RemoteSockets::MaxEndpointsPerPane);
     // An ssh session of the pane still opens.
     const auto watched = sleeper();
@@ -640,12 +712,15 @@ TEST_F(RemoteCommandsTest, AnEndpointOfANewHostTakesThePlaceOfAnIdleOne)
     for (qsizetype i = 1; i < sockets.size(); ++i) {
         auto client = std::make_unique<QLocalSocket>();
         ASSERT_TRUE(connectTo(*client, sockets[i])) << i;
-        ASSERT_FALSE(until(*client, send(*client, QStringLiteral("remote"), QStringLiteral("list"), {})).isEmpty()) << i;
+        ASSERT_FALSE(until(*client, send(*client, QStringLiteral("remote"), QStringLiteral("list"), {})).isEmpty())
+            << i;
         clients.push_back(std::move(client));
     }
     error.clear();
     EXPECT_TRUE(m_remote->endpoint(FakePane, QStringLiteral("late"), false, &error).isEmpty());
-    EXPECT_EQ(error, QStringLiteral("pane 7 has %1 remote command sockets in use already").arg(RemoteSockets::MaxEndpointsPerPane));
+    EXPECT_EQ(
+        error,
+        QStringLiteral("pane 7 has %1 remote command sockets in use already").arg(RemoteSockets::MaxEndpointsPerPane));
     // A host that has its endpoint gets it again.
     EXPECT_EQ(m_remote->endpoint(FakePane, QStringLiteral("h3"), false, &error), sockets[3]);
     clients.clear();
@@ -659,7 +734,8 @@ TEST_F(RemoteCommandsTest, EndpointsCountAgainstTheSessionsOfTheProcess)
     QString error;
     int made = 0;
     for (quint32 pane = 100; made < RemoteSockets::MaxSessions; ++pane) {
-        for (int host = 0; host < RemoteSockets::MaxEndpointsPerPane && made < RemoteSockets::MaxSessions; ++host, ++made) {
+        for (int host = 0; host < RemoteSockets::MaxEndpointsPerPane && made < RemoteSockets::MaxSessions;
+             ++host, ++made) {
             ASSERT_FALSE(m_remote->endpoint(pane, QStringLiteral("h%1").arg(host), true, &error).isEmpty())
                 << made << ": " << error.toStdString();
         }
@@ -674,7 +750,8 @@ TEST_F(RemoteCommandsTest, EndpointsCountAgainstTheSessionsOfTheProcess)
 TEST_F(RemoteCommandsTest, TheSettingsCloseTheEndpoints)
 {
     ASSERT_TRUE(start());
-    for (const auto& [group, key] : {std::pair{"Terminal", "sshRemoteCommands"}, std::pair{"Control", "enabled"}, std::pair{"Scripts", "enabled"}}) {
+    for (const auto& [group, key] : {std::pair{"Terminal", "sshRemoteCommands"}, std::pair{"Control", "enabled"},
+                                     std::pair{"Scripts", "enabled"}}) {
         const QString setting = QStringLiteral("%1.%2").arg(QLatin1String(group), QLatin1String(key));
         SCOPED_TRACE(setting.toStdString());
         QString error;
@@ -719,58 +796,89 @@ TEST_F(RemoteCommandsTest, TheRemoteTargetHasTheCallsOfARunAndNoMore)
     ASSERT_TRUE(connectTo(client, opened.socket));
 
     // The schema has the calls and the events of a run, and no command's own entry.
-    const QJsonObject schema = until(client, send(client, target, {}, {}, QStringLiteral("schema"))).value(0).value(QStringLiteral("result")).toObject();
+    const QJsonObject schema = until(client, send(client, target, {}, {}, QStringLiteral("schema")))
+                                   .value(0)
+                                   .value(QStringLiteral("result"))
+                                   .toObject();
     const auto names = [&schema](const char* kind) {
         QStringList out;
-        for (const QJsonValue& entry : schema.value(QLatin1String(kind)).toArray()) out << entry.toObject().value(QStringLiteral("name")).toString();
+        for (const QJsonValue& entry : schema.value(QLatin1String(kind)).toArray())
+            out << entry.toObject().value(QStringLiteral("name")).toString();
         return out;
     };
     const QStringList functions = names("functions");
-    for (const char* name : {"list", "input", "run", "ack", "cancel"}) EXPECT_TRUE(functions.contains(QLatin1String(name))) << name;
-    for (const QString& name : functions) EXPECT_FALSE(name.startsWith(QLatin1String("far."))) << qPrintable(name);
+    for (const char* name : {"list", "input", "run", "ack", "cancel"})
+        EXPECT_TRUE(functions.contains(QLatin1String(name))) << name;
+    for (const QString& name : functions)
+        EXPECT_FALSE(name.startsWith(QLatin1String("far."))) << qPrintable(name);
     EXPECT_EQ(names("signals"), (QStringList{QStringLiteral("stdout"), QStringLiteral("stderr")}));
     // No control events through it.
-    EXPECT_EQ(until(client, send(client, QStringLiteral("control"), QStringLiteral("titleChanged"), {}, QStringLiteral("subscribe")))
-                  .value(0).value(QStringLiteral("code")).toString(),
-              QStringLiteral("NO_SUCH_TARGET"));
+    EXPECT_EQ(
+        until(client,
+              send(client, QStringLiteral("control"), QStringLiteral("titleChanged"), {}, QStringLiteral("subscribe")))
+            .value(0)
+            .value(QStringLiteral("code"))
+            .toString(),
+        QStringLiteral("NO_SUCH_TARGET"));
     // A subscriber of the run events gets none of another connection's run.
     QLocalSocket listener;
     ASSERT_TRUE(connectTo(listener, opened.socket));
-    EXPECT_EQ(until(listener, send(listener, target, QStringLiteral("stdout"), {}, QStringLiteral("subscribe"))).value(0).value(QStringLiteral("type")),
+    EXPECT_EQ(until(listener, send(listener, target, QStringLiteral("stdout"), {}, QStringLiteral("subscribe")))
+                  .value(0)
+                  .value(QStringLiteral("type")),
               QStringLiteral("reply"));
 
     // Input in parts, then the run that takes it. The directory is one of
     // the remote host, which the handler gets as text.
     for (const bool eof : {false, true}) {
-        EXPECT_EQ(until(client, send(client, target, QStringLiteral("input"), {QStringLiteral("r1"), eof ? QStringLiteral("b") : QStringLiteral("a"), eof}))
-                      .value(0).value(QStringLiteral("result")),
+        EXPECT_EQ(until(client,
+                        send(client, target, QStringLiteral("input"),
+                             {QStringLiteral("r1"), eof ? QStringLiteral("b") : QStringLiteral("a"), eof}))
+                      .value(0)
+                      .value(QStringLiteral("result")),
                   QJsonValue(true));
     }
-    QList<QJsonObject> frames = until(client, send(client, target, QStringLiteral("run"),
-                                                   {QStringLiteral("r1"), QStringLiteral("far"), QStringLiteral("echo"), QJsonArray{},
-                                                    QStringLiteral("/nowhere/here/src"), 0}));
+    QList<QJsonObject> frames = until(client,
+                                      send(client, target, QStringLiteral("run"),
+                                           {QStringLiteral("r1"), QStringLiteral("far"), QStringLiteral("echo"),
+                                            QJsonArray{}, QStringLiteral("/nowhere/here/src"), 0}));
     EXPECT_EQ(output(frames), QStringLiteral("ab /nowhere/here/src\n"));
-    EXPECT_EQ(frames.value(frames.size() - 1).value(QStringLiteral("result")).toObject().value(QStringLiteral("exit")).toInt(-1), 0);
+    EXPECT_EQ(frames.value(frames.size() - 1)
+                  .value(QStringLiteral("result"))
+                  .toObject()
+                  .value(QStringLiteral("exit"))
+                  .toInt(-1),
+              0);
     // The run's events came to its caller alone: the subscriber's next answer is all it reads.
     EXPECT_EQ(until(listener, send(listener, target, QStringLiteral("list"), {})).size(), 1);
     // A relative directory would name one of this machine.
-    frames = until(client, send(client, target, QStringLiteral("run"),
-                                {QStringLiteral("r2"), QStringLiteral("far"), QStringLiteral("echo"), QJsonArray{}, QStringLiteral("src"), 0}));
-    EXPECT_TRUE(frames.value(0).value(QStringLiteral("message")).toString().contains(QLatin1String("cwd must be empty or an absolute path")));
+    frames = until(client,
+                   send(client, target, QStringLiteral("run"),
+                        {QStringLiteral("r2"), QStringLiteral("far"), QStringLiteral("echo"), QJsonArray{},
+                         QStringLiteral("src"), 0}));
+    EXPECT_TRUE(frames.value(0)
+                    .value(QStringLiteral("message"))
+                    .toString()
+                    .contains(QLatin1String("cwd must be empty or an absolute path")));
 
     // A run that waits takes an ack, and a cancel ends it with 130.
-    const qint64 run = send(client, target, QStringLiteral("run"),
-                            {QStringLiteral("r3"), QStringLiteral("far"), QStringLiteral("slow"), QJsonArray{}, QString(), 0});
+    const qint64 run =
+        send(client, target, QStringLiteral("run"),
+             {QStringLiteral("r3"), QStringLiteral("far"), QStringLiteral("slow"), QJsonArray{}, QString(), 0});
     QByteArray started;
     ASSERT_TRUE(pumpUntil([&] {
-        if (!client.canReadLine()) return false;
+        if (!client.canReadLine())
+            return false;
         started = client.readLine();
         return true;
     }));
     const QJsonObject event = QJsonDocument::fromJson(started).object();
     ASSERT_EQ(event.value(QStringLiteral("type")).toString(), QStringLiteral("event"));
-    EXPECT_EQ(event.value(QStringLiteral("args")).toArray(), (QJsonArray{QStringLiteral("r3"), QStringLiteral("start\n")}));
-    EXPECT_EQ(until(client, send(client, target, QStringLiteral("ack"), {QStringLiteral("r3"), double(started.size())})).value(0).value(QStringLiteral("type")),
+    EXPECT_EQ(event.value(QStringLiteral("args")).toArray(),
+              (QJsonArray{QStringLiteral("r3"), QStringLiteral("start\n")}));
+    EXPECT_EQ(until(client, send(client, target, QStringLiteral("ack"), {QStringLiteral("r3"), double(started.size())}))
+                  .value(0)
+                  .value(QStringLiteral("type")),
               QStringLiteral("reply"));
     const qint64 cancel = send(client, target, QStringLiteral("cancel"), {QStringLiteral("r3")});
     QHash<qint64, QJsonObject> answers;
@@ -782,7 +890,8 @@ TEST_F(RemoteCommandsTest, TheRemoteTargetHasTheCallsOfARunAndNoMore)
         return answers.contains(run) && answers.contains(cancel);
     }));
     EXPECT_EQ(answers.value(cancel).value(QStringLiteral("type")), QStringLiteral("reply"));
-    EXPECT_EQ(answers.value(run).value(QStringLiteral("result")).toObject().value(QStringLiteral("exit")).toInt(-1), 130);
+    EXPECT_EQ(answers.value(run).value(QStringLiteral("result")).toObject().value(QStringLiteral("exit")).toInt(-1),
+              130);
 
     // What open() takes from the client: at most 256 ssh options, and a
     // destination that ssh cannot take for an option.
@@ -794,7 +903,9 @@ TEST_F(RemoteCommandsTest, TheRemoteTargetHasTheCallsOfARunAndNoMore)
     for (const QString& destination : {QString(), QStringLiteral("-oProxyCommand=touch /tmp/x")}) {
         RemoteSockets::Request bad = request(watched->processId());
         bad.destination = destination;
-        EXPECT_EQ(m_remote->open(bad, opened), QStringLiteral("the ssh destination must not be empty or start with '-'")) << qPrintable(destination);
+        EXPECT_EQ(m_remote->open(bad, opened),
+                  QStringLiteral("the ssh destination must not be empty or start with '-'"))
+            << qPrintable(destination);
     }
 }
 
@@ -810,10 +921,13 @@ TEST_F(RemoteCommandsTest, TheSocketClosesWithItsPaneAndWithTheWatchedProcess)
     EXPECT_FALSE(exists(byPane.socket));
     EXPECT_EQ(m_answers.value(FakePane), Remote::Answer{});
     // The forward goes with the options that reach the shared connection.
-    const QStringList cancel{QStringLiteral("-F"), QStringLiteral("/cfg"), QStringLiteral("-O"), QStringLiteral("cancel"),
-                             QStringLiteral("-R"), byPane.path + QLatin1Char(':') + byPane.socket, QStringLiteral("--"),
-                             QStringLiteral("prod")};
-    EXPECT_TRUE(pumpUntil([&] { return runs().contains(cancel); }));
+    const QStringList cancel{QStringLiteral("-F"), QStringLiteral("/cfg"),
+                             QStringLiteral("-O"), QStringLiteral("cancel"),
+                             QStringLiteral("-R"), byPane.path + QLatin1Char(':') + byPane.socket,
+                             QStringLiteral("--"), QStringLiteral("prod")};
+    EXPECT_TRUE(pumpUntil([&] {
+        return runs().contains(cancel);
+    }));
 
     const auto second = sleeper();
     RemoteSockets::Opened byProcess;
@@ -822,9 +936,13 @@ TEST_F(RemoteCommandsTest, TheSocketClosesWithItsPaneAndWithTheWatchedProcess)
     const qint64 ended = second->processId();
     second->kill();
     second->waitForFinished();
-    EXPECT_TRUE(pumpUntil([&] { return m_remote->tokens().isEmpty(); }));
+    EXPECT_TRUE(pumpUntil([&] {
+        return m_remote->tokens().isEmpty();
+    }));
     EXPECT_FALSE(exists(byProcess.socket));
-    EXPECT_TRUE(pumpUntil([&] { return runsWith(byProcess.path + QLatin1Char(':') + byProcess.socket).size() == 1; }));
+    EXPECT_TRUE(pumpUntil([&] {
+        return runsWith(byProcess.path + QLatin1Char(':') + byProcess.socket).size() == 1;
+    }));
 
     // A process that has ended opens nothing.
     RemoteSockets::Opened none;
@@ -850,7 +968,9 @@ TEST_F(RemoteCommandsTest, AFailedForwardClosesTheSocketAndGivesItsReason)
     // The session keeps its reason until the process ends, and cancels nothing.
     watched->kill();
     watched->waitForFinished();
-    EXPECT_TRUE(pumpUntil([&] { return m_remote->tokens().isEmpty(); }));
+    EXPECT_TRUE(pumpUntil([&] {
+        return m_remote->tokens().isEmpty();
+    }));
     EXPECT_EQ(m_answers.value(FakePane), Remote::Answer{});
     ASSERT_NO_FATAL_FAILURE(expectNoCancel());
 }
@@ -872,11 +992,14 @@ TEST_F(RemoteCommandsTest, AnSshSessionInTheOverlayAnswersThereAndLeavesThePanes
     ASSERT_EQ(m_remote->open(overlay, opened), QString());
     ASSERT_EQ(m_remote->forwarded(opened.token), QString());
     EXPECT_EQ(m_answers.value(FakePane), paneAnswer);
-    EXPECT_EQ(m_overlayAnswers.value(FakePane), std::optional(Remote::Answer{opened.path.toStdString(), Remote::Error::Off}));
+    EXPECT_EQ(m_overlayAnswers.value(FakePane),
+              std::optional(Remote::Answer{opened.path.toStdString(), Remote::Error::Off}));
     // Once it ends, the overlay answers as the pane again.
     inOverlay->kill();
     inOverlay->waitForFinished();
-    EXPECT_TRUE(pumpUntil([&] { return m_remote->tokens().size() == 1; }));
+    EXPECT_TRUE(pumpUntil([&] {
+        return m_remote->tokens().size() == 1;
+    }));
     EXPECT_EQ(m_answers.value(FakePane), paneAnswer);
     EXPECT_EQ(m_overlayAnswers.value(FakePane), std::nullopt);
 }
@@ -939,20 +1062,23 @@ TEST_F(RemoteCommandsTest, EachSettingOfTheGateClosesTheSessionsAndRefusesNewOne
     ASSERT_TRUE(m_settings->write(QStringLiteral("Terminal"), QStringLiteral("sshRemoteCommands"), true));
     ASSERT_TRUE(m_remote->enabled());
     const auto settle = [&] {
-        return output(callOn(socketPath(), QStringLiteral("commands"), QStringLiteral("run"),
-                             {QStringLiteral("s1"), QStringLiteral("far"), QStringLiteral("settle"), QJsonArray{}, QString(), 0}));
+        return output(callOn(
+            socketPath(), QStringLiteral("commands"), QStringLiteral("run"),
+            {QStringLiteral("s1"), QStringLiteral("far"), QStringLiteral("settle"), QJsonArray{}, QString(), 0}));
     };
     // The count that shows an ended run: a slow run that runs its time counts.
     {
         ASSERT_EQ(m_remote->open(request(watched->processId()), opened), QString());
-        const QList<QJsonObject> frames = callOn(opened.socket, QStringLiteral("remote"), QStringLiteral("run"),
-                                                 {QStringLiteral("r0"), QStringLiteral("far"), QStringLiteral("slow"), QJsonArray{}, QString(), 0});
+        const QList<QJsonObject> frames =
+            callOn(opened.socket, QStringLiteral("remote"), QStringLiteral("run"),
+                   {QStringLiteral("r0"), QStringLiteral("far"), QStringLiteral("slow"), QJsonArray{}, QString(), 0});
         ASSERT_EQ(output(frames), QStringLiteral("start\ndone\n"));
         ASSERT_EQ(settle(), QStringLiteral("1"));
         m_remote->paneClosed(FakePane);
     }
 
-    for (const auto& [group, key] : {std::pair{"Terminal", "sshRemoteCommands"}, std::pair{"Control", "enabled"}, std::pair{"Scripts", "enabled"}}) {
+    for (const auto& [group, key] : {std::pair{"Terminal", "sshRemoteCommands"}, std::pair{"Control", "enabled"},
+                                     std::pair{"Scripts", "enabled"}}) {
         SCOPED_TRACE(QStringLiteral("%1.%2").arg(QLatin1String(group), QLatin1String(key)).toStdString());
         ASSERT_EQ(m_remote->open(request(watched->processId()), opened), QString());
         ASSERT_TRUE(exists(opened.socket));
@@ -964,11 +1090,13 @@ TEST_F(RemoteCommandsTest, EachSettingOfTheGateClosesTheSessionsAndRefusesNewOne
         // A client with a run in flight.
         QLocalSocket client;
         ASSERT_TRUE(connectTo(client, opened.socket));
-        const qint64 run = send(client, QStringLiteral("remote"), QStringLiteral("run"),
-                                {QStringLiteral("r1"), QStringLiteral("far"), QStringLiteral("slow"), QJsonArray{}, QString(), 0});
+        const qint64 run =
+            send(client, QStringLiteral("remote"), QStringLiteral("run"),
+                 {QStringLiteral("r1"), QStringLiteral("far"), QStringLiteral("slow"), QJsonArray{}, QString(), 0});
         QList<QJsonObject> frames;
         ASSERT_TRUE(pumpUntil([&] {
-            while (client.canReadLine()) frames << QJsonDocument::fromJson(client.readLine()).object();
+            while (client.canReadLine())
+                frames << QJsonDocument::fromJson(client.readLine()).object();
             return output(frames) == QLatin1String("start\n");
         }));
 
@@ -979,17 +1107,23 @@ TEST_F(RemoteCommandsTest, EachSettingOfTheGateClosesTheSessionsAndRefusesNewOne
         // The pane answers that there is no socket.
         EXPECT_EQ(m_answers.value(FakePane), Remote::Answer{});
         // The client gets the reason as the reply to its run, and then loses its connection.
-        EXPECT_TRUE(pumpUntil([&] { return client.state() == QLocalSocket::UnconnectedState; }));
-        while (client.canReadLine()) frames << QJsonDocument::fromJson(client.readLine()).object();
+        EXPECT_TRUE(pumpUntil([&] {
+            return client.state() == QLocalSocket::UnconnectedState;
+        }));
+        while (client.canReadLine())
+            frames << QJsonDocument::fromJson(client.readLine()).object();
         EXPECT_FALSE(frames.isEmpty());
         if (!frames.isEmpty()) {
             EXPECT_EQ(frames.last().value(QStringLiteral("id")).toInteger(), run);
             EXPECT_EQ(frames.last().value(QStringLiteral("type")), QStringLiteral("error"));
             EXPECT_EQ(frames.last().value(QStringLiteral("message")),
-                      QStringLiteral("remote commands are off (%1.%2) in the running afterglow").arg(QLatin1String(group), QLatin1String(key)));
+                      QStringLiteral("remote commands are off (%1.%2) in the running afterglow")
+                          .arg(QLatin1String(group), QLatin1String(key)));
         }
         // The forward goes too.
-        EXPECT_TRUE(pumpUntil([&] { return runsWith(opened.path + QLatin1Char(':') + opened.socket).size() == 1; }));
+        EXPECT_TRUE(pumpUntil([&] {
+            return runsWith(opened.path + QLatin1Char(':') + opened.socket).size() == 1;
+        }));
         // Nothing opens while it is off.
         RemoteSockets::Opened refused;
         EXPECT_FALSE(m_remote->open(request(watched->processId()), refused).isEmpty());
@@ -1000,7 +1134,8 @@ TEST_F(RemoteCommandsTest, EachSettingOfTheGateClosesTheSessionsAndRefusesNewOne
         // The scripts ended the run: a wait as long as its own, started
         // after it, ends after it would have, and sees it never finished.
         // Scripts.enabled reloads the script, whose count starts again.
-        EXPECT_EQ(settle(), QLatin1String(group) == QLatin1String("Scripts") ? QStringLiteral("0") : QStringLiteral("1"));
+        EXPECT_EQ(settle(),
+                  QLatin1String(group) == QLatin1String("Scripts") ? QStringLiteral("0") : QStringLiteral("1"));
     }
 
     // Terminal.sshIntegration only chooses what an integrated shell's ssh
@@ -1011,7 +1146,8 @@ TEST_F(RemoteCommandsTest, EachSettingOfTheGateClosesTheSessionsAndRefusesNewOne
     EXPECT_EQ(m_remote->tokens(), QStringList{opened.token});
     EXPECT_TRUE(exists(opened.socket));
     const QJsonObject listed = callOn(opened.socket, QStringLiteral("remote"), QStringLiteral("list"), {}).value(0);
-    EXPECT_EQ(listed.value(QStringLiteral("type")).toString(), QStringLiteral("reply")) << qPrintable(listed.value(QStringLiteral("message")).toString());
+    EXPECT_EQ(listed.value(QStringLiteral("type")).toString(), QStringLiteral("reply"))
+        << qPrintable(listed.value(QStringLiteral("message")).toString());
     RemoteSockets::Opened another;
     EXPECT_EQ(m_remote->open(request(watched->processId()), another), QString());
 }
@@ -1051,8 +1187,8 @@ TEST_F(RemoteCommandsTest, TheProbeForwardsASocketWhenTheHostHasTheSameAglow)
     ASSERT_EQ(forwards.size(), 1);
     const QStringList forward = forwards.first();
     EXPECT_EQ(forward.mid(forward.indexOf(QStringLiteral("-O"))),
-              (QStringList{QStringLiteral("-O"), QStringLiteral("forward"), QStringLiteral("-R"), path + QLatin1Char(':') + socket,
-                           QStringLiteral("--"), QStringLiteral("prod")}));
+              (QStringList{QStringLiteral("-O"), QStringLiteral("forward"), QStringLiteral("-R"),
+                           path + QLatin1Char(':') + socket, QStringLiteral("--"), QStringLiteral("prod")}));
     EXPECT_FALSE(forward.contains(QStringLiteral("-L")));
     // The session shares the connection, and never forwards with -R itself.
     const QStringList session = lastRun();
@@ -1091,7 +1227,8 @@ TEST_F(RemoteCommandsTest, NoAglowNoMasterOrTheSettingOffForwardsNothingAndSaysN
     EXPECT_TRUE(m_stderr.isEmpty()) << qPrintable(m_stderr);
 
     // A requirement off: no probe at all, and no message.
-    for (const auto& [group, key] : {std::pair{"Terminal", "sshRemoteCommands"}, std::pair{"Control", "enabled"}, std::pair{"Scripts", "enabled"}}) {
+    for (const auto& [group, key] : {std::pair{"Terminal", "sshRemoteCommands"}, std::pair{"Control", "enabled"},
+                                     std::pair{"Scripts", "enabled"}}) {
         SCOPED_TRACE(QStringLiteral("%1.%2").arg(QLatin1String(group), QLatin1String(key)).toStdString());
         ASSERT_TRUE(m_settings->write(QString::fromLatin1(group), QString::fromLatin1(key), false));
         process = helper({QStringLiteral("prod")});
@@ -1128,7 +1265,8 @@ TEST_F(RemoteCommandsTest, AnotherProtocolIsReportedOnceForEachHostAndVersion)
     EXPECT_TRUE(m_stderr.contains(QLatin1String("aglow on stage speaks protocol 99"))) << qPrintable(m_stderr);
     EXPECT_EQ(m_stderr.count(QLatin1Char('\n')), 1);
     // Each stays known.
-    for (const auto& [host, aglow] : {std::pair{"prod", "other"}, std::pair{"prod", "another"}, std::pair{"stage", "other"}}) {
+    for (const auto& [host, aglow] :
+         {std::pair{"prod", "other"}, std::pair{"prod", "another"}, std::pair{"stage", "other"}}) {
         process = helper({QString::fromLatin1(host)}, {{QStringLiteral("FAKE_AGLOW"), QString::fromLatin1(aglow)}});
         EXPECT_EQ(finish(*process), 7);
         EXPECT_TRUE(m_stderr.isEmpty()) << host << " " << aglow << ": " << qPrintable(m_stderr);
@@ -1169,7 +1307,8 @@ TEST_F(RemoteCommandsTest, ARunWhoseHandlerTurnsTheSettingOffEndsWithItsSocket)
     // sanitizers show it every time (TESTING.md).
     bool turnedOff = false;
     QObject::connect(m_scripts.get(), &ScriptHost::effectApplied, m_scripts.get(), [&] {
-        if (turnedOff) return;
+        if (turnedOff)
+            return;
         turnedOff = true;
         m_settings->write(QStringLiteral("Terminal"), QStringLiteral("sshRemoteCommands"), false);
     });
@@ -1177,7 +1316,9 @@ TEST_F(RemoteCommandsTest, ARunWhoseHandlerTurnsTheSettingOffEndsWithItsSocket)
     ASSERT_TRUE(connectTo(client, opened.socket));
     send(client, QStringLiteral("remote"), QStringLiteral("run"),
          {QStringLiteral("r1"), QStringLiteral("far"), QStringLiteral("there"), QJsonArray{}, QString(), 0});
-    EXPECT_TRUE(pumpUntil([&] { return turnedOff && client.state() == QLocalSocket::UnconnectedState; }));
+    EXPECT_TRUE(pumpUntil([&] {
+        return turnedOff && client.state() == QLocalSocket::UnconnectedState;
+    }));
     EXPECT_TRUE(m_remote->tokens().isEmpty());
     EXPECT_FALSE(exists(opened.socket));
     EXPECT_FALSE(exists(opened.socket + QStringLiteral(".lock")));
@@ -1201,23 +1342,28 @@ TEST_F(RemoteCommandsTest, ARunWhoseHandlerClosesItsSocketAsItStartsIsCancelled)
         // socket closes before the run has its handle.
         const QMetaObject::Connection hook =
             QObject::connect(m_scripts.get(), &ScriptHost::effectApplied, m_scripts.get(), [&] {
-                if (turnedOff) return;
+                if (turnedOff)
+                    return;
                 turnedOff = true;
                 m_settings->write(QStringLiteral("Terminal"), QStringLiteral("sshRemoteCommands"), false);
             });
         QLocalSocket client;
         EXPECT_TRUE(connectTo(client, opened.socket));
-        const qint64 id = send(client, QStringLiteral("remote"), QStringLiteral("run"),
-                               {QStringLiteral("r1"), QStringLiteral("far"), QStringLiteral("slow"), QJsonArray{}, QString(), 0});
+        const qint64 id =
+            send(client, QStringLiteral("remote"), QStringLiteral("run"),
+                 {QStringLiteral("r1"), QStringLiteral("far"), QStringLiteral("slow"), QJsonArray{}, QString(), 0});
         QList<QJsonObject> frames;
         const bool done = pumpUntil([&] {
-            while (client.canReadLine()) frames << QJsonDocument::fromJson(client.readLine()).object();
-            return turnOff ? client.state() == QLocalSocket::UnconnectedState : output(frames) == QLatin1String("start\n");
+            while (client.canReadLine())
+                frames << QJsonDocument::fromJson(client.readLine()).object();
+            return turnOff ? client.state() == QLocalSocket::UnconnectedState
+                           : output(frames) == QLatin1String("start\n");
         });
         QObject::disconnect(hook);
         EXPECT_TRUE(done);
         for (const QJsonObject& frame : std::as_const(frames)) {
-            if (frame.value(QStringLiteral("id")).toInteger() == id && frame.value(QStringLiteral("type")) == QLatin1String("error"))
+            if (frame.value(QStringLiteral("id")).toInteger() == id
+                && frame.value(QStringLiteral("type")) == QLatin1String("error"))
                 return frame.value(QStringLiteral("message")).toString();
         }
         return QString();
@@ -1247,15 +1393,17 @@ TEST_F(RemoteCommandsTest, TheProbeIsNoMasterOfItsOwnForAUsersDashM)
     EXPECT_EQ(finish(*process), 7);
     // ssh -G shows -M as ControlMaster yes: with no master on that path, the
     // probe would be a master that the session does not join.
-    process = helper({QStringLiteral("-vM"), QStringLiteral("prod")},
-                     {{QStringLiteral("FAKE_CONTROL_PATH"), userPath}, {QStringLiteral("FAKE_CHECK"), QStringLiteral("255")}});
+    process = helper(
+        {QStringLiteral("-vM"), QStringLiteral("prod")},
+        {{QStringLiteral("FAKE_CONTROL_PATH"), userPath}, {QStringLiteral("FAKE_CHECK"), QStringLiteral("255")}});
     EXPECT_EQ(runsWith(QStringLiteral("-O"), QStringLiteral("check")).size(), 1);
     EXPECT_TRUE(runsWith(QStringLiteral("-T")).isEmpty());
     EXPECT_TRUE(m_remote->tokens().isEmpty());
     EXPECT_TRUE(lastRun().contains(QStringLiteral("-vM")));
     EXPECT_EQ(finish(*process), 7);
-    EXPECT_TRUE(m_stderr.contains(QLatin1String("no remote commands in this session: no master runs on the ControlPath, "
-                                                "which -M needs")))
+    EXPECT_TRUE(
+        m_stderr.contains(QLatin1String("no remote commands in this session: no master runs on the ControlPath, "
+                                        "which -M needs")))
         << qPrintable(m_stderr);
 }
 
@@ -1274,8 +1422,9 @@ TEST_F(RemoteCommandsTest, ADashMWithoutAControlPathOfTheUsersGetsNoRemoteComman
     EXPECT_TRUE(m_stderr.isEmpty()) << qPrintable(m_stderr);
     process = helper({QStringLiteral("-vM"), QStringLiteral("prod")});
     EXPECT_EQ(finish(*process), 7);
-    EXPECT_TRUE(m_stderr.contains(QLatin1String("no remote commands in this session: -M needs a "
-                                                "ControlPath of your own")))
+    EXPECT_TRUE(
+        m_stderr.contains(QLatin1String("no remote commands in this session: -M needs a "
+                                        "ControlPath of your own")))
         << qPrintable(m_stderr);
 }
 
@@ -1312,13 +1461,16 @@ TEST_F(RemoteCommandsTest, TheSocketOfASessionRefusesConnectionsPastItsCapAndLog
     warnings = 0;
     static QtMessageHandler previous = nullptr;
     previous = qInstallMessageHandler([](QtMsgType type, const QMessageLogContext& context, const QString& message) {
-        if (type == QtWarningMsg && context.category && QLatin1String(context.category) == QLatin1String("afterglow.commands")
+        if (type == QtWarningMsg && context.category
+            && QLatin1String(context.category) == QLatin1String("afterglow.commands")
             && message.contains(QLatin1String("refuses more")))
             ++warnings;
         else if (previous)
             previous(type, context, message);
     });
-    const auto restore = qScopeGuard([] { qInstallMessageHandler(previous); });
+    const auto restore = qScopeGuard([] {
+        qInstallMessageHandler(previous);
+    });
     ASSERT_TRUE(start());
     m_scripts->setEnabled(true);
     const auto watched = sleeper();
@@ -1330,7 +1482,8 @@ TEST_F(RemoteCommandsTest, TheSocketOfASessionRefusesConnectionsPastItsCapAndLog
         bool reply = false;
         pumpUntil([&] {
             while (client.canReadLine()) {
-                if (QJsonDocument::fromJson(client.readLine()).object().value(QStringLiteral("id")).toInteger() == id) reply = true;
+                if (QJsonDocument::fromJson(client.readLine()).object().value(QStringLiteral("id")).toInteger() == id)
+                    reply = true;
             }
             return reply || client.state() == QLocalSocket::UnconnectedState;
         });
@@ -1369,7 +1522,8 @@ TEST_F(RemoteCommandsTest, AHostNameIsShortTextAndAPaneHasSixteenSessionsAtMost)
     ASSERT_TRUE(start());
     const auto watched = sleeper();
     RemoteSockets::Opened opened;
-    for (const QString& host : {QString(), QStringLiteral("a\x1b]0;b"), QStringLiteral("a\u009bb"), QString(256, QLatin1Char('h'))}) {
+    for (const QString& host :
+         {QString(), QStringLiteral("a\x1b]0;b"), QStringLiteral("a\u009bb"), QString(256, QLatin1Char('h'))}) {
         RemoteSockets::Request bad = request(watched->processId());
         bad.host = host;
         EXPECT_FALSE(m_remote->open(bad, opened).isEmpty()) << qPrintable(host);
@@ -1381,7 +1535,8 @@ TEST_F(RemoteCommandsTest, AHostNameIsShortTextAndAPaneHasSixteenSessionsAtMost)
     // Sessions with no socket count too.
     RemoteSockets::Request other = request(watched->processId());
     other.protocol = AfterglowProto::ProtocolVersion + 1;
-    for (int i = 0; i < RemoteSockets::MaxSessionsPerPane; ++i) ASSERT_EQ(m_remote->open(other, opened), QString()) << i;
+    for (int i = 0; i < RemoteSockets::MaxSessionsPerPane; ++i)
+        ASSERT_EQ(m_remote->open(other, opened), QString()) << i;
     EXPECT_EQ(m_remote->open(other, opened), QStringLiteral("pane 7 has 16 remote sessions already"));
     m_remote->paneClosed(FakePane);
     EXPECT_EQ(m_remote->open(other, opened), QString());
@@ -1391,15 +1546,20 @@ TEST_F(RemoteCommandsTest, TheRemoteSessionsShareTheWaitingInputBudgetOfTheProce
 {
     ASSERT_TRUE(start());
     // As Application makes it: the sessions count toward the budget of the process's own socket.
-    RemoteSockets shared(*m_control, *m_scripts, *m_settings, [](quint32, const Remote::Answer&, const std::optional<Remote::Answer>&) { return true; },
-                         m_commands->budget());
+    RemoteSockets shared(
+        *m_control, *m_scripts, *m_settings,
+        [](quint32, const Remote::Answer&, const std::optional<Remote::Answer>&) {
+            return true;
+        },
+        m_commands->budget());
     shared.setSsh(fakeSsh());
     const auto watched = sleeper();
     RemoteSockets::Opened opened;
     ASSERT_EQ(shared.open(request(watched->processId()), opened), QString());
     QLocalSocket client;
     ASSERT_TRUE(connectTo(client, opened.socket));
-    qint64 id = send(client, QStringLiteral("remote"), QStringLiteral("input"), {QStringLiteral("r1"), QStringLiteral("abc"), false});
+    qint64 id = send(client, QStringLiteral("remote"), QStringLiteral("input"),
+                     {QStringLiteral("r1"), QStringLiteral("abc"), false});
     QList<QJsonObject> frames = until(client, id);
     ASSERT_FALSE(frames.isEmpty());
     EXPECT_EQ(frames.last().value(QStringLiteral("type")).toString(), QStringLiteral("reply"));
@@ -1407,7 +1567,8 @@ TEST_F(RemoteCommandsTest, TheRemoteSessionsShareTheWaitingInputBudgetOfTheProce
     EXPECT_EQ(m_commands->waitingInputBytes(), 3);
     // Full from the other sockets: the remote input is refused.
     m_commands->budget()->inputBytes = CommandSocket::MaxWaitingInputBytes;
-    id = send(client, QStringLiteral("remote"), QStringLiteral("input"), {QStringLiteral("r2"), QStringLiteral("x"), true});
+    id = send(client, QStringLiteral("remote"), QStringLiteral("input"),
+              {QStringLiteral("r2"), QStringLiteral("x"), true});
     frames = until(client, id);
     ASSERT_FALSE(frames.isEmpty());
     EXPECT_EQ(frames.last().value(QStringLiteral("type")).toString(), QStringLiteral("error"));
@@ -1432,9 +1593,11 @@ TEST_F(RemoteCommandsTest, ControlPathNoneOrControlMasterNoKeepsTheUsersChoice)
         EXPECT_TRUE(m_stderr.isEmpty()) << qPrintable(m_stderr);
     }
     // With -v the helper says why.
-    auto process = helper({QStringLiteral("-v"), QStringLiteral("prod")}, {{QStringLiteral("FAKE_USER"), QStringLiteral("path-none")}});
+    auto process = helper({QStringLiteral("-v"), QStringLiteral("prod")},
+                          {{QStringLiteral("FAKE_USER"), QStringLiteral("path-none")}});
     EXPECT_EQ(finish(*process), 7);
-    EXPECT_TRUE(m_stderr.contains(QLatin1String("no remote commands in this session: ControlPath is none"))) << qPrintable(m_stderr);
+    EXPECT_TRUE(m_stderr.contains(QLatin1String("no remote commands in this session: ControlPath is none")))
+        << qPrintable(m_stderr);
 }
 
 // A server that answers the control call with an error: -v gives its
@@ -1455,7 +1618,8 @@ TEST_F(RemoteCommandsTest, WithVerboseAControlCallThatFailsSaysWhy)
          "no remote commands in this session: a session pane takes no control calls?[2J\n"},
         {AfterglowProto::IpcErrorCode::NoSuchTarget, "no target control",
          "no remote commands in this session: Afterglow has no control target: Control.enabled is off\n"},
-        {AfterglowProto::IpcErrorCode::CallFailed, "", "no remote commands in this session: Afterglow does not answer\n"},
+        {AfterglowProto::IpcErrorCode::CallFailed, "",
+         "no remote commands in this session: Afterglow does not answer\n"},
     };
     int index = 0;
     for (const Case& c : cases) {
@@ -1499,23 +1663,28 @@ TEST_F(RemoteCommandsTest, AForwardThatAfterglowConfirmsTooLateIsCancelledWithTh
     const QString gate = m_dir.filePath(QStringLiteral("gate"));
     QTimer stall;
     QObject::connect(&stall, &QTimer::timeout, [&] {
-        if (runsWith(QStringLiteral("-O"), QStringLiteral("forward")).isEmpty()) return;
+        if (runsWith(QStringLiteral("-O"), QStringLiteral("forward")).isEmpty())
+            return;
         stall.stop();
         QFile open(gate);
         EXPECT_TRUE(open.open(QIODevice::WriteOnly));
         // Until the helper gave up on the call: it cancels the forward then.
         QElapsedTimer held;
         held.start();
-        while (runsWith(QStringLiteral("-O"), QStringLiteral("cancel")).isEmpty() && held.elapsed() < 10000) QThread::msleep(10);
+        while (runsWith(QStringLiteral("-O"), QStringLiteral("cancel")).isEmpty() && held.elapsed() < 10000)
+            QThread::msleep(10);
     });
     stall.start(5);
-    auto process = helper({QStringLiteral("-v"), QStringLiteral("prod")}, {{QStringLiteral("FAKE_FORWARD_GATE"), gate}});
+    auto process =
+        helper({QStringLiteral("-v"), QStringLiteral("prod")}, {{QStringLiteral("FAKE_FORWARD_GATE"), gate}});
     ASSERT_FALSE(stall.isActive());
     ASSERT_EQ(m_remote->tokens().size(), 1);
     const QString token = m_remote->tokens().first();
     // The late confirmation answered with the path, and the failure after it
     // replaced the answer: the query tells aglow run why.
-    EXPECT_TRUE(pumpUntil([&] { return m_answers.value(FakePane) == (Remote::Answer{{}, Remote::Error::Forward}); }));
+    EXPECT_TRUE(pumpUntil([&] {
+        return m_answers.value(FakePane) == (Remote::Answer{{}, Remote::Error::Forward});
+    }));
     EXPECT_TRUE(m_remote->socket(token).isEmpty());
     // The helper cancelled the forward that it had added.
     const auto forwards = runsWith(QStringLiteral("-O"), QStringLiteral("forward"));
@@ -1525,11 +1694,14 @@ TEST_F(RemoteCommandsTest, AForwardThatAfterglowConfirmsTooLateIsCancelledWithTh
     ASSERT_EQ(cancels.size(), 1);
     EXPECT_TRUE(cancels.first().contains(spec)) << qPrintable(cancels.first().join(QLatin1Char(' ')));
     EXPECT_EQ(finish(*process), 7);
-    EXPECT_TRUE(m_stderr.contains(QLatin1String("no remote commands in this session: Afterglow did not answer, and the forward is "
-                                                "cancelled")))
+    EXPECT_TRUE(m_stderr.contains(
+        QLatin1String("no remote commands in this session: Afterglow did not answer, and the forward is "
+                      "cancelled")))
         << qPrintable(m_stderr);
     // Afterglow cancels nothing more as the session ends.
-    ASSERT_TRUE(pumpUntil([&] { return !fakeSshRuns(); }));
+    ASSERT_TRUE(pumpUntil([&] {
+        return !fakeSshRuns();
+    }));
     EXPECT_EQ(runsWith(QStringLiteral("-O"), QStringLiteral("cancel")).size(), 1);
 }
 
@@ -1560,9 +1732,10 @@ public:
     explicit Sshd(const QString& directory, const QString& remotePath)
         : m_dir(directory)
     {
-        m_sshd = QStandardPaths::findExecutable(QStringLiteral("sshd"), {QStringLiteral("/usr/sbin"), QStringLiteral("/usr/bin"),
-                                                                         QStringLiteral("/sbin")});
-        if (m_sshd.isEmpty()) m_sshd = QStandardPaths::findExecutable(QStringLiteral("sshd"));
+        m_sshd = QStandardPaths::findExecutable(
+            QStringLiteral("sshd"), {QStringLiteral("/usr/sbin"), QStringLiteral("/usr/bin"), QStringLiteral("/sbin")});
+        if (m_sshd.isEmpty())
+            m_sshd = QStandardPaths::findExecutable(QStringLiteral("sshd"));
         const QString keygen = QStandardPaths::findExecutable(QStringLiteral("ssh-keygen"));
         if (m_sshd.isEmpty() || keygen.isEmpty() || QStandardPaths::findExecutable(QStringLiteral("ssh")).isEmpty()) {
             m_missing = QStringLiteral("sshd, ssh or ssh-keygen is not installed");
@@ -1579,8 +1752,9 @@ public:
             return;
         }
         for (const QString& key : {QStringLiteral("host_key"), QStringLiteral("client_key")}) {
-            if (const Result keyed = run(keygen, {QStringLiteral("-q"), QStringLiteral("-t"), QStringLiteral("ed25519"), QStringLiteral("-N"),
-                                                  QString(), QStringLiteral("-f"), path(key)});
+            if (const Result keyed = run(keygen,
+                                         {QStringLiteral("-q"), QStringLiteral("-t"), QStringLiteral("ed25519"),
+                                          QStringLiteral("-N"), QString(), QStringLiteral("-f"), path(key)});
                 keyed.status != 0) {
                 m_broken = QStringLiteral("ssh-keygen failed: ") + keyed.err;
                 return;
@@ -1592,7 +1766,8 @@ public:
         }
         for (const QString& dir : {QStringLiteral("remote-home"), QStringLiteral("remote-run"), QStringLiteral("c")}) {
             if (!QDir().mkpath(path(dir))
-                || !QFile::setPermissions(path(dir), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner)) {
+                || !QFile::setPermissions(path(dir),
+                                          QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner)) {
                 m_broken = QStringLiteral("cannot make %1").arg(path(dir));
                 return;
             }
@@ -1644,7 +1819,8 @@ public:
             // The destructor stops it. When the test binary dies before
             // that, the kernel does.
             process->setChildProcessModifier(endWithTheTest);
-            process->start(m_sshd,{QStringLiteral("-D"), QStringLiteral("-e"), QStringLiteral("-f"), config.fileName()});
+            process->start(m_sshd,
+                           {QStringLiteral("-D"), QStringLiteral("-e"), QStringLiteral("-f"), config.fileName()});
             if (!process->waitForStarted()) {
                 m_broken = QStringLiteral("sshd did not start");
                 return;
@@ -1666,33 +1842,52 @@ public:
         QFile config(clientConfig());
         const qsizetype hosts = client.indexOf("Host ");
         const QByteArray ordered = client.mid(hosts) + "Host *\n" + client.left(hosts);
-        if (!config.open(QIODevice::WriteOnly) || config.write(ordered) != ordered.size()) m_broken = QStringLiteral("cannot write the ssh config");
+        if (!config.open(QIODevice::WriteOnly) || config.write(ordered) != ordered.size())
+            m_broken = QStringLiteral("cannot write the ssh config");
     }
 
     ~Sshd()
     {
         if (m_missing.isEmpty()) {
-            for (const char* host : {"allow", "refuse"}) ssh({QStringLiteral("-O"), QStringLiteral("exit"), QLatin1String(host)});
+            for (const char* host : {"allow", "refuse"})
+                ssh({QStringLiteral("-O"), QStringLiteral("exit"), QLatin1String(host)});
         }
         for (const auto& master : m_masters) {
             master->terminate();
-            if (!master->waitForFinished(3000)) master->kill();
+            if (!master->waitForFinished(3000))
+                master->kill();
             master->waitForFinished();
         }
         for (const auto& server : m_servers) {
             server->terminate();
-            if (!server->waitForFinished(3000)) server->kill();
+            if (!server->waitForFinished(3000))
+                server->kill();
             server->waitForFinished();
         }
     }
 
     /// Why the test cannot run here: a tool is not installed. Else empty.
-    QString missing() const { return m_missing; }
+    QString missing() const
+    {
+        return m_missing;
+    }
     /// What failed in the harness, with the tools there. Else empty.
-    QString broken() const { return m_broken; }
-    QString path(const QString& name) const { return m_dir + QLatin1Char('/') + name; }
-    QString clientConfig() const { return path(QStringLiteral("ssh_config")); }
-    QString remoteRun() const { return path(QStringLiteral("remote-run")); }
+    QString broken() const
+    {
+        return m_broken;
+    }
+    QString path(const QString& name) const
+    {
+        return m_dir + QLatin1Char('/') + name;
+    }
+    QString clientConfig() const
+    {
+        return path(QStringLiteral("ssh_config"));
+    }
+    QString remoteRun() const
+    {
+        return path(QStringLiteral("remote-run"));
+    }
     /// The log of the sshd @p name (allow or refuse).
     QString log(const QString& name) const
     {
@@ -1726,14 +1921,22 @@ public:
         process->setStandardOutputFile(QProcess::nullDevice());
         process->setStandardErrorFile(path(host + QStringLiteral(".master.log")));
         process->setChildProcessModifier(endWithTheTest);
-        process->start(QStringLiteral("ssh"), {QStringLiteral("-F"), clientConfig(), QStringLiteral("-MN"), QStringLiteral("-o"),
-                                               QStringLiteral("ControlPersist=no"), host});
-        if (!process->waitForStarted()) return false;
+        process->start(QStringLiteral("ssh"),
+                       {QStringLiteral("-F"), clientConfig(), QStringLiteral("-MN"), QStringLiteral("-o"),
+                        QStringLiteral("ControlPersist=no"), host});
+        if (!process->waitForStarted())
+            return false;
         QProcess& master = *process;
         m_masters.push_back(std::move(process));
-        const auto answers = [this, &host] { return ssh({QStringLiteral("-O"), QStringLiteral("check"), host}).status == 0; };
+        const auto answers = [this, &host] {
+            return ssh({QStringLiteral("-O"), QStringLiteral("check"), host}).status == 0;
+        };
         // A master that failed to sign in has ended: no wait for it.
-        pumpUntil([&] { return master.state() == QProcess::NotRunning || answers(); }, 20000);
+        pumpUntil(
+            [&] {
+                return master.state() == QProcess::NotRunning || answers();
+            },
+            20000);
         return master.state() != QProcess::NotRunning && answers();
     }
 
@@ -1764,7 +1967,8 @@ private:
         PortHold()
             : m_fd(::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0))
         {
-            if (m_fd < 0) return;
+            if (m_fd < 0)
+                return;
             const int on = 1;
             sockaddr_in address{};
             address.sin_family = AF_INET;
@@ -1777,12 +1981,19 @@ private:
         }
         ~PortHold()
         {
-            if (m_fd >= 0) ::close(m_fd);
+            if (m_fd >= 0)
+                ::close(m_fd);
         }
         PortHold(const PortHold&) = delete;
         PortHold& operator=(const PortHold&) = delete;
-        bool valid() const { return m_port != 0; }
-        int port() const { return m_port; }
+        bool valid() const
+        {
+            return m_port != 0;
+        }
+        int port() const
+        {
+            return m_port;
+        }
 
     private:
         int m_fd = -1;
@@ -1821,7 +2032,8 @@ TEST_F(RemoteCommandsTest, OpenSshForwardsAsTheDesignExpectsAndAglowRunWorksThro
 #else
     const QString aglowDirectory = QFileInfo(QStringLiteral(AFTERGLOW_AGLOW)).absolutePath();
     Sshd sshd(m_dir.filePath(QStringLiteral("ssh")), aglowDirectory + QStringLiteral(":/usr/bin:/bin"));
-    if (!sshd.missing().isEmpty()) GTEST_SKIP() << qPrintable(sshd.missing());
+    if (!sshd.missing().isEmpty())
+        GTEST_SKIP() << qPrintable(sshd.missing());
     ASSERT_TRUE(sshd.broken().isEmpty()) << qPrintable(sshd.broken());
     ASSERT_TRUE(start());
     m_scripts->setEnabled(true);
@@ -1851,37 +2063,50 @@ TEST_F(RemoteCommandsTest, OpenSshForwardsAsTheDesignExpectsAndAglowRunWorksThro
     ASSERT_TRUE(QDir().mkpath(directory));
     const QString forwarded = directory + QStringLiteral("/a.sock");
     const auto forward = [&](const QString& host, const QString& path, const QStringList& more = {}) {
-        return sshd.ssh(more + QStringList{QStringLiteral("-O"), QStringLiteral("forward"), QStringLiteral("-R"),
-                                           path + QLatin1Char(':') + target, host});
+        return sshd.ssh(more
+                        + QStringList{QStringLiteral("-O"), QStringLiteral("forward"), QStringLiteral("-R"),
+                                      path + QLatin1Char(':') + target, host});
     };
     // A forward on the shared connection: mode 0600, and it reaches the local socket.
     ASSERT_EQ(forward(QStringLiteral("allow"), forwarded).status, 0);
-    EXPECT_EQ(QFileInfo(forwarded).permissions() & ~(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ReadUser
-                                                    | QFileDevice::WriteUser),
-              QFileDevice::Permissions());
+    EXPECT_EQ(
+        QFileInfo(forwarded).permissions()
+            & ~(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ReadUser | QFileDevice::WriteUser),
+        QFileDevice::Permissions());
     EXPECT_EQ(connectError(forwarded), 0);
-    EXPECT_TRUE(pumpUntil([&] { return local.hasPendingConnections(); }));
-    while (local.hasPendingConnections()) delete local.nextPendingConnection();
+    EXPECT_TRUE(pumpUntil([&] {
+        return local.hasPendingConnections();
+    }));
+    while (local.hasPendingConnections())
+        delete local.nextPendingConnection();
     // A cancel refuses connections, and leaves the file.
-    ASSERT_EQ(sshd.ssh({QStringLiteral("-O"), QStringLiteral("cancel"), QStringLiteral("-R"), forwarded + QLatin1Char(':') + target,
-                        QStringLiteral("allow")})
+    ASSERT_EQ(sshd.ssh({QStringLiteral("-O"), QStringLiteral("cancel"), QStringLiteral("-R"),
+                        forwarded + QLatin1Char(':') + target, QStringLiteral("allow")})
                   .status,
               0);
-    EXPECT_TRUE(pumpUntil([&] { return connectError(forwarded) == ECONNREFUSED; }));
+    EXPECT_TRUE(pumpUntil([&] {
+        return connectError(forwarded) == ECONNREFUSED;
+    }));
     EXPECT_TRUE(exists(forwarded));
     // A stale file fails the forward, and the client's StreamLocalBindUnlink changes nothing.
     EXPECT_EQ(forward(QStringLiteral("allow"), forwarded).status, 255);
-    EXPECT_EQ(forward(QStringLiteral("allow"), forwarded, {QStringLiteral("-o"), QStringLiteral("StreamLocalBindUnlink=yes")}).status,
-              255);
+    EXPECT_EQ(
+        forward(QStringLiteral("allow"), forwarded, {QStringLiteral("-o"), QStringLiteral("StreamLocalBindUnlink=yes")})
+            .status,
+        255);
     // A missing parent directory fails it.
     EXPECT_EQ(forward(QStringLiteral("allow"), directory + QStringLiteral("/missing/b.sock")).status, 255);
     // A server that refuses forwarding fails it with the same status.
     EXPECT_EQ(forward(QStringLiteral("refuse"), directory + QStringLiteral("/c.sock")).status, 255);
     // A path over Linux's 108 bytes fails.
-    EXPECT_EQ(forward(QStringLiteral("allow"), directory + QLatin1Char('/') + QString(110, QLatin1Char('x'))).status, 255);
+    EXPECT_EQ(forward(QStringLiteral("allow"), directory + QLatin1Char('/') + QString(110, QLatin1Char('x'))).status,
+              255);
     // A session's own -R stays on the shared connection after the session.
     const QString own = directory + QStringLiteral("/own.sock");
-    EXPECT_EQ(sshd.ssh({QStringLiteral("-R"), own + QLatin1Char(':') + target, QStringLiteral("allow"), QStringLiteral("true")}).status, 0);
+    EXPECT_EQ(sshd.ssh({QStringLiteral("-R"), own + QLatin1Char(':') + target, QStringLiteral("allow"),
+                        QStringLiteral("true")})
+                  .status,
+              0);
     EXPECT_EQ(connectError(own), 0);
     // On a server that refuses it, ssh complains and the forward is not there.
     const Sshd::Result refused = sshd.ssh({QStringLiteral("-R"), directory + QStringLiteral("/d.sock:") + target,
@@ -1894,15 +2119,26 @@ TEST_F(RemoteCommandsTest, OpenSshForwardsAsTheDesignExpectsAndAglowRunWorksThro
     m_pane = std::make_unique<Pane>(AfterglowVt::TerminalOptions{});
     Pane& pane = *m_pane;
     AfterglowPty::SpawnOptions options;
-    options.argv = {AFTERGLOW_BINARY, "ssh", "-F", sshd.clientConfig().toStdString(), "-t", "allow",
+    options.argv = {AFTERGLOW_BINARY,
+                    "ssh",
+                    "-F",
+                    sshd.clientConfig().toStdString(),
+                    "-t",
+                    "allow",
                     "aglow run far there one; aglow run far here; sleep 1"};
     options.workingDirectory = m_dir.path().toStdString();
     options.environment = {{"HOME", m_dir.filePath(QStringLiteral("home")).toStdString()}};
     options.unsetEnvironment = {"SSH_AUTH_SOCK", "TMUX"};
     QString error;
     ASSERT_TRUE(pane.start(options, QStringLiteral("xterm-256color"), 120, 30, 8, 16, &error)) << qPrintable(error);
-    const auto screen = [&] { return pane.text(AfterglowVt::Terminal::TextScope::Screen); };
-    EXPECT_TRUE(pumpUntil([&] { return screen().contains(QLatin1String("no command here in far")); }, 30000))
+    const auto screen = [&] {
+        return pane.text(AfterglowVt::Terminal::TextScope::Screen);
+    };
+    EXPECT_TRUE(pumpUntil(
+        [&] {
+            return screen().contains(QLatin1String("no command here in far"));
+        },
+        30000))
         << qPrintable(screen()) << qPrintable(sshd.log(QStringLiteral("allow")));
     // ev.remote.host is the destination as afterglow ssh named it.
     EXPECT_TRUE(screen().contains(QStringLiteral("there remote allow %1 one").arg(pane.id()))) << qPrintable(screen());
@@ -1919,8 +2155,14 @@ TEST_F(RemoteCommandsTest, OpenSshForwardsAsTheDesignExpectsAndAglowRunWorksThro
     const QString forwardedSocket = remoteDirectory + QLatin1Char('/') + sockets.first();
     EXPECT_EQ(mode(forwardedSocket), int(S_IFSOCK | 0600));
     // The session cancels it at its end.
-    EXPECT_TRUE(pumpUntil([&] { return m_remote->tokens().isEmpty(); }, 30000));
-    EXPECT_TRUE(pumpUntil([&] { return connectError(forwardedSocket) == ECONNREFUSED; }));
+    EXPECT_TRUE(pumpUntil(
+        [&] {
+            return m_remote->tokens().isEmpty();
+        },
+        30000));
+    EXPECT_TRUE(pumpUntil([&] {
+        return connectError(forwardedSocket) == ECONNREFUSED;
+    }));
 #endif
 }
 

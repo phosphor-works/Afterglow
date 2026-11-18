@@ -77,7 +77,8 @@ std::optional<pid_t> parsePid(std::string_view text)
 {
     pid_t pid = 0;
     const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), pid);
-    if (error != std::errc() || end != text.data() + text.size() || pid <= 0) return std::nullopt;
+    if (error != std::errc() || end != text.data() + text.size() || pid <= 0)
+        return std::nullopt;
     return pid;
 }
 
@@ -95,7 +96,8 @@ bool waitFor(Done done, std::chrono::milliseconds limit = 5s)
 {
     const auto deadline = std::chrono::steady_clock::now() + limit;
     while (std::chrono::steady_clock::now() < deadline) {
-        if (done()) return true;
+        if (done())
+            return true;
         std::this_thread::sleep_for(20ms);
     }
     return done();
@@ -110,7 +112,8 @@ bool hasMarker(pid_t pid, const std::vector<std::string>& markers)
     std::size_t at = 0;
     for (std::size_t end; (end = env.find('\0', at)) != std::string::npos; at = end + 1) {
         for (const std::string& marker : markers) {
-            if (env.compare(at, end - at, marker) == 0) return true;
+            if (env.compare(at, end - at, marker) == 0)
+                return true;
         }
     }
     return false;
@@ -123,7 +126,8 @@ std::vector<pid_t> processesWith(const std::vector<std::string>& markers)
     std::error_code error;
     for (const auto& entry : std::filesystem::directory_iterator("/proc", error)) {
         const std::optional<pid_t> pid = parsePid(entry.path().filename().string());
-        if (pid && *pid != ::getpid() && hasMarker(*pid, markers)) found.push_back(*pid);
+        if (pid && *pid != ::getpid() && hasMarker(*pid, markers))
+            found.push_back(*pid);
     }
     return found;
 }
@@ -138,8 +142,10 @@ void killProcessesWith(const std::vector<std::string>& markers)
         const std::vector<pid_t> found = processesWith(markers);
         for (const pid_t pid : found) {
             const int fd = int(::syscall(SYS_pidfd_open, pid, 0));
-            if (fd < 0) continue;
-            if (hasMarker(pid, markers)) ::syscall(SYS_pidfd_send_signal, fd, SIGKILL, nullptr, 0);
+            if (fd < 0)
+                continue;
+            if (hasMarker(pid, markers))
+                ::syscall(SYS_pidfd_send_signal, fd, SIGKILL, nullptr, 0);
             ::close(fd);
         }
         return found.empty();
@@ -171,11 +177,20 @@ public:
         : m_answer(std::move(answer))
     {
         m_listening = m_listener.listen(path, &m_error) == AfterglowProto::IpcListener::Listen::Listening;
-        if (m_listening) m_thread = std::jthread([this](std::stop_token stop) { serve(stop); });
+        if (m_listening)
+            m_thread = std::jthread([this](std::stop_token stop) {
+                serve(stop);
+            });
     }
 
-    bool listening() const { return m_listening; }
-    const std::string& error() const { return m_error; }
+    bool listening() const
+    {
+        return m_listening;
+    }
+    const std::string& error() const
+    {
+        return m_error;
+    }
 
 private:
     void serve(std::stop_token stop)
@@ -189,9 +204,10 @@ private:
             }
             for (auto& connection : connections) {
                 AfterglowProto::IpcRequest request;
-                for (AfterglowProto::IpcServerConnection::Read read; (read = connection->nextRequest(request))
-                                                                     != AfterglowProto::IpcServerConnection::Read::None;) {
-                    if (read == AfterglowProto::IpcServerConnection::Read::Request) connection->send(m_answer(request));
+                for (AfterglowProto::IpcServerConnection::Read read;
+                     (read = connection->nextRequest(request)) != AfterglowProto::IpcServerConnection::Read::None;) {
+                    if (read == AfterglowProto::IpcServerConnection::Read::Request)
+                        connection->send(m_answer(request));
                 }
                 connection->flush();
             }
@@ -230,7 +246,8 @@ protected:
             // that the test starts would take for its own.
             if (name.starts_with("AFTERGLOW_") || name == "TMUX" || name == "TMUX_PANE" || name.starts_with("XDG_")
                 || name == "HOME" || name == "WAYLAND_DISPLAY" || name == "DISPLAY" || name == "QT_QPA_PLATFORM"
-                || name.starts_with("SSH_") || name == "TERMINFO_DIRS" || name == "SHELL" || name == AfterglowMux::ReportFdVariable) {
+                || name.starts_with("SSH_") || name == "TERMINFO_DIRS" || name == "SHELL"
+                || name == AfterglowMux::ReportFdVariable) {
                 continue;
             }
             m_environment.emplace_back(entry);
@@ -258,31 +275,57 @@ protected:
     void TearDown() override
     {
         // After a SetUp that failed before it made the directory: no marker.
-        if (m_dir.empty()) return;
-        if (m_displayFd >= 0) ::close(m_displayFd);
+        if (m_dir.empty())
+            return;
+        if (m_displayFd >= 0)
+            ::close(m_displayFd);
         // The daemon runs in a session of its own, and is no child of this
         // test: whatever failed, it and its programs go, found by the
         // runtime directory in their environment, which only they have.
         killProcessesWith(markersOf(m_dir));
-        EXPECT_TRUE(waitFor([this] { return processes().empty(); }));
+        EXPECT_TRUE(waitFor([this] {
+            return processes().empty();
+        }));
         std::error_code ignored;
         std::filesystem::remove_all(m_dir, ignored);
-        for (const auto& fake : m_fakes) std::filesystem::remove_all(fake, ignored);
+        for (const auto& fake : m_fakes)
+            std::filesystem::remove_all(fake, ignored);
     }
 
-    std::string runtime() const { return m_dir + "/run"; }
-    std::string state() const { return m_dir + "/state"; }
+    std::string runtime() const
+    {
+        return m_dir + "/run";
+    }
+    std::string state() const
+    {
+        return m_dir + "/state";
+    }
     /// XDG_RUNTIME_DIR of the host that fakeSsh() plays.
-    std::string farRuntime() const { return m_dir + "/far/run"; }
-    std::string sshLog() const { return m_dir + "/ssh.log"; }
-    std::string testShell() const { return m_dir + "/test-shell"; }
+    std::string farRuntime() const
+    {
+        return m_dir + "/far/run";
+    }
+    std::string sshLog() const
+    {
+        return m_dir + "/ssh.log";
+    }
+    std::string testShell() const
+    {
+        return m_dir + "/test-shell";
+    }
 
     /// A loop for sh that runs until this test process ends: a test that
     /// crashes before its TearDown leaves no program behind for longer.
-    std::string untilTheTestEnds() const { return "while kill -0 " + std::to_string(::getpid()) + " 2>/dev/null; do sleep 0.2; done"; }
+    std::string untilTheTestEnds() const
+    {
+        return "while kill -0 " + std::to_string(::getpid()) + " 2>/dev/null; do sleep 0.2; done";
+    }
 
     /// `-- COMMAND` of a session that runs until this test process ends.
-    std::vector<std::string> waitsForTheTest() const { return {"--", "sh", "-c", untilTheTestEnds()}; }
+    std::vector<std::string> waitsForTheTest() const
+    {
+        return {"--", "sh", "-c", untilTheTestEnds()};
+    }
 
     /// `new --detach` with a session that waitsForTheTest(), named @p name
     /// when it is not empty.
@@ -300,7 +343,10 @@ protected:
 
     /// The "shell" member of Terminal: testShell(), for the configurations
     /// that the tests write.
-    std::string shellSetting() const { return R"("Terminal": {"shell": ")" + testShell() + R"("})"; }
+    std::string shellSetting() const
+    {
+        return R"("Terminal": {"shell": ")" + testShell() + R"("})";
+    }
 
     /// Writes the configuration of afterglow, @p json.
     bool writeConfig(const std::string& json) const
@@ -316,7 +362,8 @@ protected:
         {
             std::ofstream script(path, std::ios::trunc);
             script << "#!/bin/sh\n" << body;
-            if (!script.flush()) return false;
+            if (!script.flush())
+                return false;
         }
         return ::chmod(path.c_str(), 0700) == 0 && ::access(path.c_str(), X_OK) == 0;
     }
@@ -325,7 +372,8 @@ protected:
     std::string variable(const std::string& name) const
     {
         for (const std::string& entry : m_environment) {
-            if (entry.starts_with(name + "=")) return entry.substr(name.size() + 1);
+            if (entry.starts_with(name + "="))
+                return entry.substr(name.size() + 1);
         }
         return {};
     }
@@ -345,7 +393,10 @@ protected:
     /// The processes of this user whose environment has the test's runtime
     /// directory or that of its fake host: the daemons that the test started
     /// and their programs.
-    std::vector<pid_t> processes() const { return processesWith(markersOf(m_dir)); }
+    std::vector<pid_t> processes() const
+    {
+        return processesWith(markersOf(m_dir));
+    }
 
     /// The daemons among processes(). A daemon whose binary a build replaced
     /// meanwhile still counts.
@@ -354,8 +405,10 @@ protected:
         std::vector<pid_t> found;
         for (const pid_t pid : processes()) {
             std::error_code error;
-            const std::string name = std::filesystem::read_symlink("/proc/" + std::to_string(pid) + "/exe", error).filename().string();
-            if (name == "aglow-mux" || name == "aglow-mux (deleted)") found.push_back(pid);
+            const std::string name =
+                std::filesystem::read_symlink("/proc/" + std::to_string(pid) + "/exe", error).filename().string();
+            if (name == "aglow-mux" || name == "aglow-mux (deleted)")
+                found.push_back(pid);
         }
         return found;
     }
@@ -390,19 +443,23 @@ protected:
         std::vector<std::string> argv{binary};
         argv.insert(argv.end(), words.begin(), words.end());
         std::vector<char*> argp;
-        for (const auto& a : argv) argp.push_back(const_cast<char*>(a.c_str()));
+        for (const auto& a : argv)
+            argp.push_back(const_cast<char*>(a.c_str()));
         argp.push_back(nullptr);
         std::vector<char*> envp;
-        for (const auto& e : m_environment) envp.push_back(const_cast<char*>(e.c_str()));
+        for (const auto& e : m_environment)
+            envp.push_back(const_cast<char*>(e.c_str()));
         envp.push_back(nullptr);
         int out[2] = {-1, -1}, err[2] = {-1, -1}, in[2] = {-1, -1};
         const auto closeAll = [&] {
             for (int* fd : {&out[0], &out[1], &err[0], &err[1], &in[0], &in[1]}) {
-                if (*fd >= 0) ::close(*fd);
+                if (*fd >= 0)
+                    ::close(*fd);
                 *fd = -1;
             }
         };
-        if (::pipe2(out, O_CLOEXEC) != 0 || ::pipe2(err, O_CLOEXEC) != 0 || (!input.empty() && ::pipe2(in, O_CLOEXEC) != 0)) {
+        if (::pipe2(out, O_CLOEXEC) != 0 || ::pipe2(err, O_CLOEXEC) != 0
+            || (!input.empty() && ::pipe2(in, O_CLOEXEC) != 0)) {
             ADD_FAILURE() << "pipe2: " << std::strerror(errno);
             closeAll();
             return result;
@@ -430,7 +487,8 @@ protected:
             // Never the test's own standard input, which can be the user's
             // terminal.
             const int null = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
-            if (null < 0) ::_exit(127);
+            if (null < 0)
+                ::_exit(127);
             ::dup2(input.empty() ? null : in[0], 0);
             ::dup2(out[1], 1);
             ::dup2(err[1], 2);
@@ -438,7 +496,8 @@ protected:
             ::_exit(127);
         }
         for (int* fd : {&out[1], &err[1], &in[0]}) {
-            if (*fd >= 0) ::close(*fd);
+            if (*fd >= 0)
+                ::close(*fd);
             *fd = -1;
         }
         const auto deadline = std::chrono::steady_clock::now() + 15s;
@@ -446,13 +505,18 @@ protected:
         std::string* text[2] = {&result.out, &result.err};
         int open = 2;
         while (open > 0) {
-            const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-            if (left.count() <= 0) break;
+            const auto left =
+                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+            if (left.count() <= 0)
+                break;
             const int ready = ::poll(fds, 2, int(left.count()));
-            if (ready < 0 && errno == EINTR) continue;
-            if (ready <= 0) break;
+            if (ready < 0 && errno == EINTR)
+                continue;
+            if (ready <= 0)
+                break;
             for (int i = 0; i < 2; ++i) {
-                if (fds[i].fd < 0 || !(fds[i].revents & (POLLIN | POLLHUP))) continue;
+                if (fds[i].fd < 0 || !(fds[i].revents & (POLLIN | POLLHUP)))
+                    continue;
                 char buffer[4096];
                 const ssize_t n = ::read(fds[i].fd, buffer, sizeof buffer);
                 if (n > 0) {
@@ -495,23 +559,28 @@ protected:
     {
         const std::string directory = m_dir + "/ssh-bin";
         ASSERT_EQ(::mkdir(directory.c_str(), 0700), 0) << std::strerror(errno);
-        const std::string path = mux ? directory + ":" + std::filesystem::path(AFTERGLOW_BINARY).parent_path().string() + ":/usr/bin:/bin"
-                                     : directory;
+        // The test's own PATH after them: /usr/bin and /bin hold no env or
+        // mkdir on every system (NixOS).
+        const char* own = std::getenv("PATH");
+        const std::string path = mux
+            ? directory + ":" + std::filesystem::path(AFTERGLOW_BINARY).parent_path().string() + ":" + (own ? own : "")
+            : directory;
         // The values come in the environment: no quoting of paths here.
         setVariable("FAKE_SSH_LOG", sshLog());
         setVariable("FAKE_HOST_PATH", path);
         setVariable("FAKE_HOST_RUNTIME", farRuntime());
         setVariable("FAKE_HOST_STATE", m_dir + "/far/state");
         setVariable("LOCAL_ONLY", "this-computer");
-        ASSERT_TRUE(writeScript(directory + "/ssh",
-                                "printf '%s\\n' \"$*\" >> \"$FAKE_SSH_LOG\"\n"
-                                "if [ \"$1\" = -G ]; then printf 'host %s\\nhostname %s\\nuser me\\nport 22\\n' \"$3\" \"$3\"; exit 0; fi\n"
-                                "while [ \"$#\" -gt 0 ] && [ \"$1\" != -- ]; do shift; done\n"
-                                "shift 2\n"
-                                "unset LOCAL_ONLY\n"
-                                "export REMOTE_MARK=from-host PATH=\"$FAKE_HOST_PATH\" XDG_RUNTIME_DIR=\"$FAKE_HOST_RUNTIME\" "
-                                "XDG_STATE_HOME=\"$FAKE_HOST_STATE\"\n"
-                                + remote + "\n"));
+        ASSERT_TRUE(writeScript(
+            directory + "/ssh",
+            "printf '%s\\n' \"$*\" >> \"$FAKE_SSH_LOG\"\n"
+            "if [ \"$1\" = -G ]; then printf 'host %s\\nhostname %s\\nuser me\\nport 22\\n' \"$3\" \"$3\"; exit 0; fi\n"
+            "while [ \"$#\" -gt 0 ] && [ \"$1\" != -- ]; do shift; done\n"
+            "shift 2\n"
+            "unset LOCAL_ONLY\n"
+            "export REMOTE_MARK=from-host PATH=\"$FAKE_HOST_PATH\" XDG_RUNTIME_DIR=\"$FAKE_HOST_RUNTIME\" "
+            "XDG_STATE_HOME=\"$FAKE_HOST_STATE\"\n"
+                + remote + "\n"));
         setVariable("PATH", directory + ":" + variable("PATH"));
     }
 
@@ -522,11 +591,14 @@ protected:
     void fakeTerminfoTools()
     {
         const std::string directory = m_dir + "/ssh-bin";
-        ASSERT_TRUE(writeScript(directory + "/infocmp", "printf '#\\tReconstructed via infocmp from file: fake\\nafterglow|fake,\\n\\tam,\\n'\n"));
-        ASSERT_TRUE(writeScript(directory + "/tic", "out=\n"
-                                                    "while [ \"$#\" -gt 0 ]; do [ \"$1\" = -o ] && out=$2; shift; done\n"
-                                                    "cat > /dev/null\n"
-                                                    "mkdir -p \"$out/a\" && : > \"$out/a/afterglow\"\n"));
+        ASSERT_TRUE(
+            writeScript(directory + "/infocmp",
+                        "printf '#\\tReconstructed via infocmp from file: fake\\nafterglow|fake,\\n\\tam,\\n'\n"));
+        ASSERT_TRUE(writeScript(directory + "/tic",
+                                "out=\n"
+                                "while [ \"$#\" -gt 0 ]; do [ \"$1\" = -o ] && out=$2; shift; done\n"
+                                "cat > /dev/null\n"
+                                "mkdir -p \"$out/a\" && : > \"$out/a/afterglow\"\n"));
     }
 
     /// A socket at WAYLAND_DISPLAY in the test's runtime directory that
@@ -541,7 +613,8 @@ protected:
         address.sun_family = AF_UNIX;
         ASSERT_LT(path.size(), sizeof address.sun_path);
         std::memcpy(address.sun_path, path.c_str(), path.size() + 1);
-        ASSERT_EQ(::bind(m_displayFd, reinterpret_cast<const sockaddr*>(&address), sizeof address), 0) << std::strerror(errno);
+        ASSERT_EQ(::bind(m_displayFd, reinterpret_cast<const sockaddr*>(&address), sizeof address), 0)
+            << std::strerror(errno);
         setVariable("WAYLAND_DISPLAY", "wayland-test");
     }
 
@@ -553,7 +626,8 @@ protected:
     std::string afterglowWithDaemon(const std::string& script)
     {
         const std::filesystem::path binary(AFTERGLOW_BINARY);
-        std::string pattern = (binary.parent_path() / ("muxcommand-" + std::to_string(::getpid()) + "-XXXXXX")).string();
+        std::string pattern =
+            (binary.parent_path() / ("muxcommand-" + std::to_string(::getpid()) + "-XXXXXX")).string();
         if (!::mkdtemp(pattern.data())) {
             ADD_FAILURE() << std::strerror(errno);
             return {};
@@ -562,7 +636,8 @@ protected:
         const std::filesystem::path directory(pattern);
         std::error_code error;
         std::filesystem::create_hard_link(binary, directory / "afterglow", error);
-        if (error) std::filesystem::copy_file(binary, directory / "afterglow", error);
+        if (error)
+            std::filesystem::copy_file(binary, directory / "afterglow", error);
         if (error) {
             ADD_FAILURE() << error.message();
             return {};
@@ -584,7 +659,8 @@ protected:
             std::istringstream words(line);
             std::string first, second;
             words >> first >> second;
-            if (first == name) return second;
+            if (first == name)
+                return second;
         }
         return {};
     }
@@ -600,8 +676,9 @@ protected:
             ADD_FAILURE() << "no daemon: " << error.message;
             return nullptr;
         }
-        const auto result = connection.call(AfterglowMux::Target, AfterglowMux::Fn::Attach,
-                                            Json::Array{AfterglowMux::ProtocolVersion, name, Json::Object{}}, 5000, &error);
+        const auto result =
+            connection.call(AfterglowMux::Target, AfterglowMux::Fn::Attach,
+                            Json::Array{AfterglowMux::ProtocolVersion, name, Json::Object{}}, 5000, &error);
         if (!result) {
             ADD_FAILURE() << "attach failed: " << error.code << " " << error.message;
             return nullptr;
@@ -624,14 +701,18 @@ protected:
     static void removeAbandonedAfterglows()
     {
         std::error_code error;
-        for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::path(AFTERGLOW_BINARY).parent_path(), error)) {
+        for (const auto& entry :
+             std::filesystem::directory_iterator(std::filesystem::path(AFTERGLOW_BINARY).parent_path(), error)) {
             const std::string name = entry.path().filename().string();
             constexpr std::string_view Prefix = "muxcommand-";
-            if (!name.starts_with(Prefix)) continue;
+            if (!name.starts_with(Prefix))
+                continue;
             // Without a valid pid: no process can own it.
-            const std::optional<pid_t> pid = parsePid(std::string_view(name).substr(Prefix.size(), name.find('-', Prefix.size()) - Prefix.size()));
+            const std::optional<pid_t> pid =
+                parsePid(std::string_view(name).substr(Prefix.size(), name.find('-', Prefix.size()) - Prefix.size()));
             std::error_code ignored;
-            if (!pid || !alive(*pid)) std::filesystem::remove_all(entry.path(), ignored);
+            if (!pid || !alive(*pid))
+                std::filesystem::remove_all(entry.path(), ignored);
         }
     }
 
@@ -642,10 +723,13 @@ protected:
         std::error_code error;
         for (const auto& entry : std::filesystem::directory_iterator("/tmp", error)) {
             const std::string name = entry.path().filename().string();
-            if (!name.starts_with(RunPrefix)) continue;
+            if (!name.starts_with(RunPrefix))
+                continue;
             const std::size_t start = RunPrefix.size();
-            const std::optional<pid_t> pid = parsePid(std::string_view(name).substr(start, name.find('-', start) - start));
-            if (pid && alive(*pid)) continue;
+            const std::optional<pid_t> pid =
+                parsePid(std::string_view(name).substr(start, name.find('-', start) - start));
+            if (pid && alive(*pid))
+                continue;
             killProcessesWith(markersOf(entry.path().string()));
             std::error_code ignored;
             std::filesystem::remove_all(entry.path(), ignored);
@@ -682,7 +766,9 @@ TEST_F(MuxCommandTest, CreatesListsAndKillsASessionAndTheDaemonEndsWithIt)
     const Result killed = mux({"kill", "--force", "1"});
     EXPECT_EQ(killed.status, 0) << killed.err;
     // The daemon of a session of its own ends with its last session.
-    EXPECT_TRUE(waitFor([this] { return daemons().empty(); }));
+    EXPECT_TRUE(waitFor([this] {
+        return daemons().empty();
+    }));
     const Result empty = mux({"ls"});
     EXPECT_EQ(empty.status, 0);
     EXPECT_EQ(empty.err, "afterglow mux ls: no sessions\n");
@@ -723,7 +809,9 @@ TEST_F(MuxCommandTest, UsageErrorsAndCommandsThatNeedADisplay)
              {{"new", "--name"}, 2, "afterglow mux: --name needs a value\n"},
              {{"new", "--detach", "--cwd"}, 2, "afterglow mux: --cwd needs a value\n"},
              {{"new", "--detach", "--name", "-x"}, 2, "afterglow mux new: " + nameRule},
-             {{"new", "--detach", "--cwd", "/no/such/directory"}, 1, "afterglow mux new: no directory /no/such/directory\n"},
+             {{"new", "--detach", "--cwd", "/no/such/directory"},
+              1,
+              "afterglow mux new: no directory /no/such/directory\n"},
              // The test has no Wayland display: no window, and no session for it.
              {{"new"}, 1, "afterglow mux new: no Wayland display shows a window here: "},
              {{"attach"}, 1, "afterglow mux attach: no Wayland display shows a window here: "},
@@ -794,7 +882,8 @@ TEST_F(MuxCommandTest, ListsDetachesAndKillsTheSessionsOfAnotherHost)
     EXPECT_TRUE(daemons().empty());
     // A session there.
     std::vector<std::string> args{"new", "--ssh", "far", "--detach", "--name", "there"};
-    for (const std::string& word : waitsForTheTest()) args.push_back(word);
+    for (const std::string& word : waitsForTheTest())
+        args.push_back(word);
     const Result made = mux(args);
     ASSERT_EQ(made.status, 0) << made.err;
     EXPECT_EQ(made.out, "there\n");
@@ -817,7 +906,9 @@ TEST_F(MuxCommandTest, ListsDetachesAndKillsTheSessionsOfAnotherHost)
     EXPECT_EQ(notHere.err, "afterglow mux kill: no sessions\n");
     const Result killed = mux({"kill", "--ssh", "far", "--force", "there"});
     EXPECT_EQ(killed.status, 0) << killed.err;
-    EXPECT_TRUE(waitFor([this] { return daemons().empty(); }));
+    EXPECT_TRUE(waitFor([this] {
+        return daemons().empty();
+    }));
     // Usage errors.
     EXPECT_EQ(mux({"ls", "--ssh"}).status, 2);
     EXPECT_EQ(mux({"ls", "--ssh", "a", "--ssh", "b"}).status, 2);
@@ -841,7 +932,9 @@ TEST_F(MuxCommandTest, ANewSessionOfAnotherHostHasThatHostsEnvironment)
                              "env > '" + out + ".part' && mv '" + out + ".part' '" + out + "'; " + untilTheTestEnds()});
     ASSERT_EQ(made.status, 0) << made.err;
     EXPECT_EQ(made.out, "far1\n");
-    ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
+    ASSERT_TRUE(waitFor([&] {
+        return !readFile(out).empty();
+    }));
     const std::string env = "\n" + readFile(out);
     EXPECT_NE(env.find("\nREMOTE_MARK=from-host\n"), std::string::npos) << env;
     EXPECT_NE(env.find("\nXDG_RUNTIME_DIR=" + farRuntime() + "\n"), std::string::npos) << env;
@@ -850,7 +943,9 @@ TEST_F(MuxCommandTest, ANewSessionOfAnotherHostHasThatHostsEnvironment)
     EXPECT_NE(env.find("\nCOLORTERM=truecolor\n"), std::string::npos) << env;
     EXPECT_NE(env.find("\nAFTERGLOW_SESSION=far1\n"), std::string::npos) << env;
     // afterglow's own entry where the host takes it, else one that it has.
-    EXPECT_TRUE(env.find("\nTERM=afterglow\n") != std::string::npos || env.find("\nTERM=xterm-256color\n") != std::string::npos) << env;
+    EXPECT_TRUE(env.find("\nTERM=afterglow\n") != std::string::npos
+                || env.find("\nTERM=xterm-256color\n") != std::string::npos)
+        << env;
     EXPECT_EQ(env.find("\nTERMINFO_DIRS="), std::string::npos) << env;
     // The directory is the host's: this computer does not check it.
     const Result relative = mux({"new", "--detach", "--ssh", "far", "--cwd", "here"});
@@ -862,7 +957,8 @@ TEST_F(MuxCommandTest, ANewSessionOfAnotherHostHasThatHostsEnvironment)
 // xterm-256color, and installs nothing there.
 TEST_F(MuxCommandTest, ANewSessionOfAnotherHostFallsBackWithoutAnInstall)
 {
-    ASSERT_TRUE(writeConfig(R"({"Terminal": {"term": "afterglow", "sshTerminfo": "fallback", "shell": ")" + testShell() + R"("}})"));
+    ASSERT_TRUE(writeConfig(R"({"Terminal": {"term": "afterglow", "sshTerminfo": "fallback", "shell": ")" + testShell()
+                            + R"("}})"));
     ASSERT_NO_FATAL_FAILURE(fakeSsh(true));
     const std::string out = m_dir + "/env";
     const Result made = mux({"new", "--detach", "--ssh", "far", "--name", "fb", "--", "sh", "-c",
@@ -870,7 +966,9 @@ TEST_F(MuxCommandTest, ANewSessionOfAnotherHostFallsBackWithoutAnInstall)
     ASSERT_EQ(made.status, 0) << made.err;
     // No word of an entry that this computer lacks: none was looked for.
     EXPECT_TRUE(made.err.empty()) << made.err;
-    ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
+    ASSERT_TRUE(waitFor([&] {
+        return !readFile(out).empty();
+    }));
     const std::string env = "\n" + readFile(out);
     EXPECT_NE(env.find("\nTERM=xterm-256color\n"), std::string::npos) << env;
     const std::string log = readFile(sshLog());
@@ -883,7 +981,8 @@ TEST_F(MuxCommandTest, ANewSessionOfAnotherHostFallsBackWithoutAnInstall)
 // session gets TERM=afterglow, and no TERMINFO_DIRS of this computer.
 TEST_F(MuxCommandTest, ANewSessionOfAnotherHostInstallsTheEntryWithOneSshG)
 {
-    ASSERT_TRUE(writeConfig(R"({"Terminal": {"term": "afterglow", "sshTerminfo": "install", "shell": ")" + testShell() + R"("}})"));
+    ASSERT_TRUE(writeConfig(R"({"Terminal": {"term": "afterglow", "sshTerminfo": "install", "shell": ")" + testShell()
+                            + R"("}})"));
     ASSERT_NO_FATAL_FAILURE(fakeSsh(true));
     ASSERT_NO_FATAL_FAILURE(fakeTerminfoTools());
     const std::string out = m_dir + "/env";
@@ -896,9 +995,12 @@ TEST_F(MuxCommandTest, ANewSessionOfAnotherHostInstallsTheEntryWithOneSshG)
     EXPECT_NE(log.find("tic -x"), std::string::npos) << log;
     int resolves = 0;
     std::istringstream lines(log);
-    for (std::string line; std::getline(lines, line);) resolves += line.starts_with("-G ") ? 1 : 0;
+    for (std::string line; std::getline(lines, line);)
+        resolves += line.starts_with("-G ") ? 1 : 0;
     EXPECT_EQ(resolves, 1) << log;
-    ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
+    ASSERT_TRUE(waitFor([&] {
+        return !readFile(out).empty();
+    }));
     const std::string env = "\n" + readFile(out);
     EXPECT_NE(env.find("\nTERM=afterglow\n"), std::string::npos) << env;
     EXPECT_EQ(env.find("\nTERMINFO_DIRS="), std::string::npos) << env;
@@ -913,15 +1015,16 @@ TEST_F(MuxCommandTest, ADestinationThatSshCannotReadSaysSo)
     setVariable("FAKE_SSH_LOG", sshLog());
     ASSERT_TRUE(writeScript(directory + "/ssh", "printf '%s\\n' \"$*\" >> \"$FAKE_SSH_LOG\"\nexit 255\n"));
     setVariable("PATH", directory + ":" + variable("PATH"));
-    for (const std::vector<std::string>& args :
-         {std::vector<std::string>{"ls", "--ssh", "far"}, std::vector<std::string>{"new", "--detach", "--ssh", "far"}}) {
+    for (const std::vector<std::string>& args : {std::vector<std::string>{"ls", "--ssh", "far"},
+                                                 std::vector<std::string>{"new", "--detach", "--ssh", "far"}}) {
         const Result r = mux(args);
         EXPECT_EQ(r.status, 1) << args.front();
         EXPECT_EQ(r.err, "afterglow mux " + args.front() + ": ssh cannot read the destination 'far' (ssh -G)\n");
     }
     const std::string log = readFile(sshLog());
     std::istringstream lines(log);
-    for (std::string line; std::getline(lines, line);) EXPECT_TRUE(line.starts_with("-G ")) << line;
+    for (std::string line; std::getline(lines, line);)
+        EXPECT_TRUE(line.starts_with("-G ")) << line;
     EXPECT_FALSE(log.empty());
     EXPECT_TRUE(daemons().empty());
 }
@@ -956,8 +1059,10 @@ TEST_F(MuxCommandTest, ALoginThatWritesOnStdoutSaysSo)
     ASSERT_NO_FATAL_FAILURE(fakeSsh(true, "echo hello; exec /bin/sh -c \"$*\""));
     const Result r = mux({"ls", "--ssh", "far"});
     EXPECT_EQ(r.status, 1);
-    EXPECT_EQ(r.err, "afterglow mux ls: far wrote text that is not from aglow-mux: a login file of the shell there, such as .bashrc, "
-                     ".zshenv or config.fish, writes on standard output when the shell is not interactive\n");
+    EXPECT_EQ(r.err,
+              "afterglow mux ls: far wrote text that is not from aglow-mux: a login file of the shell there, such as "
+              ".bashrc, "
+              ".zshenv or config.fish, writes on standard output when the shell is not interactive\n");
 }
 
 // attach to a session of another host signs in from the terminal first,
@@ -981,14 +1086,16 @@ TEST_F(MuxCommandTest, AttachToAnotherHostWithoutADaemonSaysSo)
 TEST_F(MuxCommandTest, TheProxyStartsTheDaemonAndCarriesAConnection)
 {
     const std::string proxy = (std::filesystem::path(AFTERGLOW_BINARY).parent_path() / "aglow-mux").string();
-    const std::string version = R"({"type":"call","id":1,"target":"mux","fn":"version","args":[]})" "\n";
+    const std::string version = R"({"type":"call","id":1,"target":"mux","fn":"version","args":[]})"
+                                "\n";
     const Result none = run({"proxy"}, proxy, version);
     EXPECT_EQ(none.status, AfterglowMux::ProxyNoDaemon) << none.err;
     EXPECT_TRUE(none.out.empty()) << none.out;
     EXPECT_EQ(run({"proxy", "--other"}, proxy).status, 2);
     const Result started = run({"proxy", "--start"}, proxy, version);
     EXPECT_EQ(started.status, 0) << started.err;
-    EXPECT_NE(started.out.find("\"protocol\":" + std::to_string(AfterglowMux::ProtocolVersion)), std::string::npos) << started.out;
+    EXPECT_NE(started.out.find("\"protocol\":" + std::to_string(AfterglowMux::ProtocolVersion)), std::string::npos)
+        << started.out;
     EXPECT_EQ(daemons().size(), 1u);
 }
 
@@ -997,13 +1104,16 @@ TEST_F(MuxCommandTest, TheProxyStartsTheDaemonAndCarriesAConnection)
 TEST_F(MuxCommandTest, CtlActsOnASessionWithoutAWindow)
 {
     ASSERT_TRUE(writeConfig(R"({"Control": {"allowReadText": true}, )" + shellSetting() + "}"));
-    ASSERT_EQ(mux({"new", "--detach", "--name", "work", "--", "sh", "-c", "echo hel''lo; " + untilTheTestEnds()}).status, 0);
+    ASSERT_EQ(
+        mux({"new", "--detach", "--name", "work", "--", "sh", "-c", "echo hel''lo; " + untilTheTestEnds()}).status, 0);
 
     const Result listed = ctl({"--session", "work", "ls"});
     EXPECT_EQ(listed.status, 0) << listed.err;
     // The first pane of the daemon, focused.
     EXPECT_NE(listed.out.find("\n1*"), std::string::npos) << listed.out;
-    EXPECT_TRUE(waitFor([&] { return ctl({"--session", "work", "get-text"}).out.find("hello") != std::string::npos; }));
+    EXPECT_TRUE(waitFor([&] {
+        return ctl({"--session", "work", "get-text"}).out.find("hello") != std::string::npos;
+    }));
     const Result split = ctl({"--session", "work", "split", "--down"});
     EXPECT_EQ(split.status, 0) << split.err;
     EXPECT_EQ(split.out, "2\n");
@@ -1097,7 +1207,9 @@ TEST_F(MuxCommandTest, CtlStartsTheShellOfTheSession)
     const Result split = ctl({"--session", "shells", "split"});
     EXPECT_EQ(split.status, 0) << split.err;
     EXPECT_EQ(split.out, "2\n");
-    EXPECT_TRUE(waitFor([&] { return std::filesystem::exists(sessionShell + ".ran"); }));
+    EXPECT_TRUE(waitFor([&] {
+        return std::filesystem::exists(sessionShell + ".ran");
+    }));
     EXPECT_FALSE(std::filesystem::exists(ctlShell + ".ran"));
 }
 
@@ -1121,7 +1233,8 @@ TEST_F(MuxCommandTest, CtlSaysWhyItFindsNoSession)
     // An Afterglow's socket, which has no mux target.
     const std::string other = m_dir + "/other.sock";
     FakeServer afterglow(other, [](const AfterglowProto::IpcRequest& request) {
-        return AfterglowProto::ipcError(request.id, AfterglowProto::IpcErrorCode::NoSuchTarget, "no target '" + request.target + "'");
+        return AfterglowProto::ipcError(request.id, AfterglowProto::IpcErrorCode::NoSuchTarget,
+                                        "no target '" + request.target + "'");
     });
     ASSERT_TRUE(afterglow.listening()) << afterglow.error();
     m_environment = plain;
@@ -1130,7 +1243,8 @@ TEST_F(MuxCommandTest, CtlSaysWhyItFindsNoSession)
     m_environment.push_back("AFTERGLOW_PANE_ID=1");
     const Result notDaemon = ctl({"ls"});
     EXPECT_EQ(notDaemon.status, 1);
-    EXPECT_EQ(notDaemon.err, "afterglow ctl: $AFTERGLOW_SOCKET is not the socket of the mux daemon: clear $AFTERGLOW_SESSION\n");
+    EXPECT_EQ(notDaemon.err,
+              "afterglow ctl: $AFTERGLOW_SOCKET is not the socket of the mux daemon: clear $AFTERGLOW_SESSION\n");
 
     // No lookup of another socket: the message says what is wrong.
     m_environment = plain;
@@ -1156,7 +1270,9 @@ TEST_F(MuxCommandTest, DetachEndsTheWindowOfTheNamedSessionOrOfThePane)
     }
     auto window = attachWindow("now");
     ASSERT_TRUE(window);
-    EXPECT_TRUE(waitFor([this] { return stateOf("now") == "attached"; }));
+    EXPECT_TRUE(waitFor([this] {
+        return stateOf("now") == "attached";
+    }));
     // In the first pane of the daemon (ID 1), which session "now" holds.
     m_environment.push_back("AFTERGLOW_SESSION=now");
     m_environment.push_back("AFTERGLOW_PANE_ID=1");
@@ -1177,12 +1293,16 @@ TEST_F(MuxCommandTest, DetachEndsTheWindowOfTheNamedSessionOrOfThePane)
     const Result usage = mux({"detach"});
     EXPECT_EQ(usage.status, 2);
     // The usage text follows the message.
-    EXPECT_TRUE(usage.err.starts_with("afterglow mux: detach takes the name of a session, outside a session pane\n\nUsage:")) << usage.err;
+    EXPECT_TRUE(
+        usage.err.starts_with("afterglow mux: detach takes the name of a session, outside a session pane\n\nUsage:"))
+        << usage.err;
     // By name, outside a session pane.
     m_environment.pop_back();
     window = attachWindow("now");
     ASSERT_TRUE(window);
-    EXPECT_TRUE(waitFor([this] { return stateOf("now") == "attached"; }));
+    EXPECT_TRUE(waitFor([this] {
+        return stateOf("now") == "attached";
+    }));
     const Result byName = mux({"detach", "now"});
     EXPECT_EQ(byName.status, 0) << byName.err;
     EXPECT_EQ(stateOf("now"), "detached");
@@ -1195,7 +1315,9 @@ TEST_F(MuxCommandTest, AWindowNeedsTheWaylandPlatform)
     m_environment.push_back("QT_QPA_PLATFORM=offscreen");
     const Result r = mux({"new"});
     EXPECT_EQ(r.status, 1) << r.err;
-    EXPECT_EQ(r.err, "afterglow mux new: QT_QPA_PLATFORM is offscreen, and Afterglow shows windows only on Wayland: give --detach\n");
+    EXPECT_EQ(r.err,
+              "afterglow mux new: QT_QPA_PLATFORM is offscreen, and Afterglow shows windows only on Wayland: give "
+              "--detach\n");
     EXPECT_TRUE(daemons().empty());
 }
 
@@ -1209,10 +1331,13 @@ TEST_F(MuxCommandTest, SaysWhyTheDaemonDidNotStart)
     }
     const Result r = mux(newWaiting());
     EXPECT_EQ(r.status, 1);
-    EXPECT_EQ(r.err, "afterglow mux new: aglow-mux: no socket to listen on: " + runtime()
-                         + "/aglow-mux must be a directory of this user with mode 0700 and " + state()
-                         + "/aglow-mux must be a directory of this user with mode 0700\n");
-    EXPECT_TRUE(waitFor([this] { return daemons().empty(); }));
+    EXPECT_EQ(r.err,
+              "afterglow mux new: aglow-mux: no socket to listen on: " + runtime()
+                  + "/aglow-mux must be a directory of this user with mode 0700 and " + state()
+                  + "/aglow-mux must be a directory of this user with mode 0700\n");
+    EXPECT_TRUE(waitFor([this] {
+        return daemons().empty();
+    }));
 }
 
 // A daemon that ends before it listens and says nothing (a signal, a crash)
@@ -1240,10 +1365,13 @@ TEST_F(MuxCommandTest, ADaemonThatFindsTheSocketHeldLeavesTheClientToWaitForTheH
     // Its aglow-mux reports the held socket and ends; the daemon of the
     // build listens a second later, as the holder that was slow to bind. Its
     // path comes in the environment: no quoting of it here.
-    setVariable("AFTERGLOW_TEST_DAEMON", (std::filesystem::path(AFTERGLOW_BINARY).parent_path() / "aglow-mux").string());
+    setVariable("AFTERGLOW_TEST_DAEMON",
+                (std::filesystem::path(AFTERGLOW_BINARY).parent_path() / "aglow-mux").string());
     const std::string afterglow = afterglowWithDaemon(
-        "#!/bin/sh\nprintf '\\001aglow-mux: another aglow-mux listens on %s\\n' \"$XDG_RUNTIME_DIR/aglow-mux/socket\" >&3\n"
-        "exec 3>&-\n(sleep 1; unset " + std::string(AfterglowMux::ReportFdVariable) + "; exec \"$AFTERGLOW_TEST_DAEMON\") &\nexit 1\n");
+        "#!/bin/sh\nprintf '\\001aglow-mux: another aglow-mux listens on %s\\n' \"$XDG_RUNTIME_DIR/aglow-mux/socket\" "
+        ">&3\n"
+        "exec 3>&-\n(sleep 1; unset "
+        + std::string(AfterglowMux::ReportFdVariable) + "; exec \"$AFTERGLOW_TEST_DAEMON\") &\nexit 1\n");
     ASSERT_FALSE(afterglow.empty());
     const Result r = mux(newWaiting(), afterglow);
     EXPECT_EQ(r.status, 0) << r.err;
@@ -1261,11 +1389,13 @@ TEST_F(MuxCommandTest, RefusesADaemonOfAnotherProtocol)
         return AfterglowProto::ipcReply(request.id.value_or(0), Json::Object{{"version", "0"}, {"protocol", 99}});
     });
     ASSERT_TRUE(server.listening()) << server.error();
-    for (const std::vector<std::string>& args : {std::vector<std::string>{"ls"}, std::vector<std::string>{"kill", "--force", "1"},
-                                                 std::vector<std::string>{"new", "--detach"}}) {
+    for (const std::vector<std::string>& args :
+         {std::vector<std::string>{"ls"}, std::vector<std::string>{"kill", "--force", "1"},
+          std::vector<std::string>{"new", "--detach"}}) {
         const Result r = mux(args);
         EXPECT_EQ(r.status, 1) << args.front();
-        EXPECT_NE(r.err.find("aglow-mux speaks protocol 99, and this program speaks " + std::to_string(AfterglowMux::ProtocolVersion)
+        EXPECT_NE(r.err.find("aglow-mux speaks protocol 99, and this program speaks "
+                             + std::to_string(AfterglowMux::ProtocolVersion)
                              + ": end its sessions with the afterglow that started it, or wait until they end\n"),
                   std::string::npos)
             << r.err;
@@ -1283,9 +1413,11 @@ TEST_F(MuxCommandTest, SaysWhenTheListOfTheDaemonDoesNotRead)
     FakeServer server(directory + "/socket", [&notAList](const AfterglowProto::IpcRequest& request) {
         if (request.fn == AfterglowMux::Fn::ListSessions) {
             return AfterglowProto::ipcReply(request.id.value_or(0),
-                                            notAList ? Json::Value(42) : Json::Value(Json::Array{Json::Object{{"name", ""}}}));
+                                            notAList ? Json::Value(42)
+                                                     : Json::Value(Json::Array{Json::Object{{"name", ""}}}));
         }
-        return AfterglowProto::ipcReply(request.id.value_or(0), Json::Object{{"version", "0"}, {"protocol", AfterglowMux::ProtocolVersion}});
+        return AfterglowProto::ipcReply(request.id.value_or(0),
+                                        Json::Object{{"version", "0"}, {"protocol", AfterglowMux::ProtocolVersion}});
     });
     ASSERT_TRUE(server.listening()) << server.error();
     const Result notList = mux({"ls"});
@@ -1333,22 +1465,30 @@ TEST_F(MuxCommandTest, TheProtocolTakesEveryValueOfTheSettings)
     // More variables to update than a window may send: the configuration
     // keeps the most that the daemon takes.
     std::string variables;
-    for (int i = 0; i < 300; ++i) variables += (i ? ",\"V" : "\"V") + std::to_string(i) + "\"";
-    for (const auto& [json, upper] :
-         {std::pair{R"({"Terminal": {"scrollback": 1000000000}, "Colors": {"minimumContrast": 100}, "Graphics": {"quota": 1000000}, )"
-                        R"("Control": {"eventInterval": 1000000}, "Mux": {"keptNotifications": 1000000, "updateEnvironment": [)"
-                        + variables + "]}}",
-                    true},
-          std::pair{std::string(R"({"Terminal": {"scrollback": -5}, "Colors": {"minimumContrast": -1}, "Graphics": {"quota": 0}, )"
-                                R"("Control": {"eventInterval": -5}, "Mux": {"keptNotifications": -5}})"),
-                    false}}) {
+    for (int i = 0; i < 300; ++i)
+        variables += (i ? ",\"V" : "\"V") + std::to_string(i) + "\"";
+    for (
+        const auto& [json, upper] :
+        {std::pair{
+             R"({"Terminal": {"scrollback": 1000000000}, "Colors": {"minimumContrast": 100}, "Graphics": {"quota": 1000000}, )"
+             R"("Control": {"eventInterval": 1000000}, "Mux": {"keptNotifications": 1000000, "updateEnvironment": [)"
+                 + variables + "]}}",
+             true},
+         std::pair{
+             std::string(
+                 R"({"Terminal": {"scrollback": -5}, "Colors": {"minimumContrast": -1}, "Graphics": {"quota": 0}, )"
+                 R"("Control": {"eventInterval": -5}, "Mux": {"keptNotifications": -5}})"),
+             false}}) {
         const std::string path = m_dir + "/config.json";
         std::ofstream(path, std::ios::trunc) << json;
         Afterglow::SettingsStore store(QFile::decodeName(path.c_str()));
         const Afterglow::Settings& settings = store.settings();
         AfterglowMux::SessionOptions options;
         options.terminal = settings.terminal;
-        options.control = {settings.control.enabled, settings.control.allowReadText, {}, settings.control.eventInterval};
+        options.control = {settings.control.enabled,
+                           settings.control.allowReadText,
+                           {},
+                           settings.control.eventInterval};
         options.keptNotifications = settings.mux.keptNotifications;
         // The configuration took the values, at its bounds.
         const AfterglowVt::TerminalOptions defaults;
@@ -1367,7 +1507,8 @@ TEST_F(MuxCommandTest, TheProtocolTakesEveryValueOfTheSettings)
         sent.terminal = options.terminal;
         sent.control = options.control;
         sent.keptNotifications = options.keptNotifications;
-        for (const QString& name : settings.mux.updateEnvironment) sent.environment.emplace_back(name.toStdString(), std::nullopt);
+        for (const QString& name : settings.mux.updateEnvironment)
+            sent.environment.emplace_back(name.toStdString(), std::nullopt);
         if (upper) {
             EXPECT_EQ(sent.environment.size(), AfterglowMux::MaxUpdatedVariables);
         }
@@ -1387,7 +1528,8 @@ TEST_F(MuxCommandTest, TheProtocolTakesEveryValueOfTheSettings)
 // places Sixel and iTerm2 images, which it drops without one.
 TEST_F(MuxCommandTest, ADetachedSessionHasTheCellSizeOfTheFont)
 {
-    if (std::system("command -v python3 >/dev/null 2>&1") != 0) GTEST_SKIP() << "python3 is not installed";
+    if (std::system("command -v python3 >/dev/null 2>&1") != 0)
+        GTEST_SKIP() << "python3 is not installed";
     const std::string out = m_dir + "/cell";
     const std::string script = R"(import os, sys, time, tty
 tty.setraw(0)
@@ -1406,7 +1548,9 @@ while True:
     time.sleep(0.2)
 )";
     ASSERT_EQ(mux({"new", "--detach", "--", "python3", "-I", "-c", script, out, std::to_string(::getpid())}).status, 0);
-    ASSERT_TRUE(waitFor([&] { return !readFile(out).empty(); }));
+    ASSERT_TRUE(waitFor([&] {
+        return !readFile(out).empty();
+    }));
     // ESC [ 6 ; height ; width t
     const std::string reply = readFile(out);
     int height = 0;
@@ -1429,12 +1573,14 @@ TEST_F(MuxCommandTest, CtlWatchPrintsTheEventsOfASession)
     setVariable("WATCH_OUT", printed);
     Result watched;
     std::thread watch([this, &watched] {
-        watched = run({"-c", "exec timeout 12 \"$AFTERGLOW_TEST_BINARY\" ctl --session seen watch > \"$WATCH_OUT\""}, "/bin/sh");
+        watched = run({"-c", "exec timeout 12 \"$AFTERGLOW_TEST_BINARY\" ctl --session seen watch > \"$WATCH_OUT\""},
+                      "/bin/sh");
     });
     // New tabs until the watch printed their events: then it subscribed.
     const auto seen = [&printed] {
         const std::string text = readFile(printed);
-        return text.find(R"(,"event":"paneCreated"})") != std::string::npos && text.find(R"(,"event":"focusChanged"})") != std::string::npos;
+        return text.find(R"(,"event":"paneCreated"})") != std::string::npos
+            && text.find(R"(,"event":"focusChanged"})") != std::string::npos;
     };
     for (int i = 0; i < 20 && !seen(); ++i) {
         EXPECT_EQ(ctl({"--session", "seen", "new-tab"}).status, 0);

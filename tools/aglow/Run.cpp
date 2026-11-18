@@ -52,9 +52,12 @@ constexpr long long MinQueryMs = 200;
 Passthrough passthrough(long long deadline)
 {
     const TmuxRun run = runTmux({"display-message", "-p", "#{allow-passthrough}"}, deadline);
-    if (!run.started) return Passthrough::Unknown;
-    if (run.late) return Passthrough::Late;
-    return WIFEXITED(run.status) && WEXITSTATUS(run.status) == 0 && run.output == "off\n" ? Passthrough::Off : Passthrough::Unknown;
+    if (!run.started)
+        return Passthrough::Unknown;
+    if (run.late)
+        return Passthrough::Late;
+    return WIFEXITED(run.status) && WEXITSTATUS(run.status) == 0 && run.output == "off\n" ? Passthrough::Off
+                                                                                          : Passthrough::Unknown;
 }
 
 /// Whether the client may ask its terminal: standard output is the
@@ -77,7 +80,8 @@ constexpr int Caught[] = {SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGTSTP};
 constexpr int caughtBit(int number)
 {
     for (std::size_t i = 0; i < std::size(Caught); ++i) {
-        if (Caught[i] == number) return 1 << i;
+        if (Caught[i] == number)
+            return 1 << i;
     }
     return 0;
 }
@@ -103,7 +107,8 @@ public:
     {
         sigset_t block;
         sigemptyset(&block);
-        for (const int number : Caught) sigaddset(&block, number);
+        for (const int number : Caught)
+            sigaddset(&block, number);
         sigaddset(&block, SIGTTIN);
         sigaddset(&block, SIGTTOU);
         ::sigprocmask(SIG_BLOCK, &block, &m_mask);
@@ -115,31 +120,41 @@ public:
         struct sigaction action{};
         action.sa_handler = onQuerySignal;
         sigemptyset(&action.sa_mask);
-        for (const int number : Caught) sigaddset(&action.sa_mask, number);
+        for (const int number : Caught)
+            sigaddset(&action.sa_mask, number);
         for (std::size_t i = 0; i < std::size(Caught); ++i) {
             ::sigaction(Caught[i], nullptr, &m_old[i]);
             // A signal that came ignored stays ignored (SIGINT in a
             // background job of a shell without job control).
-            if (m_old[i].sa_handler != SIG_IGN) ::sigaction(Caught[i], &action, nullptr);
+            if (m_old[i].sa_handler != SIG_IGN)
+                ::sigaction(Caught[i], &action, nullptr);
         }
     }
     /// After the modes are back: each caught signal, still blocked, is
     /// raised again, and acts as it would have once the mask comes back.
     ~QuerySignals()
     {
-        for (std::size_t i = 0; i < std::size(Caught); ++i) ::sigaction(Caught[i], &m_old[i], nullptr);
+        for (std::size_t i = 0; i < std::size(Caught); ++i)
+            ::sigaction(Caught[i], &m_old[i], nullptr);
         const int caught = g_caught;
         g_caught = 0;
         for (const int number : Caught) {
-            if (caught & caughtBit(number)) ::raise(number);
+            if (caught & caughtBit(number))
+                ::raise(number);
         }
         ::sigprocmask(SIG_SETMASK, &m_mask, nullptr);
     }
     QuerySignals(const QuerySignals&) = delete;
     QuerySignals& operator=(const QuerySignals&) = delete;
 
-    const sigset_t* waitMask() const { return &m_wait; }
-    bool caught() const { return g_caught != 0; }
+    const sigset_t* waitMask() const
+    {
+        return &m_wait;
+    }
+    bool caught() const
+    {
+        return g_caught != 0;
+    }
     bool ignored(int number) const
     {
         const auto at = std::find(std::begin(Caught), std::end(Caught), number);
@@ -149,7 +164,8 @@ public:
     /// client says why it ends before it ends by the signal.
     bool takeInterrupt()
     {
-        if (!(g_caught & caughtBit(SIGINT))) return false;
+        if (!(g_caught & caughtBit(SIGINT)))
+            return false;
         g_caught = g_caught & ~caughtBit(SIGINT);
         return true;
     }
@@ -160,19 +176,27 @@ private:
     struct sigaction m_old[std::size(Caught)]{};
 };
 
-enum class Wait { Ready, Timeout, Signal, Failed };
+enum class Wait {
+    Ready,
+    Timeout,
+    Signal,
+    Failed
+};
 
 /// Waits until @p fd has @p events, @p deadline (nowMs()) passes or a
 /// caught signal comes.
 Wait waitFor(int fd, short events, long long deadline, const QuerySignals& signals)
 {
     const long long ms = deadline - nowMs();
-    if (ms <= 0) return Wait::Timeout;
+    if (ms <= 0)
+        return Wait::Timeout;
     pollfd ready{fd, events, 0};
     const timespec timeout{time_t(ms / 1000), long(ms % 1000) * 1000000L};
     const int n = ::ppoll(&ready, 1, &timeout, signals.waitMask());
-    if (n > 0) return Wait::Ready;
-    if (n == 0) return Wait::Timeout;
+    if (n > 0)
+        return Wait::Ready;
+    if (n == 0)
+        return Wait::Timeout;
     return errno == EINTR ? Wait::Signal : Wait::Failed;
 }
 
@@ -181,16 +205,20 @@ Wait waitFor(int fd, short events, long long deadline, const QuerySignals& signa
 bool writeQuery(int fd, std::string_view bytes, long long deadline, const QuerySignals& signals)
 {
     while (!bytes.empty()) {
-        if (signals.caught()) return false;
+        if (signals.caught())
+            return false;
         const ssize_t n = ::write(fd, bytes.data(), bytes.size());
         if (n > 0) {
             bytes.remove_prefix(std::size_t(n));
             continue;
         }
-        if (n < 0 && errno == EINTR) continue;
-        if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) return false;
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK))
+            return false;
         const Wait wait = waitFor(fd, POLLOUT, deadline, signals);
-        if (wait == Wait::Timeout || wait == Wait::Failed) return false;
+        if (wait == Wait::Timeout || wait == Wait::Failed)
+            return false;
     }
     return true;
 }
@@ -213,7 +241,8 @@ bool writeQuery(int fd, std::string_view bytes, long long deadline, const QueryS
 TerminalAnswer askTerminal(int timeoutMs)
 {
     const long long deadline = nowMs() + timeoutMs;
-    if (!mayAsk()) return {};
+    if (!mayAsk())
+        return {};
     const char* tmuxVariable = std::getenv("TMUX");
     const bool tmux = tmuxVariable && *tmuxVariable;
     // Before the modes change: tmux gets the process's own signal mask.
@@ -226,12 +255,14 @@ TerminalAnswer askTerminal(int timeoutMs)
         case Passthrough::Late:
             return {TerminalAnswer::Kind::Other, {}};
         case Passthrough::Unknown:
-            if (deadline - nowMs() < MinQueryMs) return {TerminalAnswer::Kind::Other, {}};
+            if (deadline - nowMs() < MinQueryMs)
+                return {TerminalAnswer::Kind::Other, {}};
             break;
         }
     }
     const int fd = ::open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC | O_NONBLOCK);
-    if (fd < 0) return {};
+    if (fd < 0)
+        return {};
     QuerySignals signals;
     termios saved{};
     if (::tcgetattr(fd, &saved) != 0) {
@@ -258,18 +289,23 @@ TerminalAnswer askTerminal(int timeoutMs)
         // Up to the guard after a signal too: its answer is on its way.
         while (!guard) {
             const Wait wait = waitFor(fd, POLLIN, deadline, signals);
-            if (wait == Wait::Timeout || wait == Wait::Failed) break;
-            if (wait == Wait::Signal) continue;
+            if (wait == Wait::Timeout || wait == Wait::Failed)
+                break;
+            if (wait == Wait::Signal)
+                continue;
             char bytes[4096];
             const ssize_t n = ::read(fd, bytes, sizeof bytes);
-            if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
-            if (n <= 0) break;
+            if (n < 0 && (errno == EINTR || errno == EAGAIN))
+                continue;
+            if (n <= 0)
+                break;
             inputs.clear();
             parser.feed(std::string_view(bytes, std::size_t(n)), inputs);
             for (const Input& input : inputs) {
                 const auto payload = input.type == Input::Type::Osc ? Remote::oscPayload(input.data) : std::nullopt;
                 if (payload) {
-                    if (const auto reply = Remote::parseReply(*payload)) answer = {TerminalAnswer::Kind::Reply, *reply};
+                    if (const auto reply = Remote::parseReply(*payload))
+                        answer = {TerminalAnswer::Kind::Reply, *reply};
                 } else if (input.type == Input::Type::Csi
                            && (tmux ? input.data == "0n" : input.data.starts_with('?') && input.data.ends_with('c'))) {
                     guard = true;
@@ -280,10 +316,12 @@ TerminalAnswer askTerminal(int timeoutMs)
             }
         }
     }
-    if (!guard) ::tcflush(fd, TCIOFLUSH);
+    if (!guard)
+        ::tcflush(fd, TCIOFLUSH);
     ::tcsetattr(fd, TCSANOW, &saved);
     ::close(fd);
-    if (signals.takeInterrupt() || interrupted) return {TerminalAnswer::Kind::Interrupted, {}};
+    if (signals.takeInterrupt() || interrupted)
+        return {TerminalAnswer::Kind::Interrupted, {}};
     return answer;
 }
 

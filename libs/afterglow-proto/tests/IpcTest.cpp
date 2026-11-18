@@ -32,15 +32,19 @@ bool connect(IpcConnection& client, FakeServer& server)
 
 std::string eventLine(int n)
 {
-    return Json::write(Json::Object{{"type", "event"}, {"target", "t"}, {"signal", "s"}, {"args", Json::Array{n}}}) + "\n";
+    return Json::write(Json::Object{{"type", "event"}, {"target", "t"}, {"signal", "s"}, {"args", Json::Array{n}}})
+        + "\n";
 }
 
 long elapsedMs(std::chrono::steady_clock::time_point since)
 {
-    return long(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - since).count());
+    return long(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - since).count());
 }
 
-extern "C" void onTestSignal(int) { }
+extern "C" void onTestSignal(int)
+{
+}
 
 } // namespace
 
@@ -122,7 +126,9 @@ TEST(Ipc, ALineOverTheFrameLimitCloses)
     FakeServer server;
     IpcConnection client;
     ASSERT_TRUE(connect(client, server));
-    std::thread writer([&] { server.write(std::string(IpcConnection::MaxFrameBytes + 70000, 'x')); });
+    std::thread writer([&] {
+        server.write(std::string(IpcConnection::MaxFrameBytes + 70000, 'x'));
+    });
     Json::Value frame;
     EXPECT_EQ(client.next(frame, 20000), IpcConnection::Read::Closed);
     EXPECT_NE(client.closeReason().find("over 32 MiB"), std::string::npos) << client.closeReason();
@@ -137,7 +143,8 @@ TEST(Ipc, ACallWithoutATimeoutWaits)
     std::thread answer([&] {
         const auto request = server.call();
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        if (request) server.reply(*request, "late");
+        if (request)
+            server.reply(*request, "late");
     });
     IpcConnection::Error error;
     const auto result = client.call("t", "f", {}, -1, &error);
@@ -153,7 +160,8 @@ TEST(Ipc, FramesThatKeepComingDoNotHoldACallPastItsDeadline)
     ASSERT_TRUE(connect(client, server));
     std::atomic<bool> stop = false;
     std::thread flood([&] {
-        for (int n = 0; !stop && server.write(eventLine(n)); ++n) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        for (int n = 0; !stop && server.write(eventLine(n)); ++n)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
     });
     const auto start = std::chrono::steady_clock::now();
     IpcConnection::Error error;
@@ -276,7 +284,8 @@ TEST(Ipc, ASendToAServerThatClosedKeepsWhatItSentBefore)
     ASSERT_TRUE(connect(client, server));
     // The mux daemon says why it ends the connection, then closes it.
     ASSERT_TRUE(server.write(eventLine(1)));
-    ASSERT_TRUE(server.frame(Json::Object{{"type", "error"}, {"code", "CALL_FAILED"}, {"message", "the window closed"}}));
+    ASSERT_TRUE(
+        server.frame(Json::Object{{"type", "error"}, {"code", "CALL_FAILED"}, {"message", "the window closed"}}));
     server.hangUp();
     IpcConnection::Error error;
     EXPECT_FALSE(client.send("t", "ack", {}, &error));
@@ -300,7 +309,8 @@ TEST(Ipc, ACallToAServerThatClosedGetsTheReasonThatItSent)
     IpcConnection client;
     ASSERT_TRUE(connect(client, server));
     ASSERT_TRUE(server.write(eventLine(1)));
-    ASSERT_TRUE(server.frame(Json::Object{{"type", "error"}, {"code", "CALL_FAILED"}, {"message", "no window shows it"}}));
+    ASSERT_TRUE(
+        server.frame(Json::Object{{"type", "error"}, {"code", "CALL_FAILED"}, {"message", "no window shows it"}}));
     server.hangUp();
     IpcConnection::Error error;
     EXPECT_FALSE(client.call("t", "f", {}, 5000, &error));
@@ -331,7 +341,8 @@ TEST(Ipc, ACallToAServerThatClosedAfterTextSaysSo)
 TEST(Ipc, AnErrorWithoutAnIdIsAConnectionError)
 {
     EXPECT_TRUE(IpcConnection::connectionError(Json::Object{{"type", "error"}, {"code", "C"}, {"message", "M"}}));
-    EXPECT_FALSE(IpcConnection::connectionError(Json::Object{{"type", "error"}, {"id", 2}, {"code", "C"}, {"message", "M"}}));
+    EXPECT_FALSE(
+        IpcConnection::connectionError(Json::Object{{"type", "error"}, {"id", 2}, {"code", "C"}, {"message", "M"}}));
     EXPECT_FALSE(IpcConnection::connectionError(Json::Object{{"type", "reply"}, {"result", 1}}));
     EXPECT_FALSE(IpcConnection::connectionError(Json::Object{{"type", "event"}, {"target", "t"}, {"signal", "s"}}));
 }

@@ -15,7 +15,8 @@ namespace detail {
 Probe sized(std::uint64_t width, std::uint64_t height, int& outWidth, int& outHeight)
 {
     outWidth = outHeight = 0;
-    if (width == 0 || height == 0) return Probe::Unknown;
+    if (width == 0 || height == 0)
+        return Probe::Unknown;
     outWidth = int(std::min<std::uint64_t>(width, INT_MAX));
     outHeight = int(std::min<std::uint64_t>(height, INT_MAX));
     return width > std::uint64_t(MaxSide) || height > std::uint64_t(MaxSide) ? Probe::TooLarge : Probe::Image;
@@ -23,9 +24,11 @@ Probe sized(std::uint64_t width, std::uint64_t height, int& outWidth, int& outHe
 
 bool refused(Probe probe, const char* name, std::string& error)
 {
-    if (probe == Probe::Image) return false;
+    if (probe == Probe::Image)
+        return false;
     error = std::string("the ") + name;
-    error += probe == Probe::TooLarge ? " has a side longer than " + std::to_string(MaxSide) + " pixels" : " has no valid header";
+    error += probe == Probe::TooLarge ? " has a side longer than " + std::to_string(MaxSide) + " pixels"
+                                      : " has no valid header";
     return true;
 }
 
@@ -34,7 +37,8 @@ std::string libraryMessage(std::string_view text)
     const std::size_t colon = text.find(": ");
     if (colon != std::string_view::npos) {
         const std::string_view name = text.substr(0, colon);
-        if (name.ends_with("()") || name.starts_with("png_")) text.remove_prefix(colon + 2);
+        if (name.ends_with("()") || name.starts_with("png_"))
+            text.remove_prefix(colon + 2);
     }
     return std::string(text);
 }
@@ -52,19 +56,17 @@ struct Codec
 };
 
 constexpr Codec Codecs[] = {
-    {Format::Png, probePng, pngColorSpace, decodePng},
-    {Format::Jpeg, probeJpeg, jpegColorSpace, decodeJpeg},
-    {Format::Gif, probeGif, nullptr, decodeGif},
-    {Format::WebP, probeWebP, webpColorSpace, decodeWebP},
-    {Format::Bmp, probeBmp, nullptr, decodeBmp},
-    {Format::Tiff, probeTiff, tiffColorSpace, decodeTiff},
+    {Format::Png, probePng, pngColorSpace, decodePng}, {Format::Jpeg, probeJpeg, jpegColorSpace, decodeJpeg},
+    {Format::Gif, probeGif, nullptr, decodeGif},       {Format::WebP, probeWebP, webpColorSpace, decodeWebP},
+    {Format::Bmp, probeBmp, nullptr, decodeBmp},       {Format::Tiff, probeTiff, tiffColorSpace, decodeTiff},
     {Format::Pnm, probePnm, nullptr, decodePnm},
 };
 
 const Codec* codecOf(Format format)
 {
     for (const Codec& codec : Codecs) {
-        if (codec.format == format) return &codec;
+        if (codec.format == format)
+            return &codec;
     }
     return nullptr;
 }
@@ -80,7 +82,8 @@ Probe probe(std::string_view bytes, int& width, int& height)
     return codec ? codec->probe(bytes, width, height) : Probe::Unknown;
 }
 
-bool decode(std::string_view bytes, const FrameSink& sink, std::string& error, std::string& warning, PngFrames pngFrames)
+bool decode(std::string_view bytes, const FrameSink& sink, std::string& error, std::string& warning,
+            PngFrames pngFrames)
 {
     const detail::Codec* codec = detail::codecOf(format(bytes));
     if (!codec) {
@@ -94,12 +97,14 @@ bool decode(std::string_view bytes, const FrameSink& sink, std::string& error, s
     // goes to Little CMS.
     int width = 0;
     int height = 0;
-    if (!codec->colorSpace || codec->probe(bytes, width, height) != Probe::Image) return codec->decode(bytes, sink, options, error, warning);
+    if (!codec->colorSpace || codec->probe(bytes, width, height) != Probe::Image)
+        return codec->decode(bytes, sink, options, error, warning);
     // A file with an ICC profile or a cICP chunk converts to sRGB, frame by
     // frame, as kitty converts the images that it decodes.
     const detail::SrgbConverter converter(codec->colorSpace(bytes));
     options.colorKnown = converter.known();
-    if (!converter.active()) return codec->decode(bytes, sink, options, error, warning);
+    if (!converter.active())
+        return codec->decode(bytes, sink, options, error, warning);
     // A copy: the decoder of an animation draws the next frame over the
     // last one, in the colours of the file.
     std::vector<unsigned char> converted;

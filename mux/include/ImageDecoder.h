@@ -32,7 +32,8 @@ inline constexpr std::string_view DecodeWireVersion = "3";
 /// The formats that a program may send.
 enum class ImageFormats : std::uint8_t {
     Png, ///< kitty graphics f=100: PNG only, and of an APNG its default image, as kitty shows it
-    CommonFrames, ///< iTerm2 inline images: PNG, JPEG, GIF, WebP, BMP, TIFF and netPBM, with each frame of a GIF, WebP or APNG animation
+    CommonFrames, ///< iTerm2 inline images: PNG, JPEG, GIF, WebP, BMP, TIFF and netPBM, with each frame of a GIF, WebP
+                  ///< or APNG animation
 };
 
 /// One frame of decodeFrames(): RGBA8 with straight alpha, and the
@@ -113,12 +114,13 @@ public:
     /// frames into AfterglowVt::ImageFrame, their milliseconds into
     /// @p delays. A template, so that this header needs no AfterglowVt: the
     /// server includes it too.
-    template <typename Frame>
-    bool decodeFrames(std::string_view data, std::size_t maxBytes, std::vector<Frame>& frames, std::vector<std::uint32_t>& delays,
-                      int cancel)
+    template<typename Frame>
+    bool decodeFrames(std::string_view data, std::size_t maxBytes, std::vector<Frame>& frames,
+                      std::vector<std::uint32_t>& delays, int cancel)
     {
         std::vector<DecodedFrame> decoded;
-        if (!decodeFrames(data, maxBytes, decoded, cancel)) return false;
+        if (!decodeFrames(data, maxBytes, decoded, cancel))
+            return false;
         for (DecodedFrame& d : decoded) {
             Frame frame;
             frame.width = d.width;
@@ -133,7 +135,8 @@ public:
 private:
     /// Decodes @p data in a process: the frames that it writes, up to
     /// @p maxBytes of pixels.
-    bool run(std::string_view data, ImageFormats formats, std::size_t maxBytes, std::vector<DecodedFrame>& frames, int cancel);
+    bool run(std::string_view data, ImageFormats formats, std::size_t maxBytes, std::vector<DecodedFrame>& frames,
+             int cancel);
     /// Starts the server. m_mutex held.
     bool startLocked();
     /// Ends the server and reaps it. m_mutex held.

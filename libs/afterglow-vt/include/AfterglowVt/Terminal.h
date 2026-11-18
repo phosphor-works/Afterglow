@@ -36,9 +36,18 @@ struct Rgb
     bool operator==(const Rgb&) const = default;
 };
 
-enum class SemanticZoneKind { Prompt, Input, Output };
-struct SemanticPosition { std::uint64_t row = 0; int col = 0; };
-struct SemanticRegion {
+enum class SemanticZoneKind {
+    Prompt,
+    Input,
+    Output
+};
+struct SemanticPosition
+{
+    std::uint64_t row = 0;
+    int col = 0;
+};
+struct SemanticRegion
+{
     std::uint64_t id = 0;
     SemanticZoneKind kind = SemanticZoneKind::Prompt;
     SemanticPosition start, end;
@@ -48,16 +57,31 @@ struct SemanticRegion {
     std::optional<int> exitCode;
 };
 
-struct ExtraCursorColor {
-    enum class Mode : std::uint8_t { Main = 0, Reverse = 1, Rgb = 2, Palette = 5 };
+struct ExtraCursorColor
+{
+    enum class Mode : std::uint8_t {
+        Main = 0,
+        Reverse = 1,
+        Rgb = 2,
+        Palette = 5
+    };
     Mode mode = Mode::Main;
     Color color;
     bool operator==(const ExtraCursorColor&) const = default;
 };
 
-enum class BidiMode : std::uint8_t { Off, Auto, LeftToRight, RightToLeft };
+enum class BidiMode : std::uint8_t {
+    Off,
+    Auto,
+    LeftToRight,
+    RightToLeft
+};
 
-enum class CursorShape : std::uint8_t { Block, Underline, Bar };
+enum class CursorShape : std::uint8_t {
+    Block,
+    Underline,
+    Bar
+};
 
 /// How Terminal::text() writes cells. Plain by default: the characters,
 /// soft-wrapped rows joined, trailing blanks trimmed.
@@ -149,48 +173,80 @@ public:
     virtual ~ITerminalHost() = default;
     /// Bytes the terminal answers with (device reports, colour queries).
     virtual void writeToPty(std::string_view bytes) = 0;
-    virtual void titleChanged(std::string_view) { }
+    virtual void titleChanged(std::string_view)
+    {
+    }
     /// The directory a program reported, when it changes: OSC 7 gives its
     /// file:// URI as sent (the host decides whether the host name is local);
     /// OSC 9;9, OSC 633 P;Cwd and OSC 1337 CurrentDir give a plain path.
-    virtual void workingDirectoryChanged(std::string_view) { }
-    virtual void bell() { }
+    virtual void workingDirectoryChanged(std::string_view)
+    {
+    }
+    virtual void bell()
+    {
+    }
     /// OSC 52 write. @p selection is the target list ("c", "p", "s"...).
-    virtual void clipboardWrite(std::string_view selection, std::string_view data) { }
+    virtual void clipboardWrite(std::string_view selection, std::string_view data)
+    {
+    }
     /// A desktop notification (OSC 9 or OSC 777;notify). @p title may be empty.
     /// Both are clean text (detail::isCleanText): valid UTF-8 with no C0, DEL
     /// or C1 control, so no line feed. U+2028 and U+2029, which Qt breaks
     /// lines at, may occur.
-    virtual void notify(std::string_view title, std::string_view body) { }
+    virtual void notify(std::string_view title, std::string_view body)
+    {
+    }
     /// The pointer shape the program asks for (OSC 22), a CSS cursor name;
     /// empty restores the default.
-    virtual void pointerShapeChanged(std::string_view shape) { }
+    virtual void pointerShapeChanged(std::string_view shape)
+    {
+    }
     /// Program status records (OSC 7501, or legacy OSC 9;4) changed; read
     /// them through Terminal::programStatus().
-    virtual void programStatusChanged() { }
+    virtual void programStatusChanged()
+    {
+    }
     /// OSC 555: flash the whole terminal.
-    virtual void flash() { }
+    virtual void flash()
+    {
+    }
     /// Shell integration (OSC 133): a command began running, as typed after
     /// the prompt, and finished with an exit code (-1 when not reported).
-    virtual void commandStarted(std::string_view command) { }
-    virtual void commandFinished(int exitCode) { }
+    virtual void commandStarted(std::string_view command)
+    {
+    }
+    virtual void commandFinished(int exitCode)
+    {
+    }
     /// A kitty desktop notification (OSC 99) to show, close or poll.
-    virtual void desktopNotification(const NotificationRequest& request) { }
+    virtual void desktopNotification(const NotificationRequest& request)
+    {
+    }
     /// What the host's OSC 99 support covers, as the query reply's key=value
     /// list ("a=focus,report:c=1:p=title,body..."); empty for no support.
-    virtual std::string notificationCapabilities() { return {}; }
+    virtual std::string notificationCapabilities()
+    {
+        return {};
+    }
     /// The answer to `aglow run`'s query for the socket of the ssh session
     /// that runs in this terminal (OSC 24569): its path on the remote host,
     /// else why there is none. Called on the reader thread: the reply goes
     /// out before the replies to what follows the query, such as DA1. No
     /// answer, the default, sends no reply: a host without remote commands
     /// does not speak the protocol, and the query's guard ends the wait.
-    virtual std::optional<AfterglowProto::Remote::Answer> remoteSocket() { return std::nullopt; }
+    virtual std::optional<AfterglowProto::Remote::Answer> remoteSocket()
+    {
+        return std::nullopt;
+    }
     /// The pane's contexts changed (OSC 3008, iTerm2 RemoteHost); read them
     /// through Terminal::contexts().
-    virtual void contextChanged() { }
+    virtual void contextChanged()
+    {
+    }
     /// iTerm2's SetUserVar (OSC 1337): a named value for the host to keep.
-    virtual void userVarChanged(std::string_view name, std::string_view value) { }
+    virtual void userVarChanged(std::string_view name, std::string_view value)
+    {
+    }
     /// iTerm2's RequestUpload (OSC 1337, it2ul): the program asks for files,
     /// as a tar archive compressed with gzip. True when the host asks the
     /// user and answers on the program's input later: "ok", then the
@@ -200,7 +256,10 @@ public:
     /// terminal nor a host sends Ctrl+C without a person's cancel, because
     /// the program's output must not signal the foreground job. A request
     /// in another format than tgz does not come here, and gets no answer.
-    virtual bool uploadRequested() { return false; }
+    virtual bool uploadRequested()
+    {
+        return false;
+    }
     /// The most user variables that a host keeps for a terminal: it ignores
     /// new names after them.
     static constexpr std::size_t MaxUserVars = 256;
@@ -208,16 +267,21 @@ public:
     /// SetUserVar takes. Hosts that set one for a user hold to it too.
     static constexpr std::size_t MaxUserVarName = 128;
     /// A kitty clipboard request (OSC 5522): a read to answer (with a prompt)
-    /// or a complete write. OSC 52 reads come here too (ClipboardRequest::osc52). Replies go through ClipboardAssembler's encoders.
-    /// Returning false means the host has no such clipboard support.
-    virtual bool clipboardRequest(const ClipboardRequest& request) { return false; }
+    /// or a complete write. OSC 52 reads come here too (ClipboardRequest::osc52). Replies go through
+    /// ClipboardAssembler's encoders. Returning false means the host has no such clipboard support.
+    virtual bool clipboardRequest(const ClipboardRequest& request)
+    {
+        return false;
+    }
     /// A kitty file transfer (OSC 5113) or drag and drop (OSC 72) command,
     /// with @p code its OSC number; code 0, with no payload, resets every
     /// session (RIS, a new program). A command over the protocol's limit
     /// (AfterglowProto::TransferMaxCommand, AfterglowProto::DndMaxCommand)
     /// arrives cut to limit + 1 bytes. The host must treat a payload over the
     /// limit as an oversized command and end it with the protocol's error.
-    virtual void terminalProtocol(int code, std::string_view payload) {}
+    virtual void terminalProtocol(int code, std::string_view payload)
+    {
+    }
     /// A scroll moved cells of the active screen to other rows: SU, SD, IL
     /// and DL; the cursor going down past the bottom margin (LF, VT, FF,
     /// IND, NEL, an autowrap, a sixel, kitty or iTerm2 image that moves the
@@ -233,14 +297,22 @@ public:
     /// frame applied (StateReader), with the screen that scrolled active:
     /// its rows, marks and modes are then those of the frame's end, not of
     /// the moment of the scroll.
-    virtual void regionScrolled(const RegionScroll& scroll) {}
+    virtual void regionScrolled(const RegionScroll& scroll)
+    {
+    }
     /// A program asks for a new size in cells (DECCOLM, DECSCPP, DECSLPP,
     /// DECSNLS, XTWINOPS 4 and 8, and RIS after DECCOLM). Return true to let
     /// the terminal take that size; the host then follows it.
-    virtual bool requestResize(int cols, int rows) { return false; }
+    virtual bool requestResize(int cols, int rows)
+    {
+        return false;
+    }
     /// Size of the display the terminal is on, in pixels, for XTWINOPS
     /// reports and maximum sizes. Return false if unknown.
-    virtual bool screenSize(int& width, int& height) { return false; }
+    virtual bool screenSize(int& width, int& height)
+    {
+        return false;
+    }
     /// Decodes PNG data for the kitty graphics protocol into RGBA8. The core
     /// has no image codecs of its own; return false if decoding fails.
     virtual bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,
@@ -256,13 +328,21 @@ public:
     /// reading meanwhile, so the program waits. False refuses it: its data
     /// goes nowhere. A download that ends before the answer gets
     /// downloadEnd(false).
-    virtual bool downloadBegin(std::string_view name, std::int64_t size) { return false; }
+    virtual bool downloadBegin(std::string_view name, std::int64_t size)
+    {
+        return false;
+    }
     /// Decoded data of the accepted download, as it comes. False ends it as
     /// failed (downloadEnd(false)), and its other data goes nowhere.
-    virtual bool downloadData(std::string_view bytes) { return false; }
+    virtual bool downloadData(std::string_view bytes)
+    {
+        return false;
+    }
     /// The download ends: @p complete when all its data came, valid and of
     /// its declared size.
-    virtual void downloadEnd(bool complete) {}
+    virtual void downloadEnd(bool complete)
+    {
+    }
     /// Decodes an image in any format the host reads (iTerm2 inline images:
     /// PNG, JPEG, GIF...) into RGBA8. Defaults to PNG only.
     virtual bool decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height,
@@ -282,7 +362,8 @@ public:
                                    std::vector<std::uint32_t>& delays)
     {
         ImageFrame frame;
-        if (!decodeImage(data, frame.width, frame.height, frame.rgba) || frame.byteSize() > maxBytes) return false;
+        if (!decodeImage(data, frame.width, frame.height, frame.rgba) || frame.byteSize() > maxBytes)
+            return false;
         frames.push_back(std::move(frame));
         delays.push_back(0);
         return true;
@@ -295,10 +376,22 @@ struct TerminalOptions
     Rgb defaultForeground{0xd8, 0xd8, 0xd8};
     Rgb defaultBackground{0x1c, 0x1c, 0x1c};
     std::array<Rgb, 16> basePalette{{
-        {0x1c, 0x1c, 0x1c}, {0xcc, 0x55, 0x55}, {0x55, 0xcc, 0x55}, {0xcd, 0xcd, 0x55},
-        {0x54, 0x55, 0xcb}, {0xcc, 0x55, 0xcc}, {0x7a, 0xca, 0xca}, {0xcc, 0xcc, 0xcc},
-        {0x55, 0x55, 0x55}, {0xff, 0x55, 0x55}, {0x55, 0xff, 0x55}, {0xff, 0xff, 0x55},
-        {0x55, 0x55, 0xff}, {0xff, 0x55, 0xff}, {0x55, 0xff, 0xff}, {0xff, 0xff, 0xff},
+        {0x1c, 0x1c, 0x1c},
+        {0xcc, 0x55, 0x55},
+        {0x55, 0xcc, 0x55},
+        {0xcd, 0xcd, 0x55},
+        {0x54, 0x55, 0xcb},
+        {0xcc, 0x55, 0xcc},
+        {0x7a, 0xca, 0xca},
+        {0xcc, 0xcc, 0xcc},
+        {0x55, 0x55, 0x55},
+        {0xff, 0x55, 0x55},
+        {0x55, 0xff, 0x55},
+        {0xff, 0xff, 0x55},
+        {0x55, 0x55, 0xff},
+        {0xff, 0x55, 0xff},
+        {0x55, 0xff, 0xff},
+        {0xff, 0xff, 0xff},
     }};
     /// Cursor colour; unset follows the foreground.
     std::optional<Rgb> cursorColor;
@@ -350,7 +443,10 @@ public:
     void feed(std::string_view bytes);
     /// The terminal waits for the host's answer to downloadBegin(): the host
     /// stops reading the program's output until it gives it.
-    bool holdsInput() const noexcept { return m_download.waiting; }
+    bool holdsInput() const noexcept
+    {
+        return m_download.waiting;
+    }
     /// The host's answer to downloadBegin(). The held input parses at the
     /// next feed(), not in this call: the caller may be the thread that the
     /// download's data waits for.
@@ -386,32 +482,74 @@ public:
     /// @param cellWidth, cellHeight cell size in pixels, reported by CSI 14/16 t.
     void resize(int cols, int rows, int cellWidth, int cellHeight);
 
-    int cols() const noexcept { return m_active->cols(); }
-    int rows() const noexcept { return m_active->rows(); }
+    int cols() const noexcept
+    {
+        return m_active->cols();
+    }
+    int rows() const noexcept
+    {
+        return m_active->rows();
+    }
 
-    Screen& screen() noexcept { return *m_active; }
-    const Screen& screen() const noexcept { return *m_active; }
-    const Screen& primaryScreen() const noexcept { return *m_primary; }
+    Screen& screen() noexcept
+    {
+        return *m_active;
+    }
+    const Screen& screen() const noexcept
+    {
+        return *m_active;
+    }
+    const Screen& primaryScreen() const noexcept
+    {
+        return *m_primary;
+    }
 
-    const Modes& modes() const noexcept { return m_modes; }
-    const ExtraCursorColor& extraCursorColor() const { return m_extraCursorColor; }
-    const ExtraCursorColor& extraCursorTextColor() const { return m_extraCursorTextColor; }
-    const std::map<std::pair<int, int>, int>& extraCursors() const { return m_extraCursors; }
+    const Modes& modes() const noexcept
+    {
+        return m_modes;
+    }
+    const ExtraCursorColor& extraCursorColor() const
+    {
+        return m_extraCursorColor;
+    }
+    const ExtraCursorColor& extraCursorTextColor() const
+    {
+        return m_extraCursorTextColor;
+    }
+    const std::map<std::pair<int, int>, int>& extraCursors() const
+    {
+        return m_extraCursors;
+    }
     /// Kitty extra cursors kept; more are ignored. Each one is a map node and
     /// a query reply entry, and a 9-byte sequence can ask for a million.
     static constexpr std::size_t MaxExtraCursors = 4096;
-    CursorShape cursorShape() const noexcept { return m_cursorShape; }
+    CursorShape cursorShape() const noexcept
+    {
+        return m_cursorShape;
+    }
 
     /// Bumped on every state change the renderer could see.
-    std::uint64_t generation() const noexcept { return m_generation; }
+    std::uint64_t generation() const noexcept
+    {
+        return m_generation;
+    }
     /// Bumped on every such change but those of images alone: a frame of
     /// an animation, the pixels and records that a replica's images take.
     /// What reads the text (hints, links, the input method, accessibility)
     /// stays valid across those.
-    std::uint64_t textGeneration() const noexcept { return m_textGeneration; }
+    std::uint64_t textGeneration() const noexcept
+    {
+        return m_textGeneration;
+    }
 
-    const std::string& title() const noexcept { return m_title; }
-    const std::string& workingDirectory() const noexcept { return m_cwd; }
+    const std::string& title() const noexcept
+    {
+        return m_title;
+    }
+    const std::string& workingDirectory() const noexcept
+    {
+        return m_cwd;
+    }
     /// Longest working directory a program can report, in bytes (a
     /// percent-encoded OSC 7 URI of a path up to PATH_MAX fits).
     static constexpr std::size_t MaxWorkingDirectory = 8192;
@@ -437,16 +575,25 @@ public:
     /// first_cmd_output_on_screen.
     std::optional<std::uint64_t> firstCommandOutputIn(std::uint64_t top, std::uint64_t bottom) const;
     /// True while the cursor is in a shell prompt or its input (OSC 133 A/B, before C).
-    bool atShellPrompt() const noexcept { return m_semanticZone != SemanticZone::Output; }
+    bool atShellPrompt() const noexcept
+    {
+        return m_semanticZone != SemanticZone::Output;
+    }
     /// A resize kept the prompt's previous layout for the shell to repaint,
     /// and the shell has not finished yet (OSC 133;B). Renderers can keep showing
     /// the previous frame meanwhile instead of showing a partial repaint.
-    bool promptRedrawPending() const noexcept { return m_promptRedrawPending; }
+    bool promptRedrawPending() const noexcept
+    {
+        return m_promptRedrawPending;
+    }
     /// Changes each time synchronized output (mode 2026, or DCS = 1 s) begins
     /// a block. A renderer that holds frames while modes().synchronizedOutput
     /// is set restarts its timeout when this changes: an end and the next
     /// begin can both arrive between two of its frames.
-    std::uint64_t synchronizedOutputSerial() const noexcept { return m_synchronizedOutputSerial; }
+    std::uint64_t synchronizedOutputSerial() const noexcept
+    {
+        return m_synchronizedOutputSerial;
+    }
     /// What a plain click at (@p col, @p row) of the screen sends to a shell
     /// whose command line the user is at (OSC 133 marks), so that the shell
     /// moves its cursor there, as kitty's protocol has it: an SGR click when
@@ -458,7 +605,10 @@ public:
     /// tracking on, a hidden cursor, no prompt start (OSC 133 A) on the
     /// screen at or above the cursor, or above the prompt, as kitty does.
     std::string promptClickInput(int col, int row) const;
-    const ShellContexts& contexts() const noexcept { return m_contexts; }
+    const ShellContexts& contexts() const noexcept
+    {
+        return m_contexts;
+    }
 
     /// Sets or resets colours as a program does with OSC 4, 10, 11, 12, 17
     /// and 19, and OSC 104, 110, 111, 112, 117 and 119: for the host
@@ -483,28 +633,52 @@ public:
     static std::optional<std::string> colorOscOf(std::string_view name, Rgb rgb);
     /// The payloads that give each colour back its configured value.
     static std::vector<std::string> colorResetOscs();
-    Rgb paletteColor(int index) const noexcept { return m_palette[std::size_t(index & 0xFF)]; }
-    Rgb defaultForeground() const noexcept { return m_defaultFg; }
-    Rgb defaultBackground() const noexcept { return m_defaultBg; }
+    Rgb paletteColor(int index) const noexcept
+    {
+        return m_palette[std::size_t(index & 0xFF)];
+    }
+    Rgb defaultForeground() const noexcept
+    {
+        return m_defaultFg;
+    }
+    Rgb defaultBackground() const noexcept
+    {
+        return m_defaultBg;
+    }
     /// Protocol override or configured cursor colour; null uses the foreground.
     const Rgb* cursorColor() const noexcept
     {
-        if (m_protocolColors.cursorDynamic) return nullptr;
+        if (m_protocolColors.cursorDynamic)
+            return nullptr;
         return m_hasCursorColor ? &m_cursorColor : (m_options.cursorColor ? &*m_options.cursorColor : nullptr);
     }
     /// An OSC 21 transparent background colour. @c opacity is 0 to 1, or
     /// negative (-1) for the window's opacity ('@' with a value below 0).
-    struct TransparentColor { Rgb color; double opacity = 1.0; };
-    const auto& transparentColors() const noexcept { return m_protocolColors.transparent; }
-    const Rgb* visualBellColor() const noexcept { return m_protocolColors.bell ? &*m_protocolColors.bell : nullptr; }
+    struct TransparentColor
+    {
+        Rgb color;
+        double opacity = 1.0;
+    };
+    const auto& transparentColors() const noexcept
+    {
+        return m_protocolColors.transparent;
+    }
+    const Rgb* visualBellColor() const noexcept
+    {
+        return m_protocolColors.bell ? &*m_protocolColors.bell : nullptr;
+    }
     /// Text colour under a block cursor, if configured.
     const Rgb* cursorTextColor() const noexcept
     {
-        if (m_protocolColors.cursorTextSet) return m_protocolColors.cursorText ? &*m_protocolColors.cursorText : nullptr;
+        if (m_protocolColors.cursorTextSet)
+            return m_protocolColors.cursorText ? &*m_protocolColors.cursorText : nullptr;
         return m_options.cursorTextColor ? &*m_options.cursorTextColor : nullptr;
     }
     Rgb resolve(Color color, bool foreground) const noexcept;
-    const TerminalOptions& options() const noexcept { return m_options; }
+    const TerminalOptions& options() const noexcept
+    {
+        return m_options;
+    }
     /// Cells a character with @p props takes under these options.
     int charWidth(const Unicode::Props& props) const noexcept
     {
@@ -516,13 +690,22 @@ public:
     int clusterWidth(std::u32string_view cluster) const noexcept;
 
     /// Image state (kitty, sixel, iTerm2) of the active screen.
-    const GraphicsStore& graphics() const noexcept { return m_graphics[m_modes.altScreen ? 1 : 0]; }
+    const GraphicsStore& graphics() const noexcept
+    {
+        return m_graphics[m_modes.altScreen ? 1 : 0];
+    }
     /// Image state of the primary screen, or of the alternate one.
-    const GraphicsStore& graphics(bool alternate) const noexcept { return m_graphics[alternate ? 1 : 0]; }
+    const GraphicsStore& graphics(bool alternate) const noexcept
+    {
+        return m_graphics[alternate ? 1 : 0];
+    }
 
     /// What programs report doing (OSC 7501). Records belong to the terminal,
     /// not a screen.
-    const ProgramStatus& programStatus() const noexcept { return m_programStatus; }
+    const ProgramStatus& programStatus() const noexcept
+    {
+        return m_programStatus;
+    }
     /// The program attached to the terminal exited: every OSC 5113 and
     /// OSC 72 session resets (terminalProtocol(0, {}) to the host), in-flight
     /// status ends, an iTerm2 file sent in parts ends, and the shell
@@ -536,7 +719,8 @@ public:
     /// another one than its programs.
     void setTemporaryDirectory(const std::string& directory)
     {
-        for (GraphicsStore& store : m_graphics) store.setTemporaryDirectory(directory);
+        for (GraphicsStore& store : m_graphics)
+            store.setTemporaryDirectory(directory);
     }
 
     enum class TextScope : std::uint8_t {
@@ -552,24 +736,30 @@ public:
     /// whole. @p truncated: the limit left out a part of the text, not only
     /// the blank rows and line feeds that the end of the text trims.
     std::string text(TextScope scope, std::size_t maxBytes, bool* truncated, const TextFormat& format) const;
-    bool hasCommandOutput() const noexcept { return m_outputStart.valid; }
+    bool hasCommandOutput() const noexcept
+    {
+        return m_outputStart.valid;
+    }
     /// The stable ids of the first and the last row of the primary screen
     /// that the last output (TextScope::LastOutput) spans, if there is one.
     std::optional<std::pair<std::uint64_t, std::uint64_t>> lastOutputRows() const
     {
-        if (!m_outputStart.valid) return std::nullopt;
+        if (!m_outputStart.valid)
+            return std::nullopt;
         return std::pair{m_outputStart.row, (m_outputEnd.valid ? m_outputEnd : cursorMark()).row};
     }
     /// Selection colours: set by OSC 17/19, else configured; unset ones invert the cell.
     const Rgb* selectionForeground() const noexcept
     {
-        if (m_protocolColors.selectionFgDynamic) return nullptr;
+        if (m_protocolColors.selectionFgDynamic)
+            return nullptr;
         return m_hasSelectionFg ? &m_selectionFg
                                 : (m_options.selectionForeground ? &*m_options.selectionForeground : nullptr);
     }
     const Rgb* selectionBackground() const noexcept
     {
-        if (m_protocolColors.selectionBgDynamic) return nullptr;
+        if (m_protocolColors.selectionBgDynamic)
+            return nullptr;
         return m_hasSelectionBg ? &m_selectionBg
                                 : (m_options.selectionBackground ? &*m_options.selectionBackground : nullptr);
     }
@@ -579,8 +769,14 @@ public:
     /// no frames, so the caller calls again when the viewport scrolls or the
     /// screen changes.
     std::uint64_t advanceAnimations(std::uint64_t nowMs);
-    int cellWidth() const noexcept { return m_cellWidth; }
-    int cellHeight() const noexcept { return m_cellHeight; }
+    int cellWidth() const noexcept
+    {
+        return m_cellWidth;
+    }
+    int cellHeight() const noexcept
+    {
+        return m_cellHeight;
+    }
 
     /// Scrolls the viewport through history. Positive scrolls back.
     void scrollViewport(long rows);
@@ -619,8 +815,14 @@ private:
     void apcDispatch(std::string_view payload);
     // The streamed OSC 1337 File= of a download (Parser's optional calls).
     bool oscHead(std::string_view head);
-    void oscStreamData(std::string_view data) { downloadBase64(data); }
-    void oscStreamEnd(bool complete) { endDownload(complete); }
+    void oscStreamData(std::string_view data)
+    {
+        downloadBase64(data);
+    }
+    void oscStreamEnd(bool complete)
+    {
+        endDownload(complete);
+    }
     void parse(std::string_view bytes);
     /// A download begins (downloadBegin()), and ends one under way.
     void beginDownload(std::string_view nameBase64, std::size_t size, bool multipart);
@@ -629,7 +831,10 @@ private:
     void endDownload(bool complete);
 
     // Operations.
-    Cursor& cursor() noexcept { return m_active->cursor; }
+    Cursor& cursor() noexcept
+    {
+        return m_active->cursor;
+    }
     std::uint32_t acquireFill();
     void releaseFill(std::uint32_t id);
 
@@ -713,7 +918,10 @@ private:
     void setClusterWidth(Row& row, int x, int width);
     /// IRM shifts the line only from a column between the left and right
     /// margins, as ICH (xterm). Outside them a character overwrites.
-    bool insertsAt(int x) const { return m_modes.insert && x >= m_margins.left && x <= m_margins.right; }
+    bool insertsAt(int x) const
+    {
+        return m_modes.insert && x >= m_margins.left && x <= m_margins.right;
+    }
     void vt52Dispatch(std::uint8_t final);
     void reverseWrapStep();
     void setColumnMode(bool wide);
@@ -744,7 +952,10 @@ private:
         ++m_textGeneration;
     }
     /// A change of the images alone (textGeneration()).
-    void touchImages() noexcept { ++m_generation; }
+    void touchImages() noexcept
+    {
+        ++m_generation;
+    }
 
     ITerminalHost& m_host;
     TerminalOptions m_options;
@@ -759,7 +970,11 @@ private:
     int m_conformance = 5;
     /// Which erases honour protected cells: the last of DECSCA (DEC) and
     /// SPA (ISO) to protect something decides.
-    enum class Protection : std::uint8_t { Off, Dec, Iso };
+    enum class Protection : std::uint8_t {
+        Off,
+        Dec,
+        Iso
+    };
     Protection m_protection = Protection::Off;
     int m_attributeChangeExtent = 0; ///< DECSACE: whether DECCARA/DECRARA cover a stream or a rectangle
     std::unordered_map<int, bool> m_savedDecModes; ///< XTSAVE
@@ -812,11 +1027,12 @@ private:
     Mark m_outputEnd; ///< D
     bool m_commandRunning = false;
     Mark cursorMark() const;
-    std::string textBetween(const Mark& from, const Mark& to, std::size_t maxBytes = 1024 * 1024, bool* truncated = nullptr) const;
+    std::string textBetween(const Mark& from, const Mark& to, std::size_t maxBytes = 1024 * 1024,
+                            bool* truncated = nullptr) const;
     /// @p trimmed: the caller trims the line feeds at the end, so blank rows
     /// that the limit left out do not count as cut.
-    std::string textBetween(const Mark& from, const Mark& to, std::size_t maxBytes, bool* truncated, const TextFormat& format,
-                            bool trimmed = false) const;
+    std::string textBetween(const Mark& from, const Mark& to, std::size_t maxBytes, bool* truncated,
+                            const TextFormat& format, bool trimmed = false) const;
     /// The escape sequences of TextFormat::cursor.
     std::string cursorText() const;
     /// The DECSCUSR number of the cursor's shape and blink.
@@ -825,7 +1041,8 @@ private:
     int m_reportedDark = -1; ///< the theme mode last reported (mode 2031)
     bool m_hasCursorColor = false;
 
-    struct ProtocolColors {
+    struct ProtocolColors
+    {
         bool cursorDynamic = false, selectionFgDynamic = false, selectionBgDynamic = false;
         bool cursorTextSet = false;
         std::optional<Rgb> cursorText, bell;
@@ -853,20 +1070,31 @@ private:
 
     /// Shell integration (OSC 133): what the cursor is in, and whether the
     /// shell repaints its prompt after a resize (redraw=0 opts out).
-    enum class SemanticZone : std::uint8_t { Output, Prompt, Input };
+    enum class SemanticZone : std::uint8_t {
+        Output,
+        Prompt,
+        Input
+    };
     SemanticZone m_semanticZone = SemanticZone::Output;
     bool m_shellRedrawsPrompt = true;
     bool m_promptRedrawPending = false;
     /// How a click on the command line reaches the shell (OSC 133 A
     /// click_events), and whether its cursor keys are kitty's special key.
-    enum class PromptClicks : std::uint8_t { Keys, Absolute, Relative };
+    enum class PromptClicks : std::uint8_t {
+        Keys,
+        Absolute,
+        Relative
+    };
     PromptClicks m_promptClicks = PromptClicks::Keys;
     bool m_promptSpecialKey = false;
     /// Where the secondary (PS2) prompt started (OSC 133 A;k=s), for the y of
     /// click_events=2. Invalid until a shell sends one after its prompt.
     Mark m_secondaryPrompt;
     /// The marks that move with their rows, in a fixed order.
-    std::array<Mark*, 4> marks() noexcept { return {&m_inputStart, &m_outputStart, &m_outputEnd, &m_secondaryPrompt}; }
+    std::array<Mark*, 4> marks() noexcept
+    {
+        return {&m_inputStart, &m_outputStart, &m_outputEnd, &m_secondaryPrompt};
+    }
     std::array<const Mark*, 4> marks() const noexcept
     {
         return {&m_inputStart, &m_outputStart, &m_outputEnd, &m_secondaryPrompt};

@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Regression checks for afterglow_tuifuzz; pass its built executable.
 
-Exits with 77 (skipped) when bwrap is not installed."""
+Exits with 77 (skipped) when bwrap is not installed, or cannot make the namespaces of
+its sandbox here (a container without unprivileged user namespaces)."""
 import os
 import pathlib
 import shutil
@@ -36,6 +37,12 @@ for args in ([], ["--"], ["--steps"], ["sh"]):  # no command, or a command witho
 
 if not shutil.which("bwrap"):
     print("bwrap is not installed: skipped")
+    sys.exit(77)
+# The namespaces of the sandbox that afterglow_tuifuzz makes (--unshare-all).
+probe = subprocess.run(["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--unshare-all",
+                        "--die-with-parent", "--", "true"], capture_output=True)
+if probe.returncode != 0:
+    print("bwrap cannot make its sandbox here: skipped:", probe.stderr.decode(errors="replace").strip())
     sys.exit(77)
 
 with tempfile.TemporaryDirectory() as work:

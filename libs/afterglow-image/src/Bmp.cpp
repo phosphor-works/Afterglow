@@ -36,20 +36,24 @@ public:
     bool set(std::uint32_t mask)
     {
         m_mask = mask;
-        if (mask == 0) return true;
+        if (mask == 0)
+            return true;
         m_shift = std::countr_zero(mask);
         m_bits = std::popcount(mask);
         return (std::uint64_t(mask) >> m_shift) == (std::uint64_t(1) << m_bits) - 1;
     }
     std::uint8_t operator()(std::uint32_t pixel, std::uint8_t none) const
     {
-        if (m_mask == 0) return none;
+        if (m_mask == 0)
+            return none;
         const std::uint32_t value = (pixel & m_mask) >> m_shift;
-        if (m_bits >= 8) return std::uint8_t(value >> (m_bits - 8));
+        if (m_bits >= 8)
+            return std::uint8_t(value >> (m_bits - 8));
         // The bits again below themselves until 8 are full, as Qt widens a
         // channel: 5 bits of 16 give 132.
         std::uint32_t wide = value << (8 - m_bits);
-        for (int filled = m_bits; filled < 8; filled += m_bits) wide |= wide >> filled;
+        for (int filled = m_bits; filled < 8; filled += m_bits)
+            wide |= wide >> filled;
         return std::uint8_t(wide);
     }
 
@@ -72,7 +76,8 @@ struct Header
 
 bool readHeader(std::string_view bytes, Header& header)
 {
-    if (bytes.size() < 26) return false;
+    if (bytes.size() < 26)
+        return false;
     header.size = little(bytes, 14, 4);
     if (header.size == 12) {
         header.width = little(bytes, 18, 2);
@@ -80,10 +85,12 @@ bool readHeader(std::string_view bytes, Header& header)
         header.bits = little(bytes, 24, 2);
         return true;
     }
-    if (header.size < 40 || header.size > 124 || bytes.size() < 14 + std::size_t(header.size)) return false;
+    if (header.size < 40 || header.size > 124 || bytes.size() < 14 + std::size_t(header.size))
+        return false;
     const auto width = std::int32_t(little(bytes, 18, 4));
     const auto height = std::int32_t(little(bytes, 22, 4));
-    if (width <= 0 || height == 0 || height == INT32_MIN) return false;
+    if (width <= 0 || height == 0 || height == INT32_MIN)
+        return false;
     header.width = std::uint64_t(width);
     header.topDown = height < 0;
     header.height = std::uint64_t(height < 0 ? -std::int64_t(height) : height);
@@ -93,7 +100,10 @@ bool readHeader(std::string_view bytes, Header& header)
     return true;
 }
 
-using Palette = std::vector<std::array<std::uint8_t, 4>>;
+// Every index fits: it is a byte, or fewer bits of one. A fixed table, as
+// in Gif.cpp, also keeps GCC from a false -Wstringop-overflow on the fill of
+// a vector whose length it knows only as 2 to 256.
+using Palette = std::array<std::array<std::uint8_t, 4>, 256>;
 
 /// Run-length encoded indices of @p bits (8 or 4) from @p data into @p rgba,
 /// @p width by @p height: runs of one index (of two that alternate in
@@ -101,17 +111,19 @@ using Palette = std::vector<std::array<std::uint8_t, 4>>;
 /// and indices as they are. Pixels that the data does not reach keep the
 /// first colour of the palette, as in Qt, and data that ends early ends the
 /// image.
-void readRle(std::string_view data, std::uint32_t bits, const Palette& palette, std::size_t width, std::size_t height, bool topDown,
-             std::vector<unsigned char>& rgba)
+void readRle(std::string_view data, std::uint32_t bits, const Palette& palette, std::size_t width, std::size_t height,
+             bool topDown, std::vector<unsigned char>& rgba)
 {
-    for (std::size_t i = 0; i < width * height; ++i) std::memcpy(&rgba[i * 4], palette[0].data(), 4);
+    for (std::size_t i = 0; i < width * height; ++i)
+        std::memcpy(&rgba[i * 4], palette[0].data(), 4);
     std::size_t x = 0;
     std::size_t row = 0; // from the bottom, unless the image is top-down
     // Index @p i of @p count from @p next(i), past the row's end lost.
     const auto put = [&](std::size_t count, auto next) {
         const std::size_t drawn = x < width ? std::min(count, width - x) : 0;
         const std::size_t start = ((topDown ? row : height - 1 - row) * width + x) * 4;
-        for (std::size_t i = 0; i < drawn; ++i) std::memcpy(&rgba[start + i * 4], palette[next(i)].data(), 4);
+        for (std::size_t i = 0; i < drawn; ++i)
+            std::memcpy(&rgba[start + i * 4], palette[next(i)].data(), 4);
         x += count;
     };
     std::size_t pos = 0;
@@ -120,24 +132,30 @@ void readRle(std::string_view data, std::uint32_t bits, const Palette& palette, 
         const std::uint8_t value = at(data, pos + 1);
         pos += 2;
         if (count > 0) {
-            put(count, [&](std::size_t i) { return std::size_t(bits == 8 ? value : i % 2 == 0 ? value >> 4 : value & 0x0F); });
+            put(count, [&](std::size_t i) {
+                return std::size_t(bits == 8 ? value : i % 2 == 0 ? value >> 4 : value & 0x0F);
+            });
         } else if (value == 0) {
             x = 0;
             ++row;
         } else if (value == 1) {
             return;
         } else if (value == 2) {
-            if (pos + 2 > data.size()) return;
+            if (pos + 2 > data.size())
+                return;
             x += at(data, pos);
             row += at(data, pos + 1);
             pos += 2;
         } else {
             // Indices as they are, in whole 16-bit words.
             const std::size_t length = bits == 8 ? value : (std::size_t(value) + 1) / 2;
-            if (length > data.size() - pos) return;
+            if (length > data.size() - pos)
+                return;
             const std::string_view indices = data.substr(pos, length);
             put(value, [&](std::size_t i) {
-                return std::size_t(bits == 8 ? at(indices, i) : i % 2 == 0 ? at(indices, i / 2) >> 4 : at(indices, i / 2) & 0x0F);
+                return std::size_t(bits == 8        ? at(indices, i)
+                                       : i % 2 == 0 ? at(indices, i / 2) >> 4
+                                                    : at(indices, i / 2) & 0x0F);
             });
             pos += (length + 1) & ~std::size_t(1);
         }
@@ -150,7 +168,8 @@ Probe probeBmp(std::string_view bytes, int& width, int& height)
 {
     width = height = 0;
     Header header;
-    if (!readHeader(bytes, header)) return Probe::Unknown;
+    if (!readHeader(bytes, header))
+        return Probe::Unknown;
     return sized(header.width, header.height, width, height);
 }
 
@@ -159,7 +178,8 @@ bool decodeBmp(std::string_view bytes, const FrameSink& sink, const Options&, st
     Header header;
     int width = 0;
     int height = 0;
-    if (refused(readHeader(bytes, header) ? sized(header.width, header.height, width, height) : Probe::Unknown, "BMP", error)) {
+    if (refused(readHeader(bytes, header) ? sized(header.width, header.height, width, height) : Probe::Unknown, "BMP",
+                error)) {
         return false;
     }
     const std::size_t headerEnd = 14 + std::size_t(header.size);
@@ -169,8 +189,9 @@ bool decodeBmp(std::string_view bytes, const FrameSink& sink, const Options&, st
     Channel blue;
     Channel alpha;
     Palette palette;
+    const bool indexed = bits == 1 || bits == 4 || bits == 8;
     const bool rle = (bits == 8 && header.compression == Rle8) || (bits == 4 && header.compression == Rle4);
-    if (bits == 1 || bits == 4 || bits == 8) {
+    if (indexed) {
         if (header.compression != Rgb && !rle) {
             error = "the BMP is compressed, which is not supported";
             return false;
@@ -183,7 +204,7 @@ bool decodeBmp(std::string_view bytes, const FrameSink& sink, const Options&, st
             error = "the BMP is truncated";
             return false;
         }
-        palette.assign(count, {0, 0, 0, 255});
+        palette.fill({0, 0, 0, 255});
         for (std::size_t i = 0; i < listed; ++i) {
             const std::size_t p = headerEnd + i * entry;
             palette[i] = {at(bytes, p + 2), at(bytes, p + 1), at(bytes, p), 255};
@@ -200,8 +221,10 @@ bool decodeBmp(std::string_view bytes, const FrameSink& sink, const Options&, st
         red.set(wide ? 0xFF0000 : 0x7C00);
         green.set(wide ? 0xFF00 : 0x3E0);
         blue.set(wide ? 0xFF : 0x1F);
-        if (wide && header.size >= 108 && little(bytes, 14 + 52, 4) == 0xFF000000) alpha.set(0xFF000000);
-    } else if ((bits == 16 || bits == 32) && (header.compression == Bitfields || header.compression == AlphaBitfields)) {
+        if (wide && header.size >= 108 && little(bytes, 14 + 52, 4) == 0xFF000000)
+            alpha.set(0xFF000000);
+    } else if ((bits == 16 || bits == 32)
+               && (header.compression == Bitfields || header.compression == AlphaBitfields)) {
         // The masks are in a header of 52 bytes and more, and after the
         // 40-byte header otherwise. A header of 56 bytes and more, or
         // AlphaBitfields, has an alpha mask.
@@ -211,14 +234,15 @@ bool decodeBmp(std::string_view bytes, const FrameSink& sink, const Options&, st
             error = "the BMP is truncated";
             return false;
         }
-        if (!red.set(little(bytes, masks, 4)) || !green.set(little(bytes, masks + 4, 4)) || !blue.set(little(bytes, masks + 8, 4))
-            || !alpha.set(withAlpha ? little(bytes, masks + 12, 4) : 0)) {
+        if (!red.set(little(bytes, masks, 4)) || !green.set(little(bytes, masks + 4, 4))
+            || !blue.set(little(bytes, masks + 8, 4)) || !alpha.set(withAlpha ? little(bytes, masks + 12, 4) : 0)) {
             error = "the BMP has a color mask that is not valid";
             return false;
         }
     } else {
-        error = header.compression == Rgb ? "the BMP has a depth of " + std::to_string(bits) + " bits, which is not valid"
-                                          : "the BMP is compressed, which is not supported";
+        error = header.compression == Rgb
+            ? "the BMP has a depth of " + std::to_string(bits) + " bits, which is not valid"
+            : "the BMP is compressed, which is not supported";
         return false;
     }
 
@@ -241,7 +265,7 @@ bool decodeBmp(std::string_view bytes, const FrameSink& sink, const Options&, st
         const std::size_t source = offset + std::size_t(stride) * (header.topDown ? y : h - 1 - y);
         unsigned char* out = &rgba[y * w * 4];
         for (std::size_t x = 0; x < w; ++x, out += 4) {
-            if (!palette.empty()) {
+            if (indexed) {
                 const std::size_t bit = x * bits;
                 const std::uint8_t byte = at(bytes, source + bit / 8);
                 const std::size_t index = (byte >> (8 - bits - bit % 8)) & ((1u << bits) - 1);

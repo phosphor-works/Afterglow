@@ -16,7 +16,7 @@ Item {
 
     // Called by Chrome.qml when this is the topmost open overlay.
     function takeFocus() {
-        panel.forceActiveFocus()
+        panel.forceActiveFocus();
     }
 
     Scrim {
@@ -36,8 +36,7 @@ Item {
 
             Label {
                 Layout.fillWidth: true
-                text: confirm.controller.pasteLines === 1 ? qsTr("Paste 1 line?")
-                                                          : qsTr("Paste %1 lines?").arg(confirm.controller.pasteLines)
+                text: confirm.controller.pasteLines === 1 ? qsTr("Paste 1 line?") : qsTr("Paste %1 lines?").arg(confirm.controller.pasteLines)
                 font.bold: true
             }
             Label {
@@ -61,8 +60,7 @@ Item {
             Label {
                 Layout.fillWidth: true
                 visible: confirm.controller.pasteHiddenBytes > 0
-                text: confirm.controller.pasteHiddenBytes === 1 ? qsTr("The preview leaves out 1 more byte.")
-                      : qsTr("The preview leaves out %1 more bytes.").arg(confirm.controller.pasteHiddenBytes)
+                text: confirm.controller.pasteHiddenBytes === 1 ? qsTr("The preview leaves out 1 more byte.") : qsTr("The preview leaves out %1 more bytes.").arg(confirm.controller.pasteHiddenBytes)
                 wrapMode: Text.WordWrap
             }
             RowLayout {
@@ -82,8 +80,10 @@ Item {
             }
         }
 
-        Keys.onReturnPressed: if (panel.Window.activeFocusItem === panel) confirm.controller.answerPaste(true)
-        Keys.onEnterPressed: if (panel.Window.activeFocusItem === panel) confirm.controller.answerPaste(true)
+        Keys.onReturnPressed: if (panel.Window.activeFocusItem === panel)
+            confirm.controller.answerPaste(true)
+        Keys.onEnterPressed: if (panel.Window.activeFocusItem === panel)
+            confirm.controller.answerPaste(true)
         Keys.onEscapePressed: confirm.controller.answerPaste(false)
     }
 }

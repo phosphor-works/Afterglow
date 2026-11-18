@@ -116,7 +116,10 @@ public:
     /// SpawnOptions::captureOutput. What the child wrote before it exited
     /// arrives before ptyClosed. A background job that keeps the pipe after
     /// the child exits is not waited for.
-    virtual void ptyOutput(std::string_view bytes) { (void)bytes; }
+    virtual void ptyOutput(std::string_view bytes)
+    {
+        (void)bytes;
+    }
     /// The child exited, or the terminal can no longer be read. @p status is
     /// the waitpid() status, or -1 when it is unknown: the child was reaped
     /// elsewhere, or still ran when the terminal failed.
@@ -125,7 +128,9 @@ public:
     /// has room again (at most half of Pty::MaxPendingInput waits), or
     /// write() refuses for good now (Pty::accepting()). On the I/O thread,
     /// without a lock of the Pty.
-    virtual void ptyWritable() {}
+    virtual void ptyWritable()
+    {
+    }
 };
 
 /// A child process on a pseudo-terminal, with a dedicated I/O thread that
@@ -164,12 +169,18 @@ public:
     void stop();
     void resize(int cols, int rows, int pixelWidth, int pixelHeight);
 
-    pid_t pid() const noexcept { return m_pid.load(); }
+    pid_t pid() const noexcept
+    {
+        return m_pid.load();
+    }
     /// Bytes queued for the child and not yet written. Thread-safe.
     std::size_t pendingInput() const;
     /// write() can still take bytes: false once the terminal's child side is
     /// gone or the Pty stopped, although the child may still run. Thread-safe.
-    bool accepting() const noexcept { return m_accepting.load(); }
+    bool accepting() const noexcept
+    {
+        return m_accepting.load();
+    }
     /// The foreground job's working directory, else the child's, read from
     /// /proc. Empty when neither has one that was not removed. It reads no
     /// file system but /proc, so a mount that does not answer cannot block it;

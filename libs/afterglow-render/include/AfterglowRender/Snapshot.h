@@ -76,16 +76,33 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     class Identity
     {
     public:
-        Identity() : m_value(next()) {}
-        Identity(const Identity&) : m_value(next()) {}
-        Identity(Identity&& other) noexcept : m_value(std::exchange(other.m_value, next())) {}
-        Identity& operator=(const Identity&) { m_value = next(); return *this; }
-        Identity& operator=(Identity&& other) noexcept
+        Identity()
+            : m_value(next())
         {
-            if (this != &other) m_value = std::exchange(other.m_value, next());
+        }
+        Identity(const Identity&)
+            : m_value(next())
+        {
+        }
+        Identity(Identity&& other) noexcept
+            : m_value(std::exchange(other.m_value, next()))
+        {
+        }
+        Identity& operator=(const Identity&)
+        {
+            m_value = next();
             return *this;
         }
-        std::uint64_t value() const noexcept { return m_value; }
+        Identity& operator=(Identity&& other) noexcept
+        {
+            if (this != &other)
+                m_value = std::exchange(other.m_value, next());
+            return *this;
+        }
+        std::uint64_t value() const noexcept
+        {
+            return m_value;
+        }
 
     private:
         static std::uint64_t next() noexcept;
@@ -111,7 +128,12 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     std::uint32_t selectionForegroundColor = 0;
     std::uint32_t selectionBackgroundColor = 0;
 
-    struct ExtraCursor { int x, y; AfterglowVt::CursorShape shape; std::uint32_t color = 0, textColor = 0; };
+    struct ExtraCursor
+    {
+        int x, y;
+        AfterglowVt::CursorShape shape;
+        std::uint32_t color = 0, textColor = 0;
+    };
     std::vector<ExtraCursor> extraCursors;
     bool cursorVisible = false;
     int cursorX = 0;
@@ -155,10 +177,16 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
 
     int visualColumn(int logical, int row) const;
     int logicalColumn(int visual, int row) const;
-    const SnapshotCell& logicalAt(int x, int y) const { return at(visualColumn(x, y), y); }
+    const SnapshotCell& logicalAt(int x, int y) const
+    {
+        return at(visualColumn(x, y), y);
+    }
     void applyBidi(const AfterglowVt::Terminal& terminal);
 
-    const SnapshotCell& at(int x, int y) const { return cells[std::size_t(y) * std::size_t(cols) + std::size_t(x)]; }
+    const SnapshotCell& at(int x, int y) const
+    {
+        return cells[std::size_t(y) * std::size_t(cols) + std::size_t(x)];
+    }
     AfterglowVt::LineSize lineSize(int y) const
     {
         return std::size_t(y) < lineSizes.size() ? lineSizes[std::size_t(y)] : AfterglowVt::LineSize::Single;

@@ -69,7 +69,10 @@ public:
     void reset() noexcept;
     /// Whether printable ASCII (grapheme class Other) fed next would join the
     /// current cluster: only after a Prepend (GB9b).
-    bool joinsAscii() const noexcept { return m_started && m_prev == GraphemeBreak::Prepend; }
+    bool joinsAscii() const noexcept
+    {
+        return m_started && m_prev == GraphemeBreak::Prepend;
+    }
     /// breaksBefore() for a "simple" character: grapheme class Other, not
     /// Extended_Pictographic, no InCB. Same result and state, without the
     /// rules: it joins only after a Prepend (GB9b).
@@ -85,8 +88,16 @@ public:
     }
 
 private:
-    enum class EmojiState : std::uint8_t { None, Pictographic, PictographicZwj };
-    enum class ConjunctState : std::uint8_t { None, Consonant, ConsonantLinker };
+    enum class EmojiState : std::uint8_t {
+        None,
+        Pictographic,
+        PictographicZwj
+    };
+    enum class ConjunctState : std::uint8_t {
+        None,
+        Consonant,
+        ConsonantLinker
+    };
 
     bool m_started = false;
     bool m_riOdd = false;

@@ -50,7 +50,12 @@ enum class Hinting : std::uint8_t {
 };
 
 /// Coverage of outline glyphs. RGB/BGR describe horizontal display stripes.
-enum class Antialiasing : std::uint8_t { Grayscale, None, Rgb, Bgr };
+enum class Antialiasing : std::uint8_t {
+    Grayscale,
+    None,
+    Rgb,
+    Bgr
+};
 
 struct FontSpec
 {
@@ -81,7 +86,12 @@ struct FontSpec
     bool operator==(const FontSpec&) const = default;
 };
 
-enum class StyleSlot : std::uint8_t { Regular, Bold, Italic, BoldItalic };
+enum class StyleSlot : std::uint8_t {
+    Regular,
+    Bold,
+    Italic,
+    BoldItalic
+};
 
 struct FontMetrics
 {
@@ -120,16 +130,37 @@ public:
     /// FontSpec::features holds them. A FontSet skips the others.
     static bool isFeature(const std::string& feature);
 
-    const FontMetrics& metrics() const noexcept { return m_metrics; }
-    const FontSpec& spec() const noexcept { return m_spec; }
-    double devicePixelRatio() const noexcept { return m_dpr; }
-    float pixelSize() const noexcept { return m_pixelSize; }
+    const FontMetrics& metrics() const noexcept
+    {
+        return m_metrics;
+    }
+    const FontSpec& spec() const noexcept
+    {
+        return m_spec;
+    }
+    double devicePixelRatio() const noexcept
+    {
+        return m_dpr;
+    }
+    float pixelSize() const noexcept
+    {
+        return m_pixelSize;
+    }
     /// Stable identity even when an allocator reuses a destroyed FontSet address.
-    std::uint64_t identity() const noexcept { return m_identity; }
+    std::uint64_t identity() const noexcept
+    {
+        return m_identity;
+    }
 
     /// Face index for a style slot (always 0-3).
-    int primary(StyleSlot slot) const noexcept { return int(slot); }
-    const Face& face(int index) const noexcept { return *m_faces[std::size_t(index)]; }
+    int primary(StyleSlot slot) const noexcept
+    {
+        return int(slot);
+    }
+    const Face& face(int index) const noexcept
+    {
+        return *m_faces[std::size_t(index)];
+    }
     /// Face @p index has a glyph for @p cp (not its .notdef).
     bool hasGlyph(int index, char32_t cp) const noexcept;
 
@@ -138,7 +169,10 @@ public:
     /// emoji (emoji presentation, VS16).
     int faceFor(char32_t cp, StyleSlot slot, bool preferColor);
 
-    const std::vector<hb_feature_t>& features() const noexcept { return m_features; }
+    const std::vector<hb_feature_t>& features() const noexcept
+    {
+        return m_features;
+    }
 
     /// FreeType load flags and render mode for the configured hinting.
     std::int32_t loadFlags() const noexcept;

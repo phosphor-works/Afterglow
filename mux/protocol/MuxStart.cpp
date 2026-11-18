@@ -46,14 +46,17 @@ constexpr const char* Unit = "aglow-mux";
 bool lockHeldElsewhere(const AfterglowProto::MuxSockets& sockets)
 {
     return std::any_of(sockets.candidates.cbegin(), sockets.candidates.cend(),
-                       [](const AfterglowProto::MuxSocket& socket) { return AfterglowProto::lockFileHeld(socket.path + ".lock"); });
+                       [](const AfterglowProto::MuxSocket& socket) {
+                           return AfterglowProto::lockFileHeld(socket.path + ".lock");
+                       });
 }
 
 /// The value of @p name in @p environment, or nullptr.
 const char* lookup(const Environment& environment, std::string_view name)
 {
     for (const std::string& entry : environment) {
-        if (entry.size() > name.size() && entry.starts_with(name) && entry[name.size()] == '=') return entry.c_str() + name.size() + 1;
+        if (entry.size() > name.size() && entry.starts_with(name) && entry[name.size()] == '=')
+            return entry.c_str() + name.size() + 1;
     }
     return nullptr;
 }
@@ -63,13 +66,16 @@ const char* lookup(const Environment& environment, std::string_view name)
 std::string stateDirectory(const Environment& environment)
 {
     const auto trimmed = [](std::string path) {
-        while (path.size() > 1 && path.ends_with('/')) path.pop_back();
+        while (path.size() > 1 && path.ends_with('/'))
+            path.pop_back();
         return path;
     };
-    if (const char* state = lookup(environment, "XDG_STATE_HOME"); state && *state == '/') return trimmed(state);
+    if (const char* state = lookup(environment, "XDG_STATE_HOME"); state && *state == '/')
+        return trimmed(state);
     if (const char* home = lookup(environment, "HOME"); home && *home == '/') {
         std::string directory = trimmed(home);
-        if (!directory.ends_with('/')) directory += '/';
+        if (!directory.ends_with('/'))
+            directory += '/';
         return directory + ".local/state";
     }
     return {};
@@ -80,7 +86,8 @@ std::string userName()
     passwd entry{};
     passwd* found = nullptr;
     std::vector<char> buffer(16384);
-    if (::getpwuid_r(::getuid(), &entry, buffer.data(), buffer.size(), &found) != 0 || !found) return {};
+    if (::getpwuid_r(::getuid(), &entry, buffer.data(), buffer.size(), &found) != 0 || !found)
+        return {};
     return found->pw_name;
 }
 
@@ -95,10 +102,13 @@ std::string userName()
 bool userManager(const Environment& environment)
 {
     const char* runtime = lookup(environment, "XDG_RUNTIME_DIR");
-    if (!runtime || std::string(runtime) != "/run/user/" + std::to_string(::getuid())) return false;
+    if (!runtime || std::string(runtime) != "/run/user/" + std::to_string(::getuid()))
+        return false;
     struct stat info{};
-    if (::stat((std::string(runtime) + "/systemd/private").c_str(), &info) != 0 || !S_ISSOCK(info.st_mode)) return false;
-    if (const std::string user = userName(); !user.empty() && ::access(("/var/lib/systemd/linger/" + user).c_str(), F_OK) == 0) {
+    if (::stat((std::string(runtime) + "/systemd/private").c_str(), &info) != 0 || !S_ISSOCK(info.st_mode))
+        return false;
+    if (const std::string user = userName();
+        !user.empty() && ::access(("/var/lib/systemd/linger/" + user).c_str(), F_OK) == 0) {
         return true;
     }
     const char* session = lookup(environment, "XDG_SESSION_TYPE");
@@ -108,7 +118,8 @@ bool userManager(const Environment& environment)
 /// The milliseconds until @p deadline, at least 0.
 int msUntil(std::chrono::steady_clock::time_point deadline)
 {
-    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+    const auto left =
+        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
     return int(std::clamp<long long>(left, 0, 1 << 30));
 }
 
@@ -116,29 +127,36 @@ int msUntil(std::chrono::steady_clock::time_point deadline)
 /// or its standard output in @p output, and waits for it up to
 /// @p deadline, when it is killed. Its exit status, or as
 /// UserManager::run says.
-int run(const std::vector<std::string>& argv, const Environment& environment, std::chrono::steady_clock::time_point deadline,
-        std::string* output = nullptr)
+int run(const std::vector<std::string>& argv, const Environment& environment,
+        std::chrono::steady_clock::time_point deadline, std::string* output = nullptr)
 {
     const std::string program = findProgram(argv.front(), environment);
-    if (program.empty()) return -1;
+    if (program.empty())
+        return -1;
     std::vector<char*> args;
-    for (const auto& a : argv) args.push_back(const_cast<char*>(a.c_str()));
+    for (const auto& a : argv)
+        args.push_back(const_cast<char*>(a.c_str()));
     args.push_back(nullptr);
     std::vector<char*> envp;
-    for (const auto& entry : environment) envp.push_back(const_cast<char*>(entry.c_str()));
+    for (const auto& entry : environment)
+        envp.push_back(const_cast<char*>(entry.c_str()));
     envp.push_back(nullptr);
     int pipe[2] = {-1, -1};
-    if (output && ::pipe2(pipe, O_CLOEXEC) != 0) return -1;
+    if (output && ::pipe2(pipe, O_CLOEXEC) != 0)
+        return -1;
     posix_spawn_file_actions_t actions;
     int spawned = posix_spawn_file_actions_init(&actions);
     pid_t pid = 0;
     if (spawned == 0) {
         // A failed action would leave the program the streams of this process.
         for (int fd : {0, 1, 2}) {
-            if (spawned == 0) spawned = posix_spawn_file_actions_addopen(&actions, fd, "/dev/null", fd ? O_WRONLY : O_RDONLY, 0);
+            if (spawned == 0)
+                spawned = posix_spawn_file_actions_addopen(&actions, fd, "/dev/null", fd ? O_WRONLY : O_RDONLY, 0);
         }
-        if (spawned == 0 && output) spawned = posix_spawn_file_actions_adddup2(&actions, pipe[1], 1);
-        if (spawned == 0) spawned = posix_spawn(&pid, program.c_str(), &actions, nullptr, args.data(), envp.data());
+        if (spawned == 0 && output)
+            spawned = posix_spawn_file_actions_adddup2(&actions, pipe[1], 1);
+        if (spawned == 0)
+            spawned = posix_spawn(&pid, program.c_str(), &actions, nullptr, args.data(), envp.data());
         posix_spawn_file_actions_destroy(&actions);
     }
     if (output) {
@@ -147,23 +165,30 @@ int run(const std::vector<std::string>& argv, const Environment& environment, st
         while (spawned == 0) {
             pollfd p{pipe[0], POLLIN, 0};
             const int ready = ::poll(&p, 1, msUntil(deadline));
-            if (ready < 0 && errno == EINTR) continue;
-            if (ready <= 0) break;
+            if (ready < 0 && errno == EINTR)
+                continue;
+            if (ready <= 0)
+                break;
             const ssize_t n = ::read(pipe[0], buffer, sizeof buffer);
-            if (n > 0) output->append(buffer, std::size_t(n));
-            else if (n == 0 || errno != EINTR) break;
+            if (n > 0)
+                output->append(buffer, std::size_t(n));
+            else if (n == 0 || errno != EINTR)
+                break;
         }
         ::close(pipe[0]);
     }
-    if (spawned != 0) return -1;
+    if (spawned != 0)
+        return -1;
     // The caller of connectOrStart left SIGCHLD at its default, so the
     // status is the child's. A waitpid() that fails tells nothing: unknown,
     // not 0.
     while (true) {
         int status = 0;
         const pid_t reaped = ::waitpid(pid, &status, WNOHANG);
-        if (reaped == pid) return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-        if (reaped < 0 && errno != EINTR) return -1;
+        if (reaped == pid)
+            return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        if (reaped < 0 && errno != EINTR)
+            return -1;
         // A user manager that does not answer holds the start no longer.
         // Not -1: a program that did not answer says nothing about the unit.
         if (std::chrono::steady_clock::now() >= deadline) {
@@ -182,14 +207,19 @@ constexpr const char* NoAnswer = "aglow-mux did not start: the systemd user mana
 
 /// The value of @p property of the daemon's unit in the user manager: empty
 /// when systemctl fails, nothing when it did not end by @p deadline.
-std::optional<std::string> unitProperty(const char* property, const UserManager& manager, std::chrono::steady_clock::time_point deadline)
+std::optional<std::string> unitProperty(const char* property, const UserManager& manager,
+                                        std::chrono::steady_clock::time_point deadline)
 {
     std::string value;
-    const int status = manager.run({"systemctl", "--user", "show", std::string("--property=") + property, "--value", std::string(Unit) + ".service"},
+    const int status = manager.run({"systemctl", "--user", "show", std::string("--property=") + property, "--value",
+                                    std::string(Unit) + ".service"},
                                    deadline, &value);
-    if (status == UserManager::TimedOut) return std::nullopt;
-    if (status != 0) return std::string();
-    while (value.ends_with('\n')) value.pop_back();
+    if (status == UserManager::TimedOut)
+        return std::nullopt;
+    if (status != 0)
+        return std::string();
+    while (value.ends_with('\n'))
+        value.pop_back();
     return value;
 }
 
@@ -199,7 +229,8 @@ std::optional<std::string> unitProperty(const char* property, const UserManager&
 std::optional<bool> unitLoaded(const UserManager& manager, std::chrono::steady_clock::time_point deadline)
 {
     const std::optional<std::string> state = unitProperty("LoadState", manager, deadline);
-    if (!state) return std::nullopt;
+    if (!state)
+        return std::nullopt;
     return *state == "loaded";
 }
 
@@ -210,12 +241,16 @@ std::optional<bool> ownUnitStopped(const UserManager& manager, std::chrono::stea
 {
     // systemctl says "no" and "inactive" for a unit that it does not have too.
     const std::optional<bool> loaded = unitLoaded(manager, deadline);
-    if (!loaded || !*loaded) return loaded;
+    if (!loaded || !*loaded)
+        return loaded;
     const std::optional<std::string> transient = unitProperty("Transient", manager, deadline);
-    if (!transient) return std::nullopt;
-    if (*transient != "no") return false;
+    if (!transient)
+        return std::nullopt;
+    if (*transient != "no")
+        return false;
     const std::optional<std::string> state = unitProperty("ActiveState", manager, deadline);
-    if (!state) return std::nullopt;
+    if (!state)
+        return std::nullopt;
     return *state == "inactive" || *state == "failed";
 }
 
@@ -255,11 +290,13 @@ bool startDetached(const std::string& daemon, const Environment& environment, in
     std::vector<std::string> store;
     const std::string reportVariable = std::string(AfterglowMux::ReportFdVariable) + "=";
     for (const std::string& entry : environment) {
-        if (!entry.starts_with(reportVariable)) store.push_back(entry);
+        if (!entry.starts_with(reportVariable))
+            store.push_back(entry);
     }
     store.emplace_back(reportVariable + "3");
     std::vector<char*> envp;
-    for (auto& entry : store) envp.push_back(entry.data());
+    for (auto& entry : store)
+        envp.push_back(entry.data());
     envp.push_back(nullptr);
     char* const args[] = {const_cast<char*>(daemon.c_str()), nullptr};
     const std::string execFailed = execFailure(daemon);
@@ -273,7 +310,8 @@ bool startDetached(const std::string& daemon, const Environment& environment, in
     pthread_sigmask(SIG_SETMASK, &blockAll, &callerMask);
     const pid_t child = ::fork();
     const int forkError = errno;
-    if (child != 0) pthread_sigmask(SIG_SETMASK, &callerMask, nullptr);
+    if (child != 0)
+        pthread_sigmask(SIG_SETMASK, &callerMask, nullptr);
     if (child < 0) {
         *error = std::string("cannot fork: ") + std::strerror(forkError);
         return false;
@@ -284,7 +322,8 @@ bool startDetached(const std::string& daemon, const Environment& environment, in
         struct sigaction fallback{};
         fallback.sa_handler = SIG_DFL;
         for (int sig = 1; sig < NSIG; ++sig) {
-            if (sig != SIGKILL && sig != SIGSTOP) ::sigaction(sig, &fallback, nullptr);
+            if (sig != SIGKILL && sig != SIGSTOP)
+                ::sigaction(sig, &fallback, nullptr);
         }
         sigset_t none;
         sigemptyset(&none);
@@ -293,13 +332,17 @@ bool startDetached(const std::string& daemon, const Environment& environment, in
         // A second fork: the daemon is no session leader, so it can never
         // take a controlling terminal.
         const pid_t daemonPid = ::fork();
-        if (daemonPid < 0) ::_exit(127);
-        if (daemonPid > 0) ::_exit(0);
+        if (daemonPid < 0)
+            ::_exit(127);
+        if (daemonPid > 0)
+            ::_exit(0);
         // Descriptor 3 is the report pipe, and the daemon gets no other
         // descriptor of this command: not the socket of a window, nor a pipe
         // whose reader waits for its end.
-        if (reportFd != 3) ::dup2(reportFd, 3);
-        else ::fcntl(3, F_SETFD, 0);
+        if (reportFd != 3)
+            ::dup2(reportFd, 3);
+        else
+            ::fcntl(3, F_SETFD, 0);
         AfterglowPty::closeFrom(4);
         // Without /dev/null the daemon would keep the streams of this
         // command: the ssh channel of a proxy, which then never ends.
@@ -309,9 +352,11 @@ bool startDetached(const std::string& daemon, const Environment& environment, in
             ::_exit(127);
         }
         for (int fd = 0; fd < 3; ++fd) {
-            if (fd != null) ::dup2(null, fd);
+            if (fd != null)
+                ::dup2(null, fd);
         }
-        if (null > 3) ::close(null);
+        if (null > 3)
+            ::close(null);
         (void)!::chdir("/");
         ::execve(daemon.c_str(), args, envp.data());
         writeFailure(3, execFailed, errno);
@@ -339,9 +384,13 @@ bool startDetached(const std::string& daemon, const Environment& environment, in
 std::string failureText(const std::string& reason, const std::string& daemon)
 {
     for (const std::string& prefix : {execFailure(daemon), std::string(NoNullFailure)}) {
-        if (!reason.starts_with(prefix)) continue;
+        if (!reason.starts_with(prefix))
+            continue;
         const std::string_view digits = std::string_view(reason).substr(prefix.size());
-        if (digits.empty() || digits.size() > 9 || !std::all_of(digits.begin(), digits.end(), [](char c) { return c >= '0' && c <= '9'; })) break;
+        if (digits.empty() || digits.size() > 9 || !std::all_of(digits.begin(), digits.end(), [](char c) {
+                return c >= '0' && c <= '9';
+            }))
+            break;
         return prefix.substr(0, prefix.size() - std::strlen("errno ")) + std::strerror(std::stoi(std::string(digits)));
     }
     return reason;
@@ -367,15 +416,20 @@ Report readReport(int fd, std::chrono::steady_clock::time_point deadline)
     Report report;
     bool ended = false;
     while (true) {
-        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-        if (left.count() <= 0) break;
+        const auto left =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+        if (left.count() <= 0)
+            break;
         pollfd p{fd, POLLIN, 0};
         const int ready = ::poll(&p, 1, int(left.count()));
-        if (ready < 0 && errno == EINTR) continue;
-        if (ready <= 0) break;
+        if (ready < 0 && errno == EINTR)
+            continue;
+        if (ready <= 0)
+            break;
         char buffer[4096];
         const ssize_t n = ::read(fd, buffer, sizeof buffer);
-        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && errno == EINTR)
+            continue;
         if (n > 0) {
             report.message.append(buffer, std::size_t(n));
             if (report.message.size() == 1 && report.message.front() == AfterglowMux::ReportListening) {
@@ -387,7 +441,8 @@ Report readReport(int fd, std::chrono::steady_clock::time_point deadline)
         break;
     }
     if (report.message.empty()) {
-        if (ended) report.state = Report::State::Ended;
+        if (ended)
+            report.state = Report::State::Ended;
     } else if (report.message.front() == AfterglowMux::ReportHeld) {
         report.state = Report::State::Held;
         report.message.erase(0, 1);
@@ -401,7 +456,8 @@ Report readReport(int fd, std::chrono::steady_clock::time_point deadline)
 std::string paths(const AfterglowProto::MuxSockets& sockets)
 {
     std::string list;
-    for (const auto& socket : sockets.candidates) list += (list.empty() ? "" : " and ") + socket.path;
+    for (const auto& socket : sockets.candidates)
+        list += (list.empty() ? "" : " and ") + socket.path;
     return list;
 }
 
@@ -412,7 +468,8 @@ Reached waitForDaemon(const AfterglowProto::MuxSockets& sockets, std::chrono::st
     while (true) {
         // Each look ends by the deadline too.
         Reached reached = connectAny(sockets, error, std::max(msUntil(deadline), 1));
-        if (reached.connection || !error->empty() || std::chrono::steady_clock::now() >= deadline) return reached;
+        if (reached.connection || !error->empty() || std::chrono::steady_clock::now() >= deadline)
+            return reached;
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
 }
@@ -424,8 +481,8 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::str
     return connectOrStart(sockets, daemon, currentEnvironment(), error);
 }
 
-Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::string& daemon, const Environment& environment,
-                       std::string* error)
+Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::string& daemon,
+                       const Environment& environment, std::string* error)
 {
     return connectOrStart(sockets, daemon, environment, userManagerOf(environment), error);
 }
@@ -434,16 +491,18 @@ UserManager userManagerOf(const Environment& environment)
 {
     UserManager manager;
     manager.runs = userManager(environment);
-    manager.run = [environment](const std::vector<std::string>& argv, std::chrono::steady_clock::time_point deadline, std::string* output) {
+    manager.run = [environment](const std::vector<std::string>& argv, std::chrono::steady_clock::time_point deadline,
+                                std::string* output) {
         return run(argv, environment, deadline, output);
     };
     return manager;
 }
 
-Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::string& daemon, const Environment& environment,
-                       const UserManager& manager, std::string* error)
+Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::string& daemon,
+                       const Environment& environment, const UserManager& manager, std::string* error)
 {
-    if (Reached reached = connectAny(sockets, error); reached.connection || !error->empty()) return reached;
+    if (Reached reached = connectAny(sockets, error); reached.connection || !error->empty())
+        return reached;
     const auto deadline = std::chrono::steady_clock::now() + StartWait;
     if (manager.runs && manager.run) {
         // Before the message that the manager does not answer, one more look
@@ -453,18 +512,25 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::str
         // may answer by now.
         const auto noAnswer = [&](std::chrono::steady_clock::time_point look) {
             Reached reached = connectAny(sockets, error, std::max(msUntil(look), 1));
-            if (!reached.connection && error->empty()) *error = NoAnswer;
+            if (!reached.connection && error->empty())
+                *error = NoAnswer;
             return reached;
         };
-        std::vector<std::string> start = {"systemd-run", "--user", "--quiet", "--collect",
-                                          std::string("--unit=") + Unit, "--description=Afterglow terminal sessions"};
+        std::vector<std::string> start = {"systemd-run",
+                                          "--user",
+                                          "--quiet",
+                                          "--collect",
+                                          std::string("--unit=") + Unit,
+                                          "--description=Afterglow terminal sessions"};
         // The daemon runs in the user manager's environment, and finds its
         // state directory's socket from these: the one that this command and
         // later clients look for. The state directory always, as
         // muxSockets() finds it: the manager's own XDG_STATE_HOME can be
         // another one.
-        if (const std::string state = stateDirectory(environment); !state.empty()) start.push_back("--setenv=XDG_STATE_HOME=" + state);
-        if (const char* home = lookup(environment, "HOME"); home && *home) start.push_back(std::string("--setenv=HOME=") + home);
+        if (const std::string state = stateDirectory(environment); !state.empty())
+            start.push_back("--setenv=XDG_STATE_HOME=" + state);
+        if (const char* home = lookup(environment, "HOME"); home && *home)
+            start.push_back(std::string("--setenv=HOME=") + home);
         start.push_back(daemon);
         // systemd-run fails too when the unit exists: another command
         // started the daemon at the same time, or the daemon of the unit
@@ -472,20 +538,24 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::str
         // does a start that the manager did not answer in time, which can
         // still bring the unit's daemon.
         const int status = manager.run(start, deadline, nullptr);
-        if (status == UserManager::TimedOut) return noAnswer(std::chrono::steady_clock::now() + LookWait);
+        if (status == UserManager::TimedOut)
+            return noAnswer(std::chrono::steady_clock::now() + LookWait);
         bool ours = status == 0;
         // A unit file of that name that does not run: no daemon of it comes.
         if (!ours) {
             const std::optional<bool> stopped = ownUnitStopped(manager, deadline);
-            if (!stopped) return noAnswer(std::chrono::steady_clock::now() + LookWait);
+            if (!stopped)
+                return noAnswer(std::chrono::steady_clock::now() + LookWait);
             if (*stopped) {
                 *error = std::string("aglow-mux did not start: the user unit ") + Unit
-                    + ".service exists and does not run. Start it with systemctl --user start " + Unit + ".service, or remove it";
+                    + ".service exists and does not run. Start it with systemctl --user start " + Unit
+                    + ".service, or remove it";
                 return {};
             }
         }
         const std::optional<bool> loaded = ours ? std::optional<bool>(true) : unitLoaded(manager, deadline);
-        if (!loaded) return noAnswer(std::chrono::steady_clock::now() + LookWait);
+        if (!loaded)
+            return noAnswer(std::chrono::steady_clock::now() + LookWait);
         if (*loaded) {
             // A unit that ends keeps its name until its daemon is gone, and
             // then --collect unloads it. Nothing starts a daemon after that,
@@ -500,9 +570,11 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::str
             auto nextLook = std::chrono::steady_clock::now();
             while (true) {
                 Reached reached = connectAny(sockets, error, std::max(msUntil(deadline), 1));
-                if (reached.connection || !error->empty()) return reached;
+                if (reached.connection || !error->empty())
+                    return reached;
                 const auto now = std::chrono::steady_clock::now();
-                if (now >= deadline) break;
+                if (now >= deadline)
+                    break;
                 if (now >= nextLook) {
                     nextLook = now + std::chrono::milliseconds(250);
                     // A look that got no answer tells nothing: the wait goes on.
@@ -510,7 +582,8 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::str
                         if (!ours && !retried) {
                             retried = true;
                             const int again = manager.run(start, deadline, nullptr);
-                            if (again == UserManager::TimedOut) return noAnswer(std::chrono::steady_clock::now() + LookWait);
+                            if (again == UserManager::TimedOut)
+                                return noAnswer(std::chrono::steady_clock::now() + LookWait);
                             ours = again == 0;
                         } else if (!lockHeldElsewhere(sockets)) {
                             break;
@@ -525,7 +598,8 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::str
             // used it up leaves the last look at the sockets a wait of its own.
             const auto look = std::chrono::steady_clock::now() + LookWait;
             const std::optional<bool> runs = ours ? unitLoaded(manager, look) : std::optional<bool>(false);
-            if (!runs) return noAnswer(std::chrono::steady_clock::now() + LookWait);
+            if (!runs)
+                return noAnswer(std::chrono::steady_clock::now() + LookWait);
             if (!*runs && lockHeldElsewhere(sockets)) {
                 *error = "aglow-mux did not start: another aglow-mux holds a socket and does not answer";
             } else if (const std::optional<std::string> state = unitProperty("ActiveState", manager, look); !state) {
@@ -547,9 +621,11 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::str
     const bool started = startDetached(daemon, environment, report[1], error);
     ::close(report[1]);
     Report reported;
-    if (started) reported = readReport(report[0], deadline);
+    if (started)
+        reported = readReport(report[0], deadline);
     ::close(report[0]);
-    if (!started) return {};
+    if (!started)
+        return {};
     // A daemon that found another one holding a socket (another command
     // started it at the same time) leaves that one to answer: it took its
     // lock before it binds, so the wait is the same as for this one. Any
@@ -558,7 +634,8 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::str
     Reached reached = waits ? waitForDaemon(sockets, deadline, error) : connectAny(sockets, error);
     if (!reached.connection && error->empty()) {
         std::string& reason = reported.message;
-        while (reason.ends_with('\n')) reason.pop_back();
+        while (reason.ends_with('\n'))
+            reason.pop_back();
         switch (reported.state) {
         case Report::State::Failed:
             *error = printable(failureText(reason, daemon));

@@ -31,8 +31,9 @@ struct Settings;
 /// start from it. A window adds its own fallback when the program fails to
 /// start. Shell integration reads the variables that the program would
 /// inherit in @p inherited.
-AfterglowPty::SpawnOptions prepareLaunch(const Settings& settings, const QString& workingDirectory, const QStringList& command,
-                                         const QVariantMap& environment, const InheritedEnvironment* inherited = nullptr);
+AfterglowPty::SpawnOptions prepareLaunch(const Settings& settings, const QString& workingDirectory,
+                                         const QStringList& command, const QVariantMap& environment,
+                                         const InheritedEnvironment* inherited = nullptr);
 
 /// TERM, and what goes with it: TERMINFO_DIRS for afterglow's own entry,
 /// COLORTERM, TERM_PROGRAM and TERM_PROGRAM_VERSION. Removes the variables
@@ -40,7 +41,8 @@ AfterglowPty::SpawnOptions prepareLaunch(const Settings& settings, const QString
 /// WINDOWID, KITTY_WINDOW_ID, SHLVL and others). A name that the
 /// configuration or the launch sets or unsets keeps its value. The
 /// inherited TERMINFO_DIRS comes from @p inherited.
-void offerTerminalEnvironment(AfterglowPty::SpawnOptions& options, const QString& term, const InheritedEnvironment* inherited = nullptr);
+void offerTerminalEnvironment(AfterglowPty::SpawnOptions& options, const QString& term,
+                              const InheritedEnvironment* inherited = nullptr);
 
 /// Applies a launch's own variables to @p options (`env` of a script or a
 /// control call): a string sets the name, false unsets it. The launch wins

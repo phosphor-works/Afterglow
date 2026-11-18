@@ -16,8 +16,15 @@ namespace AfterglowProto {
 class ZlibStream
 {
 public:
-    enum class Mode : std::uint8_t { Inflate, Deflate };
-    enum class Result : std::uint8_t { Ok, End, Error };
+    enum class Mode : std::uint8_t {
+        Inflate,
+        Deflate
+    };
+    enum class Result : std::uint8_t {
+        Ok,
+        End,
+        Error
+    };
 
     explicit ZlibStream(Mode mode);
     ~ZlibStream();

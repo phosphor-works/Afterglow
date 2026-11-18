@@ -76,7 +76,8 @@ inline bool base64DecodeAppend(std::string& out, std::string_view in, Base64Chec
                 if ((a | b | c | d) < 0) {
                     break;
                 }
-                const std::uint32_t n = (std::uint32_t(a) << 18) | (std::uint32_t(b) << 12) | (std::uint32_t(c) << 6) | std::uint32_t(d);
+                const std::uint32_t n =
+                    (std::uint32_t(a) << 18) | (std::uint32_t(b) << 12) | (std::uint32_t(c) << 6) | std::uint32_t(d);
                 dst[0] = static_cast<unsigned char>(n >> 16);
                 dst[1] = static_cast<unsigned char>(n >> 8);
                 dst[2] = static_cast<unsigned char>(n);
@@ -139,8 +140,8 @@ inline std::string base64Encode(std::string_view in, bool pad = true)
     out.reserve((in.size() + 2) / 3 * 4);
     std::size_t i = 0;
     for (; i + 2 < in.size(); i += 3) {
-        const std::uint32_t n = (std::uint32_t(std::uint8_t(in[i])) << 16) | (std::uint32_t(std::uint8_t(in[i + 1])) << 8)
-            | std::uint8_t(in[i + 2]);
+        const std::uint32_t n = (std::uint32_t(std::uint8_t(in[i])) << 16)
+            | (std::uint32_t(std::uint8_t(in[i + 1])) << 8) | std::uint8_t(in[i + 2]);
         out += chars[(n >> 18) & 63];
         out += chars[(n >> 12) & 63];
         out += chars[(n >> 6) & 63];

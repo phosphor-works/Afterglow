@@ -27,7 +27,8 @@ namespace AfterglowRender::Testing {
 /// to offscreen, where the tests skip, instead of aborting the binary.
 inline void selectPlatform()
 {
-    qputenv("QT_QPA_PLATFORM", qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY") ? QByteArray("offscreen") : QByteArray("wayland;offscreen"));
+    qputenv("QT_QPA_PLATFORM",
+            qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY") ? QByteArray("offscreen") : QByteArray("wayland;offscreen"));
     // Not the desktop's theme plugin, which reaches the desktop's services.
     qputenv("QT_QPA_PLATFORMTHEME", "generic");
 }
@@ -74,10 +75,12 @@ inline Device makeDevice()
             QtMessageHandler previous = nullptr;
             {
                 const std::lock_guard lock(s_lock);
-                if (type != QtDebugMsg && type != QtInfoMsg) s_warnings += "\n" + text.toStdString();
+                if (type != QtDebugMsg && type != QtInfoMsg)
+                    s_warnings += "\n" + text.toStdString();
                 previous = s_previous;
             }
-            if (previous) previous(type, context, text);
+            if (previous)
+                previous(type, context, text);
         });
     }
     try {
@@ -86,7 +89,8 @@ inline Device makeDevice()
     } catch (const std::exception& error) {
         made.device.reset();
         const std::lock_guard lock(s_lock);
-        made.reason = std::string("this machine has a Vulkan device, and the test could not make one: ") + error.what() + s_warnings;
+        made.reason = std::string("this machine has a Vulkan device, and the test could not make one: ") + error.what()
+            + s_warnings;
     }
     const std::lock_guard lock(s_lock);
     qInstallMessageHandler(s_previous);

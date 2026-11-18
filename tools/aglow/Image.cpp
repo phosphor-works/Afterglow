@@ -34,7 +34,10 @@ static_assert(std::uint32_t(AfterglowImage::MaxSide) == AfterglowProto::Graphics
 
 namespace {
 
-std::uint8_t at(std::string_view bytes, std::size_t index) { return std::uint8_t(bytes[index]); }
+std::uint8_t at(std::string_view bytes, std::size_t index)
+{
+    return std::uint8_t(bytes[index]);
+}
 
 std::uint32_t big32(std::string_view bytes, std::size_t index)
 {
@@ -44,8 +47,8 @@ std::uint32_t big32(std::string_view bytes, std::size_t index)
 
 std::uint32_t little32(std::string_view bytes, std::size_t index)
 {
-    return std::uint32_t(at(bytes, index)) | std::uint32_t(at(bytes, index + 1)) << 8 | std::uint32_t(at(bytes, index + 2)) << 16
-        | std::uint32_t(at(bytes, index + 3)) << 24;
+    return std::uint32_t(at(bytes, index)) | std::uint32_t(at(bytes, index + 1)) << 8
+        | std::uint32_t(at(bytes, index + 2)) << 16 | std::uint32_t(at(bytes, index + 3)) << 24;
 }
 
 // The Orientation tag (0x0112) of the first IFD of a TIFF block, 1 without it.
@@ -171,11 +174,16 @@ int webpOrientation(std::string_view bytes)
 int exifOrientation(std::string_view bytes)
 {
     switch (AfterglowImage::format(bytes)) {
-    case AfterglowImage::Format::Jpeg: return jpegOrientation(bytes);
-    case AfterglowImage::Format::Png: return pngOrientation(bytes);
-    case AfterglowImage::Format::WebP: return webpOrientation(bytes);
-    case AfterglowImage::Format::Tiff: return tiffOrientation(bytes);
-    default: return 1;
+    case AfterglowImage::Format::Jpeg:
+        return jpegOrientation(bytes);
+    case AfterglowImage::Format::Png:
+        return pngOrientation(bytes);
+    case AfterglowImage::Format::WebP:
+        return webpOrientation(bytes);
+    case AfterglowImage::Format::Tiff:
+        return tiffOrientation(bytes);
+    default:
+        return 1;
     }
 }
 
@@ -194,14 +202,34 @@ std::string orient(const unsigned char* rgba, int width, int height, int orienta
             std::size_t sx = x;
             std::size_t sy = y;
             switch (orientation) {
-            case 2: sx = w - 1 - x; break;
-            case 3: sx = w - 1 - x; sy = h - 1 - y; break;
-            case 4: sy = h - 1 - y; break;
-            case 5: sx = y; sy = x; break;
-            case 6: sx = y; sy = h - 1 - x; break;
-            case 7: sx = w - 1 - y; sy = h - 1 - x; break;
-            case 8: sx = w - 1 - y; sy = x; break;
-            default: break;
+            case 2:
+                sx = w - 1 - x;
+                break;
+            case 3:
+                sx = w - 1 - x;
+                sy = h - 1 - y;
+                break;
+            case 4:
+                sy = h - 1 - y;
+                break;
+            case 5:
+                sx = y;
+                sy = x;
+                break;
+            case 6:
+                sx = y;
+                sy = h - 1 - x;
+                break;
+            case 7:
+                sx = w - 1 - y;
+                sy = h - 1 - x;
+                break;
+            case 8:
+                sx = w - 1 - y;
+                sy = x;
+                break;
+            default:
+                break;
             }
             std::memcpy(out.data() + (y * outWidth + x) * 4, rgba + (sy * w + sx) * 4, 4);
         }
@@ -223,16 +251,22 @@ public:
     {
         sigset_t stops;
         sigemptyset(&stops);
-        for (const int number : { SIGINT, SIGTERM, SIGHUP }) {
+        for (const int number : {SIGINT, SIGTERM, SIGHUP}) {
             sigaddset(&stops, number);
         }
         ::sigprocmask(SIG_BLOCK, &stops, &m_waiting);
     }
-    ~SignalGate() { ::sigprocmask(SIG_SETMASK, &m_waiting, nullptr); }
+    ~SignalGate()
+    {
+        ::sigprocmask(SIG_SETMASK, &m_waiting, nullptr);
+    }
     SignalGate(const SignalGate&) = delete;
     SignalGate& operator=(const SignalGate&) = delete;
     /// The mask from before the gate, for ppoll().
-    const sigset_t* waiting() const { return &m_waiting; }
+    const sigset_t* waiting() const
+    {
+        return &m_waiting;
+    }
 
 private:
     sigset_t m_waiting;
@@ -295,35 +329,39 @@ constexpr int SetupStatus = 5;
         const int sourceWidth = swap ? limits.height : limits.width;
         const int sourceHeight = swap ? limits.width : limits.height;
         bool mismatch = false;
-        const bool ok = AfterglowImage::decode(bytes, [&](const unsigned char* rgba, int width, int height, int delay) {
-            if (width != sourceWidth || height != sourceHeight) {
-                mismatch = true;
-                return false;
-            }
-            if (++frames > limits.maxFrames) {
-                written = AfterglowProto::writeDecodeRecord(fd, { Kind::TooMany });
-                return false;
-            }
-            std::string turned;
-            if (limits.orientation != 1) {
-                turned = orient(rgba, width, height, limits.orientation);
-            }
-            const void* pixels = limits.orientation != 1 ? static_cast<const void*>(turned.data()) : rgba;
-            written = AfterglowProto::writeDecodeFrame(fd, std::uint32_t(limits.width), std::uint32_t(limits.height), delay, pixels);
-            return written && !(limits.stopAtMax && frames == limits.maxFrames);
-        }, error, warning);
+        const bool ok = AfterglowImage::decode(
+            bytes,
+            [&](const unsigned char* rgba, int width, int height, int delay) {
+                if (width != sourceWidth || height != sourceHeight) {
+                    mismatch = true;
+                    return false;
+                }
+                if (++frames > limits.maxFrames) {
+                    written = AfterglowProto::writeDecodeRecord(fd, {Kind::TooMany});
+                    return false;
+                }
+                std::string turned;
+                if (limits.orientation != 1) {
+                    turned = orient(rgba, width, height, limits.orientation);
+                }
+                const void* pixels = limits.orientation != 1 ? static_cast<const void*>(turned.data()) : rgba;
+                written = AfterglowProto::writeDecodeFrame(fd, std::uint32_t(limits.width),
+                                                           std::uint32_t(limits.height), delay, pixels);
+                return written && !(limits.stopAtMax && frames == limits.maxFrames);
+            },
+            error, warning);
         if (mismatch) {
             error = "the image is not what its header says";
         }
         if (!ok || mismatch) {
             error.resize(std::min<std::size_t>(error.size(), DecodeRecord::MaxText));
-            AfterglowProto::writeDecodeRecord(fd, { Kind::Error, 0, 0, 0, error.size() }, error);
+            AfterglowProto::writeDecodeRecord(fd, {Kind::Error, 0, 0, 0, error.size()}, error);
         } else if (written) {
             if (!warning.empty()) {
                 warning.resize(std::min<std::size_t>(warning.size(), DecodeRecord::MaxText));
-                AfterglowProto::writeDecodeRecord(fd, { Kind::Warning, 0, 0, 0, warning.size() }, warning);
+                AfterglowProto::writeDecodeRecord(fd, {Kind::Warning, 0, 0, 0, warning.size()}, warning);
             }
-            AfterglowProto::writeDecodeRecord(fd, { Kind::End });
+            AfterglowProto::writeDecodeRecord(fd, {Kind::End});
         }
     } catch (const std::bad_alloc&) {
         code = OutOfMemoryStatus; // under the memory limit: the parent reads why from the exit
@@ -355,8 +393,7 @@ public:
             ::kill(m_pid, SIGKILL);
         }
         int status = 0;
-        while (::waitpid(m_pid, &status, 0) < 0 && errno == EINTR) {
-        }
+        while (::waitpid(m_pid, &status, 0) < 0 && errno == EINTR) { }
         m_pid = -1;
         return status;
     }
@@ -385,7 +422,8 @@ std::string childFailure(int status)
         return "the image needs more memory to decode than aglow allows";
     }
     if (WIFEXITED(status) && WEXITSTATUS(status) == SetupStatus) {
-        return "the image decoder cannot set up its standard input, output and error (no free descriptor or no /dev/null)";
+        return "the image decoder cannot set up its standard input, output and error (no free descriptor or no "
+               "/dev/null)";
     }
     if (WIFEXITED(status) && WEXITSTATUS(status) == NoFilterStatus) {
         return "the image decoder cannot limit its system calls (seccomp) here, so it decodes nothing";
@@ -402,8 +440,9 @@ bool imageSize(std::string_view bytes, int& width, int& height, std::string& err
         error = "not an image that aglow can read";
         return false;
     case AfterglowImage::Probe::TooLarge:
-        error = "the image is " + std::to_string(width) + "x" + std::to_string(height) + " pixels, and aglow decodes no side longer than "
-            + std::to_string(AfterglowProto::GraphicsMaxSide) + ", the longest that a terminal takes";
+        error = "the image is " + std::to_string(width) + "x" + std::to_string(height)
+            + " pixels, and aglow decodes no side longer than " + std::to_string(AfterglowProto::GraphicsMaxSide)
+            + ", the longest that a terminal takes";
         return false;
     case AfterglowImage::Probe::Image:
         break;
@@ -468,12 +507,19 @@ bool isPng(std::string_view bytes)
     const bool low = depth == 1 || depth == 2 || depth == 4;
     bool valid = false;
     switch (colour) {
-    case 0: valid = low || depth == 8 || depth == 16; break;
-    case 3: valid = low || depth == 8; break;
+    case 0:
+        valid = low || depth == 8 || depth == 16;
+        break;
+    case 3:
+        valid = low || depth == 8;
+        break;
     case 2:
     case 4:
-    case 6: valid = depth == 8 || depth == 16; break;
-    default: break;
+    case 6:
+        valid = depth == 8 || depth == 16;
+        break;
+    default:
+        break;
     }
     return valid && width > 0 && height > 0 && width <= AfterglowProto::GraphicsMaxSide
         && height <= AfterglowProto::GraphicsMaxSide;
@@ -491,15 +537,17 @@ std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std
     // Checked before any pixel is decoded: a small file can name a huge image.
     const std::uint64_t frameBytes = std::uint64_t(image.width) * std::uint64_t(image.height) * 4;
     if (frameBytes > budget) {
-        error = "the image is " + std::to_string(image.width) + "x" + std::to_string(image.height) + " pixels and needs "
-            + humanSize(frameBytes) + ", more than the " + humanSize(budget) + " that aglow allows for it";
+        error = "the image is " + std::to_string(image.width) + "x" + std::to_string(image.height)
+            + " pixels and needs " + humanSize(frameBytes) + ", more than the " + humanSize(budget)
+            + " that aglow allows for it";
         return std::nullopt;
     }
     Limits limits;
     limits.orientation = exifOrientation(bytes);
     limits.width = image.width;
     limits.height = image.height;
-    const std::uint64_t fit = std::max<std::uint64_t>(1, std::min<std::uint64_t>(AfterglowProto::GraphicsMaxFrames, budget / frameBytes));
+    const std::uint64_t fit =
+        std::max<std::uint64_t>(1, std::min<std::uint64_t>(AfterglowProto::GraphicsMaxFrames, budget / frameBytes));
     limits.maxFrames = std::size_t(std::min<std::uint64_t>(fit, std::max<std::size_t>(1, maxFrames)));
     // The caller's own limit stops the decode quietly, also where it is what
     // fits: past what fits, the frames left out are a warning.
@@ -509,7 +557,7 @@ std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std
     limits.memory = AfterglowProto::decodeMemory(frameBytes);
     limits.seconds = AfterglowProto::decodeSeconds(std::uint64_t(limits.maxFrames) * frameBytes);
 
-    int fds[2] = { -1, -1 };
+    int fds[2] = {-1, -1};
     if (::pipe2(fds, O_CLOEXEC) != 0) {
         error = std::string("cannot start the image decoder: ") + std::strerror(errno);
         return std::nullopt;
@@ -548,8 +596,8 @@ std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std
             break;
         }
         if (record.kind == Kind::Frame) {
-            if (record.width != std::uint32_t(image.width) || record.height != std::uint32_t(image.height) || record.length != frameBytes
-                || image.m_frames.size() >= limits.maxFrames) {
+            if (record.width != std::uint32_t(image.width) || record.height != std::uint32_t(image.height)
+                || record.length != frameBytes || image.m_frames.size() >= limits.maxFrames) {
                 error = "the image is not what its header says";
                 break;
             }
@@ -611,7 +659,9 @@ std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std
     // file, also short ones, and a frame without a delay shows with the next
     // (Image::delay() says 0).
     if (image.m_frames.size() > 1 && AfterglowImage::format(bytes) == AfterglowImage::Format::Gif
-        && std::all_of(image.m_delays.begin(), image.m_delays.end(), [](int delay) { return delay <= 0; })) {
+        && std::all_of(image.m_delays.begin(), image.m_delays.end(), [](int delay) {
+               return delay <= 0;
+           })) {
         image.m_delays.assign(image.m_delays.size(), 100);
     }
     return image;
@@ -647,7 +697,7 @@ std::string pngOfRows(std::string_view rgba, int width, int height)
         put32(AfterglowProto::crc32Of(std::string_view(png).substr(start)));
     };
     std::string header;
-    for (const std::uint32_t value : { std::uint32_t(width), std::uint32_t(height) }) {
+    for (const std::uint32_t value : {std::uint32_t(width), std::uint32_t(height)}) {
         for (int shift = 24; shift >= 0; shift -= 8) {
             header.push_back(char(value >> shift));
         }
@@ -739,9 +789,10 @@ std::string Resizer::operator()(const std::string& rgba) const
             return out;
         }
         held[slot] = y;
-        const auto* row = reinterpret_cast<const std::uint8_t*>(rgba.data()) + std::size_t(y) * std::size_t(m_width) * 4;
+        const auto* row =
+            reinterpret_cast<const std::uint8_t*>(rgba.data()) + std::size_t(y) * std::size_t(m_width) * 4;
         for (std::size_t x = 0; x < newWidth; ++x) {
-            float acc[4] = { 0, 0, 0, 0 };
+            float acc[4] = {0, 0, 0, 0};
             const auto& tap = m_across[x];
             for (std::size_t k = 0; k < tap.weights.size(); ++k) {
                 const auto* px = row + std::size_t(tap.first + int(k)) * 4;
@@ -764,7 +815,7 @@ std::string Resizer::operator()(const std::string& rgba) const
             rows.push_back(across(tap.first + int(k)));
         }
         for (std::size_t x = 0; x < newWidth; ++x) {
-            float acc[4] = { 0, 0, 0, 0 };
+            float acc[4] = {0, 0, 0, 0};
             for (std::size_t k = 0; k < tap.weights.size(); ++k) {
                 const float* px = rows[k] + x * 4;
                 for (int c = 0; c < 4; ++c) {
@@ -809,7 +860,7 @@ void mirrorFrame(std::string& rgba, int width, int height, bool horizontal, bool
 
 void flattenFrame(std::string& rgba, std::uint8_t red, std::uint8_t green, std::uint8_t blue)
 {
-    const std::uint8_t colour[3] = { red, green, blue };
+    const std::uint8_t colour[3] = {red, green, blue};
     for (std::size_t i = 0; i + 3 < rgba.size(); i += 4) {
         const unsigned alpha = std::uint8_t(rgba[i + 3]);
         for (int c = 0; c < 3; ++c) {

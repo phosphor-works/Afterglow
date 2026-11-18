@@ -11,7 +11,8 @@ namespace Afterglow {
 /// At most @p limit UTF-16 units of @p text, without splitting a surrogate pair.
 inline QString textPrefix(const QString& text, qsizetype limit)
 {
-    if (text.size() <= limit) return text;
+    if (text.size() <= limit)
+        return text;
     return text.left(limit > 0 && text.at(limit).isLowSurrogate() ? limit - 1 : limit);
 }
 
@@ -25,13 +26,14 @@ inline bool disguisesText(char16_t u)
 
 /// The characters of @p s that @p keep takes, at most @p limit UTF-16 units
 /// of them, without splitting a surrogate pair.
-template <typename Keep>
+template<typename Keep>
 QString keptText(const QString& s, qsizetype limit, Keep keep)
 {
     QString out;
     out.reserve(std::min(s.size(), limit));
     for (const QChar c : s) {
-        if (keep(c)) out.append(c);
+        if (keep(c))
+            out.append(c);
     }
     return textPrefix(out, limit);
 }
@@ -40,14 +42,18 @@ QString keptText(const QString& s, qsizetype limit, Keep keep)
 /// names. At most @p limit UTF-16 units, without splitting a surrogate pair.
 inline QString sanitizedText(const QString& s, qsizetype limit)
 {
-    return keptText(s, limit, [](QChar c) { return !disguisesText(c.unicode()); });
+    return keptText(s, limit, [](QChar c) {
+        return !disguisesText(c.unicode());
+    });
 }
 
 /// sanitizedText() without control characters too: one line of text that is
 /// kept, such as a title that a client sets.
 inline QString sanitizedLine(const QString& s, qsizetype limit)
 {
-    return keptText(s, limit, [](QChar c) { return c.category() != QChar::Other_Control && !disguisesText(c.unicode()); });
+    return keptText(s, limit, [](QChar c) {
+        return c.category() != QChar::Other_Control && !disguisesText(c.unicode());
+    });
 }
 
 } // namespace Afterglow

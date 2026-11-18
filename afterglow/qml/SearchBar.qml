@@ -17,15 +17,15 @@ Pane {
 
     function syncVisibility() {
         if (visible) {
-            query.selectAll()
+            query.selectAll();
             // Closing the bar cleared the matches: search the kept query again.
             if (query.text.length > 0)
-                bar.controller.search(query.text, 0)
+                bar.controller.search(query.text, 0);
         }
     }
 
     function takeFocus() {
-        query.forceActiveFocus()
+        query.forceActiveFocus();
     }
 
     onVisibleChanged: syncVisibility()
@@ -59,8 +59,8 @@ Pane {
             ToolTip.visible: hovered
             ToolTip.text: Accessible.name
             onClicked: {
-                bar.controller.searchRegex = checked
-                bar.controller.search(query.text, 0)
+                bar.controller.searchRegex = checked;
+                bar.controller.search(query.text, 0);
             }
         }
 

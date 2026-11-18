@@ -45,7 +45,9 @@ namespace {
 
 struct NullHost : AfterglowVt::ITerminalHost
 {
-    void writeToPty(std::string_view) override {}
+    void writeToPty(std::string_view) override
+    {
+    }
 };
 
 /// The servers of decoders: the children of this process that name
@@ -57,7 +59,8 @@ std::set<pid_t> imageServers()
     for (const auto& task : std::filesystem::directory_iterator("/proc/self/task", ignored)) {
         std::ifstream list(task.path() / "children");
         for (pid_t pid = 0; list >> pid;) {
-            if (readFile("/proc/" + std::to_string(pid) + "/comm") == "afterglow-image\n") found.insert(pid);
+            if (readFile("/proc/" + std::to_string(pid) + "/comm") == "afterglow-image\n")
+                found.insert(pid);
         }
     }
     return found;
@@ -70,7 +73,8 @@ pid_t newImageServer(const std::set<pid_t>& before)
     const auto deadline = Clock::now() + std::chrono::seconds(5);
     do {
         for (const pid_t pid : imageServers()) {
-            if (!before.contains(pid)) return pid;
+            if (!before.contains(pid))
+                return pid;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     } while (Clock::now() < deadline && MuxTest::childrenListed());
@@ -93,26 +97,31 @@ struct StuckDecode
     pid_t server = 0;
 
     /// @p after follows the image in the same write, which the pane reads at once.
-    explicit StuckDecode(int waitMs, const std::string& then = "exec /bin/sleep 60", const std::string& before = {},
+    explicit StuckDecode(int waitMs, const std::string& then = "exec sleep 60", const std::string& before = {},
                          const std::string& after = {})
     {
-        if (dir.path.empty()) return;
+        if (dir.path.empty())
+            return;
         const std::string image = (dir.path / "image").string();
-        std::ofstream(image) << "\x1b_Ga=T,f=100,i=1,q=2;" << AfterglowProto::base64Encode(AfterglowImage::TestFiles::Png) << "\x1b\\"
-                             << after;
+        std::ofstream(image) << "\x1b_Ga=T,f=100,i=1,q=2;"
+                             << AfterglowProto::base64Encode(AfterglowImage::TestFiles::Png) << "\x1b\\" << after;
         // Other tests of this program may have a server running.
         const std::set<pid_t> running = imageServers();
         decoder = std::make_unique<ImageDecoder>(AFTERGLOW_MUX, waitMs);
         server = newImageServer(running);
-        if (server <= 0 || ::kill(server, SIGSTOP) != 0) return;
-        pane = std::make_unique<MuxPane>(1, AfterglowVt::TerminalOptions{}, PaneSize{80, 24, 10, 20}, std::string(), *decoder,
-                                         [this] { ++wakes; });
+        if (server <= 0 || ::kill(server, SIGSTOP) != 0)
+            return;
+        pane = std::make_unique<MuxPane>(1, AfterglowVt::TerminalOptions{}, PaneSize{80, 24, 10, 20}, std::string(),
+                                         *decoder, [this] {
+                                             ++wakes;
+                                         });
         AfterglowPty::SpawnOptions spawn;
         spawn.argv = {"/bin/sh", "-c", before + "cat '" + image + "'; " + then};
         spawn.inheritEnvironment = false;
-        spawn.environment = {{"PATH", "/usr/bin:/bin"}, {"HOME", dir.path.string()}, {"TERM", "xterm-256color"}};
+        spawn.environment = {{"PATH", MuxTest::testPath()}, {"HOME", dir.path.string()}, {"TERM", "xterm-256color"}};
         std::string error;
-        if (!pane->start(std::move(spawn), std::string(), &error)) pane.reset();
+        if (!pane->start(std::move(spawn), std::string(), &error))
+            pane.reset();
     }
     ~StuckDecode()
     {
@@ -124,12 +133,14 @@ struct StuckDecode
     /// The server goes on: the decode that waits for it ends.
     void release() const
     {
-        if (server > 0) ::kill(server, SIGCONT);
+        if (server > 0)
+            ::kill(server, SIGCONT);
     }
     /// The server stops again: the next decode waits.
     void hold() const
     {
-        if (server > 0) ::kill(server, SIGSTOP);
+        if (server > 0)
+            ::kill(server, SIGSTOP);
     }
 
     /// Waits until a frame waits for the decode: the program's image is in
@@ -138,7 +149,8 @@ struct StuckDecode
     {
         const auto deadline = Clock::now() + std::chrono::seconds(10);
         while (Clock::now() < deadline) {
-            if (!pane->frame(writer, std::size_t(1) << 20)) return true;
+            if (!pane->frame(writer, std::size_t(1) << 20))
+                return true;
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
         return false;
@@ -148,18 +160,20 @@ struct StuckDecode
     bool wokeAfter(int before) const
     {
         const auto deadline = Clock::now() + std::chrono::seconds(10);
-        while (wakes <= before && Clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        while (wakes <= before && Clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
         return wakes > before;
     }
 };
 
 // Only a kernel that lists no children skips: a server that does not start
 // or does not name itself is a failure.
-#define SKIP_WITHOUT_SERVER(stuck)                                                                                  \
-    do {                                                                                                            \
-        if (!MuxTest::childrenListed()) GTEST_SKIP() << "the kernel lists no children of a process (CONFIG_PROC_CHILDREN)"; \
-        ASSERT_FALSE((stuck).dir.path.empty());                                                                     \
-        ASSERT_GT((stuck).server, 0) << "the decoder's server did not start, or did not name itself afterglow-image"; \
+#define SKIP_WITHOUT_SERVER(stuck)                                                                                     \
+    do {                                                                                                               \
+        if (!MuxTest::childrenListed())                                                                                \
+            GTEST_SKIP() << "the kernel lists no children of a process (CONFIG_PROC_CHILDREN)";                        \
+        ASSERT_FALSE((stuck).dir.path.empty());                                                                        \
+        ASSERT_GT((stuck).server, 0) << "the decoder's server did not start, or did not name itself afterglow-image";  \
     } while (false)
 
 /// A pane whose program is `/bin/sh -c SCRIPT sh ARGS...` in @p directory,
@@ -172,17 +186,19 @@ struct ShellPane
     std::unique_ptr<MuxPane> pane;
 
     /// @p watched: the daemon watches the pane from its start.
-    ShellPane(const std::string& script, const std::vector<std::string>& args, const std::string& directory, bool watched = false)
+    ShellPane(const std::string& script, const std::vector<std::string>& args, const std::string& directory,
+              bool watched = false)
     {
         decoder = std::make_unique<ImageDecoder>(AFTERGLOW_MUX);
-        pane = std::make_unique<MuxPane>(1, AfterglowVt::TerminalOptions{}, PaneSize{80, 24, 10, 20}, std::string(), *decoder, [] {});
+        pane = std::make_unique<MuxPane>(1, AfterglowVt::TerminalOptions{}, PaneSize{80, 24, 10, 20}, std::string(),
+                                         *decoder, [] { });
         pane->setWatched(watched);
         AfterglowPty::SpawnOptions spawn;
         spawn.argv = {"/bin/sh", "-c", script, "sh"};
         spawn.argv.insert(spawn.argv.end(), args.begin(), args.end());
         spawn.workingDirectory = directory;
         spawn.inheritEnvironment = false;
-        spawn.environment = {{"PATH", "/usr/bin:/bin"}, {"HOME", directory}, {"TERM", "xterm-256color"}};
+        spawn.environment = {{"PATH", MuxTest::testPath()}, {"HOME", directory}, {"TERM", "xterm-256color"}};
         std::string error;
         if (!pane->start(std::move(spawn), std::string(), &error)) {
             ADD_FAILURE() << "the pane did not start: " << error;
@@ -231,7 +247,7 @@ TEST(MuxPane, VisibilityWaitsForADecode)
     // its image, and rings the bell after it, in the same read. The pane's
     // window shows it while the image decodes: the report comes after the
     // decode, in its order with the program's output, so after the bell.
-    StuckDecode stuck(30000, "exec /bin/sleep 60", "printf '\\033[?2033h'; ", "\a");
+    StuckDecode stuck(30000, "exec sleep 60", "printf '\\033[?2033h'; ", "\a");
     SKIP_WITHOUT_SERVER(stuck);
     ASSERT_TRUE(stuck.pane);
     stuck.pane->setWindow(1, std::size_t(1) << 20);
@@ -241,12 +257,14 @@ TEST(MuxPane, VisibilityWaitsForADecode)
     std::vector<std::string> calls;
     const auto take = [&stuck, &calls] {
         (void)stuck.pane->frame(stuck.writer, std::size_t(1) << 20);
-        for (std::string& call : stuck.pane->takeHostCalls(1, std::size_t(1) << 20)) calls.push_back(std::move(call));
+        for (std::string& call : stuck.pane->takeHostCalls(1, std::size_t(1) << 20))
+            calls.push_back(std::move(call));
     };
     // The bell by its whole call, and the report in the bytes of its call.
     const auto at = [&calls](const std::string& wanted, bool whole) {
         for (std::size_t i = 0; i < calls.size(); ++i) {
-            if (whole ? calls[i] == wanted : calls[i].find(wanted) != std::string::npos) return std::ptrdiff_t(i);
+            if (whole ? calls[i] == wanted : calls[i].find(wanted) != std::string::npos)
+                return std::ptrdiff_t(i);
         }
         return std::ptrdiff_t(-1);
     };
@@ -272,7 +290,7 @@ TEST(MuxPane, VisibilityWaitsForADecode)
 // comes first, and those of the wait after it.
 TEST(MuxPane, ADownloadAfterADecodeWakesTheDaemonAndKeepsTheOrder)
 {
-    StuckDecode stuck(30000, "printf do''ne; exec /bin/sleep 60", "read -r _; printf '\\a'; ",
+    StuckDecode stuck(30000, "printf do''ne; exec sleep 60", "read -r _; printf '\\a'; ",
                       "\x1b]1337;File=name=eA==;size=1:eA==\a");
     SKIP_WITHOUT_SERVER(stuck);
     ASSERT_TRUE(stuck.pane);
@@ -289,12 +307,14 @@ TEST(MuxPane, ADownloadAfterADecodeWakesTheDaemonAndKeepsTheOrder)
     const auto deadline = Clock::now() + std::chrono::seconds(10);
     const auto asked = [&calls] {
         return std::any_of(calls.begin(), calls.end(), [](const std::string& call) {
-            return !call.empty() && AfterglowMux::Host::Kind(std::uint8_t(call.front())) == AfterglowMux::Host::Kind::DownloadBegin;
+            return !call.empty()
+                && AfterglowMux::Host::Kind(std::uint8_t(call.front())) == AfterglowMux::Host::Kind::DownloadBegin;
         });
     };
     while (!asked() && Clock::now() < deadline) {
         (void)stuck.pane->frame(stuck.writer, std::size_t(1) << 20);
-        for (std::string& call : stuck.pane->takeHostCalls(1, std::size_t(1) << 20)) calls.push_back(std::move(call));
+        for (std::string& call : stuck.pane->takeHostCalls(1, std::size_t(1) << 20))
+            calls.push_back(std::move(call));
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     ASSERT_TRUE(asked());
@@ -310,7 +330,8 @@ TEST(MuxPane, ADownloadAfterADecodeWakesTheDaemonAndKeepsTheOrder)
         const auto text = stuck.pane->text(AfterglowVt::Terminal::TextScope::Screen);
         return text && text->find("done") != std::string::npos;
     };
-    while (Clock::now() < end && !shown()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    while (Clock::now() < end && !shown())
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
     ASSERT_TRUE(shown());
     EXPECT_EQ(stuck.pane->facts().size.cols, 90);
     EXPECT_EQ(stuck.pane->facts().size.rows, 25);
@@ -328,8 +349,9 @@ TEST(MuxPane, InputWaitsInThePaneBehindAChangeThatWaitsForADecode)
     ASSERT_FALSE(out.path.empty());
     const std::string size = (out.path / "size").string();
     const std::string line = (out.path / "line").string();
-    StuckDecode stuck(30000, "IFS= read -r line; stty size > '" + size + "'; printf '%s' \"$line\" > '" + line + "'; exec /bin/sleep 60",
-                      "printf '\\033]133;A\\007'; ");
+    StuckDecode stuck(
+        30000, "IFS= read -r line; stty size > '" + size + "'; printf '%s' \"$line\" > '" + line + "'; exec sleep 60",
+        "printf '\\033]133;A\\007'; ");
     SKIP_WITHOUT_SERVER(stuck);
     ASSERT_TRUE(stuck.pane);
     ASSERT_TRUE(stuck.decoding());
@@ -349,7 +371,8 @@ TEST(MuxPane, InputWaitsInThePaneBehindAChangeThatWaitsForADecode)
     EXPECT_TRUE(stuck.wokeAfter(before));
     std::string got;
     const auto deadline = Clock::now() + std::chrono::seconds(10);
-    while (Clock::now() < deadline && (got = readFile(line)).empty()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    while (Clock::now() < deadline && (got = readFile(line)).empty())
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
     EXPECT_EQ(got, "\x0cx");
     EXPECT_EQ(readFile(size), "30 100\n");
 }
@@ -362,8 +385,9 @@ TEST(MuxPane, TheBoundOfWaitingInputCountsThePtyQueueAndWhatWent)
     ASSERT_FALSE(out.path.empty());
     const std::string next = (out.path / "next").string();
     const std::string image = (out.path / "image").string();
-    std::ofstream(image) << "\x1b_Ga=T,f=100,i=2,q=2;" << AfterglowProto::base64Encode(AfterglowImage::TestFiles::Png) << "\x1b\\";
-    StuckDecode stuck(30000, "while [ ! -e '" + next + "' ]; do sleep 0.02; done; cat '" + image + "'; exec /bin/sleep 60");
+    std::ofstream(image) << "\x1b_Ga=T,f=100,i=2,q=2;" << AfterglowProto::base64Encode(AfterglowImage::TestFiles::Png)
+                         << "\x1b\\";
+    StuckDecode stuck(30000, "while [ ! -e '" + next + "' ]; do sleep 0.02; done; cat '" + image + "'; exec sleep 60");
     SKIP_WITHOUT_SERVER(stuck);
     ASSERT_TRUE(stuck.pane);
     ASSERT_TRUE(stuck.decoding());
@@ -414,25 +438,32 @@ TEST(MuxPane, FactsGiveTheCheckedDirectoryOfTheShell)
     // file in $3: then it reports a directory that does not exist, $1
     // again, and last, from a context on another host, the plain path $2,
     // and a title after it.
-    const std::string script = "flags=$3\n"
-                               "step() { i=0; while [ ! -e \"$flags/$1\" ] && [ $i -lt 1000 ]; do sleep 0.02; i=$((i+1)); done; }\n"
-                               "printf '\\033]7;%s\\007' \"$1\"\n"
-                               "step one\n"
-                               "printf '\\033]7;file://localhost/no/such/directory/here\\007'\n"
-                               "step two\n"
-                               "printf '\\033]7;%s\\007' \"$1\"\n"
-                               "step three\n"
-                               "printf '\\033]3008;start=elsewhere;type=remote;targethost=aglow-test.invalid\\033\\\\'\n"
-                               "printf '\\033]7;%s\\007' \"$2\"\n"
-                               "printf '\\033]2;done\\007'\n"
-                               "exec sleep 60\n";
+    const std::string script =
+        "flags=$3\n"
+        "step() { i=0; while [ ! -e \"$flags/$1\" ] && [ $i -lt 1000 ]; do sleep 0.02; i=$((i+1)); done; }\n"
+        "printf '\\033]7;%s\\007' \"$1\"\n"
+        "step one\n"
+        "printf '\\033]7;file://localhost/no/such/directory/here\\007'\n"
+        "step two\n"
+        "printf '\\033]7;%s\\007' \"$1\"\n"
+        "step three\n"
+        "printf '\\033]3008;start=elsewhere;type=remote;targethost=aglow-test.invalid\\033\\\\'\n"
+        "printf '\\033]7;%s\\007' \"$2\"\n"
+        "printf '\\033]2;done\\007'\n"
+        "exec sleep 60\n";
     const std::string url = "file://localhost" + AfterglowProto::dndPercentEncode(reported.path.string());
     ShellPane shell(script, {url, other.path.string(), home.path.string()}, home.path.string());
     ASSERT_TRUE(shell.pane);
     const auto directoryIs = [&shell](const std::string& wanted) {
-        return MuxTest::waitFor([&] { return shell.pane->facts().directory == wanted; }, std::chrono::seconds(10));
+        return MuxTest::waitFor(
+            [&] {
+                return shell.pane->facts().directory == wanted;
+            },
+            std::chrono::seconds(10));
     };
-    const auto next = [&home](const char* step) { std::ofstream(home.path / step) << ""; };
+    const auto next = [&home](const char* step) {
+        std::ofstream(home.path / step) << "";
+    };
     ASSERT_TRUE(directoryIs(reported.path.string())) << shell.pane->facts().directory;
     // No such directory here: the directory of the program.
     next("one");
@@ -444,7 +475,11 @@ TEST(MuxPane, FactsGiveTheCheckedDirectoryOfTheShell)
     // The title comes after the path: the terminal read both. The context
     // alone already gives the directory of the program.
     next("three");
-    ASSERT_TRUE(MuxTest::waitFor([&] { return shell.pane->facts().title == "done"; }, std::chrono::seconds(10)))
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&] {
+            return shell.pane->facts().title == "done";
+        },
+        std::chrono::seconds(10)))
         << shell.pane->facts().title;
     EXPECT_EQ(shell.pane->facts().directory, here);
 }
@@ -457,7 +492,11 @@ TEST(MuxPane, AResetLeavesThePrompt)
     ASSERT_FALSE(home.path.empty());
     ShellPane shell("printf '\\033]133;A\\007$ '; exec sleep 60", {}, home.path.string());
     ASSERT_TRUE(shell.pane);
-    ASSERT_TRUE(MuxTest::waitFor([&] { return shell.pane->facts().atPrompt; }, std::chrono::seconds(10)));
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&] {
+            return shell.pane->facts().atPrompt;
+        },
+        std::chrono::seconds(10)));
     shell.pane->reset();
     EXPECT_FALSE(shell.pane->facts().atPrompt);
 }
@@ -473,7 +512,12 @@ TEST(MuxPane, AWatchPastItsLimitKeepsTheNewestTitle)
                     home.path.string(), true);
     ASSERT_TRUE(shell.pane);
     // The title and its event change under one lock.
-    ASSERT_TRUE(MuxTest::waitFor([&shell] { return shell.pane->title() == "t1099"; }, std::chrono::seconds(20))) << shell.pane->title();
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&shell] {
+            return shell.pane->title() == "t1099";
+        },
+        std::chrono::seconds(20)))
+        << shell.pane->title();
     const std::vector<MuxPane::WatchEvent> events = shell.pane->takeWatchEvents();
     EXPECT_EQ(events.size(), MuxPane::MaxWatchEvents);
     ASSERT_FALSE(events.empty());

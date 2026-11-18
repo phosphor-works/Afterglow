@@ -17,14 +17,20 @@ struct Recorder
     std::u32string printed;
     std::vector<std::string> events;
 
-    void print(char32_t cp) { printed.push_back(cp); }
+    void print(char32_t cp)
+    {
+        printed.push_back(cp);
+    }
     void printAscii(const char* text, std::size_t n)
     {
         for (std::size_t i = 0; i < n; ++i) {
             printed.push_back(char32_t(text[i]));
         }
     }
-    void execute(std::uint8_t c) { events.push_back("exec " + std::to_string(c)); }
+    void execute(std::uint8_t c)
+    {
+        events.push_back("exec " + std::to_string(c));
+    }
     void escDispatch(const Intermediates& i, std::uint8_t f)
     {
         events.push_back(std::string("esc ") + (i.count ? std::string(1, i.bytes[0]) : "") + char(f));
@@ -56,7 +62,10 @@ struct Recorder
         events.push_back(std::string("dcs ") + (i.marker ? std::string(1, i.marker) : "") + char(f) + " "
                          + std::string(data));
     }
-    void apcDispatch(std::string_view payload) { events.push_back("apc " + std::string(payload)); }
+    void apcDispatch(std::string_view payload)
+    {
+        events.push_back("apc " + std::string(payload));
+    }
 };
 
 struct Fixture
@@ -151,7 +160,9 @@ TEST(Parser, CancelAbortsSequence)
 TEST(Parser, EscDispatch)
 {
     Fixture f;
-    f.p.feed("\x1b" "7\x1b(0\x1b#8");
+    f.p.feed(
+        "\x1b"
+        "7\x1b(0\x1b#8");
     ASSERT_EQ(f.r.events.size(), 3u);
     EXPECT_EQ(f.r.events[0], "esc 7");
     EXPECT_EQ(f.r.events[1], "esc (0");
@@ -163,7 +174,8 @@ TEST(Parser, ResetRecoversFromUnterminatedOverflow)
     Fixture f;
     f.p.feed("\x1b]2;");
     const std::string chunk(1024 * 1024, 'a');
-    for (std::size_t i = 0; i <= Parser<Recorder>::MaxStringPayload / chunk.size(); ++i) f.p.feed(chunk);
+    for (std::size_t i = 0; i <= Parser<Recorder>::MaxStringPayload / chunk.size(); ++i)
+        f.p.feed(chunk);
     f.p.reset();
     // Ground again: text prints instead of joining the dropped string.
     f.p.feed("x");
@@ -256,8 +268,9 @@ TEST(Parser, CsiSplitAnywhereMatchesWholeOnes)
     // The whole-sequence fast path and the per-byte path must agree, and the
     // fast path must leave a sequence cut off by the end of a feed, or one
     // with intermediates, controls or an ignored byte, to the per-byte path.
-    const std::string input = "a\x1b[38:5:196;48;5;17mb\x1b[?25l\x1b[>0;2:3:1;4:1:3:2:4 q\x1b[1;5\rH"
-                              "\x1b[1?2m\x1b[m\x1b[;5H\x1b[3\x1b[2J\x1b[!pc\x1b[<1;2;3M";
+    const std::string input =
+        "a\x1b[38:5:196;48;5;17mb\x1b[?25l\x1b[>0;2:3:1;4:1:3:2:4 q\x1b[1;5\rH"
+        "\x1b[1?2m\x1b[m\x1b[;5H\x1b[3\x1b[2J\x1b[!pc\x1b[<1;2;3M";
     Fixture whole;
     whole.p.feed(input);
     ASSERT_EQ(whole.r.events.front(), "csi 38:5:196;48;5;17m");
@@ -295,7 +308,10 @@ TEST(Parser, CancelEndsAPartialUtf8SequenceWithReplacement)
 TEST(Parser, DcsFinalByteAboveAsciiIsIgnored)
 {
     Fixture f;
-    f.p.feed("\x1bP1\xC3" "data\x1b\\\x1bP$\xC3" "data\x1b\\");
+    f.p.feed(
+        "\x1bP1\xC3"
+        "data\x1b\\\x1bP$\xC3"
+        "data\x1b\\");
     for (const std::string& e : f.r.events) {
         EXPECT_FALSE(e.starts_with("dcs")) << e;
     }

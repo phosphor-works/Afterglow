@@ -36,12 +36,18 @@ enum class Format {
 /// process (mux/src/ImageDecoder.cpp) checks it without the decoders.
 inline Format format(std::string_view bytes)
 {
-    if (bytes.starts_with("\x89PNG\r\n\x1a\n")) return Format::Png;
-    if (bytes.starts_with("\xff\xd8\xff")) return Format::Jpeg;
-    if (bytes.starts_with("GIF87a") || bytes.starts_with("GIF89a")) return Format::Gif;
-    if (bytes.size() >= 12 && bytes.starts_with("RIFF") && bytes.substr(8, 4) == "WEBP") return Format::WebP;
-    if (bytes.starts_with("BM")) return Format::Bmp;
-    if (bytes.starts_with(std::string_view("II*\0", 4)) || bytes.starts_with(std::string_view("MM\0*", 4))) return Format::Tiff;
+    if (bytes.starts_with("\x89PNG\r\n\x1a\n"))
+        return Format::Png;
+    if (bytes.starts_with("\xff\xd8\xff"))
+        return Format::Jpeg;
+    if (bytes.starts_with("GIF87a") || bytes.starts_with("GIF89a"))
+        return Format::Gif;
+    if (bytes.size() >= 12 && bytes.starts_with("RIFF") && bytes.substr(8, 4) == "WEBP")
+        return Format::WebP;
+    if (bytes.starts_with("BM"))
+        return Format::Bmp;
+    if (bytes.starts_with(std::string_view("II*\0", 4)) || bytes.starts_with(std::string_view("MM\0*", 4)))
+        return Format::Tiff;
     // P1 to P7, then white space.
     if (bytes.size() >= 3 && bytes[0] == 'P' && bytes[1] >= '1' && bytes[1] <= '7'
         && (bytes[2] == ' ' || bytes[2] == '\t' || bytes[2] == '\n' || bytes[2] == '\r')) {
@@ -95,6 +101,7 @@ enum class PngFrames {
 /// std::bad_alloc when the memory for a frame is not there. A still lossy
 /// WebP with alpha is the exception: libwebp reports a corrupt alpha chunk
 /// as a lack of memory, so there the error says that the WebP is corrupt.
-bool decode(std::string_view bytes, const FrameSink& sink, std::string& error, std::string& warning, PngFrames pngFrames = PngFrames::Animation);
+bool decode(std::string_view bytes, const FrameSink& sink, std::string& error, std::string& warning,
+            PngFrames pngFrames = PngFrames::Animation);
 
 } // namespace AfterglowImage

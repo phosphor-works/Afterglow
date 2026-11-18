@@ -80,16 +80,25 @@ public:
     QString validateParameters(const QString& ref, const QVariantMap& values,
                                AfterglowRender::ShaderParameterValues& packed) const;
     /// Curves for parameter transitions.
-    const PhosphorAnimation::CurveRegistry& curves() const { return *m_curves; }
+    const PhosphorAnimation::CurveRegistry& curves() const
+    {
+        return *m_curves;
+    }
     /// What the last build() could not use, one line each: Shaders.params
     /// entries that apply nowhere (no such shader, parameter or acceptable
     /// value), and configured packs that do not draw
     /// (no such pack, a compile error, an image, the image budget). Each is
     /// also logged, with the full compile log.
-    QStringList problems() const { return m_problems; }
+    QStringList problems() const
+    {
+        return m_problems;
+    }
     /// The files whose change rebuilds: the configured packs' stages,
     /// includes and images, found or not yet created.
-    QStringList watchedPaths() const { return m_files.paths(); }
+    QStringList watchedPaths() const
+    {
+        return m_files.paths();
+    }
 
 Q_SIGNALS:
     /// A configured pack or one of its files changed on disk, or script
@@ -108,9 +117,9 @@ private:
     {
         AfterglowRender::ShaderProgramPtr program; ///< null when it failed
         QString error;
-        QStringList watched;   ///< resolved and missing candidate paths of its files
-        QByteArray signature;  ///< their state when it compiled
-        QString packDir;       ///< the pack its reference named
+        QStringList watched; ///< resolved and missing candidate paths of its files
+        QByteArray signature; ///< their state when it compiled
+        QString packDir; ///< the pack its reference named
         /// Why a default image did not load, by slot. The program has no
         /// image there, and only a configured image for that slot can use it.
         std::array<QString, AfterglowRender::MaxShaderImages> imageErrors;

@@ -32,10 +32,19 @@ inline constexpr double MaxExactInteger = 9007199254740992.0;
 class Value
 {
 public:
-    enum class Type { Null, Bool, Number, String, Array, Object };
+    enum class Type {
+        Null,
+        Bool,
+        Number,
+        String,
+        Array,
+        Object
+    };
 
     Value() = default;
-    Value(std::nullptr_t) { }
+    Value(std::nullptr_t)
+    {
+    }
     /// Only a bool: a pointer or a number does not become one.
     template<typename T>
         requires std::same_as<T, bool>
@@ -67,7 +76,8 @@ public:
     /// A null pointer is a null value.
     Value(const char* value)
     {
-        if (value) m_data = std::string(value);
+        if (value)
+            m_data = std::string(value);
     }
     Value(Json::Array value)
         : m_data(std::move(value))
@@ -78,13 +88,34 @@ public:
     {
     }
 
-    Type type() const { return Type(m_data.index()); }
-    bool isNull() const { return type() == Type::Null; }
-    bool isBool() const { return type() == Type::Bool; }
-    bool isNumber() const { return type() == Type::Number; }
-    bool isString() const { return type() == Type::String; }
-    bool isArray() const { return type() == Type::Array; }
-    bool isObject() const { return type() == Type::Object; }
+    Type type() const
+    {
+        return Type(m_data.index());
+    }
+    bool isNull() const
+    {
+        return type() == Type::Null;
+    }
+    bool isBool() const
+    {
+        return type() == Type::Bool;
+    }
+    bool isNumber() const
+    {
+        return type() == Type::Number;
+    }
+    bool isString() const
+    {
+        return type() == Type::String;
+    }
+    bool isArray() const
+    {
+        return type() == Type::Array;
+    }
+    bool isObject() const
+    {
+        return type() == Type::Object;
+    }
 
     /// The value, or @p fallback when it has another type.
     bool toBool(bool fallback = false) const;

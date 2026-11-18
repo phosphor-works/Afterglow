@@ -32,13 +32,22 @@ if(NOT AGLOW_SANITIZED)
     # glibc and libstdc++ come as static libraries in their own packages on
     # some distributions. Without them, say what to install, before a long build.
     include(CheckCXXSourceCompiles)
-    set(CMAKE_REQUIRED_LINK_OPTIONS -static)
+    # Where a system keeps them apart from the shared ones, out of the
+    # compiler's search (Nix's glibc.static): only the static link of aglow
+    # searches these, as a search of every link breaks the dynamic ones.
+    set(AFTERGLOW_STATIC_RUNTIME_DIRS "" CACHE STRING
+        "Directories with the static C and C++ runtime libraries (libc.a, libstdc++.a) that the compiler does not search, for the static aglow")
+    set(AGLOW_STATIC_DIRS)
+    foreach(dir IN LISTS AFTERGLOW_STATIC_RUNTIME_DIRS)
+        list(APPEND AGLOW_STATIC_DIRS "-L${dir}")
+    endforeach()
+    set(CMAKE_REQUIRED_LINK_OPTIONS -static ${AGLOW_STATIC_DIRS})
     check_cxx_source_compiles("#include <string>\nint main(int argc, char**) { return int(std::string(std::size_t(argc), 'x').size()); }"
                               AGLOW_STATIC_LINK_WORKS)
     # A static program that loads at a random address, as a dynamic one does,
     # where the C library has its start file for that (rcrt1.o): aglow reads
     # untrusted images. Else a static program at a fixed address.
-    set(CMAKE_REQUIRED_LINK_OPTIONS -static-pie)
+    set(CMAKE_REQUIRED_LINK_OPTIONS -static-pie ${AGLOW_STATIC_DIRS})
     set(CMAKE_REQUIRED_FLAGS -fPIE)
     check_cxx_source_compiles("#include <string>\nint main(int argc, char**) { return int(std::string(std::size_t(argc), 'x').size()); }"
                               AGLOW_STATIC_PIE_WORKS)
@@ -59,7 +68,8 @@ if(NOT AGLOW_SANITIZED)
         # libraries are installed.
         unset(AGLOW_STATIC_LINK_WORKS CACHE)
         string(CONCAT AGLOW_STATIC_PACKAGES "Install the static C and C++ runtime libraries (the packages "
-                      "glibc-static and libstdc++-static, as Fedora names them)")
+                      "glibc-static and libstdc++-static, as Fedora names them). Name their directories in "
+                      "AFTERGLOW_STATIC_RUNTIME_DIRS when the compiler does not search them")
         if(AFTERGLOW_AGLOW_ONLY)
             # A build of aglow alone builds aglow: turning it off is no way out.
             message(FATAL_ERROR "aglow links statically, and a static C++ program does not link here. "
@@ -160,9 +170,9 @@ endif()
 if(AGLOW_STATIC AND AGLOW_STATIC_PIE_WORKS)
     # Every library that it links is position-independent too.
     set_target_properties(aglow PROPERTIES POSITION_INDEPENDENT_CODE ON)
-    target_link_options(aglow PRIVATE -static-pie)
+    target_link_options(aglow PRIVATE -static-pie ${AGLOW_STATIC_DIRS})
 elseif(AGLOW_STATIC)
-    target_link_options(aglow PRIVATE -static)
+    target_link_options(aglow PRIVATE -static ${AGLOW_STATIC_DIRS})
 endif()
 if(AGLOW_STATIC)
     if(CMAKE_READELF)
@@ -264,6 +274,7 @@ if(BUILD_TESTING AND TARGET afterglow)
     # A list as one argument with no semicolon: a colon separates the
     # directories, as in the environment variable CMAKE_PREFIX_PATH.
     string(JOIN ":" AGLOW_ONLY_PREFIX_PATH ${CMAKE_PREFIX_PATH})
+    string(JOIN ":" AGLOW_ONLY_STATIC_RUNTIME_DIRS ${AFTERGLOW_STATIC_RUNTIME_DIRS})
     string(JOIN "," AGLOW_ONLY_MUX_LIBS ${AFTERGLOW_MUX_PRIVATE_LIBS})
     # The flags of each build type too, as the check of a static link at the
     # top of this file reads them: CONFIGS names the types, and each has its
@@ -292,6 +303,7 @@ if(BUILD_TESTING AND TARGET afterglow)
                      "-DLINKER_FLAGS=${CMAKE_EXE_LINKER_FLAGS}"
                      "-DCONFIGS=${AGLOW_ONLY_CONFIGS}" ${AGLOW_ONLY_CONFIG_FLAGS}
                      "-DCPM_CACHE=${CPM_SOURCE_CACHE}" "-DDEPS_ARCHIVES=${AFTERGLOW_DEPS_ARCHIVES}"
+                     "-DSTATIC_RUNTIME_DIRS=${AGLOW_ONLY_STATIC_RUNTIME_DIRS}"
                      "-DPREFIX_PATH=${AGLOW_ONLY_PREFIX_PATH}" "-DPKG_CONFIG=${PKG_CONFIG_EXECUTABLE}"
                      "-DTOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}" "-DSYSROOT=${CMAKE_SYSROOT}"
                      "-DMUX_LIBS=${AGLOW_ONLY_MUX_LIBS}"

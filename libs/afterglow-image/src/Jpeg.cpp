@@ -27,7 +27,10 @@ bool isFrameMarker(std::uint8_t marker)
 
 struct Handle
 {
-    void operator()(void* handle) const { tj3Destroy(handle); }
+    void operator()(void* handle) const
+    {
+        tj3Destroy(handle);
+    }
 };
 
 } // namespace
@@ -39,8 +42,10 @@ Probe probeJpeg(std::string_view bytes, int& width, int& height)
     // before the image data: no size.
     Probe result = Probe::Unknown;
     forEachJpegSegment(bytes, [&](std::uint8_t marker, std::string_view segment) {
-        if (!isFrameMarker(marker)) return true;
-        if (segment.size() >= 5) result = sized(big(segment, 3, 2), big(segment, 1, 2), width, height);
+        if (!isFrameMarker(marker))
+            return true;
+        if (segment.size() >= 5)
+            result = sized(big(segment, 3, 2), big(segment, 1, 2), width, height);
         return false;
     });
     return result;
@@ -55,7 +60,8 @@ ColorSpace jpegColorSpace(std::string_view bytes)
     int count = 0;
     bool grey = false;
     forEachJpegSegment(bytes, [&](std::uint8_t marker, std::string_view segment) {
-        if (isFrameMarker(marker) && segment.size() >= 6) grey = at(segment, 5) == 1; // one component
+        if (isFrameMarker(marker) && segment.size() >= 6)
+            grey = at(segment, 5) == 1; // one component
         if (marker == 0xE2 && segment.size() > Tag.size() + 2 && segment.substr(0, Tag.size()) == Tag) {
             const int number = at(segment, Tag.size());
             const int of = at(segment, Tag.size() + 1);
@@ -68,7 +74,8 @@ ColorSpace jpegColorSpace(std::string_view bytes)
     });
     ColorSpace space;
     space.grey = grey;
-    if (count == 0 || int(parts.size()) != count) return space;
+    if (count == 0 || int(parts.size()) != count)
+        return space;
     for (const auto& [number, part] : parts) {
         if (space.icc.size() + part.size() > MaxIcc) {
             space.icc.clear();
@@ -83,7 +90,8 @@ bool decodeJpeg(std::string_view bytes, const FrameSink& sink, const Options&, s
 {
     int width = 0;
     int height = 0;
-    if (refused(probeJpeg(bytes, width, height), "JPEG", error)) return false;
+    if (refused(probeJpeg(bytes, width, height), "JPEG", error))
+        return false;
     const std::unique_ptr<void, Handle> handle(tj3Init(TJINIT_DECOMPRESS));
     if (!handle) {
         error = "the JPEG decoder does not start";

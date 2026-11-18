@@ -17,15 +17,24 @@ struct NotifyHost : RecordingHost
 {
     std::vector<NotificationRequest> requests;
     std::string caps;
-    void desktopNotification(const NotificationRequest& r) override { requests.push_back(r); }
-    std::string notificationCapabilities() override { return caps; }
+    void desktopNotification(const NotificationRequest& r) override
+    {
+        requests.push_back(r);
+    }
+    std::string notificationCapabilities() override
+    {
+        return caps;
+    }
 };
 
 struct Term
 {
     NotifyHost host;
     Terminal t{20, 5, host};
-    void feed(std::string_view s) { t.feed(s); }
+    void feed(std::string_view s)
+    {
+        t.feed(s);
+    }
 };
 
 } // namespace
@@ -64,7 +73,9 @@ TEST(Notification, ChunksAssembleByIdWithMetadata)
     t.feed("\x1b]99;i=job1:d=0;done\x1b\\");
     // Body in base64 ("All 42 tests passed"), buttons split on U+2028.
     t.feed("\x1b]99;i=job1:d=0:p=body:e=1;QWxsIDQyIHRlc3RzIHBhc3NlZA==\x1b\\");
-    t.feed("\x1b]99;i=job1:p=buttons:c=1:w=5000;Open\xe2\x80\xa8" "Dismiss\x1b\\");
+    t.feed(
+        "\x1b]99;i=job1:p=buttons:c=1:w=5000;Open\xe2\x80\xa8"
+        "Dismiss\x1b\\");
     ASSERT_EQ(t.host.requests.size(), 1u);
     const NotificationRequest& r = t.host.requests[0];
     EXPECT_EQ(r.id, "job1");
@@ -294,7 +305,8 @@ TEST(Notification, TheUnpaddedEndOfTheLastChunkCountsAgainstTheLimit)
         for (int i = 0; i < 10; ++i) {
             ASSERT_EQ(assembler.feed("i=x:e=1:d=0;" + chunk, request), NotificationAssembler::Result::Pending);
         }
-        ASSERT_EQ(assembler.feed("i=x:e=1:d=0;" + base64Encode(std::string(4092, 'A')), request), NotificationAssembler::Result::Pending);
+        ASSERT_EQ(assembler.feed("i=x:e=1:d=0;" + base64Encode(std::string(4092, 'A')), request),
+                  NotificationAssembler::Result::Pending);
         const auto result = assembler.feed("i=x:e=1;" + end, request);
         EXPECT_EQ(result, ready ? NotificationAssembler::Result::Ready : NotificationAssembler::Result::Ignored) << end;
         if (ready) {
@@ -334,8 +346,7 @@ TEST(Notification, MetadataEdgeCases)
     ASSERT_EQ(t.host.requests.size(), 2u);
     EXPECT_EQ(t.host.requests[1].appName, std::string(255, 'a'));
     // Occasion, sound and types.
-    t.feed("\x1b]99;o=unfocused:s=" + base64Encode("bell") + ":t=" + base64Encode("im.received")
-           + ";T\x1b\\");
+    t.feed("\x1b]99;o=unfocused:s=" + base64Encode("bell") + ":t=" + base64Encode("im.received") + ";T\x1b\\");
     t.feed("\x1b]99;o=invisible;T\x1b\\\x1b]99;o=sometimes;T\x1b\\");
     ASSERT_EQ(t.host.requests.size(), 5u);
     EXPECT_EQ(t.host.requests[2].occasion, NotificationRequest::Occasion::Unfocused);
@@ -349,7 +360,9 @@ TEST(Notification, MetadataEdgeCases)
 TEST(Notification, ResetDropsHalfSentNotifications)
 {
     Term t;
-    t.feed("\x1b]99;i=a:d=0;start\x1b\\\x1b" "c\x1b]99;i=a;end\x1b\\");
+    t.feed(
+        "\x1b]99;i=a:d=0;start\x1b\\\x1b"
+        "c\x1b]99;i=a;end\x1b\\");
     ASSERT_EQ(t.host.requests.size(), 1u);
     EXPECT_EQ(t.host.requests[0].title, "end");
 }

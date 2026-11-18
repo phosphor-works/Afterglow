@@ -23,8 +23,9 @@ bool rowIsBlank(const Row& row)
 
 bool hasOnlyDefaultStyle(const Row& row)
 {
-    return std::all_of(row.cells.begin(), row.cells.end(),
-                       [](const Cell& c) { return c.styleId() == StyleTable::DefaultId; });
+    return std::all_of(row.cells.begin(), row.cells.end(), [](const Cell& c) {
+        return c.styleId() == StyleTable::DefaultId;
+    });
 }
 
 // A blank cell that a compact row does not store. A spacer head is kept:
@@ -245,7 +246,8 @@ void Screen::writeMulticell(int y, int x, char32_t cp, std::u32string_view extra
         }
         (*r.multicell)[std::uint16_t(x)] = params;
         if (!extra.empty()) {
-            if (!r.graphemes) r.graphemes = std::make_unique<GraphemeMap>();
+            if (!r.graphemes)
+                r.graphemes = std::make_unique<GraphemeMap>();
             (*r.graphemes)[std::uint16_t(x)] = std::u32string(extra.substr(0, keep));
             r.cells[std::size_t(x)].setHasGrapheme(true);
         }
@@ -408,7 +410,8 @@ std::vector<std::uint16_t> Screen::settleMulticellsForShift(Row& row, int x, int
     std::vector<int> doomed;
     for (const auto& [left, params] : *row.multicell) {
         const int end = left + params.columns() - 1;
-        if (end < x || left > right) continue;
+        if (end < x || left > right)
+            continue;
         const int to = left + shift;
         if (params.scale > 1 || left < x || end > right || to < x || to + params.columns() - 1 > right) {
             doomed.push_back(left);
@@ -417,7 +420,8 @@ std::vector<std::uint16_t> Screen::settleMulticellsForShift(Row& row, int x, int
         }
     }
     for (const int left : doomed) {
-        if (row.cells[std::size_t(left)].isMulticell()) eraseMulticellAt(row, left);
+        if (row.cells[std::size_t(left)].isMulticell())
+            eraseMulticellAt(row, left);
     }
     return moved;
 }
@@ -431,7 +435,8 @@ void Screen::shiftMulticellKeys(Row& row, const std::vector<std::uint16_t>& move
     std::vector<std::pair<std::uint16_t, MulticellParams>> entries;
     entries.reserve(moved.size());
     for (const std::uint16_t left : moved) {
-        if (auto node = row.multicell->extract(left)) entries.emplace_back(std::uint16_t(left + shift), node.mapped());
+        if (auto node = row.multicell->extract(left))
+            entries.emplace_back(std::uint16_t(left + shift), node.mapped());
     }
     for (const auto& [left, params] : entries) {
         (*row.multicell)[left] = params;
@@ -541,7 +546,9 @@ void Screen::copyRowSpan(Row& dst, const Row& src, int left, int right)
         }
     }
     if (dst.multicell) {
-        std::erase_if(*dst.multicell, [left, right](const auto& kv) { return kv.first >= left && kv.first <= right; });
+        std::erase_if(*dst.multicell, [left, right](const auto& kv) {
+            return kv.first >= left && kv.first <= right;
+        });
     }
     if (src.multicell) {
         for (const auto& [col, params] : *src.multicell) {
@@ -774,11 +781,15 @@ void Screen::clearVacatedSpan(Row& row, int left, int right, std::uint32_t fillS
     // Erased as a block, it would take the parameters of the block from the
     // rows that hold one now.
     if (row.multicell) {
-        std::erase_if(*row.multicell, [left, right](const auto& kv) { return kv.first >= left && kv.first <= right; });
+        std::erase_if(*row.multicell, [left, right](const auto& kv) {
+            return kv.first >= left && kv.first <= right;
+        });
         for (int x = left; x <= right; ++x) {
             Cell& c = row.cells[std::size_t(x)];
-            if (!c.isMulticell()) continue;
-            if (c.hasGrapheme() && row.graphemes) row.graphemes->erase(std::uint16_t(x));
+            if (!c.isMulticell())
+                continue;
+            if (c.hasGrapheme() && row.graphemes)
+                row.graphemes->erase(std::uint16_t(x));
             m_styles.release(c.styleId());
             c = Cell{};
         }
@@ -825,7 +836,8 @@ void Screen::resize(int cols, int rows, bool reflow, std::optional<std::size_t> 
 {
     cols = std::clamp(cols, 2, MaxColumns);
     rows = std::clamp(rows, 1, int(MaxCells) / cols);
-    if (trackedColumns && (!trackedRows || trackedColumns->size() != trackedRows->size())) trackedColumns = nullptr;
+    if (trackedColumns && (!trackedRows || trackedColumns->size() != trackedRows->size()))
+        trackedColumns = nullptr;
     if (cols == m_cols && rows == m_rowCount) {
         return;
     }
@@ -969,7 +981,8 @@ void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracke
         for (int k = 1; k <= pulled; ++k) {
             expand(m_rows[historySize() - std::size_t(k)]); // history rows return to the screen
         }
-        if (pulled > 0) ++m_historyRewinds;
+        if (pulled > 0)
+            ++m_historyRewinds;
         m_rowCount += pulled;
         cursor.y += pulled;
         savedCursor.y += pulled;
@@ -979,7 +992,9 @@ void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracke
         }
     }
     trimHistory();
-    if (trackedColumns) for (auto& col : *trackedColumns) col = std::clamp(col, 0, cols);
+    if (trackedColumns)
+        for (auto& col : *trackedColumns)
+            col = std::clamp(col, 0, cols);
     if (tracked) {
         const std::size_t dropped = std::size_t(m_rowsDropped - droppedBefore);
         for (std::size_t& t : *tracked) {
@@ -988,7 +1003,8 @@ void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracke
     }
 }
 
-void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptStart, std::vector<std::size_t>* tracked, std::vector<int>* trackedColumns)
+void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptStart, std::vector<std::size_t>* tracked,
+                          std::vector<int>* trackedColumns)
 {
     const std::size_t cursorAbs = historySize() + std::size_t(cursor.y);
     // Reflow output above a redrawable prompt, preserving the prompt's row
@@ -1030,7 +1046,9 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
     auto trackedOffset = [&](const Row& r, std::size_t index, std::size_t lineCells) {
         const int col = trackedColumns ? std::clamp((*trackedColumns)[index], 0, m_cols) : 0;
         std::size_t offset = lineCells;
-        for (int x = 0; x < col; ++x) if (!r.at(x).isSpacerHead()) ++offset;
+        for (int x = 0; x < col; ++x)
+            if (!r.at(x).isSpacerHead())
+                ++offset;
         return offset;
     };
 
@@ -1293,7 +1311,8 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
             mappedColumns[k] = trackedColumns ? std::clamp((*trackedColumns)[k], 0, cols) : 0;
         }
     }
-    if (trackedColumns) *trackedColumns = std::move(mappedColumns);
+    if (trackedColumns)
+        *trackedColumns = std::move(mappedColumns);
 
     // Trim blank rows below the cursor, pad to the screen height.
     while (out.size() > cursorRow + 1 && rowIsBlank(out.back()) && !out[out.size() - 2].wrapped) {
@@ -1334,8 +1353,8 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
     if (tracked) {
         for (std::size_t k = 0; k < trackedNew.size(); ++k) {
             const std::size_t t = trackedNew[k];
-            (*tracked)[k] = (t == TrackedRowGone || t < dropped || t - dropped >= m_rows.size()) ? TrackedRowGone
-                                                                                                : t - dropped;
+            (*tracked)[k] =
+                (t == TrackedRowGone || t < dropped || t - dropped >= m_rows.size()) ? TrackedRowGone : t - dropped;
         }
     }
 }

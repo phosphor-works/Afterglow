@@ -19,11 +19,13 @@ namespace AfterglowProto {
 inline std::uint64_t addressSpace()
 {
     const int fd = ::open("/proc/self/statm", O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return 0;
+    if (fd < 0)
+        return 0;
     char text[128];
     const ssize_t n = ::read(fd, text, sizeof text - 1);
     ::close(fd);
-    if (n <= 0) return 0;
+    if (n <= 0)
+        return 0;
     text[n] = '\0';
     const long page = ::sysconf(_SC_PAGESIZE);
     return std::strtoull(text, nullptr, 10) * std::uint64_t(page > 0 ? page : 4096);
@@ -41,11 +43,17 @@ inline std::uint64_t addressSpaceOr(std::uint64_t fileBytes)
 /// the decoded image while it works (16-bit PNG, the canvas of an
 /// animation). Past this, its allocations fail, whatever a corrupt file asks
 /// for.
-inline std::uint64_t decodeMemory(std::uint64_t frameBytes) { return 8 * frameBytes + (std::uint64_t(64) << 20); }
+inline std::uint64_t decodeMemory(std::uint64_t frameBytes)
+{
+    return 8 * frameBytes + (std::uint64_t(64) << 20);
+}
 
 /// Seconds of CPU time to decode @p pixelBytes: decoding runs at well over
 /// 16 MiB a second.
-inline rlim_t decodeSeconds(std::uint64_t pixelBytes) { return rlim_t(5 + (pixelBytes >> 24)); }
+inline rlim_t decodeSeconds(std::uint64_t pixelBytes)
+{
+    return rlim_t(5 + (pixelBytes >> 24));
+}
 
 /// Lowers the limit of @p resource to @p soft and @p hard, within the hard
 /// limit that the process has: an unprivileged process cannot raise it. Set
@@ -54,7 +62,8 @@ inline rlim_t decodeSeconds(std::uint64_t pixelBytes) { return rlim_t(5 + (pixel
 inline void limit(int resource, rlim_t soft, rlim_t hard)
 {
     rlimit current{};
-    if (::getrlimit(resource, &current) != 0) return;
+    if (::getrlimit(resource, &current) != 0)
+        return;
     const rlimit next{std::min(soft, current.rlim_max), std::min(hard, current.rlim_max)};
     ::setrlimit(resource, &next);
 }

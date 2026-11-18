@@ -13,19 +13,27 @@ public:
     /// The defaults of Keybinds.sequenceTimeout and Keybinds.tableTimeout, in milliseconds.
     static constexpr int DefaultSequenceTimeout = 1000;
     static constexpr int DefaultTableTimeout = 5000;
-    struct State {
+    struct State
+    {
         QList<int> prefix;
         QString table;
         qint64 prefixDeadline = 0; ///< when a pending prefix times out
         qint64 tableDeadline = 0; ///< when an idle table is left
         qint64 deadline = 0; ///< the earlier of the two that apply: when expire() next has work
-        bool active() const { return !prefix.isEmpty() || !table.isEmpty(); }
+        bool active() const
+        {
+            return !prefix.isEmpty() || !table.isEmpty();
+        }
         QString label() const;
     };
-    struct Result { bool consumed = false; QString target; };
+    struct Result
+    {
+        bool consumed = false;
+        QString target;
+    };
     /// Timeouts arrive already clamped by the schema.
-    static KeyModes fromConfig(const QVariantMap& bindings, const QVariantMap& tables,
-        const QString& leader, int sequenceTimeout, int tableTimeout, const Keybinds& singles, QStringList* errors);
+    static KeyModes fromConfig(const QVariantMap& bindings, const QVariantMap& tables, const QString& leader,
+                               int sequenceTimeout, int tableTimeout, const Keybinds& singles, QStringList* errors);
     /// @p base is the unshifted key on the active layout (bindingBaseKey),
     /// as for Keybinds::combinations.
     Result press(const QKeyEvent* event, State& state, qint64 now, char32_t base = 0) const;
@@ -35,8 +43,10 @@ public:
     /// menus and the palette, in the order the config lists them.
     QStringList bindingsOf(const QString& target) const;
     bool operator==(const KeyModes&) const = default;
+
 private:
-    struct Binding {
+    struct Binding
+    {
         QList<int> keys;
         QString target;
         bool operator==(const Binding&) const = default;

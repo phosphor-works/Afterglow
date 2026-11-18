@@ -12,7 +12,10 @@ class ProjectStore
     Q_DECLARE_TR_FUNCTIONS(ProjectStore)
 
 public:
-    explicit ProjectStore(QString directory) : m_directory(std::move(directory)) {}
+    explicit ProjectStore(QString directory)
+        : m_directory(std::move(directory))
+    {
+    }
     static bool validName(const QString& name);
     static QString validate(const QJsonObject& document);
     /// The most arguments of a pane command, and the most UTF-8 bytes of one
@@ -50,6 +53,7 @@ public:
     QStringList names() const;
     QString read(const QString& name, QJsonObject& document) const;
     QString save(const QString& name, const QJsonObject& document, bool overwrite) const;
+
 private:
     QString m_directory;
 };

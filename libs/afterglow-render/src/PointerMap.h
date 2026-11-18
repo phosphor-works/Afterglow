@@ -72,7 +72,10 @@ public:
     /// Grids are evaluated or read back: frames must come until they arrive.
     bool pending() const;
     /// Changes when a region's maps change, so the pointer can be looked at again.
-    std::uint64_t serial() const { return m_serial; }
+    std::uint64_t serial() const
+    {
+        return m_serial;
+    }
 
     /// @p point (device pixels of the window) through the maps of the
     /// window, or of the pane @p pane, last pack first. A region with no

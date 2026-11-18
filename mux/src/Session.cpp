@@ -17,8 +17,8 @@ namespace {
 /// The environment of a pane: the session's, without what @p launch unsets,
 /// then with what it sets, the last value of each name. Each list once: a
 /// request line (1 MiB) can hold many variables.
-std::vector<std::pair<std::string, std::string>> paneEnvironment(std::vector<std::pair<std::string, std::string>> environment,
-                                                                 const Launch& launch)
+std::vector<std::pair<std::string, std::string>>
+paneEnvironment(std::vector<std::pair<std::string, std::string>> environment, const Launch& launch)
 {
     std::set<std::string_view> dropped(launch.unset.begin(), launch.unset.end());
     std::map<std::string_view, std::size_t> last;
@@ -26,9 +26,12 @@ std::vector<std::pair<std::string, std::string>> paneEnvironment(std::vector<std
         dropped.insert(launch.environment[i].first);
         last[launch.environment[i].first] = i;
     }
-    std::erase_if(environment, [&dropped](const auto& variable) { return dropped.contains(variable.first); });
+    std::erase_if(environment, [&dropped](const auto& variable) {
+        return dropped.contains(variable.first);
+    });
     for (std::size_t i = 0; i < launch.environment.size(); ++i) {
-        if (last[launch.environment[i].first] == i) environment.push_back(launch.environment[i]);
+        if (last[launch.environment[i].first] == i)
+            environment.push_back(launch.environment[i]);
     }
     return environment;
 }
@@ -58,11 +61,13 @@ bool Session::addPane(std::uint32_t id, const Launch& launch, const PaneSize& si
     if (m_options.callerEnvironment) {
         // The environment of a command over ssh, which no login read: the
         // shell reads the login's files, as an interactive ssh login does.
-        if (spawn.argv.empty()) spawn.argv = {AfterglowPty::Pty::defaultShell(spawn), "-l"};
+        if (spawn.argv.empty())
+            spawn.argv = {AfterglowPty::Pty::defaultShell(spawn), "-l"};
         if (spawn.workingDirectory.empty()) {
             spawn.workingDirectory = "/";
             for (const auto& [name, value] : spawn.environment) {
-                if (name == "HOME" && !value.empty()) spawn.workingDirectory = value;
+                if (name == "HOME" && !value.empty())
+                    spawn.workingDirectory = value;
             }
         }
     }
@@ -72,7 +77,8 @@ bool Session::addPane(std::uint32_t id, const Launch& launch, const PaneSize& si
     // the client's, not the daemon's: /tmp when they have none.
     std::string temporaryDirectory = "/tmp";
     for (const auto& [name, value] : spawn.environment) {
-        if (name == "TMPDIR" && !value.empty()) temporaryDirectory = value;
+        if (name == "TMPDIR" && !value.empty())
+            temporaryDirectory = value;
     }
     // `afterglow ctl` and `aglow run` in a session pane reach the daemon: it
     // answers the control calls of the session, and passes a client of the
@@ -82,7 +88,8 @@ bool Session::addPane(std::uint32_t id, const Launch& launch, const PaneSize& si
     AfterglowPty::setVariable(spawn, "AFTERGLOW_PANE_ID", std::to_string(id));
     AfterglowPty::setVariable(spawn, "AFTERGLOW_SESSION", m_name);
     AfterglowPty::unsetVariable(spawn, "AFTERGLOW_OVERLAY");
-    auto pane = std::make_unique<MuxPane>(id, m_options.terminal, size, m_options.notificationCapabilities, m_images, std::move(wake));
+    auto pane = std::make_unique<MuxPane>(id, m_options.terminal, size, m_options.notificationCapabilities, m_images,
+                                          std::move(wake));
     pane->setTemporaryDirectory(temporaryDirectory);
     pane->setKeptNotifications(std::size_t(m_options.keptNotifications));
     // Before the program runs: a bell or a clipboard request that it makes
@@ -95,14 +102,17 @@ bool Session::addPane(std::uint32_t id, const Launch& launch, const PaneSize& si
     // Before the program runs too: `afterglow ctl watch` hears its first
     // title.
     pane->setWatched(m_watched);
-    if (!pane->start(std::move(spawn), launch.launchedProgram, error)) return false;
+    if (!pane->start(std::move(spawn), launch.launchedProgram, error))
+        return false;
     m_layout.addTab(id);
     m_panes.push_back(std::move(pane));
     // The next window saves the command in a project, as the client that
     // started the pane would: while the layout has room for it.
     std::size_t bytes = 0;
-    for (const std::string& arg : launch.command) bytes += arg.size();
-    if (!launch.command.empty() && m_layout.valueBytes() + bytes <= MaxLayoutValueBytes) m_layout.values[id].command = launch.command;
+    for (const std::string& arg : launch.command)
+        bytes += arg.size();
+    if (!launch.command.empty() && m_layout.valueBytes() + bytes <= MaxLayoutValueBytes)
+        m_layout.values[id].command = launch.command;
     return true;
 }
 
@@ -126,8 +136,11 @@ std::vector<std::unique_ptr<MuxPane>> Session::reap()
 
 std::unique_ptr<MuxPane> Session::take(std::uint32_t id)
 {
-    const auto it = std::find_if(m_panes.begin(), m_panes.end(), [id](const auto& pane) { return pane->id() == id; });
-    if (it == m_panes.end()) return nullptr;
+    const auto it = std::find_if(m_panes.begin(), m_panes.end(), [id](const auto& pane) {
+        return pane->id() == id;
+    });
+    if (it == m_panes.end())
+        return nullptr;
     // For closePane(), the caller drops it: its terminal closes, which hangs
     // up the program, and the PTY's reaper kills it when it stays.
     std::unique_ptr<MuxPane> pane = std::move(*it);
@@ -142,10 +155,12 @@ std::unique_ptr<MuxPane> Session::take(std::uint32_t id)
 
 void Session::keepLeftEvents(MuxPane& pane) noexcept
 {
-    if (!m_watched) return;
+    if (!m_watched)
+        return;
     try {
         std::vector<MuxPane::WatchEvent> events = pane.takeWatchEvents();
-        if (!events.empty()) m_left.push_back({pane.id(), std::move(events)});
+        if (!events.empty())
+            m_left.push_back({pane.id(), std::move(events)});
     } catch (const std::exception&) {
         // The watch misses them: the pane still leaves whole.
     }
@@ -153,13 +168,15 @@ void Session::keepLeftEvents(MuxPane& pane) noexcept
 
 void Session::setWatched(bool watched)
 {
-    if (watched == m_watched) return;
+    if (watched == m_watched)
+        return;
     m_watched = watched;
     if (!watched) {
         m_moved.clear();
         m_left.clear();
     }
-    for (const auto& pane : m_panes) pane->setWatched(watched);
+    for (const auto& pane : m_panes)
+        pane->setWatched(watched);
 }
 
 void Session::adopt(std::vector<std::unique_ptr<MuxPane>> panes, Layout layout) noexcept
@@ -168,7 +185,8 @@ void Session::adopt(std::vector<std::unique_ptr<MuxPane>> panes, Layout layout) 
     m_layout = std::move(layout);
     // The new session's watch: `afterglow ctl watch` of the old one hears
     // nothing more of them.
-    for (const auto& pane : m_panes) pane->setWatched(m_watched);
+    for (const auto& pane : m_panes)
+        pane->setWatched(m_watched);
 }
 
 void Session::join(std::unique_ptr<MuxPane> pane) noexcept
@@ -199,29 +217,38 @@ void Session::applySettings(const SessionSettings& settings)
     m_options.control = settings.control;
     if (m_options.notificationCapabilities != settings.notificationCapabilities) {
         m_options.notificationCapabilities = settings.notificationCapabilities;
-        for (const auto& pane : m_panes) pane->setNotificationCapabilities(settings.notificationCapabilities);
+        for (const auto& pane : m_panes)
+            pane->setNotificationCapabilities(settings.notificationCapabilities);
     }
     if (m_options.keptNotifications != settings.keptNotifications) {
         m_options.keptNotifications = settings.keptNotifications;
-        for (const auto& pane : m_panes) pane->setKeptNotifications(std::size_t(settings.keptNotifications));
+        for (const auto& pane : m_panes)
+            pane->setKeptNotifications(std::size_t(settings.keptNotifications));
     }
     for (const auto& [name, value] : settings.environment) {
-        std::erase_if(m_options.environment, [&name](const auto& variable) { return variable.first == name; });
-        if (value) m_options.environment.emplace_back(name, *value);
+        std::erase_if(m_options.environment, [&name](const auto& variable) {
+            return variable.first == name;
+        });
+        if (value)
+            m_options.environment.emplace_back(name, *value);
     }
-    if (m_options.terminal == settings.terminal) return;
+    if (m_options.terminal == settings.terminal)
+        return;
     m_options.terminal = settings.terminal;
-    for (const auto& pane : m_panes) pane->setOptions(settings.terminal);
+    for (const auto& pane : m_panes)
+        pane->setOptions(settings.terminal);
 }
 
 void Session::noteMoved(std::uint32_t pane)
 {
-    if (m_watched && m_moved.size() < MaxSessionPanes) m_moved.push_back(pane);
+    if (m_watched && m_moved.size() < MaxSessionPanes)
+        m_moved.push_back(pane);
 }
 
 void Session::setLayout(Layout layout)
 {
-    for (const std::uint32_t pane : std::exchange(layout.moved, {})) noteMoved(pane);
+    for (const std::uint32_t pane : std::exchange(layout.moved, {}))
+        noteMoved(pane);
     keepCommands(layout, m_layout);
     // Those of panes that the layout does not hold go in reconcile().
     layout.reconcile(paneIds());
@@ -236,25 +263,32 @@ void Session::keepCommands(Layout& layout, const Layout& kept)
     // command, an empty one too, and a pane without values give theirs.
     std::size_t bytes = layout.valueBytes();
     for (auto& [pane, values] : layout.values) {
-        if (!values.keepsCommand) continue;
+        if (!values.keepsCommand)
+            continue;
         values.keepsCommand = false;
         const auto known = kept.values.find(pane);
-        if (known == kept.values.end()) continue;
+        if (known == kept.values.end())
+            continue;
         std::size_t size = 0;
-        for (const std::string& arg : known->second.command) size += arg.size();
-        if (bytes + size > MaxLayoutValueBytes) continue;
+        for (const std::string& arg : known->second.command)
+            size += arg.size();
+        if (bytes + size > MaxLayoutValueBytes)
+            continue;
         values.command = known->second.command;
         bytes += size;
     }
     // No keepsCommand stays for the next window, and an entry with no title
     // and no command that it kept is no entry.
-    std::erase_if(layout.values, [](const auto& entry) { return entry.second.empty(); });
+    std::erase_if(layout.values, [](const auto& entry) {
+        return entry.second.empty();
+    });
 }
 
 std::vector<std::uint32_t> Session::paneIds() const
 {
     std::vector<std::uint32_t> ids;
-    for (const auto& pane : m_panes) ids.push_back(pane->id());
+    for (const auto& pane : m_panes)
+        ids.push_back(pane->id());
     return ids;
 }
 
@@ -264,7 +298,8 @@ SessionInfo Session::info(pid_t caller) const
     info.name = m_name;
     info.panes = int(m_panes.size());
     for (const auto& pane : m_panes) {
-        if (std::string job = pane->foregroundJob(caller); !job.empty() && std::find(info.jobs.begin(), info.jobs.end(), job) == info.jobs.end()) {
+        if (std::string job = pane->foregroundJob(caller);
+            !job.empty() && std::find(info.jobs.begin(), info.jobs.end(), job) == info.jobs.end()) {
             info.jobs.push_back(std::move(job));
         }
     }

@@ -89,8 +89,16 @@ class Control : public QObject
 public:
     /// FirstOutputOnScreen and LastVisitedOutput as kitty's get-text extents
     /// first_cmd_output_on_screen and last_visited_cmd_output.
-    enum class TextScope { Screen, Scrollback, Selection, LastOutput, FirstOutputOnScreen, LastVisitedOutput };
-    using WindowFactory = std::function<TerminalWindow*(const QString& workingDirectory, const QStringList& command, bool empty)>;
+    enum class TextScope {
+        Screen,
+        Scrollback,
+        Selection,
+        LastOutput,
+        FirstOutputOnScreen,
+        LastVisitedOutput
+    };
+    using WindowFactory =
+        std::function<TerminalWindow*(const QString& workingDirectory, const QStringList& command, bool empty)>;
     /// Starts a script command ("<script id>.<command>") with no arguments and
     /// no client, from @p source (ev.source). Returns an error, or empty.
     using ScriptCommandRunner = std::function<QString(const QString& command, quint32 pane, const QString& source)>;
@@ -128,21 +136,33 @@ public:
     /// window (a drag, a key, the menu, a script or afterglow ctl): it goes
     /// to a new session, which a new window shows. Also for a project whose
     /// session runs while the window that showed it closed (openProject).
-    void setSessionWindowOpener(SessionWindowOpener opener) { m_openSessionWindow = std::move(opener); }
+    void setSessionWindowOpener(SessionWindowOpener opener)
+    {
+        m_openSessionWindow = std::move(opener);
+    }
     /// For a project that opens into a session, whose attach waited for the
     /// daemon off the GUI thread.
-    void setSessionLinkShower(SessionLinkShower shower) { m_showSessionLink = std::move(shower); }
+    void setSessionLinkShower(SessionLinkShower shower)
+    {
+        m_showSessionLink = std::move(shower);
+    }
 
     /// Follows a window's panes; every window registers on creation.
     void attachWindow(TerminalWindow* window);
-    void setScriptCommandRunner(ScriptCommandRunner runner) { m_scriptCommands = std::move(runner); }
+    void setScriptCommandRunner(ScriptCommandRunner runner)
+    {
+        m_scriptCommands = std::move(runner);
+    }
 
     /// With @p facts, each pane's PaneInfo::facts too, for listPanes: the
     /// command line of the foreground process only with @p cmdlines, which
     /// read access gives (Pane::foreground).
     QList<PaneInfo> panes(bool facts = false, bool cmdlines = true) const;
     std::optional<PaneInfo> paneInfo(quint32 id) const;
-    bool hasPane(quint32 id) const { return find(id); }
+    bool hasPane(quint32 id) const
+    {
+        return find(id);
+    }
     /// Sets what @p pane answers to `aglow run`'s query for its ssh
     /// session's socket (RemoteSockets). False when there is no such pane.
     bool setRemoteSocket(quint32 pane, const AfterglowProto::Remote::Answer& answer,
@@ -158,8 +178,14 @@ public:
     static QString statusStateName(AfterglowVt::StatusState state);
 
     QString openDirectory(const QString& cwd, const QString& layout, QVariantMap& result);
-    void setScriptDiagnostics(std::function<QVariantList()> read) { m_scriptDiagnostics = std::move(read); }
-    QVariantList scriptDiagnostics() const { return m_scriptDiagnostics ? m_scriptDiagnostics() : QVariantList{}; }
+    void setScriptDiagnostics(std::function<QVariantList()> read)
+    {
+        m_scriptDiagnostics = std::move(read);
+    }
+    QVariantList scriptDiagnostics() const
+    {
+        return m_scriptDiagnostics ? m_scriptDiagnostics() : QVariantList{};
+    }
     QStringList projectNames() const;
     QString saveProject(quint32 pane, const QString& name, bool overwrite, QVariantMap& result);
     /// Who owns the overlays and the inputs of @p client of the session that
@@ -179,8 +205,14 @@ public:
     {
         return m_sessionInputs.add(owner, name, chunk, eof);
     }
-    QString takeSessionOverlayInput(const QString& owner, QVariantMap& options) { return m_sessionInputs.resolve(owner, options); }
-    void sessionOverlayOpened(const QString& owner) { m_sessionOverlayOwners.insert(owner); }
+    QString takeSessionOverlayInput(const QString& owner, QVariantMap& options)
+    {
+        return m_sessionInputs.resolve(owner, options);
+    }
+    void sessionOverlayOpened(const QString& owner)
+    {
+        m_sessionOverlayOwners.insert(owner);
+    }
     /// The client @p owner of a session went: its overlays close with
     /// @p message, and its inputs go.
     void endSessionClient(const QString& owner, const QString& message);
@@ -239,20 +271,25 @@ public:
     QString readTextBounded(quint32 pane, const QString& scope, int limit, QVariantMap& result, bool clientRun);
     QString semanticRegions(quint32 pane, QVariantMap& result, bool clientRun);
     QString readRegion(quint32 pane, const QString& region, int limit, QVariantMap& result, bool clientRun);
-    QString split(quint32 pane, const QString& direction, const QStringList& command, const QVariantMap& options, quint32& created);
+    QString split(quint32 pane, const QString& direction, const QStringList& command, const QVariantMap& options,
+                  quint32& created);
     /// split() that does not wait for the mux daemon (a script's): in the
     /// window of a session, the daemon starts the program off the GUI
     /// thread (TerminalWindow::startSessionPane). @p done gets the outcome
     /// once, before this returns, or later, also when the window closes
     /// first.
-    void split(quint32 pane, const QString& direction, const QStringList& command, const QVariantMap& options, PaneMade done);
+    void split(quint32 pane, const QString& direction, const QStringList& command, const QVariantMap& options,
+               PaneMade done);
     QString newTab(quint32 pane, const QString& workingDirectory, const QStringList& command, quint32& created);
-    QString newTab(quint32 pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options, quint32& created);
+    QString newTab(quint32 pane, const QString& workingDirectory, const QStringList& command,
+                   const QVariantMap& options, quint32& created);
     /// newTab() that does not wait for the mux daemon, as split() with
     /// @p done.
-    void newTab(quint32 pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options, PaneMade done);
+    void newTab(quint32 pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options,
+                PaneMade done);
     QString newWindow(const QString& workingDirectory, const QStringList& command, quint32& created);
-    QString newWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options, quint32& created);
+    QString newWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options,
+                      quint32& created);
 
     /// The side that @p name (left, right, up or down) names, for a split
     /// or a move.
@@ -271,10 +308,12 @@ public:
     /// stdin_ansi. The pane's text goes to the program only with
     /// Control.allowReadText, as getText, and only to a command: a shell
     /// would run it.
-    QString clientSplit(quint32 pane, const QString& direction, const QStringList& command, const QVariantMap& options, quint32& created);
-    QString clientNewTab(quint32 pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options,
-                         quint32& created);
-    QString clientNewWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options, quint32& created);
+    QString clientSplit(quint32 pane, const QString& direction, const QStringList& command, const QVariantMap& options,
+                        quint32& created);
+    QString clientNewTab(quint32 pane, const QString& workingDirectory, const QStringList& command,
+                         const QVariantMap& options, quint32& created);
+    QString clientNewWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options,
+                            quint32& created);
     QString focus(quint32 pane);
     QString close(quint32 pane);
     QString setTitle(quint32 pane, const QString& title);
@@ -336,7 +375,10 @@ public:
     void notice(quint32 pane, const QString& title, const QString& body);
     /// From now on notice() shows nothing: the application quits, and what
     /// quitting ends is no news.
-    void endNotices() { m_noticesEnded = true; }
+    void endNotices()
+    {
+        m_noticesEnded = true;
+    }
     /// Refuses text longer than MaxCopyLength UTF-16 units.
     QString copy(const QString& text);
     static constexpr qsizetype MaxCopyLength = 1 << 22;
@@ -388,19 +430,21 @@ public:
     /// Runs @p spec over @p pane for @p owner (a script, or a control
     /// client), with the script's @p request ID. @p code tells a refusal
     /// apart: no_pane, busy or spawn_failed.
-    QString overlay(const QString& owner, const QString& request, quint32 pane, const OverlaySpec& spec, OverlayReply reply,
-                    QString& code);
+    QString overlay(const QString& owner, const QString& request, quint32 pane, const OverlaySpec& spec,
+                    OverlayReply reply, QString& code);
     /// The overlay call of a client of the control socket or of a session,
     /// in two steps that both take, so that their rules cannot drift apart.
     /// The caller takes the client's waiting input into @p options first,
     /// and names the pane between the steps. This one reads @p argv with
     /// @p options: the spec, whose directory is one of this computer, or
     /// nothing and @p error, which has no code.
-    static std::optional<OverlaySpec> clientOverlaySpec(const QStringList& argv, const QVariantMap& options, QString& error);
+    static std::optional<OverlaySpec> clientOverlaySpec(const QStringList& argv, const QVariantMap& options,
+                                                        QString& error);
     /// Then overlay() for @p owner with no request ID. The result's stdout
     /// leaves only with Control.allowReadText, checked as it goes out: read
     /// access can go while the program runs.
-    QString clientOverlay(const QString& owner, quint32 pane, const OverlaySpec& spec, OverlayReply reply, QString& code);
+    QString clientOverlay(const QString& owner, quint32 pane, const OverlaySpec& spec, OverlayReply reply,
+                          QString& code);
     /// Reads back the next frame of @p pane's window, as it shows on screen,
     /// cut to @p scope. It needs Control.allowReadText (see captureRefusal()).
     /// A refusal returns its error at once, with @p code denied or no_pane.
@@ -417,7 +461,8 @@ public:
     /// The overview for @p owner's script: see TerminalWindow::scriptOverview,
     /// which sets @p code "busy" for a refusal while another script holds
     /// the keyboard.
-    QString overview(const QString& owner, quint32 pane, const QString& operation, QVariantMap& result, QString* code = nullptr);
+    QString overview(const QString& owner, quint32 pane, const QString& operation, QVariantMap& result,
+                     QString* code = nullptr);
     QString overviewMove(quint32 pane, quint32 target, int step, QVariantMap& result);
     QString pulse(quint32 pane, int effect, int durationMs, int color);
     /// Where a pane split from: {"split_from": pane ID, "edge": 1-4}, empty when it did not.
@@ -460,7 +505,8 @@ Q_SIGNALS:
     /// An event of a script's dock for the owner's @p handler; @p pane is a
     /// pane dock's pane, or the window's focused pane for a window dock.
     /// @p limited: the call counts toward the script's callback limit.
-    void scriptDockEvent(const QString& owner, const QString& handler, quint32 pane, const QVariantMap& event, bool limited);
+    void scriptDockEvent(const QString& owner, const QString& handler, quint32 pane, const QVariantMap& event,
+                         bool limited);
     /// A window's current tab changed; @p pane is the new tab's focused pane.
     void tabSwitched(quint32 pane, quint32 fromTab, quint32 toTab, int direction);
 
@@ -483,8 +529,8 @@ private:
     /// or none.
     QString splitWith(quint32 pane, const QString& direction, const QStringList& command, const QVariantMap& input,
                       const LaunchExtras* extras, quint32& created);
-    QString newTabWith(quint32 pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& input,
-                       const LaunchExtras* extras, quint32& created);
+    QString newTabWith(quint32 pane, const QString& workingDirectory, const QStringList& command,
+                       const QVariantMap& input, const LaunchExtras* extras, quint32& created);
     QString newWindowWith(const QString& workingDirectory, const QStringList& command, const QVariantMap& input,
                           const LaunchExtras* extras, quint32& created);
     /// The window that shows mux session @p session of this computer, or nullptr.
@@ -524,7 +570,8 @@ private:
     /// (TerminalWindow::joinSession), and @p destination takes what @p source
     /// kept for the pane. @p done gets the pane in @p destination, which has
     /// another ID, once: a refusal at once, else later.
-    void joinSession(TerminalWindow* source, Pane* pane, TerminalWindow* destination, Pane* beside, const QString& placement, PaneMoved done);
+    void joinSession(TerminalWindow* source, Pane* pane, TerminalWindow* destination, Pane* beside,
+                     const QString& placement, PaneMoved done);
 
     SettingsStore& m_settings;
     WindowFactory m_newWindow;
@@ -579,8 +626,13 @@ private:
 template<typename Result>
 QString Control::offThread(std::function<Result()> work, std::function<void(Result)> then)
 {
-    return startOffThread([work = std::move(work)]() -> OffThreadResult { return std::make_shared<Result>(work()); },
-                          [then = std::move(then)](OffThreadResult result) { then(std::move(*std::static_pointer_cast<Result>(result))); });
+    return startOffThread(
+        [work = std::move(work)]() -> OffThreadResult {
+            return std::make_shared<Result>(work());
+        },
+        [then = std::move(then)](OffThreadResult result) {
+            then(std::move(*std::static_pointer_cast<Result>(result)));
+        });
 }
 
 } // namespace Afterglow

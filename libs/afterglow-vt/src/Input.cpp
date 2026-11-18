@@ -569,7 +569,7 @@ std::string encodeKittyKey(const KeyEvent& e, const Modes& modes)
 
     // Plain typing stays plain text unless every key is to be reported.
     const bool keypadText = ((e.key >= Key::Keypad0 && e.key <= Key::KeypadEqual) || e.key == Key::KeypadSeparator)
-                            && e.key != Key::KeypadEnter && producesText;
+        && e.key != Key::KeypadEnter && producesText;
     if (!reportAll && (!functional || keypadText) && (activeMods & ~Mod::Shift) == 0) {
         return e.action == KeyAction::Release ? std::string() : std::string(e.text);
     }
@@ -603,9 +603,12 @@ std::string encodeKittyKey(const KeyEvent& e, const Modes& modes)
         const char32_t shifted = ownLayout ? e.layoutShifted : e.shifted;
         const bool withShifted = (mods & Mod::Shift) && shifted != 0 && std::uint32_t(shifted) != kk.number;
         const bool withBase = e.base >= 0x20 && e.base < 0x7F && std::uint32_t(e.base) != kk.number;
-        if (withShifted || withBase) out += ':';
-        if (withShifted) out += std::to_string(std::uint32_t(shifted));
-        if (withBase) out += ':' + std::to_string(std::uint32_t(e.base));
+        if (withShifted || withBase)
+            out += ':';
+        if (withShifted)
+            out += std::to_string(std::uint32_t(shifted));
+        if (withBase)
+            out += ':' + std::to_string(std::uint32_t(e.base));
     }
     if (modifierParam != 1 || withEvent || !text.empty()) {
         out += ';' + std::to_string(modifierParam);
@@ -639,11 +642,15 @@ std::string encodeMouse(const MouseEvent& e, const Modes& modes)
         // kitty's mouse leave: the SGR pixel format only, whatever the
         // tracking mode, as kitty sends it. Bit 8 is the leave, 32 a motion,
         // with the modifiers; a program ignores the position.
-        if (modes.mouseFormat != MouseFormat::SgrPixels) return {};
+        if (modes.mouseFormat != MouseFormat::SgrPixels)
+            return {};
         int cb = 256 | 32;
-        if (e.mods & Mod::Shift) cb |= 4;
-        if (e.mods & Mod::Alt) cb |= 8;
-        if (e.mods & Mod::Ctrl) cb |= 16;
+        if (e.mods & Mod::Shift)
+            cb |= 4;
+        if (e.mods & Mod::Alt)
+            cb |= 8;
+        if (e.mods & Mod::Ctrl)
+            cb |= 16;
         char buf[64];
         const int n = std::snprintf(buf, sizeof buf, "\x1b[<%d;%d;%dM", cb, e.pixelX + 1, e.pixelY + 1);
         return std::string(buf, std::size_t(n));

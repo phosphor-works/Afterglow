@@ -52,7 +52,10 @@ public:
 
     /// Notifications.filters: the rules of the notifications that programs
     /// send and that are not shown.
-    void setFilters(std::vector<NotificationFilter> filters) { m_filters = std::move(filters); }
+    void setFilters(std::vector<NotificationFilter> filters)
+    {
+        m_filters = std::move(filters);
+    }
 
     /// An OSC 99 request from @p pane. The window has already applied the
     /// request's occasion (always / unfocused / invisible). Its icon goes in

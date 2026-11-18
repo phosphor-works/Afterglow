@@ -24,11 +24,11 @@
 namespace AfterglowMux {
 
 namespace Json = AfterglowProto::Json;
-using AfterglowProto::IpcRequest;
-using AfterglowProto::IpcServerConnection;
 using AfterglowProto::ipcError;
 using AfterglowProto::ipcEvent;
 using AfterglowProto::ipcReply;
+using AfterglowProto::IpcRequest;
+using AfterglowProto::IpcServerConnection;
 namespace IpcErrorCode = AfterglowProto::IpcErrorCode;
 
 namespace {
@@ -40,7 +40,9 @@ constexpr std::size_t MaxSubscriptions = 256;
 
 Session* Daemon::sessionBySerial(std::uint64_t serial) const
 {
-    const auto it = std::find_if(m_sessions.begin(), m_sessions.end(), [serial](const auto& s) { return s->serial() == serial; });
+    const auto it = std::find_if(m_sessions.begin(), m_sessions.end(), [serial](const auto& s) {
+        return s->serial() == serial;
+    });
     return it == m_sessions.end() ? nullptr : it->get();
 }
 
@@ -49,24 +51,30 @@ std::string Daemon::subscribe(const IpcRequest& request, IpcServerConnection& co
     // The checks and the words of PhosphorIpc's router, in its order: the
     // cap before the others.
     if (std::find(ControlEvents.begin(), ControlEvents.end(), request.signal) == ControlEvents.end()) {
-        return ipcError(request.id, IpcErrorCode::NoSuchSignal, "target 'control' has no signal '" + request.signal + "'");
+        return ipcError(request.id, IpcErrorCode::NoSuchSignal,
+                        "target 'control' has no signal '" + request.signal + "'");
     }
     const std::int64_t id = request.id.value_or(0);
-    const auto mine = std::count_if(m_subscriptions.begin(), m_subscriptions.end(),
-                                    [&connection](const Subscription& s) { return s.connection == &connection; });
+    const auto mine =
+        std::count_if(m_subscriptions.begin(), m_subscriptions.end(), [&connection](const Subscription& s) {
+            return s.connection == &connection;
+        });
     if (std::size_t(mine) >= MaxSubscriptions) {
         return ipcError(request.id, IpcErrorCode::MalformedRequest,
                         "subscription cap of " + std::to_string(MaxSubscriptions) + " per socket exceeded");
     }
     for (const Subscription& s : m_subscriptions) {
-        if (s.connection != &connection) continue;
+        if (s.connection != &connection)
+            continue;
         if (s.session == session.serial() && s.signal == request.signal) {
             return ipcError(request.id, IpcErrorCode::MalformedRequest,
-                            "already subscribed to 'control." + request.signal + "' on this connection (subscriptionId " + std::to_string(s.id) + ")");
+                            "already subscribed to 'control." + request.signal + "' on this connection (subscriptionId "
+                                + std::to_string(s.id) + ")");
         }
         if (s.id == id) {
             return ipcError(request.id, IpcErrorCode::MalformedRequest,
-                            "subscriptionId " + std::to_string(id) + " is already in use on this connection (by 'control." + s.signal + "')");
+                            "subscriptionId " + std::to_string(id)
+                                + " is already in use on this connection (by 'control." + s.signal + "')");
         }
     }
     // What the panes are now is no event: the events start from here.
@@ -74,7 +82,8 @@ std::string Daemon::subscribe(const IpcRequest& request, IpcServerConnection& co
         SessionWatch& watch = m_watches[session.serial()];
         watch.name = session.name();
         session.setWatched(true);
-        for (const auto& pane : session.panes()) watch.panes[pane->id()] = PaneWatch{pane->title(), pane->status()};
+        for (const auto& pane : session.panes())
+            watch.panes[pane->id()] = PaneWatch{pane->title(), pane->status()};
         watch.focused = session.focusedPane();
     }
     // The events go to the subscription by the id of its request.
@@ -86,13 +95,17 @@ std::string Daemon::subscribe(const IpcRequest& request, IpcServerConnection& co
 
 std::string Daemon::unsubscribe(const IpcRequest& request, IpcServerConnection& connection)
 {
-    const bool any = std::any_of(m_subscriptions.begin(), m_subscriptions.end(), [&](const Subscription& s) { return s.connection == &connection; });
-    if (!any) return ipcError(request.id, IpcErrorCode::NoSuchSubscription, "no subscriptions on this connection");
+    const bool any = std::any_of(m_subscriptions.begin(), m_subscriptions.end(), [&](const Subscription& s) {
+        return s.connection == &connection;
+    });
+    if (!any)
+        return ipcError(request.id, IpcErrorCode::NoSuchSubscription, "no subscriptions on this connection");
     const auto it = std::find_if(m_subscriptions.begin(), m_subscriptions.end(), [&](const Subscription& s) {
         return s.connection == &connection && s.id == request.subscriptionId;
     });
     if (it == m_subscriptions.end()) {
-        return ipcError(request.id, IpcErrorCode::NoSuchSubscription, "unknown subscriptionId " + std::to_string(request.subscriptionId));
+        return ipcError(request.id, IpcErrorCode::NoSuchSubscription,
+                        "unknown subscriptionId " + std::to_string(request.subscriptionId));
     }
     m_subscriptions.erase(it);
     // The answer goes before the connection is let go: a client that ended
@@ -105,21 +118,29 @@ std::string Daemon::unsubscribe(const IpcRequest& request, IpcServerConnection& 
 
 void Daemon::forgetWatches(const IpcServerConnection* connection)
 {
-    std::erase_if(m_subscriptions, [connection](const Subscription& s) { return s.connection == connection; });
+    std::erase_if(m_subscriptions, [connection](const Subscription& s) {
+        return s.connection == connection;
+    });
 }
 
 void Daemon::sendWatch(std::uint64_t serial, const SessionWatch& watch, const std::string& signal, Json::Array args)
 {
     // Read access as the event goes out, also for one that waited.
     if (!watch.readText) {
-        if (signal == "userVarChanged" && args.size() > 2) args[2] = "";
-        if ((signal == "commandStarted" || signal == "commandFinished") && args.size() > 1) args[1] = "";
+        if (signal == "userVarChanged" && args.size() > 2)
+            args[2] = "";
+        if ((signal == "commandStarted" || signal == "commandFinished") && args.size() > 1)
+            args[1] = "";
     }
     for (const Subscription& s : m_subscriptions) {
-        if (s.session != serial || s.signal != signal) continue;
+        if (s.session != serial || s.signal != signal)
+            continue;
         // A watcher whose event fails (out of memory) loses its connection,
         // which tells it that it missed one. The others still get theirs.
-        if (!contained("an event of afterglow ctl watch", [&] { s.connection->send(ipcEvent(s.id, args)); })) s.connection->close();
+        if (!contained("an event of afterglow ctl watch", [&] {
+                s.connection->send(ipcEvent(s.id, args));
+            }))
+            s.connection->close();
     }
 }
 
@@ -127,21 +148,23 @@ void Daemon::flushPane(std::uint64_t serial, SessionWatch& watch, std::uint32_t 
 {
     const auto now = std::chrono::steady_clock::now();
     for (auto& [key, merged] : watch.merged) {
-        if (merged.pane != pane || !merged.waiting) continue;
+        if (merged.pane != pane || !merged.waiting)
+            continue;
         merged.sent = now;
         sendWatch(serial, watch, merged.signal, std::exchange(merged.waiting, std::nullopt).value());
     }
 }
 
-void Daemon::watchNow(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane, const std::string& signal, Json::Array args)
+void Daemon::watchNow(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane, const std::string& signal,
+                      Json::Array args)
 {
     // What waits for the pane goes first, as a window sends it.
     flushPane(serial, watch, pane);
     sendWatch(serial, watch, signal, std::move(args));
 }
 
-void Daemon::watchMerged(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane, const std::string& key, const std::string& signal,
-                         Json::Array args)
+void Daemon::watchMerged(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane, const std::string& key,
+                         const std::string& signal, Json::Array args)
 {
     // At most one event of a kind for a pane in Control.eventInterval: the
     // newest waits for the end of it, as in a window.
@@ -164,34 +187,40 @@ void Daemon::watchMerged(std::uint64_t serial, SessionWatch& watch, std::uint32_
     sendWatch(serial, watch, signal, std::move(args));
 }
 
-void Daemon::watchEvent(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane, PaneWatch& state, MuxPane::WatchEvent& event)
+void Daemon::watchEvent(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane, PaneWatch& state,
+                        MuxPane::WatchEvent& event)
 {
     using Kind = MuxPane::WatchEvent::Kind;
     switch (event.kind) {
     case Kind::Title:
-        if (state.title == event.text) break;
+        if (state.title == event.text)
+            break;
         state.title = event.text;
         watchMerged(serial, watch, pane, {}, "titleChanged", Json::Array{std::int64_t(pane), std::move(event.text)});
         break;
     case Kind::Status: {
         std::pair<std::string, std::string> status{std::move(event.name), std::move(event.text)};
-        if (state.status == status) break;
+        if (state.status == status)
+            break;
         state.status = status;
-        watchMerged(serial, watch, pane, {}, "statusChanged", Json::Array{std::int64_t(pane), status.first, status.second});
+        watchMerged(serial, watch, pane, {}, "statusChanged",
+                    Json::Array{std::int64_t(pane), status.first, status.second});
         break;
     }
     case Kind::Bell:
         watchMerged(serial, watch, pane, {}, "bell", Json::Array{std::int64_t(pane)});
         break;
     case Kind::UserVar:
-        watchMerged(serial, watch, pane, event.name, "userVarChanged", Json::Array{std::int64_t(pane), event.name, std::move(event.text)});
+        watchMerged(serial, watch, pane, event.name, "userVarChanged",
+                    Json::Array{std::int64_t(pane), event.name, std::move(event.text)});
         break;
     case Kind::CommandStarted:
         watchNow(serial, watch, pane, "commandStarted", Json::Array{std::int64_t(pane), std::move(event.text)});
         break;
     case Kind::CommandFinished:
-        watchNow(serial, watch, pane, "commandFinished",
-                 Json::Array{std::int64_t(pane), std::move(event.text), event.exitCode, std::int64_t(event.milliseconds)});
+        watchNow(
+            serial, watch, pane, "commandFinished",
+            Json::Array{std::int64_t(pane), std::move(event.text), event.exitCode, std::int64_t(event.milliseconds)});
         break;
     }
 }
@@ -200,7 +229,8 @@ void Daemon::flushWatch(const Session& session)
 {
     // As the step of the loop, which fails watched session by watched
     // session (pumpWatch()): the session ends all the same.
-    if (m_watches.contains(session.serial())) pumpWatch();
+    if (m_watches.contains(session.serial()))
+        pumpWatch();
 }
 
 void Daemon::pumpWatch()
@@ -215,9 +245,12 @@ void Daemon::pumpWatch()
         // their connections, which tells them that they missed events. The
         // watchers of the other sessions still get theirs, and the next pass
         // ends the watch without watchers.
-        if (!contained("afterglow ctl watch", [&] { pumpWatchOf(watched, now); })) {
+        if (!contained("afterglow ctl watch", [&] {
+                pumpWatchOf(watched, now);
+            })) {
             for (const Subscription& s : m_subscriptions) {
-                if (s.session == serial) s.connection->close();
+                if (s.session == serial)
+                    s.connection->close();
             }
         }
     }
@@ -235,7 +268,8 @@ void Daemon::pumpWatchOf(std::map<std::uint64_t, SessionWatch>::iterator it, std
     // window's control target drops what waits for them.
     if (!open) {
         if (!session) {
-            for (const auto& [pane, state] : watch.panes) watchNow(serial, watch, pane, "paneClosed", Json::Array{std::int64_t(pane)});
+            for (const auto& [pane, state] : watch.panes)
+                watchNow(serial, watch, pane, "paneClosed", Json::Array{std::int64_t(pane)});
         }
         const std::string code = session ? IpcErrorCode::NoSuchTarget : Error::NoSuchSession;
         const std::string message = session ? "no target 'control'" : "session '" + watch.name + "' ended";
@@ -249,13 +283,20 @@ void Daemon::pumpWatchOf(std::map<std::uint64_t, SessionWatch>::iterator it, std
             m_subscriptions.erase(m_subscriptions.begin() + std::ptrdiff_t(i));
             // Out of memory, the watcher's connection closes, which tells
             // it.
-            if (!contained("an event of afterglow ctl watch", [&] { connection->send(ipcError(id, code, message)); })) connection->close();
+            if (!contained("an event of afterglow ctl watch", [&] {
+                    connection->send(ipcError(id, code, message));
+                }))
+                connection->close();
             holdForAnswers(*connection);
         }
     }
-    const bool subscribed = std::any_of(m_subscriptions.begin(), m_subscriptions.end(), [serial](const Subscription& s) { return s.session == serial; });
+    const bool subscribed =
+        std::any_of(m_subscriptions.begin(), m_subscriptions.end(), [serial](const Subscription& s) {
+            return s.session == serial;
+        });
     if (!open || !subscribed) {
-        if (session) session->setWatched(false);
+        if (session)
+            session->setWatched(false);
         m_watches.erase(it);
         return;
     }
@@ -272,14 +313,17 @@ void Daemon::pumpWatchOf(std::map<std::uint64_t, SessionWatch>::iterator it, std
             watchNow(serial, watch, id, "paneCreated", Json::Array{std::int64_t(id)});
         }
         PaneWatch& state = watch.panes[id];
-        for (MuxPane::WatchEvent& event : pane->takeWatchEvents()) watchEvent(serial, watch, id, state, event);
+        for (MuxPane::WatchEvent& event : pane->takeWatchEvents())
+            watchEvent(serial, watch, id, state, event);
     }
     // What the panes that left since told before they left (an exit, a
     // close, a move to another session): before their end below.
     for (Session::LeftEvents& left : session->takeLeftEvents()) {
         const auto known = watch.panes.find(left.pane);
-        if (known == watch.panes.end()) continue;
-        for (MuxPane::WatchEvent& event : left.events) watchEvent(serial, watch, left.pane, known->second, event);
+        if (known == watch.panes.end())
+            continue;
+        for (MuxPane::WatchEvent& event : left.events)
+            watchEvent(serial, watch, left.pane, known->second, event);
     }
     for (auto known = watch.panes.begin(); known != watch.panes.end();) {
         if (live.contains(known->first)) {
@@ -288,15 +332,19 @@ void Daemon::pumpWatchOf(std::map<std::uint64_t, SessionWatch>::iterator it, std
         }
         const std::uint32_t pane = known->first;
         watchNow(serial, watch, pane, "paneClosed", Json::Array{std::int64_t(pane)});
-        std::erase_if(watch.merged, [pane](const auto& merged) { return merged.second.pane == pane; });
+        std::erase_if(watch.merged, [pane](const auto& merged) {
+            return merged.second.pane == pane;
+        });
         known = watch.panes.erase(known);
     }
     // The moves of a window's layout and of `afterglow ctl`, in their order.
     for (const std::uint32_t pane : session->takeMoved()) {
-        if (live.contains(pane)) watchNow(serial, watch, pane, "paneMoved", Json::Array{std::int64_t(pane)});
+        if (live.contains(pane))
+            watchNow(serial, watch, pane, "paneMoved", Json::Array{std::int64_t(pane)});
     }
     const std::uint32_t focused = session->focusedPane();
-    if (focused != watch.focused && focused != 0) watchNow(serial, watch, focused, "focusChanged", Json::Array{std::int64_t(focused)});
+    if (focused != watch.focused && focused != 0)
+        watchNow(serial, watch, focused, "focusChanged", Json::Array{std::int64_t(focused)});
     watch.focused = focused;
     // What waited for its interval goes. An interval that passed with
     // nothing waiting leaves no entry.
@@ -304,7 +352,8 @@ void Daemon::pumpWatchOf(std::map<std::uint64_t, SessionWatch>::iterator it, std
         const bool over = !merged->second.sent || now - *merged->second.sent >= watch.interval;
         if (over && merged->second.waiting) {
             merged->second.sent = now;
-            sendWatch(serial, watch, merged->second.signal, std::exchange(merged->second.waiting, std::nullopt).value());
+            sendWatch(serial, watch, merged->second.signal,
+                      std::exchange(merged->second.waiting, std::nullopt).value());
         } else if (over) {
             merged = watch.merged.erase(merged);
             continue;
@@ -320,9 +369,12 @@ int Daemon::watchDueMs() const
     for (const auto& [serial, watch] : m_watches) {
         for (const auto& [key, merged] : watch.merged) {
             // An entry ends at the end of its interval, whether it waits or not.
-            const auto left = merged.sent ? std::chrono::duration_cast<std::chrono::milliseconds>(*merged.sent + watch.interval - now).count() : 0;
+            const auto left = merged.sent
+                ? std::chrono::duration_cast<std::chrono::milliseconds>(*merged.sent + watch.interval - now).count()
+                : 0;
             const int ms = int(std::max<std::int64_t>(0, left)) + 1;
-            if (due < 0 || ms < due) due = ms;
+            if (due < 0 || ms < due)
+                due = ms;
         }
     }
     return due;

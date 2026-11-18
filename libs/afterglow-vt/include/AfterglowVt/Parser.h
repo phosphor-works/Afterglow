@@ -29,14 +29,23 @@ struct Params
     int count = 0;
     bool overflow = false;
 
-    std::uint16_t at(int i, std::uint16_t fallback = 0) const { return i < count ? values[i] : fallback; }
+    std::uint16_t at(int i, std::uint16_t fallback = 0) const
+    {
+        return i < count ? values[i] : fallback;
+    }
     /// Value at @p i where 0 or absent means @p fallback (the usual "default 1").
     std::uint16_t atOr(int i, std::uint16_t fallback) const
     {
         return (i < count && values[i] != 0) ? values[i] : fallback;
     }
-    bool isSub(int i) const { return i > 0 && i < count && subMask[std::size_t(i)]; }
-    bool given(int i) const { return i < count && givenMask[std::size_t(i)]; }
+    bool isSub(int i) const
+    {
+        return i > 0 && i < count && subMask[std::size_t(i)];
+    }
+    bool given(int i) const
+    {
+        return i < count && givenMask[std::size_t(i)];
+    }
 };
 
 /// Up to two intermediate bytes plus an optional private marker ('?', '>', '<', '=').
@@ -47,8 +56,14 @@ struct Intermediates
     int count = 0;
     bool overflow = false;
 
-    bool empty() const { return marker == 0 && count == 0; }
-    bool is(char m, char i0 = 0) const { return marker == m && (i0 == 0 ? count == 0 : (count == 1 && bytes[0] == i0)); }
+    bool empty() const
+    {
+        return marker == 0 && count == 0;
+    }
+    bool is(char m, char i0 = 0) const
+    {
+        return marker == m && (i0 == 0 ? count == 0 : (count == 1 && bytes[0] == i0));
+    }
 };
 
 /// DEC/ANSI escape sequence parser, modelled on Paul Williams' state machine,

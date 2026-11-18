@@ -76,7 +76,10 @@ public:
         : m_s(s)
     {
     }
-    void byte(std::uint8_t v) { m_s.push_back(char(v)); }
+    void byte(std::uint8_t v)
+    {
+        m_s.push_back(char(v));
+    }
     void varint(std::uint64_t v)
     {
         while (v >= 0x80) {
@@ -86,10 +89,14 @@ public:
         m_s.push_back(char(v));
     }
     /// A signed integer, zigzag encoded.
-    void signedVarint(std::int64_t v) { varint((std::uint64_t(v) << 1) ^ std::uint64_t(v >> 63)); }
+    void signedVarint(std::int64_t v)
+    {
+        varint((std::uint64_t(v) << 1) ^ std::uint64_t(v >> 63));
+    }
     void u32(std::uint32_t v)
     {
-        for (int i = 0; i < 4; ++i) m_s.push_back(char((v >> (8 * i)) & 0xff));
+        for (int i = 0; i < 4; ++i)
+            m_s.push_back(char((v >> (8 * i)) & 0xff));
     }
     void string(std::string_view v)
     {
@@ -105,7 +112,8 @@ public:
     void optionalRgb(const Rgb* c)
     {
         byte(c ? 1 : 0);
-        if (c) rgb(*c);
+        if (c)
+            rgb(*c);
     }
 
 private:
@@ -119,8 +127,14 @@ public:
         : m_s(s)
     {
     }
-    bool ok() const { return m_ok; }
-    bool done() const { return m_at == m_s.size(); }
+    bool ok() const
+    {
+        return m_ok;
+    }
+    bool done() const
+    {
+        return m_at == m_s.size();
+    }
     bool fail()
     {
         m_ok = false;
@@ -139,14 +153,16 @@ public:
         std::uint64_t v = 0;
         for (int shift = 0; shift < 64; shift += 7) {
             const std::uint8_t b = byte();
-            if (!m_ok) return 0;
+            if (!m_ok)
+                return 0;
             // The tenth byte holds the 64th bit only: more would be cut.
             if (shift == 63 && b > 1) {
                 fail();
                 return 0;
             }
             v |= std::uint64_t(b & 0x7f) << shift;
-            if (!(b & 0x80)) return v;
+            if (!(b & 0x80))
+                return v;
         }
         fail();
         return 0;
@@ -155,7 +171,8 @@ public:
     std::uint64_t bounded(std::uint64_t max)
     {
         const std::uint64_t v = varint();
-        if (v > max) fail();
+        if (v > max)
+            fail();
         return m_ok ? v : 0;
     }
     std::int64_t signedVarint()
@@ -167,13 +184,15 @@ public:
     std::int64_t signedBounded(std::int64_t min, std::int64_t max)
     {
         const std::int64_t v = signedVarint();
-        if (v < min || v > max) fail();
+        if (v < min || v > max)
+            fail();
         return m_ok ? v : 0;
     }
     std::uint32_t u32()
     {
         std::uint32_t v = 0;
-        for (int i = 0; i < 4; ++i) v |= std::uint32_t(byte()) << (8 * i);
+        for (int i = 0; i < 4; ++i)
+            v |= std::uint32_t(byte()) << (8 * i);
         return v;
     }
     std::string_view bytes(std::size_t n)
@@ -186,8 +205,14 @@ public:
         m_at += n;
         return v;
     }
-    std::string_view string(std::size_t max) { return bytes(bounded(max)); }
-    std::string_view rest() { return bytes(m_s.size() - m_at); }
+    std::string_view string(std::size_t max)
+    {
+        return bytes(bounded(max));
+    }
+    std::string_view rest()
+    {
+        return bytes(m_s.size() - m_at);
+    }
     Rgb rgb()
     {
         const std::uint8_t r = byte();
@@ -198,8 +223,10 @@ public:
     std::optional<Rgb> optionalRgb()
     {
         const std::uint8_t has = byte();
-        if (has > 1) fail();
-        if (!has) return std::nullopt;
+        if (has > 1)
+            fail();
+        if (!has)
+            return std::nullopt;
         return rgb();
     }
 
@@ -220,7 +247,8 @@ void section(std::string& out, Tag tag, std::string_view payload)
 /// the replica has (@p sent), or always with @p first, and keeps it as sent.
 void sendIfChanged(std::string& out, Tag tag, std::string& payload, std::string& sent, bool first)
 {
-    if (!first && payload == sent) return;
+    if (!first && payload == sent)
+        return;
     section(out, tag, payload);
     sent = std::move(payload);
 }
@@ -246,10 +274,12 @@ constexpr std::size_t MaxLinkText = StyleTable::MaxLinkBytes;
 /// without controls, line or paragraph separators or bidirectional controls.
 bool isCleanTitle(std::string_view title)
 {
-    if (!detail::isCleanText(title)) return false;
+    if (!detail::isCleanText(title))
+        return false;
     for (std::size_t i = 0; i < title.size();) {
         char32_t cp = 0;
-        if (!detail::nextUtf8(title, i, cp) || AfterglowProto::isBidiControl(cp)) return false;
+        if (!detail::nextUtf8(title, i, cp) || AfterglowProto::isBidiControl(cp))
+            return false;
     }
     return true;
 }
@@ -257,8 +287,9 @@ bool isCleanTitle(std::string_view title)
 /// A directory as Terminal::setWorkingDirectory takes one.
 bool isCleanDirectory(std::string_view cwd)
 {
-    return cwd.size() <= Terminal::MaxWorkingDirectory
-        && std::none_of(cwd.begin(), cwd.end(), [](char c) { return (unsigned char)c < 0x20 || c == 0x7F; });
+    return cwd.size() <= Terminal::MaxWorkingDirectory && std::none_of(cwd.begin(), cwd.end(), [](char c) {
+               return (unsigned char)c < 0x20 || c == 0x7F;
+           });
 }
 
 // The codec carries every field of these by name, in the writer and in the
@@ -304,31 +335,37 @@ void encodeRow(std::string& out, const Row& row, std::vector<std::uint32_t>& sty
         // The raw fields: the reader checks each part and maps the style id.
         o.varint(c.rawCodepoint());
         o.varint(c.rawPacked());
-        if (c.styleId() != StyleTable::DefaultId) styles.push_back(c.styleId());
+        if (c.styleId() != StyleTable::DefaultId)
+            styles.push_back(c.styleId());
     }
     std::sort(styles.begin(), styles.end());
     styles.erase(std::unique(styles.begin(), styles.end()), styles.end());
     if (row.graphemes) {
         // In column order, so that equal rows encode to equal bytes.
         std::vector<std::pair<std::uint16_t, const std::u32string*>> entries;
-        for (const auto& [x, extra] : *row.graphemes) entries.emplace_back(x, &extra);
+        for (const auto& [x, extra] : *row.graphemes)
+            entries.emplace_back(x, &extra);
         std::sort(entries.begin(), entries.end());
         o.varint(entries.size());
         for (const auto& [x, extra] : entries) {
             o.varint(x);
             o.varint(extra->size());
-            for (const char32_t cp : *extra) o.varint(cp);
+            for (const char32_t cp : *extra)
+                o.varint(cp);
         }
     } else {
         o.varint(0);
     }
     if (row.multicell) {
         std::vector<std::pair<std::uint16_t, MulticellParams>> entries(row.multicell->begin(), row.multicell->end());
-        std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+            return a.first < b.first;
+        });
         o.varint(entries.size());
         for (const auto& [x, p] : entries) {
             o.varint(x);
-            for (const std::uint8_t v : {p.scale, p.width, p.num, p.den, p.valign, p.halign}) o.byte(v);
+            for (const std::uint8_t v : {p.scale, p.width, p.num, p.den, p.valign, p.halign})
+                o.byte(v);
         }
     } else {
         o.varint(0);
@@ -375,12 +412,14 @@ public:
         m_unknownLinks.clear();
         for (const std::uint32_t id : ids) {
             const Style& style = m_table.get(id);
-            if (style.link && !linkKnown(style.link)) m_unknownLinks.push_back(style.link);
+            if (style.link && !linkKnown(style.link))
+                m_unknownLinks.push_back(style.link);
             bytes += styleCost(id, style);
         }
         std::sort(m_unknownLinks.begin(), m_unknownLinks.end());
         m_unknownLinks.erase(std::unique(m_unknownLinks.begin(), m_unknownLinks.end()), m_unknownLinks.end());
-        for (const std::uint32_t link : m_unknownLinks) bytes += linkBytes(link);
+        for (const std::uint32_t link : m_unknownLinks)
+            bytes += linkBytes(link);
         return bytes;
     }
 
@@ -422,15 +461,20 @@ public:
         bool added = false;
         for (const std::uint32_t id : ids) {
             const std::size_t more = cost(id);
-            if (more == 0) continue;
-            if (added && bytes() + more > room) return;
+            if (more == 0)
+                continue;
+            if (added && bytes() + more > room)
+                return;
             define(id);
             added = true;
         }
     }
 
     /// The bytes of the definitions that wait for emit().
-    std::size_t bytes() const { return m_styles.size() + m_links.size(); }
+    std::size_t bytes() const
+    {
+        return m_styles.size() + m_links.size();
+    }
 
     /// The sections of screen @p which for the definitions added since the
     /// last call: the links first, which the styles name.
@@ -488,9 +532,12 @@ private:
 std::optional<Color> colorOf(std::uint32_t bits)
 {
     const std::uint32_t kind = bits >> 24;
-    if (kind > std::uint32_t(Color::Kind::Rgb)) return std::nullopt;
-    if (kind == std::uint32_t(Color::Kind::Default)) return Color();
-    if (kind == std::uint32_t(Color::Kind::Palette)) return Color::palette(std::uint8_t(bits & 0xff));
+    if (kind > std::uint32_t(Color::Kind::Rgb))
+        return std::nullopt;
+    if (kind == std::uint32_t(Color::Kind::Default))
+        return Color();
+    if (kind == std::uint32_t(Color::Kind::Palette))
+        return Color::palette(std::uint8_t(bits & 0xff));
     return Color::rgb(std::uint8_t((bits >> 16) & 0xff), std::uint8_t((bits >> 8) & 0xff), std::uint8_t(bits & 0xff));
 }
 
@@ -503,7 +550,8 @@ std::optional<Style> decodeStyle(In& in)
     s.attrs = std::uint16_t(in.bounded(0xffff));
     const std::uint8_t underline = in.byte();
     s.link = std::uint32_t(in.bounded(0xffffffffu));
-    if (!in.ok() || !fg || !bg || !ul || underline > std::uint8_t(UnderlineStyle::Dashed)) return std::nullopt;
+    if (!in.ok() || !fg || !bg || !ul || underline > std::uint8_t(UnderlineStyle::Dashed))
+        return std::nullopt;
     s.fg = *fg;
     s.bg = *bg;
     s.underlineColor = *ul;
@@ -517,19 +565,48 @@ std::optional<Style> decodeStyle(In& in)
 static_assert(sizeof(Modes) == 38, "a field of Modes that the codec does not carry");
 std::array<bool*, 34> modeFlags(Modes& m)
 {
-    return {&m.insert, &m.newline, &m.cursorKeysApp, &m.keypadApp, &m.reverseVideo, &m.originMode, &m.autowrap,
-            &m.cursorVisible, &m.cursorBlink, &m.altScreen, &m.leftRightMargins, &m.bracketedPaste, &m.focusEvents,
-            &m.synchronizedOutput, &m.graphemeClustering, &m.altScroll, &m.reverseWrap, &m.reverseWrapExtended,
-            &m.moreFix, &m.vt52, &m.pasteEvents, &m.themeReports, &m.visibilityReports, &m.sizeReports, &m.sixelDisplay,
-            &m.sixelPrivateColors, &m.sixelCursorRight, &m.allow132, &m.columns132, &m.noClearOnColumnChange,
-            &m.backarrowSendsBs, &m.smoothScroll, &m.printFormFeed, &m.printExtent};
+    return {&m.insert,
+            &m.newline,
+            &m.cursorKeysApp,
+            &m.keypadApp,
+            &m.reverseVideo,
+            &m.originMode,
+            &m.autowrap,
+            &m.cursorVisible,
+            &m.cursorBlink,
+            &m.altScreen,
+            &m.leftRightMargins,
+            &m.bracketedPaste,
+            &m.focusEvents,
+            &m.synchronizedOutput,
+            &m.graphemeClustering,
+            &m.altScroll,
+            &m.reverseWrap,
+            &m.reverseWrapExtended,
+            &m.moreFix,
+            &m.vt52,
+            &m.pasteEvents,
+            &m.themeReports,
+            &m.visibilityReports,
+            &m.sizeReports,
+            &m.sixelDisplay,
+            &m.sixelPrivateColors,
+            &m.sixelCursorRight,
+            &m.allow132,
+            &m.columns132,
+            &m.noClearOnColumnChange,
+            &m.backarrowSendsBs,
+            &m.smoothScroll,
+            &m.printFormFeed,
+            &m.printExtent};
 }
 
 std::string encodeModes(Modes m)
 {
     std::uint64_t bits = 0;
     const auto flags = modeFlags(m);
-    for (std::size_t i = 0; i < flags.size(); ++i) bits |= std::uint64_t(*flags[i]) << i;
+    for (std::size_t i = 0; i < flags.size(); ++i)
+        bits |= std::uint64_t(*flags[i]) << i;
     std::string out;
     Out o(out);
     o.varint(bits);
@@ -545,8 +622,10 @@ bool decodeModes(In& in, Modes& m)
     Modes decoded = m;
     const auto flags = modeFlags(decoded);
     const std::uint64_t bits = in.varint();
-    if (bits >> flags.size()) return false;
-    for (std::size_t i = 0; i < flags.size(); ++i) *flags[i] = (bits >> i) & 1;
+    if (bits >> flags.size())
+        return false;
+    for (std::size_t i = 0; i < flags.size(); ++i)
+        *flags[i] = (bits >> i) & 1;
     decoded.modifyOtherKeys = in.byte();
     const std::uint8_t tracking = in.byte();
     const std::uint8_t format = in.byte();
@@ -569,13 +648,15 @@ bool decodeModes(In& in, Modes& m)
 
 void RegionScrolls::add(bool altScreen, const RegionScroll& scroll)
 {
-    if (scroll.delta == 0) return;
+    if (scroll.delta == 0)
+        return;
     // Each scroll counts for a loss too, the ones before it included.
     Span& span = m_spans[altScreen ? 1 : 0];
     span.top = span.any ? std::min(span.top, scroll.top) : scroll.top;
     span.bottom = span.any ? std::max(span.bottom, scroll.bottom) : scroll.bottom;
     span.any = true;
-    if (m_lost) return;
+    if (m_lost)
+        return;
     if (!m_entries.empty()) {
         Entry& last = m_entries.back();
         const RegionScroll& l = last.scroll;
@@ -614,8 +695,8 @@ void StateWriter::reset()
 
 bool StateWriter::pending() const
 {
-    return m_screens[0].historyPending || m_screens[1].historyPending || m_screens[0].rowsPending || m_screens[1].rowsPending
-        || m_imagesPending;
+    return m_screens[0].historyPending || m_screens[1].historyPending || m_screens[0].rowsPending
+        || m_screens[1].rowsPending || m_imagesPending;
 }
 
 bool StateWriter::rowsPending() const
@@ -625,7 +706,8 @@ bool StateWriter::rowsPending() const
 
 bool StateWriter::textMarked() const
 {
-    if (!m_mark.taken || rowsPending()) return false;
+    if (!m_mark.taken || rowsPending())
+        return false;
     for (int which = 0; which < 2; ++which) {
         const ScreenState& st = m_screens[which];
         // The rows of the mark that are history now went: those that were
@@ -634,7 +716,9 @@ bool StateWriter::textMarked() const
         // the screen (rowsPending). Then the older ones down to the mark's
         // floor, or to the replica's floor now, which rose past it.
         // totalSent and oldestSent are of the last frame.
-        if (st.to < std::min(m_mark.total[which], st.totalSent) || st.from > std::max(m_mark.floor[which], st.oldestSent)) return false;
+        if (st.to < std::min(m_mark.total[which], st.totalSent)
+            || st.from > std::max(m_mark.floor[which], st.oldestSent))
+            return false;
     }
     return true;
 }
@@ -693,7 +777,8 @@ std::string StateWriter::write(const Terminal& t, std::size_t maxBytes, const Re
         if (scrolls->m_lost) {
             for (const RegionScrolls::Span& span : scrolls->m_spans) {
                 o.byte(span.any ? 1 : 0);
-                if (!span.any) continue;
+                if (!span.any)
+                    continue;
                 // A scroll counts its rows in an int. Rows that far above the
                 // lowest region are history, which no scroll moves.
                 o.varint(std::max(span.top, span.bottom - std::min<std::uint64_t>(span.bottom, INT_MAX - 1)));
@@ -713,7 +798,8 @@ std::string StateWriter::write(const Terminal& t, std::size_t maxBytes, const Re
         payload.clear();
         {
             Out o(payload);
-            for (const Rgb& c : t.m_palette) o.rgb(c);
+            for (const Rgb& c : t.m_palette)
+                o.rgb(c);
             o.rgb(t.m_defaultFg);
             o.rgb(t.m_defaultBg);
             o.optionalRgb(t.cursorColor());
@@ -724,9 +810,11 @@ std::string StateWriter::write(const Terminal& t, std::size_t maxBytes, const Re
             // 0 none, 1 an opacity, 2 the window's opacity (a negative one).
             for (const auto& transparent : t.m_protocolColors.transparent) {
                 o.byte(!transparent ? 0 : transparent->opacity < 0 ? 2 : 1);
-                if (!transparent) continue;
+                if (!transparent)
+                    continue;
                 o.rgb(transparent->color);
-                if (transparent->opacity >= 0) o.varint(std::uint64_t(std::lround(std::min(transparent->opacity, 1.0) * 65535.0)));
+                if (transparent->opacity >= 0)
+                    o.varint(std::uint64_t(std::lround(std::min(transparent->opacity, 1.0) * 65535.0)));
             }
             o.byte(std::uint8_t(t.m_cursorShape));
         }
@@ -752,7 +840,8 @@ std::string StateWriter::write(const Terminal& t, std::size_t maxBytes, const Re
             o.byte(t.m_promptRedrawPending ? 1 : 0);
             for (const Terminal::Mark* m : t.marks()) {
                 o.byte(m->valid ? 1 : 0);
-                if (!m->valid) continue;
+                if (!m->valid)
+                    continue;
                 o.varint(m->row);
                 o.varint(std::uint64_t(m->col));
             }
@@ -760,12 +849,14 @@ std::string StateWriter::write(const Terminal& t, std::size_t maxBytes, const Re
             o.varint(t.m_semanticRegions.size());
             for (const SemanticRegion& r : t.m_semanticRegions) {
                 o.varint(r.id);
-                o.byte(std::uint8_t(std::uint8_t(r.kind) | (r.open ? RegionOpen : 0) | (r.exitCode ? RegionExitCode : 0)));
+                o.byte(
+                    std::uint8_t(std::uint8_t(r.kind) | (r.open ? RegionOpen : 0) | (r.exitCode ? RegionExitCode : 0)));
                 o.varint(r.start.row);
                 o.varint(std::uint64_t(r.start.col));
                 o.varint(r.end.row);
                 o.varint(std::uint64_t(r.end.col));
-                if (r.exitCode) o.signedVarint(*r.exitCode);
+                if (r.exitCode)
+                    o.signedVarint(*r.exitCode);
             }
         }
         sendIfChanged(out, ShellTag, payload, m_shell, first);
@@ -797,7 +888,8 @@ std::string StateWriter::write(const Terminal& t, std::size_t maxBytes, const Re
             for (const ShellContext& c : t.m_contexts.stack()) {
                 o.string(c.id);
                 o.byte(c.iterm2RemoteHost ? 1 : 0);
-                for (const std::string* field : {&c.type, &c.user, &c.hostname, &c.targetUser, &c.targetHost, &c.container, &c.vm}) {
+                for (const std::string* field :
+                     {&c.type, &c.user, &c.hostname, &c.targetUser, &c.targetHost, &c.container, &c.vm}) {
                     o.string(*field);
                 }
             }
@@ -884,7 +976,8 @@ std::string StateWriter::write(const Terminal& t, std::size_t maxBytes, const Re
         // What waits for a later frame.
         bool incomplete = false;
         for (const GraphicsStore& store : t.m_graphics) {
-            for (const auto& [id, image] : store.images()) incomplete = incomplete || (sendable(image) && !complete(image));
+            for (const auto& [id, image] : store.images())
+                incomplete = incomplete || (sendable(image) && !complete(image));
         }
         m_imagesPending = m_imagesPending || incomplete || m_transfer || !m_done.empty() || !m_drops.empty();
     }
@@ -897,7 +990,8 @@ std::string StateWriter::write(const Terminal& t, std::size_t maxBytes, const Re
     return out.size() == 1 ? std::string() : out;
 }
 
-bool StateWriter::writeRows(std::string& out, const Terminal& t, int which, ScreenState& st, Budget& budget, bool changed)
+bool StateWriter::writeRows(std::string& out, const Terminal& t, int which, ScreenState& st, Budget& budget,
+                            bool changed)
 {
     bool reset = false;
     const Screen& s = which == 0 ? *t.m_primary : *t.m_alternate;
@@ -937,7 +1031,8 @@ bool StateWriter::writeRows(std::string& out, const Terminal& t, int which, Scre
         }
     }
     // Nothing changed since the frame that sent every row that changed.
-    if (!changed && !reset && !st.rowsPending) return reset;
+    if (!changed && !reset && !st.rowsPending)
+        return reset;
 
     // The rows that changed, with the styles and links that they use, while
     // the frame stays within its budget (Budget). Rows that wait keep their
@@ -956,7 +1051,8 @@ bool StateWriter::writeRows(std::string& out, const Terminal& t, int which, Scre
     std::string style;
     std::vector<std::uint32_t> rowStyles;
     const auto wait = [&](int y) {
-        if (!st.rowsPending) st.rowStart = y;
+        if (!st.rowsPending)
+            st.rowStart = y;
         st.rowsPending = true;
     };
     for (int i = 0; i < s.rows(); ++i) {
@@ -982,7 +1078,8 @@ bool StateWriter::writeRows(std::string& out, const Terminal& t, int which, Scre
             }
         }
         h |= 1; // never 0, the mark of a missing row
-        if (st.rowHashes[std::size_t(y)] == h) continue;
+        if (st.rowHashes[std::size_t(y)] == h)
+            continue;
         if (budget.full) {
             wait(y);
             continue;
@@ -1011,7 +1108,8 @@ bool StateWriter::writeRows(std::string& out, const Terminal& t, int which, Scre
             // The first row of the frame goes past the budget by its own
             // bytes only.
         }
-        for (const std::uint32_t id : rowStyles) definitions.define(id);
+        for (const std::uint32_t id : rowStyles)
+            definitions.define(id);
         st.rowHashes[std::size_t(y)] = h;
         Out(rows).varint(std::uint64_t(y));
         rows += row;
@@ -1047,7 +1145,8 @@ void StateWriter::writeHistory(std::string& out, const Terminal& t, int which, S
         // older.
         st.from = st.to = floor;
     }
-    if (st.from < floor) st.from = floor;
+    if (st.from < floor)
+        st.from = floor;
     Definitions definitions(s.styles(), st.styles, st.links);
     std::string appends;
     std::size_t appendCount = 0;
@@ -1060,22 +1159,26 @@ void StateWriter::writeHistory(std::string& out, const Terminal& t, int which, S
     // bytes at most, so the history advances even past a row larger than the
     // budget. Definitions too many for one frame go ahead of their row.
     const auto take = [&](const Row& row, std::string& to, std::uint64_t id) {
-        if (budget.full) return false;
+        if (budget.full)
+            return false;
         rowBytes.clear();
         rowStyles.clear();
         encodeRow(rowBytes, row, rowStyles);
         const std::size_t used = out.size() + definitions.bytes() + appends.size() + prepends.size() + 64;
-        if (budget.anyRow && used + rowBytes.size() + 10 > budget.max) return false;
+        if (budget.anyRow && used + rowBytes.size() + 10 > budget.max)
+            return false;
         const std::size_t cost = definitions.cost(rowStyles);
         if (used + cost + rowBytes.size() + 10 > budget.max) {
-            if (budget.anyRow) return false;
+            if (budget.anyRow)
+                return false;
             if (cost > 0 && used + cost > budget.max) {
                 definitions.definePart(rowStyles, budget.max > used ? budget.max - used : 0);
                 budget.full = true;
                 return false;
             }
         }
-        for (const std::uint32_t styleId : rowStyles) definitions.define(styleId);
+        for (const std::uint32_t styleId : rowStyles)
+            definitions.define(styleId);
         Out(to).varint(id);
         to += rowBytes;
         budget.anyRow = true;
@@ -1085,7 +1188,8 @@ void StateWriter::writeHistory(std::string& out, const Terminal& t, int which, S
         ++appendCount;
         ++st.to;
     }
-    while (st.to == total && st.from > floor && take(s.absoluteRow(std::size_t(st.from - 1 - oldest)), prepends, st.from - 1)) {
+    while (st.to == total && st.from > floor
+           && take(s.absoluteRow(std::size_t(st.from - 1 - oldest)), prepends, st.from - 1)) {
         ++prependCount;
         --st.from;
     }
@@ -1141,7 +1245,8 @@ void encodePlacement(Out& o, const Placement& p)
     o.varint(p.imageId);
     o.varint(p.placementId);
     o.varint(p.row);
-    for (const int v : {p.col, p.offsetX, p.offsetY, p.srcX, p.srcY, p.srcW, p.srcH, p.cols, p.rows}) o.signedVarint(v);
+    for (const int v : {p.col, p.offsetX, p.offsetY, p.srcX, p.srcY, p.srcW, p.srcH, p.cols, p.rows})
+        o.signedVarint(v);
     o.signedVarint(p.z);
     o.varint(p.parentImage);
     o.varint(p.parentPlacement);
@@ -1174,7 +1279,9 @@ namespace {
 /// No writer makes one.
 bool sendable(const Image& image)
 {
-    return std::none_of(image.frames.begin(), image.frames.end(), [](const FramePtr& frame) { return pixelsOf(*frame).empty(); });
+    return std::none_of(image.frames.begin(), image.frames.end(), [](const FramePtr& frame) {
+        return pixelsOf(*frame).empty();
+    });
 }
 
 } // namespace
@@ -1183,11 +1290,14 @@ bool StateWriter::prepareImages(std::string& out, const Terminal& t, bool first)
 {
     // A writer that was reset starts the replica's images over, also those
     // of a reader that applied the frames of the writer before.
-    if (first) section(out, ImagesResetTag, {});
-    const bool changed = first || t.m_graphics[0].changes() != m_storeChanges[0] || t.m_graphics[1].changes() != m_storeChanges[1];
+    if (first)
+        section(out, ImagesResetTag, {});
+    const bool changed =
+        first || t.m_graphics[0].changes() != m_storeChanges[0] || t.m_graphics[1].changes() != m_storeChanges[1];
     m_imagesWent = false;
     m_storesChanged = false;
-    if (!changed && !m_imagesPending) return false;
+    if (!changed && !m_imagesPending)
+        return false;
     m_storeChanges[0] = t.m_graphics[0].changes();
     m_storeChanges[1] = t.m_graphics[1].changes();
     m_storesChanged = changed;
@@ -1201,7 +1311,8 @@ bool StateWriter::prepareImages(std::string& out, const Terminal& t, bool first)
             ++it;
             continue;
         }
-        if (it->second.sent > 0) m_drops.push_back(it->second.id);
+        if (it->second.sent > 0)
+            m_drops.push_back(it->second.id);
         it = m_frames.erase(it);
     }
     // The frames that are new get an id.
@@ -1209,7 +1320,8 @@ bool StateWriter::prepareImages(std::string& out, const Terminal& t, bool first)
         for (const auto& [id, image] : store.images()) {
             for (const FramePtr& frame : image.frames) {
                 auto [it, added] = m_frames.try_emplace(frame.get());
-                if (added) it->second = SentFrame{frame, m_nextFrameId++, 0};
+                if (added)
+                    it->second = SentFrame{frame, m_nextFrameId++, 0};
             }
         }
     }
@@ -1227,7 +1339,8 @@ void StateWriter::releaseGoneImages(const Terminal& t)
         const auto it = images.find(v.image.id);
         return it == images.end() || it->second.order != v.image.order;
     };
-    if (m_transfer && gone(*m_transfer)) endTransfer();
+    if (m_transfer && gone(*m_transfer))
+        endTransfer();
     std::erase_if(m_done, gone);
 }
 
@@ -1239,7 +1352,8 @@ void StateWriter::endTransfer()
     // dropped it.
     for (const FramePtr& frame : m_transfer->image.frames) {
         const auto it = m_frames.find(frame.get());
-        if (it == m_frames.end() || it->second.sent == 0 || it->second.sent == pixelsOf(*frame).size()) continue;
+        if (it == m_frames.end() || it->second.sent == 0 || it->second.sent == pixelsOf(*frame).size())
+            continue;
         m_drops.insert(m_drops.begin(), it->second.id);
         m_dropsBuilding = true;
         m_frames.erase(it);
@@ -1249,11 +1363,13 @@ void StateWriter::endTransfer()
 
 void StateWriter::writeDrops(std::string& out, Budget& budget)
 {
-    if (m_drops.empty()) return;
+    if (m_drops.empty())
+        return;
     std::string ids;
     std::size_t count = 0;
     for (const std::uint64_t id : m_drops) {
-        if (!fits(out, budget, ids.size() + varintSize(id) + 10, count == 0)) break;
+        if (!fits(out, budget, ids.size() + varintSize(id) + 10, count == 0))
+            break;
         Out(ids).varint(id);
         ++count;
     }
@@ -1279,12 +1395,15 @@ void StateWriter::writePixels(std::string& out, const Terminal& t, Budget& budge
         return;
     }
     const int active = t.m_modes.altScreen ? 1 : 0;
-    const auto shows = [&](int which, std::uint32_t id) { return which == active && m_shown.contains(id); };
+    const auto shows = [&](int which, std::uint32_t id) {
+        return which == active && m_shown.contains(id);
+    };
     // The next part of @p f's pixels, if the budget leaves room for one.
     // True once all of them went.
     const auto sendPart = [&](SentFrame& f, const ImageFrame& frame) {
         const std::string_view pixels = pixelsOf(frame);
-        if (f.sent == pixels.size()) return true;
+        if (f.sent == pixels.size())
+            return true;
         std::string header;
         Out o(header);
         o.varint(f.id);
@@ -1300,7 +1419,8 @@ void StateWriter::writePixels(std::string& out, const Terminal& t, Budget& budge
         if (room < std::min(left, MinPixelPart)) {
             // A frame that has nothing else takes a part all the same, so
             // that the pixels move at any budget.
-            if (budget.anyRow || m_imagesWent) return false;
+            if (budget.anyRow || m_imagesWent)
+                return false;
             room = std::min(left, MinPixelPart);
         }
         const std::size_t part = std::min(room, left);
@@ -1311,7 +1431,8 @@ void StateWriter::writePixels(std::string& out, const Terminal& t, Budget& budge
         out.append(pixels.substr(f.sent, part));
         f.sent += part;
         m_imagesWent = true;
-        if (f.sent != pixels.size()) return false;
+        if (f.sent != pixels.size())
+            return false;
         // A frame that completes can complete an image other than the
         // transfer's: one of another id that holds the frame too, or the
         // store's own, while the version that goes keeps a frame that the
@@ -1330,18 +1451,22 @@ void StateWriter::writePixels(std::string& out, const Terminal& t, Budget& budge
                 listed = true;
                 for (const int which : {active, 1 - active}) {
                     for (const auto& [id, image] : t.m_graphics[which].images()) {
-                        if ((shown && !shows(which, id)) || !sendable(image) || complete(image)) continue;
+                        if ((shown && !shows(which, id)) || !sendable(image) || complete(image))
+                            continue;
                         next.emplace_back(which, &image);
                     }
                 }
             }
             // One that an image before it completed (a shared frame) is done.
-            while (at < next.size() && complete(*next[at].second)) ++at;
-            if (at == next.size()) return;
+            while (at < next.size() && complete(*next[at].second))
+                ++at;
+            if (at == next.size())
+                return;
             m_transfer = ImageVersion{next[at].first, *next[at].second};
             ++at;
         }
-        if (shown && !shows(m_transfer->which, m_transfer->image.id)) return;
+        if (shown && !shows(m_transfer->which, m_transfer->image.id))
+            return;
         // The store's own image of the id, when it is another version of
         // the same image (the program deleted a frame of it): the frames
         // that the replica lacks of it. Once they went, with this version's,
@@ -1374,7 +1499,8 @@ void StateWriter::writePixels(std::string& out, const Terminal& t, Budget& budge
         }
         for (const FramePtr& frame : m_transfer->image.frames) {
             SentFrame& f = m_frames[frame.get()];
-            if (f.id == 0) f = SentFrame{frame, m_nextFrameId++, 0};
+            if (f.id == 0)
+                f = SentFrame{frame, m_nextFrameId++, 0};
             if (!sendPart(f, *frame)) {
                 m_imagesPending = true;
                 return;
@@ -1394,7 +1520,8 @@ void StateWriter::writeRecords(std::string& out, const Terminal& t, Budget& budg
 {
     // Nothing for a record to say while only pixels go: the stores did not
     // change, nothing waits, and no frame's pixels completed.
-    if (!m_storesChanged && !m_recordsWaiting && m_done.empty()) return;
+    if (!m_storesChanged && !m_recordsWaiting && m_done.empty())
+        return;
     m_recordsWaiting = false;
     for (int which = 0; which < 2; ++which) {
         const GraphicsStore& store = t.m_graphics[which];
@@ -1403,22 +1530,27 @@ void StateWriter::writeRecords(std::string& out, const Terminal& t, Budget& budg
         // store, else the newest one whose pixels went. One that the replica
         // has keeps its record until then.
         const auto version = [&](std::uint32_t id, const Image& image) -> std::pair<const Image*, ImageVersion*> {
-            if (complete(image)) return {&image, nullptr};
+            if (complete(image))
+                return {&image, nullptr};
             for (auto it = m_done.rbegin(); it != m_done.rend(); ++it) {
-                if (it->which == which && it->image.id == id) return {&it->image, &*it};
+                if (it->which == which && it->image.id == id)
+                    return {&it->image, &*it};
             }
             return {nullptr, nullptr};
         };
         std::vector<std::uint32_t> removed;
         for (const auto& [id, record] : sent) {
-            if (!store.images().contains(id)) removed.push_back(id);
+            if (!store.images().contains(id))
+                removed.push_back(id);
         }
-        for (const std::uint32_t id : removed) sent.erase(id);
+        for (const std::uint32_t id : removed)
+            sent.erase(id);
         std::string records;
         std::size_t recordCount = 0;
         for (const auto& [id, live] : store.images()) {
             const auto [image, done] = version(id, live);
-            if (!image) continue;
+            if (!image)
+                continue;
             std::string record;
             Out o(record);
             o.varint(image->id);
@@ -1428,9 +1560,11 @@ void StateWriter::writeRecords(std::string& out, const Terminal& t, Budget& budg
             o.varint(image->width);
             o.varint(image->height);
             o.varint(image->frames.size());
-            for (const FramePtr& frame : image->frames) o.varint(m_frames[frame.get()].id);
+            for (const FramePtr& frame : image->frames)
+                o.varint(m_frames[frame.get()].id);
             o.varint(image->gaps.size());
-            for (const std::uint32_t gap : image->gaps) o.varint(gap);
+            for (const std::uint32_t gap : image->gaps)
+                o.varint(gap);
             o.byte(std::uint8_t(image->animation));
             o.varint(image->maxLoops);
             o.varint(image->loopsDone);
@@ -1441,7 +1575,8 @@ void StateWriter::writeRecords(std::string& out, const Terminal& t, Budget& budg
             o.varint(image->order);
             const auto it = sent.find(id);
             if (it != sent.end() && it->second == record) {
-                if (done) done->recorded = true;
+                if (done)
+                    done->recorded = true;
                 continue;
             }
             if (!fits(out, budget, records.size() + record.size() + 16, recordCount == 0)) {
@@ -1452,13 +1587,15 @@ void StateWriter::writeRecords(std::string& out, const Terminal& t, Budget& budg
             records += record;
             ++recordCount;
             sent[id] = std::move(record);
-            if (done) done->recorded = true;
+            if (done)
+                done->recorded = true;
         }
         if (recordCount || !removed.empty()) {
             std::string payload(1, char(which));
             Out o(payload);
             o.varint(removed.size());
-            for (const std::uint32_t id : removed) o.varint(id);
+            for (const std::uint32_t id : removed)
+                o.varint(id);
             o.varint(recordCount);
             payload += records;
             section(out, ImagesTag, payload);
@@ -1468,7 +1605,8 @@ void StateWriter::writeRecords(std::string& out, const Terminal& t, Budget& budg
         std::string placements;
         std::size_t count = 0;
         for (const Placement& p : store.placements()) {
-            if (!sent.contains(p.imageId) || (p.parentImage && !sent.contains(p.parentImage))) continue;
+            if (!sent.contains(p.imageId) || (p.parentImage && !sent.contains(p.parentImage)))
+                continue;
             Out o(placements);
             encodePlacement(o, p);
             ++count;
@@ -1476,7 +1614,8 @@ void StateWriter::writeRecords(std::string& out, const Terminal& t, Budget& budg
         std::string payload(1, char(which));
         Out(payload).varint(count);
         payload += placements;
-        if (payload == m_placements[which]) continue;
+        if (payload == m_placements[which])
+            continue;
         if (!fits(out, budget, payload.size(), true)) {
             m_imagesPending = true;
             m_recordsWaiting = true;
@@ -1489,14 +1628,16 @@ void StateWriter::writeRecords(std::string& out, const Terminal& t, Budget& budg
     // A version is done once the replica has its record, once the store's
     // own went whole, and once a newer version of its image replaced it.
     std::unordered_map<std::uint64_t, std::size_t> newest;
-    for (std::size_t i = 0; i < m_done.size(); ++i) newest[(std::uint64_t(m_done[i].which) << 32) | m_done[i].image.id] = i;
+    for (std::size_t i = 0; i < m_done.size(); ++i)
+        newest[(std::uint64_t(m_done[i].which) << 32) | m_done[i].image.id] = i;
     std::vector<ImageVersion> keep;
     for (std::size_t i = 0; i < m_done.size(); ++i) {
         const ImageVersion& v = m_done[i];
         const bool newer = newest[(std::uint64_t(v.which) << 32) | v.image.id] != i;
         const auto& images = t.m_graphics[v.which].images();
         const auto live = images.find(v.image.id);
-        if (v.recorded || newer || live == images.end() || complete(live->second)) continue;
+        if (v.recorded || newer || live == images.end() || complete(live->second))
+            continue;
         keep.push_back(std::move(m_done[i]));
     }
     const bool released = keep.size() < m_done.size();
@@ -1517,7 +1658,8 @@ void StateWriter::writeRecords(std::string& out, const Terminal& t, Budget& budg
 
 void StateReader::keepView(Screen& s, ScreenState& st)
 {
-    if (!st.keepView) return;
+    if (!st.keepView)
+        return;
     const std::uint64_t bottom = s.m_rowsDropped + s.historySize();
     if (st.viewTop >= bottom) {
         // The top row is on the screen now: the view is at the bottom.
@@ -1527,16 +1669,19 @@ void StateReader::keepView(Screen& s, ScreenState& st)
     const bool held = st.viewTop >= s.m_rowsDropped;
     s.m_viewportOffset = held ? std::size_t(bottom - st.viewTop) : s.historySize();
     st.viewOffset = s.m_viewportOffset;
-    if (held) st.keepView = false;
+    if (held)
+        st.keepView = false;
 }
 
 bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
 {
     const auto fail = [error](std::string text) {
-        if (error) *error = std::move(text);
+        if (error)
+            *error = std::move(text);
         return false;
     };
-    if (frame.empty()) return true;
+    if (frame.empty())
+        return true;
     if (std::uint8_t(frame[0]) != Version) {
         return fail("the state frame has version " + std::to_string(std::uint8_t(frame[0])) + ", and this end reads "
                     + std::to_string(Version));
@@ -1549,48 +1694,56 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
     // A row from the frame, its styles taken in the replica's table.
     const auto decodeRow = [&](In& r, Screen& s, ScreenState& st, Row& row, bool history) {
         const std::uint8_t flags = r.byte();
-        if (flags >> 4) return r.fail();
+        if (flags >> 4)
+            return r.fail();
         row.wrapped = flags & RowWrapped;
         row.promptStart = flags & RowPromptStart;
         row.lineSize = LineSize((flags >> RowLineSizeShift) & 3);
         // A history row can be shorter: it drops its trailing blank cells.
         const std::uint64_t count = r.bounded(std::uint64_t(s.cols()));
-        if (!r.ok() || (!history && count != std::uint64_t(s.cols()))) return r.fail();
+        if (!r.ok() || (!history && count != std::uint64_t(s.cols())))
+            return r.fail();
         row.cells.resize(std::size_t(count));
         bool plain = true;
         for (Cell& c : row.cells) {
             const std::uint32_t cp = std::uint32_t(r.bounded(0xffffffffu));
             const std::uint32_t packed = std::uint32_t(r.bounded(0xffffffffu));
-            if (!r.ok()) return false;
+            if (!r.ok())
+                return false;
             c = Cell::fromRaw(cp, packed);
             const std::uint32_t theirs = c.styleId();
             // The writer's id is no reference in the replica's table: the
             // cell holds none until it takes its own below, so a row that
             // fails half way releases only what it took.
             c.setStyleId(StyleTable::DefaultId);
-            if (c.codepoint() > 0x10FFFF || c.width() > 2 || (packed >> 28) != 0) return r.fail();
+            if (c.codepoint() > 0x10FFFF || c.width() > 2 || (packed >> 28) != 0)
+                return r.fail();
             std::uint32_t ours = StyleTable::DefaultId;
             if (theirs != StyleTable::DefaultId) {
                 const auto def = st.styles.find(theirs);
-                if (def == st.styles.end()) return r.fail();
+                if (def == st.styles.end())
+                    return r.fail();
                 Style style = def->second;
                 if (style.link) {
                     const auto link = st.links.find(style.link);
-                    if (link == st.links.end()) return r.fail();
+                    if (link == st.links.end())
+                        return r.fail();
                     // A cached link of the replica holds only while it still
                     // is this link's: a freed index can be taken again, also by
                     // another link of the same text, which must stay another.
                     std::uint32_t& cached = st.linkCache[style.link];
                     const auto owner = cached ? st.linkOwner.find(cached) : st.linkOwner.end();
                     if (!cached || owner == st.linkOwner.end() || owner->second != style.link
-                        || s.m_styles.linkUri(cached) != link->second.first || s.m_styles.linkId(cached) != link->second.second) {
+                        || s.m_styles.linkUri(cached) != link->second.first
+                        || s.m_styles.linkId(cached) != link->second.second) {
                         cached = s.m_styles.internLink(link->second.first, link->second.second);
                         const auto [previous, added] = st.linkOwner.try_emplace(cached, style.link);
                         if (!added && previous->second != style.link) {
                             // The link that held this place last loses it,
                             // unless it took another since.
                             const auto stale = st.linkCache.find(previous->second);
-                            if (stale != st.linkCache.end() && stale->second == cached) st.linkCache.erase(stale);
+                            if (stale != st.linkCache.end() && stale->second == cached)
+                                st.linkCache.erase(stale);
                             previous->second = style.link;
                         }
                     }
@@ -1609,13 +1762,15 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
         for (std::uint64_t i = 0; i < graphemes && r.ok(); ++i) {
             const std::uint64_t x = r.bounded(count ? count - 1 : 0);
             const std::uint64_t n = r.bounded(MaxExtra);
-            if (!r.ok() || count == 0) return r.fail();
+            if (!r.ok() || count == 0)
+                return r.fail();
             std::u32string extra;
             for (std::uint64_t k = 0; k < n && r.ok(); ++k) {
                 const std::uint64_t cp = r.bounded(0x10FFFF);
                 extra.push_back(char32_t(cp));
             }
-            if (!row.graphemes) row.graphemes = std::make_unique<GraphemeMap>();
+            if (!row.graphemes)
+                row.graphemes = std::make_unique<GraphemeMap>();
             (*row.graphemes)[std::uint16_t(x)] = std::move(extra);
         }
         const std::uint64_t multicells = r.bounded(count);
@@ -1632,7 +1787,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 || p.den > 15 || p.valign > 2 || p.halign > 2) {
                 return r.fail();
             }
-            if (!row.multicell) row.multicell = std::make_unique<MulticellMap>();
+            if (!row.multicell)
+                row.multicell = std::make_unique<MulticellMap>();
             (*row.multicell)[std::uint16_t(x)] = p;
         }
         // Only history rows keep the plain mark (Row::plain).
@@ -1649,7 +1805,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
     // window put it.
     for (int which = 0; which < 2; ++which) {
         ScreenState& st = m_screens[which];
-        if (st.keepView && screenOf(std::uint8_t(which))->m_viewportOffset != st.viewOffset) st.keepView = false;
+        if (st.keepView && screenOf(std::uint8_t(which))->m_viewportOffset != st.viewOffset)
+            st.keepView = false;
     }
 
     bool cursorsSeen = false;
@@ -1664,7 +1821,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
     while (!in.done()) {
         const std::uint8_t tag = in.byte();
         const std::string_view payload = in.bytes(std::size_t(in.bounded(frame.size())));
-        if (!in.ok()) return fail("the state frame is cut short");
+        if (!in.ok())
+            return fail("the state frame is cut short");
         In p(payload);
         // Pixels that come for an image that does not show yet change
         // nothing that the replica shows, and the images change no text.
@@ -1676,9 +1834,11 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
         switch (tag) {
         case ModesTag: {
             Modes modes = t.m_modes;
-            if (!decodeModes(p, modes)) return fail("the state frame has bad modes");
+            if (!decodeModes(p, modes))
+                return fail("the state frame has bad modes");
             const std::uint64_t serial = p.varint();
-            if (!p.ok() || !p.done()) return fail("the state frame has bad modes");
+            if (!p.ok() || !p.done())
+                return fail("the state frame has bad modes");
             // The modes and the active screen change together.
             t.m_modes = modes;
             t.m_synchronizedOutputSerial = serial;
@@ -1687,7 +1847,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
         }
         case ColorsTag: {
             std::array<Rgb, 256> palette;
-            for (Rgb& c : palette) c = p.rgb();
+            for (Rgb& c : palette)
+                c = p.rgb();
             const Rgb fg = p.rgb();
             const Rgb bg = p.rgb();
             const auto cursor = p.optionalRgb();
@@ -1698,14 +1859,17 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             std::array<std::optional<Terminal::TransparentColor>, 8> transparent;
             for (auto& entry : transparent) {
                 const std::uint8_t has = p.byte();
-                if (has > 2) return fail("the state frame has bad colors");
-                if (!has) continue;
+                if (has > 2)
+                    return fail("the state frame has bad colors");
+                if (!has)
+                    continue;
                 const Rgb c = p.rgb();
                 const double opacity = has == 2 ? -1.0 : double(p.bounded(65535)) / 65535.0;
                 entry = Terminal::TransparentColor{c, opacity};
             }
             const std::uint8_t shape = p.byte();
-            if (!p.ok() || !p.done() || shape > std::uint8_t(CursorShape::Bar)) return fail("the state frame has bad colors");
+            if (!p.ok() || !p.done() || shape > std::uint8_t(CursorShape::Bar))
+                return fail("the state frame has bad colors");
             t.m_palette = palette;
             t.m_defaultFg = fg;
             t.m_defaultBg = bg;
@@ -1713,15 +1877,18 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             // a dynamic flag stands for "none", whatever the options say.
             t.m_protocolColors.cursorDynamic = !cursor;
             t.m_hasCursorColor = cursor.has_value();
-            if (cursor) t.m_cursorColor = *cursor;
+            if (cursor)
+                t.m_cursorColor = *cursor;
             t.m_protocolColors.cursorTextSet = true;
             t.m_protocolColors.cursorText = cursorText;
             t.m_protocolColors.selectionFgDynamic = !selectionFg;
             t.m_hasSelectionFg = selectionFg.has_value();
-            if (selectionFg) t.m_selectionFg = *selectionFg;
+            if (selectionFg)
+                t.m_selectionFg = *selectionFg;
             t.m_protocolColors.selectionBgDynamic = !selectionBg;
             t.m_hasSelectionBg = selectionBg.has_value();
-            if (selectionBg) t.m_selectionBg = *selectionBg;
+            if (selectionBg)
+                t.m_selectionBg = *selectionBg;
             t.m_protocolColors.bell = bell;
             t.m_protocolColors.transparent = transparent;
             t.m_cursorShape = CursorShape(shape);
@@ -1731,7 +1898,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             const std::string_view title = p.string(MaxText);
             const std::string_view cwd = p.string(MaxText);
             // What the window shows of them, as the parser would have taken them.
-            if (!p.ok() || !p.done() || !isCleanTitle(title) || !isCleanDirectory(cwd)) return fail("the state frame has bad text");
+            if (!p.ok() || !p.done() || !isCleanTitle(title) || !isCleanDirectory(cwd))
+                return fail("the state frame has bad text");
             t.m_title = title;
             t.m_cwd = cwd;
             break;
@@ -1753,8 +1921,7 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             // waits for it: where it shows now is only as far as the history
             // came, or the bottom when none came yet.
             const bool waiting = st.keepView;
-            const std::uint64_t viewTop =
-                waiting ? st.viewTop : s->m_rowsDropped + s->historySize() - viewOffset;
+            const std::uint64_t viewTop = waiting ? st.viewTop : s->m_rowsDropped + s->historySize() - viewOffset;
             s->clearHistory();
             for (int y = 0; y < s->rows(); ++y) {
                 discard(*s, s->row(y));
@@ -1774,7 +1941,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             // region scroll, which the host heard of.
             Epoch& known = m_epochs[which];
             const bool sameLayout = known.known && known.epoch == epoch;
-            if (!sameLayout && s->m_layoutEpoch == layout) ++s->m_layoutEpoch;
+            if (!sameLayout && s->m_layoutEpoch == layout)
+                ++s->m_layoutEpoch;
             known = Epoch{true, epoch};
             st = ScreenState();
             st.next = st.hole = st.from = next;
@@ -1795,33 +1963,38 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
         case StylesTag:
         case LinksTag: {
             const std::uint8_t which = p.byte();
-            if (which > 1) return fail("the state frame names no screen");
+            if (which > 1)
+                return fail("the state frame names no screen");
             ScreenState& st = m_screens[which];
             const std::uint64_t count = p.bounded(payload.size());
             for (std::uint64_t i = 0; i < count && p.ok(); ++i) {
                 const std::uint32_t id = std::uint32_t(p.bounded(tag == StylesTag ? StyleTable::MaxId : 0xffffffffu));
                 if (tag == StylesTag) {
                     const auto style = decodeStyle(p);
-                    if (!style || id == StyleTable::DefaultId) return fail("the state frame has a bad style");
+                    if (!style || id == StyleTable::DefaultId)
+                        return fail("the state frame has a bad style");
                     st.styles[id] = *style;
                 } else {
                     const std::string_view uri = p.string(MaxLinkText);
                     const std::string_view linkId = p.string(MaxLinkText);
                     // An OSC 8 link always has a URI. The link cache also
                     // needs one: a freed link of the replica has an empty URI.
-                    if (!p.ok() || id == 0 || uri.empty()) return fail("the state frame has a bad link");
+                    if (!p.ok() || id == 0 || uri.empty())
+                        return fail("the state frame has a bad link");
                     st.links[id] = {std::string(uri), std::string(linkId)};
                     // A new meaning of the writer's id is another link.
                     st.linkCache.erase(id);
                 }
             }
-            if (!p.ok() || !p.done()) return fail("the state frame has bad definitions");
+            if (!p.ok() || !p.done())
+                return fail("the state frame has bad definitions");
             break;
         }
         case RowsTag: {
             const std::uint8_t which = p.byte();
             Screen* s = screenOf(which);
-            if (!s) return fail("the state frame names no screen");
+            if (!s)
+                return fail("the state frame names no screen");
             ScreenState& st = m_screens[which];
             const std::uint64_t count = p.bounded(std::uint64_t(s->rows()));
             for (std::uint64_t i = 0; i < count && p.ok(); ++i) {
@@ -1835,19 +2008,22 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 discard(*s, target);
                 target = std::move(row);
             }
-            if (!p.ok() || !p.done()) return fail("the state frame has bad rows");
+            if (!p.ok() || !p.done())
+                return fail("the state frame has bad rows");
             m_screenChanged = m_screenChanged || count > 0;
             break;
         }
         case AppendTag: {
             const std::uint8_t which = p.byte();
             Screen* s = screenOf(which);
-            if (!s) return fail("the state frame names no screen");
+            if (!s)
+                return fail("the state frame names no screen");
             ScreenState& st = m_screens[which];
             const std::uint64_t oldest = p.bounded(MaxRowId);
             const std::uint64_t total = p.bounded(MaxRowId);
             const std::uint64_t count = p.bounded(payload.size());
-            if (!p.ok() || total < st.next || oldest > total) return fail("the state frame has bad history");
+            if (!p.ok() || total < st.next || oldest > total)
+                return fail("the state frame has bad history");
             // A view scrolled back into the history stays on its rows, as it
             // does when a terminal scrolls rows into its own history.
             const std::size_t viewport = s->m_viewportOffset;
@@ -1859,7 +2035,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 const std::uint64_t blanks = std::min<std::uint64_t>(total - st.next, s->m_maxScrollback);
                 // Past the replica's own limit, a view scrolled back ends on
                 // the oldest row, as in the terminal that parsed the output.
-                if (blanks < total - st.next) s->clearHistory();
+                if (blanks < total - st.next)
+                    s->clearHistory();
                 for (std::uint64_t i = 0; i < blanks; ++i) {
                     Row blank;
                     blank.plain = true;
@@ -1893,7 +2070,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 discard(*s, place);
                 place = std::move(row);
             }
-            if (!p.ok() || !p.done()) return fail("the state frame has bad history");
+            if (!p.ok() || !p.done())
+                return fail("the state frame has bad history");
             // The writer sends no row older than the oldest that exists.
             st.hole = std::max(st.hole, oldest);
             st.from = std::max(st.from, oldest);
@@ -1912,7 +2090,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
         case PrependTag: {
             const std::uint8_t which = p.byte();
             Screen* s = screenOf(which);
-            if (!s) return fail("the state frame names no screen");
+            if (!s)
+                return fail("the state frame names no screen");
             ScreenState& st = m_screens[which];
             const std::uint64_t count = p.bounded(payload.size());
             // Each row is one older than the oldest that the writer sent
@@ -1937,7 +2116,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 s->m_rows.push_front(std::move(row));
                 s->m_rowsDropped = id;
             }
-            if (!p.ok() || !p.done()) return fail("the state frame has bad older history");
+            if (!p.ok() || !p.done())
+                return fail("the state frame has bad older history");
             keepView(*s, st);
             break;
         }
@@ -1957,21 +2137,25 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 scroll.right = int(p.bounded(std::uint64_t(Screen::MaxColumns - 1)));
                 const std::uint8_t full = p.byte();
                 scroll.delta = int(p.signedBounded(INT_MIN, INT_MAX));
-                if (!p.ok() || alt > 1 || full > 1 || scroll.top > scroll.bottom || scroll.left > scroll.right || scroll.delta == 0) {
+                if (!p.ok() || alt > 1 || full > 1 || scroll.top > scroll.bottom || scroll.left > scroll.right
+                    || scroll.delta == 0) {
                     return fail("the state frame has a bad region scroll");
                 }
                 scroll.fullWidth = full;
                 scrolled.emplace_back(alt == 1, scroll);
             }
-            if (!p.ok() || lost > 1) return fail("the state frame has bad region scrolls");
+            if (!p.ok() || lost > 1)
+                return fail("the state frame has bad region scrolls");
             if (lost) {
                 // Too many to carry: every row between the top of the highest
                 // region that scrolled and the bottom of the lowest, on each
                 // screen, left its region. History rows never move.
                 for (const bool alt : {false, true}) {
                     const std::uint8_t any = p.byte();
-                    if (any > 1) return fail("the state frame has bad region scrolls");
-                    if (!any) continue;
+                    if (any > 1)
+                        return fail("the state frame has bad region scrolls");
+                    if (!any)
+                        continue;
                     RegionScroll all;
                     all.top = p.bounded(MaxRowId);
                     all.bottom = p.bounded(MaxRowId);
@@ -1983,7 +2167,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                     scrolled.emplace_back(alt, all);
                 }
             }
-            if (!p.ok() || !p.done()) return fail("the state frame has bad region scrolls");
+            if (!p.ok() || !p.done())
+                return fail("the state frame has bad region scrolls");
             break;
         }
         case ShellTag: {
@@ -1994,8 +2179,10 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             Terminal::Mark marks[std::tuple_size_v<decltype(t.marks())>];
             for (Terminal::Mark& m : marks) {
                 const std::uint8_t valid = p.byte();
-                if (valid > 1) return fail("the state frame has a bad shell mark");
-                if (!valid) continue;
+                if (valid > 1)
+                    return fail("the state frame has a bad shell mark");
+                if (!valid)
+                    continue;
                 m.row = p.bounded(MaxRowId);
                 // A mark after a pending wrap is one past the last column.
                 m.col = int(p.bounded(std::uint64_t(Screen::MaxColumns)));
@@ -2014,19 +2201,21 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 r.end.row = p.bounded(MaxRowId);
                 r.end.col = int(p.bounded(std::uint64_t(Screen::MaxColumns)));
                 const std::uint8_t kind = flags & 3;
-                if (!p.ok() || kind > std::uint8_t(SemanticZoneKind::Output) || (flags & ~(3 | RegionOpen | RegionExitCode))
-                    || r.id >= nextId) {
+                if (!p.ok() || kind > std::uint8_t(SemanticZoneKind::Output)
+                    || (flags & ~(3 | RegionOpen | RegionExitCode)) || r.id >= nextId) {
                     return fail("the state frame has a bad semantic region");
                 }
                 r.kind = SemanticZoneKind(kind);
                 r.open = flags & RegionOpen;
-                if (flags & RegionExitCode) r.exitCode = int(p.signedBounded(INT_MIN, INT_MAX));
+                if (flags & RegionExitCode)
+                    r.exitCode = int(p.signedBounded(INT_MIN, INT_MAX));
                 lastRow = std::max({lastRow, r.start.row, r.end.row});
                 regions.push_back(r);
             }
             if (!p.ok() || !p.done() || zone > std::uint8_t(Terminal::SemanticZone::Input)
                 || (clicks & ~(ClickModeMask | ClickSpecialKey))
-                || (clicks & ClickModeMask) > std::uint8_t(Terminal::PromptClicks::Relative) || running > 1 || redraw > 1) {
+                || (clicks & ClickModeMask) > std::uint8_t(Terminal::PromptClicks::Relative) || running > 1
+                || redraw > 1) {
                 return fail("the state frame has bad shell marks");
             }
             t.m_semanticZone = Terminal::SemanticZone(zone);
@@ -2037,7 +2226,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             // after a resize, as for a program of its own.
             t.m_promptRedrawPending = redraw;
             const auto targets = t.marks();
-            for (std::size_t i = 0; i < targets.size(); ++i) *targets[i] = marks[i];
+            for (std::size_t i = 0; i < targets.size(); ++i)
+                *targets[i] = marks[i];
             t.m_nextSemanticId = nextId;
             t.m_semanticRegions = std::move(regions);
             t.m_semanticRegionsLastRow = lastRow;
@@ -2052,7 +2242,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             // ProgramStatus keeps them for its lookups.
             const auto field = [&p](std::size_t max) {
                 const std::string_view v = p.string(max);
-                if (!detail::isCleanText(v)) p.fail();
+                if (!detail::isCleanText(v))
+                    p.fail();
                 return std::string(v);
             };
             for (std::uint64_t i = 0; i < count && p.ok(); ++i) {
@@ -2074,14 +2265,17 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 serial = std::max(serial, r.serial);
                 records.push_back(std::move(r));
             }
-            if (!p.ok() || !p.done()) return fail("the state frame has bad status records");
+            if (!p.ok() || !p.done())
+                return fail("the state frame has bad status records");
             ProgramStatus& status = t.m_programStatus;
             // Every change of a record gives it a new serial, terminal-wide
             // (ProgramStatus::serial): a record with its old serial is the
             // same record, and one that went shows in the count.
             statusChanged = statusChanged
                 || !std::equal(records.begin(), records.end(), status.m_records.begin(), status.m_records.end(),
-                               [](const StatusRecord& a, const StatusRecord& b) { return a.serial == b.serial && a.id == b.id; });
+                               [](const StatusRecord& a, const StatusRecord& b) {
+                                   return a.serial == b.serial && a.id == b.id;
+                               });
             status.m_records = std::move(records);
             status.m_serial = std::max(status.m_serial, serial);
             break;
@@ -2094,12 +2288,15 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 ShellContext c;
                 const auto field = [&p](std::string& to) {
                     const std::string_view v = p.string(ShellContexts::MaxField);
-                    if (!detail::isCleanText(v)) p.fail();
+                    if (!detail::isCleanText(v))
+                        p.fail();
                     to = v;
                 };
                 field(c.id);
                 const std::uint8_t remote = p.byte();
-                for (std::string* f : {&c.type, &c.user, &c.hostname, &c.targetUser, &c.targetHost, &c.container, &c.vm}) field(*f);
+                for (std::string* f :
+                     {&c.type, &c.user, &c.hostname, &c.targetUser, &c.targetHost, &c.container, &c.vm})
+                    field(*f);
                 // One iTerm2 entry at most, without an id; every other one has
                 // an id (ShellContexts).
                 if (!p.ok() || remote > 1 || (remote && remoteHost) || (!remote && c.id.empty())) {
@@ -2109,7 +2306,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 c.iterm2RemoteHost = remote;
                 stack.push_back(std::move(c));
             }
-            if (!p.ok() || !p.done()) return fail("the state frame has bad shell contexts");
+            if (!p.ok() || !p.done())
+                return fail("the state frame has bad shell contexts");
             if (stack != t.m_contexts.m_stack) {
                 t.m_contexts.m_stack = std::move(stack);
                 contextsChanged = true;
@@ -2122,8 +2320,10 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 const std::uint8_t mode = p.byte();
                 const auto color = colorOf(p.u32());
                 if (!p.ok() || !color
-                    || (mode != std::uint8_t(ExtraCursorColor::Mode::Main) && mode != std::uint8_t(ExtraCursorColor::Mode::Reverse)
-                        && mode != std::uint8_t(ExtraCursorColor::Mode::Rgb) && mode != std::uint8_t(ExtraCursorColor::Mode::Palette))) {
+                    || (mode != std::uint8_t(ExtraCursorColor::Mode::Main)
+                        && mode != std::uint8_t(ExtraCursorColor::Mode::Reverse)
+                        && mode != std::uint8_t(ExtraCursorColor::Mode::Rgb)
+                        && mode != std::uint8_t(ExtraCursorColor::Mode::Palette))) {
                     return fail("the state frame has a bad extra cursor color");
                 }
                 c.mode = ExtraCursorColor::Mode(mode);
@@ -2142,7 +2342,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 }
                 cursors[{y, x}] = shape;
             }
-            if (!p.ok() || !p.done()) return fail("the state frame has bad extra cursors");
+            if (!p.ok() || !p.done())
+                return fail("the state frame has bad extra cursors");
             t.m_extraCursorColor = colors[0];
             t.m_extraCursorTextColor = colors[1];
             t.m_extraCursors = std::move(cursors);
@@ -2150,7 +2351,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
         }
         case ImagesResetTag: {
             // A writer that starts over: nothing that it named before stays.
-            if (!p.done()) return fail("the state frame has a bad images reset");
+            if (!p.done())
+                return fail("the state frame has a bad images reset");
             m_frames.clear();
             m_frameBytes = 0;
             m_building = 0;
@@ -2163,7 +2365,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
         case FrameTag: {
             const std::uint64_t id = p.varint();
             const std::uint64_t offset = p.varint();
-            if (!p.ok() || id == 0) return fail("the state frame has a bad image frame");
+            if (!p.ok() || id == 0)
+                return fail("the state frame has a bad image frame");
             if (offset == 0) {
                 const std::uint64_t width = p.bounded(AfterglowProto::GraphicsMaxSide);
                 const std::uint64_t height = p.bounded(AfterglowProto::GraphicsMaxSide);
@@ -2181,7 +2384,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 const std::size_t size = std::size_t(width) * std::size_t(height) * bytesPerPixel(frame->format);
                 // What both screens show and what comes for them: a writer
                 // keeps no more.
-                if (m_frames.size() >= 4 * GraphicsStore::MaxStoreFrames || m_frameBytes + size > 4 * GraphicsStore::MaxQuota) {
+                if (m_frames.size() >= 4 * GraphicsStore::MaxStoreFrames
+                    || m_frameBytes + size > 4 * GraphicsStore::MaxQuota) {
                     return fail("the state frame has more image frames than the quota takes");
                 }
                 frame->pixels().reserve(size);
@@ -2199,12 +2403,14 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             std::vector<std::uint8_t>& bytes = f.frame->pixels();
             bytes.insert(bytes.end(), part.begin(), part.end());
             f.received += part.size();
-            if (f.complete()) m_building = 0;
+            if (f.complete())
+                m_building = 0;
             break;
         }
         case ImagesTag: {
             const std::uint8_t which = p.byte();
-            if (which > 1) return fail("the state frame names no screen");
+            if (which > 1)
+                return fail("the state frame names no screen");
             GraphicsStore& store = t.m_graphics[which];
             std::unordered_map<std::uint32_t, Animation>& animations = m_animations[which];
             const std::uint64_t removed = p.bounded(GraphicsStore::MaxImages);
@@ -2230,8 +2436,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 for (std::uint64_t k = 0; k < frames && p.ok(); ++k) {
                     const auto it = m_frames.find(p.varint());
                     // A writer keeps each frame of an image at its size.
-                    if (!p.ok() || it == m_frames.end() || !it->second.complete() || it->second.frame->width != image.width
-                        || it->second.frame->height != image.height) {
+                    if (!p.ok() || it == m_frames.end() || !it->second.complete()
+                        || it->second.frame->width != image.width || it->second.frame->height != image.height) {
                         return fail("the state frame has an image with a frame that did not come");
                     }
                     image.frames.push_back(it->second.frame);
@@ -2239,15 +2445,18 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 // One gap for each frame, of what a command can give (z=, an
                 // int): the replica's animation reads the gap of each frame.
                 const std::uint64_t gaps = p.bounded(GraphicsStore::MaxFrames);
-                for (std::uint64_t k = 0; k < gaps && p.ok(); ++k) image.gaps.push_back(std::uint32_t(p.bounded(INT_MAX)));
+                for (std::uint64_t k = 0; k < gaps && p.ok(); ++k)
+                    image.gaps.push_back(std::uint32_t(p.bounded(INT_MAX)));
                 const std::uint8_t state = p.byte();
                 image.maxLoops = std::uint32_t(p.bounded(0xffffffffu));
                 const std::uint32_t loopsDone = std::uint32_t(p.bounded(0xffffffffu));
                 const std::size_t currentFrame = std::size_t(p.bounded(frames ? frames - 1 : 0));
-                const Animation sent{std::uint32_t(p.bounded(0xffffffffu)), std::uint32_t(p.bounded(0xffffffffu)), p.varint()};
+                const Animation sent{std::uint32_t(p.bounded(0xffffffffu)), std::uint32_t(p.bounded(0xffffffffu)),
+                                     p.varint()};
                 image.sequence = sent.sequence;
                 image.order = p.varint();
-                if (!p.ok() || frames == 0 || gaps != frames || (flags & ~(ImageSixel | ImageAnonymous | ImageTransient))
+                if (!p.ok() || frames == 0 || gaps != frames
+                    || (flags & ~(ImageSixel | ImageAnonymous | ImageTransient))
                     || state > std::uint8_t(Image::Animation::Running)) {
                     return fail("the state frame has a bad image");
                 }
@@ -2261,7 +2470,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 // all of the writer's animation for an image sent again.
                 const auto old = store.m_images.find(image.id);
                 const auto last = animations.find(image.id);
-                const bool known = old != store.m_images.end() && last != animations.end() && last->second.sequence == sent.sequence;
+                const bool known =
+                    old != store.m_images.end() && last != animations.end() && last->second.sequence == sent.sequence;
                 if (!known) {
                     image.animation = Image::Animation(state);
                     image.loopsDone = loopsDone;
@@ -2293,7 +2503,9 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                         image.loopsDone = loopsDone;
                         // A running animation keeps its clock when only its
                         // mode changes.
-                        restart = restart || (before.animation == Image::Animation::Stopped && image.animation != Image::Animation::Stopped);
+                        restart = restart
+                            || (before.animation == Image::Animation::Stopped
+                                && image.animation != Image::Animation::Stopped);
                     } else {
                         image.animation = before.animation;
                         image.loopsDone = before.loopsDone;
@@ -2310,16 +2522,20 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             store.indexVirtual();
             // An image that a program sent, or changed, on the screen that
             // shows: output, as a local pane's scroll-on-output takes it.
-            if (which == (t.m_modes.altScreen ? 1 : 0) && (removed > 0 || count > 0)) m_screenChanged = true;
+            if (which == (t.m_modes.altScreen ? 1 : 0) && (removed > 0 || count > 0))
+                m_screenChanged = true;
             break;
         }
         case PlacementsTag: {
             const std::uint8_t which = p.byte();
-            if (which > 1) return fail("the state frame names no screen");
+            if (which > 1)
+                return fail("the state frame names no screen");
             GraphicsStore& store = t.m_graphics[which];
             const std::uint64_t count = p.bounded(GraphicsStore::MaxPlacements);
             std::vector<Placement> placements;
-            const auto value = [&p] { return int(p.signedBounded(INT_MIN, INT_MAX)); };
+            const auto value = [&p] {
+                return int(p.signedBounded(INT_MIN, INT_MAX));
+            };
             for (std::uint64_t i = 0; i < count && p.ok(); ++i) {
                 Placement pl;
                 pl.imageId = std::uint32_t(p.bounded(0xffffffffu));
@@ -2327,7 +2543,9 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 // A stable row id, which a placement multiplies by the cell
                 // height: past this, the arithmetic of a row overflows.
                 pl.row = p.bounded(MaxRowId);
-                for (int* v : {&pl.col, &pl.offsetX, &pl.offsetY, &pl.srcX, &pl.srcY, &pl.srcW, &pl.srcH, &pl.cols, &pl.rows}) *v = value();
+                for (int* v :
+                     {&pl.col, &pl.offsetX, &pl.offsetY, &pl.srcX, &pl.srcY, &pl.srcW, &pl.srcH, &pl.cols, &pl.rows})
+                    *v = value();
                 pl.z = std::int32_t(value());
                 pl.parentImage = std::uint32_t(p.bounded(0xffffffffu));
                 pl.parentPlacement = std::uint32_t(p.bounded(0xffffffffu));
@@ -2343,16 +2561,19 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 pl.isVirtual = isVirtual;
                 placements.push_back(pl);
             }
-            if (!p.ok() || !p.done()) return fail("the state frame has bad image placements");
+            if (!p.ok() || !p.done())
+                return fail("the state frame has bad image placements");
             store.m_placements = std::move(placements);
             store.indexVirtual();
-            if (which == (t.m_modes.altScreen ? 1 : 0)) m_screenChanged = true;
+            if (which == (t.m_modes.altScreen ? 1 : 0))
+                m_screenChanged = true;
             break;
         }
         case CellSizeTag: {
             const std::uint64_t width = p.bounded(0xffff);
             const std::uint64_t height = p.bounded(0xffff);
-            if (!p.ok() || !p.done()) return fail("the state frame has a bad cell size");
+            if (!p.ok() || !p.done())
+                return fail("the state frame has a bad cell size");
             t.m_cellWidth = int(width);
             t.m_cellHeight = int(height);
             break;
@@ -2361,13 +2582,15 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             const std::uint64_t count = p.bounded(m_frames.size());
             for (std::uint64_t i = 0; i < count && p.ok(); ++i) {
                 const std::uint64_t id = p.varint();
-                if (id == m_building) m_building = 0;
+                if (id == m_building)
+                    m_building = 0;
                 if (const auto it = m_frames.find(id); it != m_frames.end()) {
                     m_frameBytes -= it->second.size;
                     m_frames.erase(it);
                 }
             }
-            if (!p.ok() || !p.done()) return fail("the state frame drops bad image frames");
+            if (!p.ok() || !p.done())
+                return fail("the state frame drops bad image frames");
             break;
         }
         default:
@@ -2380,12 +2603,14 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             const std::uint64_t x = p.bounded(std::uint64_t(s->cols() - 1));
             const std::uint64_t y = p.bounded(std::uint64_t(s->rows() - 1));
             const std::uint8_t pendingWrap = p.byte();
-            if (!p.ok() || pendingWrap > 1) return fail("the state frame has a bad cursor");
+            if (!p.ok() || pendingWrap > 1)
+                return fail("the state frame has a bad cursor");
             s->cursor.x = int(x);
             s->cursor.y = int(y);
             s->cursor.pendingWrap = pendingWrap;
         }
-        if (!p.done()) return fail("the state frame has a bad cursor");
+        if (!p.done())
+            return fail("the state frame has a bad cursor");
     }
     // The host hears of the scrolls as the writer's did, with the screen
     // that scrolled active, and with the frame applied: the rows that they
@@ -2399,8 +2624,10 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
     }
     t.m_modes.altScreen = altScreen;
     t.m_active = active;
-    if (statusChanged) t.m_host.programStatusChanged();
-    if (contextsChanged) t.m_host.contextChanged();
+    if (statusChanged)
+        t.m_host.programStatusChanged();
+    if (contextsChanged)
+        t.m_host.contextChanged();
     if (touched) {
         t.touch();
     } else if (imagesTouched) {

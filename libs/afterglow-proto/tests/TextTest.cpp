@@ -82,15 +82,25 @@ TEST(Text, CleanTextRejectsControls)
     EXPECT_TRUE(isCleanText("plain text, caf\xc3\xa9"));
     EXPECT_FALSE(isCleanText("a\x1b[1mb"));
     EXPECT_FALSE(isCleanText("a\tb"));
-    EXPECT_FALSE(isCleanText("a\x7f" "b")); // DEL
-    EXPECT_FALSE(isCleanText("a\xc2\x85" "b")); // C1 NEL, encoded
-    EXPECT_FALSE(isCleanText("a\xc2\x9b" "1m")); // C1 CSI, encoded
+    EXPECT_FALSE(
+        isCleanText("a\x7f"
+                    "b")); // DEL
+    EXPECT_FALSE(
+        isCleanText("a\xc2\x85"
+                    "b")); // C1 NEL, encoded
+    EXPECT_FALSE(
+        isCleanText("a\xc2\x9b"
+                    "1m")); // C1 CSI, encoded
 }
 
 TEST(Text, CleanTextAllowsNewlinesAndLineSeparatorsOnRequest)
 {
-    const std::string_view lineSeparator = "a\xe2\x80\xa8" "b"; // U+2028
-    const std::string_view paragraphSeparator = "a\xe2\x80\xa9" "b"; // U+2029
+    const std::string_view lineSeparator =
+        "a\xe2\x80\xa8"
+        "b"; // U+2028
+    const std::string_view paragraphSeparator =
+        "a\xe2\x80\xa9"
+        "b"; // U+2029
     EXPECT_FALSE(isCleanText(lineSeparator));
     EXPECT_FALSE(isCleanText(paragraphSeparator));
     EXPECT_TRUE(isCleanText(lineSeparator, TextAllow::LineSeparators));
@@ -102,14 +112,20 @@ TEST(Text, CleanTextAllowsNewlinesAndLineSeparatorsOnRequest)
     EXPECT_FALSE(isCleanText("a\nb", TextAllow::LineSeparators));
     // Newline lets LF through, not CR or another control.
     EXPECT_FALSE(isCleanText("a\r\nb", TextAllow::Newline));
-    EXPECT_TRUE(isCleanText("a\n\xe2\x80\xa8" "b", TextAllow::Newline | TextAllow::LineSeparators));
+    EXPECT_TRUE(
+        isCleanText("a\n\xe2\x80\xa8"
+                    "b",
+                    TextAllow::Newline | TextAllow::LineSeparators));
 }
 
 TEST(Text, PrintableHidesControlsBidiControlsAndLineSeparators)
 {
     EXPECT_EQ(printable("plain text, caf\xc3\xa9 \xe4\xb8\x80"), "plain text, caf\xc3\xa9 \xe4\xb8\x80");
     EXPECT_EQ(printable("a\x1b[31mb\x07\tc\n"), "a?[31mb??c?");
-    EXPECT_EQ(printable("a\x7f" "b\xc2\x9b" "c"), "a?b?c"); // DEL and C1 CSI, encoded
+    EXPECT_EQ(printable("a\x7f"
+                        "b\xc2\x9b"
+                        "c"),
+              "a?b?c"); // DEL and C1 CSI, encoded
     // Each control of bidirectional text: ALM, LRM, RLM, LRE to RLO, LRI to PDI.
     for (const char32_t cp : {U'\u061c', U'\u200e', U'\u200f', U'\u202a', U'\u202b', U'\u202c', U'\u202d', U'\u202e',
                               U'\u2066', U'\u2067', U'\u2068', U'\u2069'}) {
@@ -119,10 +135,21 @@ TEST(Text, PrintableHidesControlsBidiControlsAndLineSeparators)
         EXPECT_EQ(printable(text), "a?b") << std::hex << std::uint32_t(cp);
     }
     // Their neighbours stay: ZWJ and the word joiner shape text, and move nothing.
-    EXPECT_EQ(printable("a\xe2\x80\x8d" "b\xe2\x81\xa0" "c"), "a\xe2\x80\x8d" "b\xe2\x81\xa0" "c");
-    EXPECT_EQ(printable("a\xe2\x80\xa8" "b\xe2\x80\xa9" "c"), "a?b?c"); // U+2028, U+2029
+    EXPECT_EQ(printable("a\xe2\x80\x8d"
+                        "b\xe2\x81\xa0"
+                        "c"),
+              "a\xe2\x80\x8d"
+              "b\xe2\x81\xa0"
+              "c");
+    EXPECT_EQ(printable("a\xe2\x80\xa8"
+                        "b\xe2\x80\xa9"
+                        "c"),
+              "a?b?c"); // U+2028, U+2029
     // One '?' for each byte that is not UTF-8, and the text after it stays.
-    EXPECT_EQ(printable("a\xff\xfe" "b\xf0\x9f" "c"), "a??b??c");
+    EXPECT_EQ(printable("a\xff\xfe"
+                        "b\xf0\x9f"
+                        "c"),
+              "a??b??c");
     EXPECT_EQ(printable(""), "");
 }
 

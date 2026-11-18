@@ -17,8 +17,11 @@ QJsonObject pane(QString id = QStringLiteral("shell"))
 }
 QJsonObject project(QJsonObject tree = pane())
 {
-    return {{"version", 1}, {"active_tab", "main"}, {"tabs", QJsonArray{QJsonObject{
-        {"id", "main"}, {"title", "Development"}, {"active_pane", "shell"}, {"tree", tree}}}}};
+    return {
+        {"version", 1},
+        {"active_tab", "main"},
+        {"tabs",
+         QJsonArray{QJsonObject{{"id", "main"}, {"title", "Development"}, {"active_pane", "shell"}, {"tree", tree}}}}};
 }
 }
 TEST(ProjectStore, RoundTripAndExplicitReplacement)
@@ -40,7 +43,8 @@ TEST(ProjectStore, RejectsUnsafeNamesCorruptFilesAndSymlinks)
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
     ProjectStore store(dir.path());
-    for (const auto name : {"../oops", "a/b", "", ".", "two words"}) EXPECT_FALSE(store.save(name, project(), false).isEmpty());
+    for (const auto name : {"../oops", "a/b", "", ".", "two words"})
+        EXPECT_FALSE(store.save(name, project(), false).isEmpty());
     QFile broken(dir.filePath("broken.json"));
     ASSERT_TRUE(broken.open(QIODevice::WriteOnly));
     broken.write("{bad");
@@ -96,7 +100,8 @@ TEST(ProjectStore, RejectsInvalidVersionsIdentitiesRatiosAndCommands)
     for (const auto cwd : {"relative", "", "$HOME", ":/", ":dir"}) {
         auto p = pane()["pane"].toObject();
         p["cwd"] = cwd;
-        EXPECT_TRUE(ProjectStore::validate(project({{"pane", p}})).startsWith("A pane directory must be an absolute path"))
+        EXPECT_TRUE(
+            ProjectStore::validate(project({{"pane", p}})).startsWith("A pane directory must be an absolute path"))
             << cwd << ": " << ProjectStore::validate(project({{"pane", p}})).toStdString();
     }
     auto p = pane()["pane"].toObject();
@@ -128,7 +133,10 @@ TEST(ProjectStore, TheSessionOfAProjectIsTrueOrFalse)
 TEST(ProjectStore, TheFirstPaneIsTheFirstLeafOfTheFirstTab)
 {
     QJsonObject first{{"id", "first"}, {"cwd", "/"}, {"title", ""}, {"command", QJsonArray{"/no/such/program", "-x"}}};
-    QJsonObject split{{"direction", "down"}, {"ratio", 0.5}, {"first", QJsonObject{{"pane", first}}}, {"second", pane("second")}};
+    QJsonObject split{{"direction", "down"},
+                      {"ratio", 0.5},
+                      {"first", QJsonObject{{"pane", first}}},
+                      {"second", pane("second")}};
     auto doc = project(split);
     // The active pane is not the first: the first is the first leaf.
     QJsonArray tabs = doc["tabs"].toArray();
@@ -156,10 +164,13 @@ TEST(ProjectStore, TheFirstPaneIsTheFirstLeafOfTheFirstTab)
 TEST(ProjectStore, BoundsTreesBeforeAnyPaneIsCreated)
 {
     auto root = pane();
-    for (int i = 0; i < 17; ++i) root = {{"direction", "down"}, {"ratio", 0.5}, {"first", root}, {"second", pane(QString::number(i))}};
+    for (int i = 0; i < 17; ++i)
+        root = {{"direction", "down"}, {"ratio", 0.5}, {"first", root}, {"second", pane(QString::number(i))}};
     EXPECT_FALSE(ProjectStore::validate(project(root)).isEmpty());
     auto doc = project();
-    auto tabs = doc["tabs"].toArray(); tabs.append(tabs.first()); doc["tabs"] = tabs;
+    auto tabs = doc["tabs"].toArray();
+    tabs.append(tabs.first());
+    doc["tabs"] = tabs;
     EXPECT_FALSE(ProjectStore::validate(doc).isEmpty());
 }
 TEST(ProjectStore, BoundsAcceptTheLimitsAndRejectOnePast)
@@ -167,7 +178,8 @@ TEST(ProjectStore, BoundsAcceptTheLimitsAndRejectOnePast)
     // Depth 16 is accepted, 17 is not.
     const auto chain = [](int depth) {
         auto root = pane();
-        for (int i = 0; i < depth; ++i) root = {{"direction", "down"}, {"ratio", 0.5}, {"first", root}, {"second", pane(QString::number(i))}};
+        for (int i = 0; i < depth; ++i)
+            root = {{"direction", "down"}, {"ratio", 0.5}, {"first", root}, {"second", pane(QString::number(i))}};
         return root;
     };
     EXPECT_TRUE(ProjectStore::validate(project(chain(16))).isEmpty());
@@ -175,12 +187,18 @@ TEST(ProjectStore, BoundsAcceptTheLimitsAndRejectOnePast)
     // 32 panes are accepted, 33 are not: a balanced tree stays within the depth.
     const auto balanced = [](int count) {
         QJsonArray level;
-        for (int i = 0; i < count; ++i) level.append(i == 0 ? pane() : pane(QString::number(i)));
+        for (int i = 0; i < count; ++i)
+            level.append(i == 0 ? pane() : pane(QString::number(i)));
         while (level.size() > 1) {
             QJsonArray next;
             for (qsizetype i = 0; i < level.size(); i += 2) {
-                if (i + 1 < level.size()) next.append(QJsonObject{{"direction", "right"}, {"ratio", 0.5}, {"first", level[i]}, {"second", level[i + 1]}});
-                else next.append(level[i]);
+                if (i + 1 < level.size())
+                    next.append(QJsonObject{{"direction", "right"},
+                                            {"ratio", 0.5},
+                                            {"first", level[i]},
+                                            {"second", level[i + 1]}});
+                else
+                    next.append(level[i]);
             }
             level = next;
         }
@@ -202,18 +220,26 @@ TEST(ProjectStore, BoundsAcceptTheLimitsAndRejectOnePast)
     // A repeated tab id alone, then a repeated pane id alone.
     auto doc = tabs(2);
     auto list = doc["tabs"].toArray();
-    auto second = list[1].toObject(); second["id"] = "0"; list[1] = second; doc["tabs"] = list;
+    auto second = list[1].toObject();
+    second["id"] = "0";
+    list[1] = second;
+    doc["tabs"] = list;
     EXPECT_FALSE(ProjectStore::validate(doc).isEmpty());
     doc = tabs(2);
     list = doc["tabs"].toArray();
-    second = list[1].toObject(); second["tree"] = pane("0"); second["active_pane"] = "0"; list[1] = second; doc["tabs"] = list;
+    second = list[1].toObject();
+    second["tree"] = pane("0");
+    second["active_pane"] = "0";
+    list[1] = second;
+    doc["tabs"] = list;
     EXPECT_FALSE(ProjectStore::validate(doc).isEmpty());
 }
 TEST(ProjectStore, EachLimitNamesItselfInTheError)
 {
     const auto chain = [](int depth) {
         auto root = pane();
-        for (int i = 0; i < depth; ++i) root = {{"direction", "down"}, {"ratio", 0.5}, {"first", root}, {"second", pane(QString::number(i))}};
+        for (int i = 0; i < depth; ++i)
+            root = {{"direction", "down"}, {"ratio", 0.5}, {"first", root}, {"second", pane(QString::number(i))}};
         return root;
     };
     EXPECT_TRUE(ProjectStore::validate(project(chain(17))).contains("16 levels"));
@@ -221,12 +247,16 @@ TEST(ProjectStore, EachLimitNamesItselfInTheError)
     EXPECT_TRUE(ProjectStore::validate(project(chain(17))).contains("17 levels deep"));
     // 33 panes in a tree of depth 6, so only the pane count is over.
     QJsonArray level;
-    for (int i = 0; i < 33; ++i) level.append(i == 0 ? pane() : pane(QString::number(i)));
+    for (int i = 0; i < 33; ++i)
+        level.append(i == 0 ? pane() : pane(QString::number(i)));
     while (level.size() > 1) {
         QJsonArray next;
         for (qsizetype i = 0; i < level.size(); i += 2) {
-            if (i + 1 < level.size()) next.append(QJsonObject{{"direction", "right"}, {"ratio", 0.5}, {"first", level[i]}, {"second", level[i + 1]}});
-            else next.append(level[i]);
+            if (i + 1 < level.size())
+                next.append(
+                    QJsonObject{{"direction", "right"}, {"ratio", 0.5}, {"first", level[i]}, {"second", level[i + 1]}});
+            else
+                next.append(level[i]);
         }
         level = next;
     }
@@ -237,21 +267,27 @@ TEST(ProjectStore, EachLimitNamesItselfInTheError)
         const QString id = QString::number(i);
         tabList.append(QJsonObject{{"id", id}, {"title", id}, {"active_pane", id}, {"tree", pane(id)}});
     }
-    EXPECT_TRUE(ProjectStore::validate(QJsonObject{{"version", 1}, {"active_tab", "0"}, {"tabs", tabList}}).contains("this one has 17"));
+    EXPECT_TRUE(ProjectStore::validate(QJsonObject{{"version", 1}, {"active_tab", "0"}, {"tabs", tabList}})
+                    .contains("this one has 17"));
     QJsonObject split{{"direction", "right"}, {"ratio", 0.3}, {"first", pane()}, {"second", pane()}};
     EXPECT_TRUE(ProjectStore::validate(project(split)).contains("\"shell\" is used more than once"));
     auto p = pane()["pane"].toObject();
     QJsonArray many;
-    for (int i = 0; i < 65; ++i) many.append("x");
+    for (int i = 0; i < 65; ++i)
+        many.append("x");
     p["command"] = many;
     EXPECT_TRUE(ProjectStore::validate(project({{"pane", p}})).contains("64 arguments"));
     p["command"] = QJsonArray{"sh", QString(4097, QLatin1Char('a'))};
     EXPECT_TRUE(ProjectStore::validate(project({{"pane", p}})).contains("argument"));
-    p = pane()["pane"].toObject(); p["title"] = QString(257, QLatin1Char('t'));
+    p = pane()["pane"].toObject();
+    p["title"] = QString(257, QLatin1Char('t'));
     EXPECT_TRUE(ProjectStore::validate(project({{"pane", p}})).contains("pane title"));
     auto doc = project();
     auto tabs = doc["tabs"].toArray();
-    auto tab = tabs[0].toObject(); tab["active_pane"] = "elsewhere"; tabs[0] = tab; doc["tabs"] = tabs;
+    auto tab = tabs[0].toObject();
+    tab["active_pane"] = "elsewhere";
+    tabs[0] = tab;
+    doc["tabs"] = tabs;
     EXPECT_TRUE(ProjectStore::validate(doc).contains("active pane"));
 }
 
@@ -273,7 +309,8 @@ TEST(ProjectStore, ThePanesComeInTheOrderOfTheLayout)
     doc["active_tab"] = "logs";
     ASSERT_TRUE(ProjectStore::validate(doc).isEmpty()) << qPrintable(ProjectStore::validate(doc));
     QStringList ids;
-    for (const QJsonObject& leaf : ProjectStore::panes(doc)) ids << leaf.value(QStringLiteral("id")).toString();
+    for (const QJsonObject& leaf : ProjectStore::panes(doc))
+        ids << leaf.value(QStringLiteral("id")).toString();
     EXPECT_EQ(ids, (QStringList{QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c"), QStringLiteral("d")}));
     EXPECT_EQ(ProjectStore::panes(doc).value(0).value(QStringLiteral("id")).toString(), QStringLiteral("a"));
 }
@@ -291,7 +328,8 @@ TEST(ProjectStore, KeepsCommandCountsUtf8Bytes)
     EXPECT_TRUE(ProjectStore::keepsCommand({}));
     auto p = pane()["pane"].toObject();
     p["command"] = QJsonArray{"sh", accented};
-    EXPECT_TRUE(ProjectStore::validate(project({{"pane", p}})).contains("bytes")) << ProjectStore::validate(project({{"pane", p}})).toStdString();
+    EXPECT_TRUE(ProjectStore::validate(project({{"pane", p}})).contains("bytes"))
+        << ProjectStore::validate(project({{"pane", p}})).toStdString();
 }
 
 // The directory of a pane with ~, and the program of its command: one with a
@@ -330,7 +368,8 @@ TEST(ProjectStore, LaunchOfSearchesTheGivenPath)
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
     ASSERT_TRUE(QDir(dir.path()).mkpath(QStringLiteral("bin")));
-    for (const QString& path : {dir.filePath(QStringLiteral("agtool-x")), dir.filePath(QStringLiteral("bin/agtool-x"))}) {
+    for (const QString& path :
+         {dir.filePath(QStringLiteral("agtool-x")), dir.filePath(QStringLiteral("bin/agtool-x"))}) {
         QFile tool(path);
         ASSERT_TRUE(tool.open(QIODevice::WriteOnly));
         tool.write("#!/bin/sh\n");

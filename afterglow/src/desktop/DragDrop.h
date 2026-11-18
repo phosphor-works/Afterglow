@@ -20,10 +20,11 @@ namespace Afterglow {
 /// owns them, not the pane. A drop target such as a file manager copies the
 /// files after the drag has ended, and can still copy after the pane closed
 /// or the next drag started.
-class DragTrees : public QObject {
+class DragTrees : public QObject
+{
 public:
     /// The default of Terminal.dragTreeLifetime.
-    static constexpr std::chrono::minutes DefaultLifetime { 10 };
+    static constexpr std::chrono::minutes DefaultLifetime{10};
     static DragTrees& instance();
     ~DragTrees() override;
     /// How long the tree of a drag that ended in a drop remains. A tree keeps
@@ -39,12 +40,16 @@ public:
     /// Whether the file at @p path is inside one of the trees. Links in the
     /// directories above it are followed, a link that it is itself is not.
     bool holds(const QByteArray& path) const;
-    std::size_t size() const { return m_trees.size(); }
+    std::size_t size() const
+    {
+        return m_trees.size();
+    }
 
 private:
     explicit DragTrees(QObject* parent);
     void expire();
-    struct Tree {
+    struct Tree
+    {
         std::shared_ptr<QTemporaryDir> directory;
         QByteArray root; ///< the directory's path with no links
         QDeadlineTimer expiry; ///< forever while the drag runs
@@ -54,7 +59,8 @@ private:
     std::chrono::milliseconds m_lifetime = DefaultLifetime;
 };
 /// Kitty OSC 72 desktop bridge. Each terminal pane owns its own protocol state.
-class DragDrop : public QObject {
+class DragDrop : public QObject
+{
     Q_OBJECT
 public:
     /// What the commands that the pane dropped held, in the order that the
