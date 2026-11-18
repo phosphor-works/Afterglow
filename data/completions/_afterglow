@@ -149,6 +149,7 @@ _afterglow_ctl() {
     commands=(
         'ls:list panes'
         'send-text:type text into the pane'
+        'paste:paste text into the pane'
         'get-text:print pane text'
         'split:split the pane'
         'move-pane:move the pane beside another'
@@ -235,7 +236,7 @@ _afterglow_ctl() {
     esac
     case $words[1] in
     ls) _arguments '--json[print JSON]' ;;
-    send-text)
+    send-text | paste)
         _arguments -S $pane '(--stdin)--raw[send the text as it is]' '(--raw *)--stdin[send standard input]' \
             '(--stdin)*:text:' ;;
     get-text)

@@ -12,6 +12,9 @@ namespace Afterglow {
 // goes in parts of this many units, which stay under the limit whatever they
 // hold.
 inline constexpr qsizetype CtlTextPart = 128 * 1024;
+/// The room in a request line for the parts of a paste request other than
+/// its text: the type, the id, the target, the call and the pane.
+inline constexpr qsizetype CtlRequestRoom = 4096;
 // A pane takes at most this much input that its program has not read yet
 // (MaxPending in afterglow-pty's Pty.cpp). Longer text would be typed in part
 // and then refused.

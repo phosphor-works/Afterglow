@@ -88,6 +88,12 @@ void ControlApi::sendText(double pane, const QString& text)
         failed(m_control.sendText(*id, text));
 }
 
+void ControlApi::paste(double pane, const QString& text)
+{
+    if (const auto id = paneId(pane))
+        failed(m_control.paste(*id, text));
+}
+
 ControlApi::PendingReply ControlApi::deferCall(const QString& noClient)
 {
     auto reply = std::make_shared<PhosphorIpc::IpcPendingReply>(deferReply());

@@ -135,7 +135,7 @@ function __afterglow_ctl
         if string match -q -- '-*' "$cur"
             __afterglow_print $options
         else
-            __afterglow_print ls\t'List panes' send-text\t'Type text into the pane' get-text\t'Print pane text' \
+            __afterglow_print ls\t'List panes' send-text\t'Type text into the pane' paste\t'Paste text into the pane' get-text\t'Print pane text' \
                 split\t'Split the pane' move-pane\t'Move the pane beside another' \
                 detach-tab\t"Move the pane's tab to a new window" new-tab\t'Open a tab' new-window\t'Open a window' \
                 focus\t'Focus the pane' close\t'Close the pane' set-title\t"Set the pane's title" \
@@ -249,7 +249,7 @@ function __afterglow_ctl
     switch $command
         case ls
             contains -- --json $argv; or set -a offer --json\t'Print JSON'
-        case send-text
+        case send-text paste
             # --stdin takes no text, and the text takes no --stdin.
             if not contains -- --stdin $argv
                 contains -- --raw $argv; or set -a offer --raw\t'Send the text as it is'

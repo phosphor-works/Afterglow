@@ -7194,6 +7194,42 @@ TEST(MuxControl, TheDaemonTellsTheShellsStateRegionsAndTextSinceAMark)
     EXPECT_EQ(ctl.error.code, IpcErrorCode::InvalidArg);
 }
 
+// The paste call sends text as a paste in a window: between the paste marks
+// while the program asks for them (mode 2004), the line ends as Enter, and
+// no other control, so the text cannot end the paste early.
+TEST(MuxControl, ThePasteCallBracketsAsTheProgramAsks)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "s")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("s"), "");
+    const auto pane = std::int64_t(firstPane(ctl));
+    ASSERT_NE(pane, 0);
+    // A program that prints the bytes that it reads, in hexadecimal.
+    ASSERT_TRUE(ctl.call("sendText",
+                         Json::Array{pane,
+                                     "stty raw -echo; printf '\\033[?2004hre''ady'; head -c15 | od "
+                                     "-An -tx1 | tr -s ' '; printf '\\033[?2004l'; stty sane\n"}))
+        << ctl.error.message;
+    ASSERT_TRUE(screenShows(ctl, pane, "ready"));
+    ASSERT_TRUE(ctl.call("paste", Json::Array{pane, "a\nb\x1b"})) << ctl.error.message;
+    EXPECT_TRUE(screenShows(ctl, pane, " 1b 5b 32 30 30 7e 61 0d 62 1b 5b 32 30 31 7e"));
+    // Without the mode: the text alone.
+    ASSERT_TRUE(
+        ctl.call("sendText",
+                 Json::Array{pane, "stty raw -echo; printf 'go''ne'; head -c3 | od -An -tx1 | tr -s ' '; stty sane\n"}))
+        << ctl.error.message;
+    ASSERT_TRUE(screenShows(ctl, pane, "gone"));
+    ASSERT_TRUE(ctl.call("paste", Json::Array{pane, "c\r\nd"})) << ctl.error.message;
+    EXPECT_TRUE(screenShows(ctl, pane, " 63 0d 64"));
+
+    EXPECT_FALSE(ctl.call("paste", Json::Array{pane}));
+    EXPECT_EQ(ctl.error.code, IpcErrorCode::InvalidArg);
+    EXPECT_FALSE(ctl.call("paste", Json::Array{pane, 3}));
+    EXPECT_EQ(ctl.error.code, IpcErrorCode::InvalidArg);
+}
+
 TEST(MuxControl, TheDaemonChecksTheArgumentsOfItsControlCalls)
 {
     TestDaemon daemon;

@@ -43,6 +43,8 @@ public:
     // A pane argument is a double, the type of a JSON number: paneId() checks
     // that it is a whole number in the range of a pane ID.
     Q_INVOKABLE void sendText(double pane, const QString& text);
+    /// @p text as a paste: bracketed when the program asked for it.
+    Q_INVOKABLE void paste(double pane, const QString& text);
     /// @p scope: screen, scrollback, selection, last-output,
     /// first-output-on-screen, last-visited-output or since. Answers
     /// {text, truncated}, and for since also trimmed.
