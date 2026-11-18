@@ -8,6 +8,8 @@
 #ifndef PHOSPHOR_DEPTHS_GLSL
 #define PHOSPHOR_DEPTHS_GLSL
 
+#include <phosphor_spectrum.glsl>
+
 #define TAU 6.28318530718
 
 // Bounded drift: the noise domain traces a Lissajous path whose offset never
@@ -20,24 +22,14 @@
 #define DRIFT_W2     0.0029 // ~36 min period
 
 // === COLOUR ===
-vec3 gradientStop(int i)
-{
-    if (p_followTheme > 0.5) {
-        // Bright cyan, blue, magenta, red: the themed equivalents of the
-        // phosphor stops, so a wallpaper-driven palette carries through.
-        const int index[4] = int[4](14, 12, 13, 9);
-        return paletteColor(index[i]);
-    }
-    return i == 0 ? p_stop0.rgb : i == 1 ? p_stop1.rgb : i == 2 ? p_stop2.rgb : p_stop3.rgb;
-}
-
-// Four-stop gradient, t in [0, 1], in linear light.
+// Four-stop gradient, t in [0, 1], in linear light. The stops are those of
+// the other Phosphor packs: spectrumStop().
 vec3 fluxGradient(float t)
 {
     t = clamp(t, 0.0, 1.0) * 3.0;
-    vec3 c = mix(gradientStop(0), gradientStop(1), clamp(t, 0.0, 1.0));
-    c = mix(c, gradientStop(2), clamp(t - 1.0, 0.0, 1.0));
-    c = mix(c, gradientStop(3), clamp(t - 2.0, 0.0, 1.0));
+    vec3 c = mix(spectrumStop(0), spectrumStop(1), clamp(t, 0.0, 1.0));
+    c = mix(c, spectrumStop(2), clamp(t - 1.0, 0.0, 1.0));
+    c = mix(c, spectrumStop(3), clamp(t - 2.0, 0.0, 1.0));
     return srgbToLinear(c);
 }
 

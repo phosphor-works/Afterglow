@@ -1122,12 +1122,12 @@ A key mode that starts before the overview opens continues.
 ## Pane pulses
 
 `pulse(pane, effect, options?)` plays an effect over the pane in `Shaders.paneEffects`.
-The bundled Pane Effects pack draws these effects:
+The bundled Phosphor Panes pack draws these effects:
 
 | Effect | Number | Look |
 | --- | --- | --- |
-| `portal` | 1 | A ring that sweeps out |
-| `flash` | 2 | A light that fades |
+| `portal` | 1 | A ring of light that sweeps out |
+| `flash` | 2 | A light at the rim of the pane that fades |
 | `shake` | 3 | The pane shakes |
 
 Numbers from 4 to 255 select effects that other packs define. Give an effect as its name, or as a number or a numeric string.

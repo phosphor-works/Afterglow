@@ -38,7 +38,8 @@ gtest_discover_tests(afterglow_scripting_tests PROPERTIES TIMEOUT 60)
 qt_add_executable(afterglow_config_tests ConfigTest.cpp DesktopTest.cpp)
 # afterglow_mux_protocol: the bounds of the Mux settings are the daemon's.
 target_link_libraries(afterglow_config_tests PRIVATE afterglow_config afterglow_mux_protocol GTest::gtest_main)
-target_compile_definitions(afterglow_config_tests PRIVATE AFTERGLOW_THEME_DIR="${PROJECT_SOURCE_DIR}/data/themes")
+target_compile_definitions(afterglow_config_tests PRIVATE AFTERGLOW_THEME_DIR="${PROJECT_SOURCE_DIR}/data/themes"
+    AFTERGLOW_BUNDLED_SHADERS="${PROJECT_SOURCE_DIR}/data/shaders")
 gtest_discover_tests(afterglow_config_tests)
 
 qt_add_executable(afterglow_upload_tests UploadArchiveTest.cpp ../src/desktop/UploadArchive.cpp ../src/desktop/UploadArchive.h)
@@ -121,12 +122,13 @@ target_include_directories(afterglow_popup_tests PRIVATE ${PROJECT_SOURCE_DIR}/l
 target_link_libraries(afterglow_popup_tests PRIVATE afterglow_app GTest::gtest)
 gtest_discover_tests(afterglow_popup_tests PROPERTIES RESOURCE_LOCK gpu LABELS gpu TIMEOUT 60)
 
-# The pointer maps of the bundled packs against their pictures, offscreen.
+# The pointer maps of the bundled and example packs against their pictures, offscreen.
 qt_add_executable(afterglow_pointer_map_tests PointerMapTest.cpp)
 target_include_directories(afterglow_pointer_map_tests PRIVATE ${PROJECT_SOURCE_DIR}/libs/afterglow-render/tests)
 # The pack registry and the renderer: no window, no application.
 target_link_libraries(afterglow_pointer_map_tests PRIVATE afterglow_shaders GTest::gtest)
-target_compile_definitions(afterglow_pointer_map_tests PRIVATE AFTERGLOW_SOURCE_SHADERS="${PROJECT_SOURCE_DIR}/data/shaders")
+target_compile_definitions(afterglow_pointer_map_tests PRIVATE AFTERGLOW_SOURCE_SHADERS="${PROJECT_SOURCE_DIR}/data/shaders"
+    AFTERGLOW_EXAMPLE_SHADERS="${PROJECT_SOURCE_DIR}/examples/shaders")
 gtest_discover_tests(afterglow_pointer_map_tests PROPERTIES RESOURCE_LOCK gpu LABELS gpu TIMEOUT 60)
 
 qt_add_executable(afterglow_signal_tests QuitSignalsTest.cpp)

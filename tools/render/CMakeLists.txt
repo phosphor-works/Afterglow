@@ -17,4 +17,9 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME afterglow_renderpng_images
         COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/renderpng_images.py $<TARGET_FILE:afterglow_renderpng>)
     set_tests_properties(afterglow_renderpng_images PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77 RESOURCE_LOCK gpu)
+    # The bundled event packs load, draw during their event, and leave the
+    # window as it is at the ends of it (77: no Vulkan).
+    add_test(NAME afterglow_renderpng_event_packs
+        COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/renderpng_event_packs.py $<TARGET_FILE:afterglow_renderpng>)
+    set_tests_properties(afterglow_renderpng_event_packs PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77 RESOURCE_LOCK gpu LABELS gpu)
 endif()

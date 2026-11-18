@@ -54,6 +54,7 @@
 #include <QFontMetricsF>
 #include <QUrl>
 #include <QDir>
+#include <QDirIterator>
 #include <QLocale>
 #include <QFileInfo>
 #include <sys/stat.h>
@@ -656,6 +657,25 @@ private:
 constexpr int TestScrollLines = 3;
 constexpr int TestTouchSelectHold = 400;
 constexpr auto TestScripts = Application::ScriptDirectories::ConfigOnly;
+// Copies the example pack @p id (examples/shaders) to the packs beside the
+// config files of @p directory, where a test's Application finds it. Afterglow
+// installs only its own packs, and a build-tree binary reads only those from
+// the checkout.
+bool installExamplePack(const QTemporaryDir& directory, const QString& id)
+{
+    const QDir source(QStringLiteral(AFTERGLOW_EXAMPLE_SHADERS "/") + id);
+    const QString target = directory.filePath(QStringLiteral("shaders/") + id);
+    if (!source.exists() || !QDir().mkpath(target))
+        return false;
+    QDirIterator files(source.absolutePath(), QDir::Files, QDirIterator::Subdirectories);
+    while (files.hasNext()) {
+        const QString from = files.next();
+        const QString to = target + QLatin1Char('/') + source.relativeFilePath(from);
+        if (!QDir().mkpath(QFileInfo(to).absolutePath()) || (!QFile::exists(to) && !QFile::copy(from, to)))
+            return false;
+    }
+    return true;
+}
 QJsonObject testSettings(const QJsonObject& overrides = {})
 {
     // These are overrides, which a test's edit of the file does not change.
@@ -893,6 +913,7 @@ TEST_P(NativeRenderer, SurvivesWindowTransferResizeAndSourceDestruction)
 {
     QTemporaryDir directory;
     ASSERT_TRUE(directory.isValid());
+    ASSERT_TRUE(installExamplePack(directory, QStringLiteral("mesh-reactor")));
     Application application(
         testSocket(), directory.filePath(QStringLiteral("mesh.conf")),
         testSettings({{QStringLiteral("Shaders"),
@@ -3148,6 +3169,7 @@ TEST_F(NativeWindow, AClickOnABentPaneReachesTheCellDrawnThere)
     // pointer map (pPointerMap) moves the click the same way.
     constexpr double Curvature = 0.3;
     const QString reports = directory.filePath(QStringLiteral("reports"));
+    ASSERT_TRUE(installExamplePack(directory, QStringLiteral("crt-curve")));
     restartApplication(
         QStringLiteral("crt.conf"),
         testSettings({{QStringLiteral("Shaders"),
@@ -3209,6 +3231,7 @@ TEST_F(NativeWindow, AClickThroughABentWindowReachesThePaneDrawnThere)
     // neighbor. A click goes to the pane drawn under it, at the drawn cell.
     constexpr double Curvature = 0.3;
     const QString leftReports = directory.filePath(QStringLiteral("left"));
+    ASSERT_TRUE(installExamplePack(directory, QStringLiteral("crt-curve")));
     restartApplication(
         QStringLiteral("crt-window.conf"),
         testSettings({{QStringLiteral("Shaders"),
@@ -3416,6 +3439,7 @@ TEST_F(NativeWindow, APaneDockIsClickedWhereTheWindowChainDrawsIt)
     // dock at the top of the pane shows well inside the window, and a click
     // there reaches its item.
     constexpr double Curvature = 0.3;
+    ASSERT_TRUE(installExamplePack(directory, QStringLiteral("crt-curve")));
     restartApplication(
         QStringLiteral("crt-dock.conf"),
         testSettings({{QStringLiteral("Shaders"),

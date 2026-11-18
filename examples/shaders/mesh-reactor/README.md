@@ -3,11 +3,13 @@
 
 # Mesh Reactor
 
+Afterglow does not install this pack. [Copy it](../README.md) into the `shaders` directory of your configuration first.
+
 Add `"mesh-reactor"` to `Shaders.background`.
-To run it from a built checkout:
+To use it for one run:
 
 ```sh
-./build/afterglow/afterglow -o 'Shaders.background=["mesh-reactor"]'
+afterglow -o 'Shaders.background=["mesh-reactor"]'
 ```
 
 The scene contains curved armor panels, a plasma core, three moving rings,
@@ -45,7 +47,7 @@ With two samples, its buffer budget is approximately 53.4 MiB at 1080p
 and 213.6 MiB at 4K. Other shader buffers share the same 256 MiB budget.
 These figures exclude the terminal targets, font atlas and driver allocations.
 On an RTX 2080, the complete `--mesh` scene renders a 1080p frame in about 11 ms and a 4K frame in about 34 ms.
-See [Phosphor scene performance](../../../examples/phosphor/PERFORMANCE.md) for the conditions.
+See [Phosphor scene performance](../../phosphor/PERFORMANCE.md) for the conditions.
 This is a triangle scene. The default Phosphor scene still uses ray marching.
 
 See [Mesh passes](../../../docs/SHADER-API.md#mesh-passes) for imported OBJ meshes,

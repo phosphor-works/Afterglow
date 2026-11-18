@@ -54,6 +54,7 @@ try:
         # Every pack from the checkout, so an installed copy of a bundled pack
         # (the default overview, pane effects and tab switch too) cannot answer.
         shutil.copytree(repo/'data/shaders',config/'shaders')
+        shutil.copytree(repo/'examples/shaders/feedback-glow',config/'shaders/feedback-glow')
         shutil.copytree(repo/'examples/phosphor/shaders',config/'shaders',dirs_exist_ok=True)
         shutil.copytree(repo/'examples/phosphor/scripts',config/'scripts')
         for package in ['scene-controls','contextual-scene']:

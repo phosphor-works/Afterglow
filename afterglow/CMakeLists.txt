@@ -240,7 +240,8 @@ if(BUILD_TESTING)
     target_include_directories(afterglow_native_tests PRIVATE ${PROJECT_SOURCE_DIR}/mux/tests)
     afterglow_test_runs(afterglow_native_tests AFTERGLOW_MUX aglow-mux)
     afterglow_test_runs(afterglow_native_tests AFTERGLOW_BINARY afterglow)
-    target_compile_definitions(afterglow_native_tests PRIVATE AFTERGLOW_FAKE_SSH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fake-ssh.sh")
+    target_compile_definitions(afterglow_native_tests PRIVATE AFTERGLOW_FAKE_SSH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fake-ssh.sh"
+        AFTERGLOW_EXAMPLE_SHADERS="${PROJECT_SOURCE_DIR}/examples/shaders")
     # The aglow dnd twins of the kitten dnd tests and the aglow run tests of
     # session panes run the aglow of this build.
     if(AFTERGLOW_BUILD_AGLOW)

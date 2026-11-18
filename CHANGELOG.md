@@ -109,10 +109,10 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Ctrl+Shift+Alt+= equalizes the splits of a tab. Ctrl++ and Ctrl+= make the font larger.
 - Animated splits whose motion takes any Phosphor curve, such as a spring or a cubic Bézier.
 - Phosphor curves for the cursor, scrolling, the visual bell and the quick terminal (`Animation.cursorCurve`, `scrollCurve`, `bellCurve` and `QuickTerminal.curve`).
-- A pane overview that shows the panes of every tab as live 3D cards to choose from, drawn by a replaceable shader pack.
-- Animated tab switches, drawn by a replaceable shader pack: a turning cube, a page flip, a shatter or a slide.
-- Panes that swing in on a hinge or switch on like a picture tube as they split. They fall away or switch off as they close.
-- A portal for a pane whose shell moves to another host, user or container, and a colored frame while it is away. The pane spirals into a black hole and comes back out of it, or a ring sweeps across it. `Animation.contextDuration` sets the time.
+- A pane overview that shows each tab as a live picture of its panes to choose from, drawn by a replaceable shader pack.
+- Animated tab switches, drawn by a replaceable shader pack: the new tab slides in over the tab being left, or the two fade.
+- Panes that fade in as they split and fade out as they close, with a rim in the Phosphor spectrum that is bright at once and then fades.
+- A thin line at the edge of a pane whose shell moves to another host, user or container, in a color for each. The line is bright at the change and stays while the pane is away. `Animation.contextDuration` sets the time of the change.
 - Pane and tab moves between tabs and windows. A drag outside the tab bar detaches a tab into a new window.
 - Saved projects that store a window's tabs, splits, directories and launch arguments. A project with `"session": true` opens into a mux session with its name. It shows that session again after its window closed, with the commands and titles of its panes. The windows go on responding while the session starts.
 - Terminal sessions that keep running without a window, in the `aglow-mux` daemon. `afterglow mux new` starts a session with one pane and shows it in a window. `afterglow mux attach` shows a session in a window, and `afterglow mux detach` closes that window. One window at a time shows a session, and a second one takes it over. The session follows the settings of the window that shows it, also after you edit them. `Mux.updateEnvironment` names the variables that a session of this computer takes from Afterglow each time a window shows it, such as `SSH_AUTH_SOCK`. `Mux.onClose` decides whether closing that window, or its last tab or pane, ends the session. `afterglow mux ls` and `afterglow mux kill` list and end the sessions.
@@ -150,7 +150,9 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - System audio input through CAVA, with its framerate, smoothing and frequency range in `Audio` settings.
 - Scrollback-driven inputs and parameter transitions with Phosphor curves.
 - Time helpers `timeAngle` and `timeCycle` that keep full precision however long the window runs, and `timeSeconds` for the full clock.
-- Bundled packs: Bloom, CRT Curve, Cursor Trail, Depth Trails, Feedback Glow, Mesh Reactor, Orrery, Overlay Fade, Pane Deck, Pane Effects, Phosphor Depths, Tab Switch and Tilt.
+- Bundled packs in the Phosphor design language: Phosphor Overview, Phosphor Tabs and Phosphor Panes, which are the defaults of their event packs, and Phosphor Depths.
+- Bundled neutral packs, which take their colors from the theme: Plain Overview, Plain Tabs and Plain Panes, with the motion of the Phosphor packs and no gradient or glow, Overlay Fade, Bloom and Cursor Trail.
+- Example packs in the `examples/shaders` directory of the source repository: CRT Curve, Depth Trails, Feedback Glow, Mesh Reactor, Orrery, Pane Deck, Pane Effects, Tab Switch and Tilt.
 - Packs that move the content can define a pointer map (`pPointerMap`). Clicks, selections and links then reach the cell that the pack draws under the pointer.
 - Pane rectangles, every tab's pane pixels and overview state for window shaders, through `terminal_panes.glsl`.
 - The Phosphor and Glasshouse example scenes, in the `examples` directory of the source repository.

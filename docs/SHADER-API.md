@@ -241,8 +241,8 @@ The map moves only the pointer. These stay where the layout has them:
 - The docks of the window, which are drawn over the chains.
 - The labels of URL hints, the input method's cursor and what accessibility tools read.
 
-[CRT Curve](../data/shaders/crt-curve/effect.frag) bends the canvas and moves the pointer the same way.
-[Tilt](../data/shaders/tilt/effect.frag) turns the canvas in perspective. Its map casts the same ray as its picture.
+[CRT Curve](../examples/shaders/crt-curve/effect.frag) bends the canvas and moves the pointer the same way.
+[Tilt](../examples/shaders/tilt/effect.frag) turns the canvas in perspective. Its map casts the same ray as its picture.
 
 ## Mesh passes
 
@@ -317,7 +317,7 @@ A pass that exceeds that budget renders at a smaller size that fits, and logs a 
 It grows back when the budget has room again.
 Resize and shader replacement release obsolete GPU resources.
 
-[Mesh Reactor](../data/shaders/mesh-reactor/README.md) demonstrates instanced geometry,
+[Mesh Reactor](../examples/shaders/mesh-reactor/README.md) demonstrates instanced geometry,
 parent and child rotations in a shader, a perspective camera, lighting and audio response.
 
 ### Object hierarchies
@@ -364,7 +364,7 @@ Include `terminal_scene.glsl` in the mesh vertex shader:
 `uObjectMatrix` and `uObjectNormalMatrix` hold the matrices for all objects.
 The pack still applies its own camera and projection.
 Send `objectIndex()` to the fragment stage in a flat output when that stage needs it.
-[Orrery](../data/shaders/orrery/metadata.json) demonstrates a sun, an orbiting planet and its moon.
+[Orrery](../examples/shaders/orrery/metadata.json) demonstrates a sun, an orbiting planet and its moon.
 
 ## Panes and the overview
 
@@ -423,7 +423,8 @@ Draw the tab being left at progress 0 and the new tab at 1. The switch then star
 The tab being left has no layer, pane or window shaders, because its image does not include them.
 With window shaders, the first frame of a switch can differ from the frame before it.
 The overview takes precedence: a switch that the overview makes does not run the transition.
-[Tab Switch](../data/shaders/tab-switch/effect.frag) shows four styles.
+[The flat tab transition](../data/shaders/shared/flat_tabs.glsl) of Phosphor Tabs and Plain Tabs slides the new tab in flat.
+The example pack [Tab Switch](../examples/shaders/tab-switch/effect.frag) shows a cube, a page flip, a shatter and a slide.
 
 `Shaders.paneEffects` names the pack that animates panes as they split open and close.
 Afterglow runs it after the window chain while a pane opens or closes, a pulse runs or a pane is away.
@@ -443,12 +444,14 @@ Scripts play pulses with `afterglow.pulse`. `panePulse(i)` runs from 0 to 1, lin
 `panePulseEffect(i)` is 0 for none, 1 for a portal, 2 for a flash or 3 for a shake. A pack can define its own numbers from 4 to 255.
 `panePulseColor(i)` is the palette color the script chose.
 While any pane is away from here, the pack also runs on each frame Afterglow draws. Those frames come only from changes, so a static mark costs no extra frames.
-[Pane Effects](../data/shaders/pane-effects/effect.frag) shows a hinge and a picture tube, and a ring and a vortex for the context change.
+[The flat pane effects](../data/shaders/shared/flat_panes.glsl) of Phosphor Panes and Plain Panes fade panes in and out, and mark a pane that is away with a line at its edge.
+The example pack [Pane Effects](../examples/shaders/pane-effects/effect.frag) shows a hinge and a picture tube, and a ring and a vortex for the context change.
 
 Input does not reach the panes while the overview is open.
 The highlighted pane is the one the user chooses, so a pack needs no hit testing.
 While the overview shows, other tabs use two more window-sized textures. Afterglow releases them when it closes.
-[Pane Deck](../data/shaders/pane-deck/effect.frag) traces the panes as live cards on a carousel in one pass.
+[The flat overview](../data/shaders/shared/flat_overview.glsl) of Phosphor Overview and Plain Overview lays the panes out flat, each tab as a picture of its layout.
+The example pack [Pane Deck](../examples/shaders/pane-deck/effect.frag) traces the panes as live cards on a carousel in one pass.
 
 ### Overlay transitions
 
@@ -521,6 +524,44 @@ Use `toLinearPremultiplied` and `toSrgbPremultiplied` for colors with alpha.
 Transparent colors convert to zero to prevent division by zero.
 The feedback-glow example stores linear premultiplied light and converts back during composition.
 
+### The Phosphor spectrum and the rim
+
+Include `phosphor_spectrum.glsl` to draw with the gradient of the bundled Phosphor packs.
+The file is in the `shared/` directory of the bundled packs, so the [include search](SHADERS.md#pack-locations) finds it.
+A pack that includes it must declare the parameters `followTheme` (`bool`) and `stop0` to `stop3` (`color`).
+
+| Function | Value |
+| --- | --- |
+| `spectrum(t)` | The gradient at `t`, 0 to 1, as encoded sRGB: cyan, blue, purple and rose by default. |
+| `spectrumStop(i)` | Color `i` of the gradient, 0 to 3. With `followTheme`, a bright color of the terminal palette. |
+| `spectrumContext(context)` | The color for a `paneContext()` value: cyan remote, rose elevated, purple a container. |
+
+`rim.glsl` draws a line at the edge of a rectangle, with a halo inside it. It needs no parameter, and `phosphor_spectrum.glsl` includes it.
+
+| Function | Value |
+| --- | --- |
+| `rimDistance(pixel, rect)` | How far inside a rectangle a pixel is, in pixels. Negative outside. |
+| `drawRim(color, tint, inside, width, line, reach, halo)` | A line at the edge of a rectangle, with a halo inside it, over a premultiplied color. |
+| `addLight(color, light)` | A premultiplied color with light added. Alpha rises to cover the light. |
+| `coverWith(color, paint, amount)` | A premultiplied color blended toward an opaque color. |
+
+### The flat event packs
+
+The bundled overview, tab transition and pane effects packs come in two looks, Phosphor and plain, with one motion.
+The motion is in three files in the same `shared/` directory.
+A pack declares the parameters that the file names, defines macros for its look, and then includes the file.
+Its `pTerminal` returns the function of the file. Afterglow looks for `pTerminal` in the pack's own file, so an include file cannot define it.
+
+| File | Function | Macros | Packs |
+| --- | --- | --- | --- |
+| `flat_overview.glsl` | `flatOverview(uv)` | `OVERVIEW_TINT(t)`, and optionally `OVERVIEW_GLOW` and `OVERVIEW_REACH` | `phosphor-overview`, `plain-overview` |
+| `flat_tabs.glsl` | `flatTabs(uv)` | Optionally `TAB_SEAM_TINT(t)` | `phosphor-tabs`, `plain-tabs` |
+| `flat_panes.glsl` | `flatPanes(uv)` | `PANE_CONTEXT_TINT(context)`, and optionally `PANE_EDGE_TINT(pixel, r)`, `PANE_RIM`, `PANE_GLOW`, `PANE_REACH`, `PANE_HALO` and `PANE_SETTLED` | `phosphor-panes`, `plain-panes` |
+
+The comment at the top of each file gives its parameters and what each macro does.
+[Plain Panes](../data/shaders/plain-panes/effect.frag) is a complete pack in one macro, one include and one call.
+A pack of your own can do the same to change only the colors.
+
 ## Ownership and reset
 
 Each effect occurrence, scope and pane owns two alternating textures per buffer.
@@ -567,6 +608,8 @@ The feedback-glow half-resolution RGBA16F pair uses approximately 31.6 MiB at 4K
 
 ## Examples
 
-- [Feedback Glow](../data/shaders/feedback-glow/README.md): one buffer with retained bright pixels.
-- [Depth Trails](../data/shaders/depth-trails/README.md): two buffers, depth, a vertex stage and an image parameter.
+The [example packs](../examples/shaders/README.md) are in the source repository. Afterglow does not install them.
+
+- [Feedback Glow](../examples/shaders/feedback-glow/README.md): one buffer with retained bright pixels.
+- [Depth Trails](../examples/shaders/depth-trails/README.md): two buffers, depth, a vertex stage and an image parameter.
 - [The Phosphor scene](../examples/phosphor/README.md): a complete reactive scene.
