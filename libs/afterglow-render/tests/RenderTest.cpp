@@ -2811,7 +2811,9 @@ TEST(Fonts, StaticStyleSlotsAndSymbolMappingsSelectStyledFaces)
     spec.regular.family = spec.bold.family = spec.italic.family = spec.boldItalic.family = "DejaVu Sans Mono";
     spec.symbolMap = {{U'A', U'Z', "DejaVu Sans Mono"}};
     FontSet fonts(spec, 1.0);
-    if (fonts.face(fonts.primary(StyleSlot::Regular)).path.find("DejaVu") == std::string::npos) {
+    // DejaVu Sans Mono's own files, not any DejaVu: fontconfig falls back to
+    // DejaVuSans.ttf where it has no fonts (a Nix build).
+    if (fonts.face(fonts.primary(StyleSlot::Regular)).path.find("DejaVuSansMono") == std::string::npos) {
         GTEST_SKIP() << "DejaVu Sans Mono is not installed";
     }
     EXPECT_NE(fonts.face(fonts.primary(StyleSlot::Regular)).path, fonts.face(fonts.primary(StyleSlot::Bold)).path);
@@ -4215,9 +4217,14 @@ TEST(GlyphCache, OverBudgetOnlyAPageUnusedForStaleAfterDiscardsTheCache)
     // Five gray pages: each sprite opens a new page after the one before
     // is full, so four are full and the fifth holds one sprite. 80 MiB,
     // over the 64 MiB budget.
+    // The sprites' own shelf is filled too: with a cell of 17 px, a sprite
+    // of 7 rows fits a shelf lower than those of the 128 px blocks, and the
+    // next sprite would share it on the same page.
     int x = 0, y = 0, width = 49;
+    const int rows = 7 * fonts.metrics().cellHeight;
     while (cache.grayPageCount() < 5 && width > 0) {
         while (cache.grayPage(cache.grayPageCount() - 1).allocate(128, 128, x, y)) { }
+        while (cache.grayPage(cache.grayPageCount() - 1).allocate(1, rows, x, y)) { }
         cache.beginFrame(std::numeric_limits<std::size_t>::max() / 2, 8192, start);
         cache.sprite(fonts, U'\u2588', width--, 7); // a new size: a new entry, on a new page
     }

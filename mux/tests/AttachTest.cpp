@@ -1366,14 +1366,18 @@ TEST(MuxAttach, ThePaneDirectoryIsThatOfTheForegroundProgram)
     ASSERT_TRUE(w.until([&] {
         return contains(w.screen(), "\nback ");
     })) << w.screen();
-    // A program in the foreground in another directory.
-    ASSERT_TRUE(w.type("(cd /usr && echo in-usr && exec sleep 30)\n"));
+    // A program in the foreground in another directory: one of the test's
+    // own, as a system need not have /usr (a Nix build has none).
+    const std::string elsewhere = daemon.dir() + "/elsewhere";
+    ASSERT_TRUE(std::filesystem::create_directory(elsewhere));
+    const std::string real = std::filesystem::canonical(elsewhere).string();
+    ASSERT_TRUE(w.type("(cd '" + elsewhere + "' && echo in-elsewhere && exec sleep 30)\n"));
     ASSERT_TRUE(w.until([&] {
-        return contains(w.screen(), "\nin-usr ");
+        return contains(w.screen(), "\nin-elsewhere ");
     })) << w.screen();
     // The shell puts the program in the foreground after it forked it.
     EXPECT_TRUE(w.until([&] {
-        return directory() == "/usr";
+        return directory() == real;
     })) << directory();
     IpcConnection::Error error;
     EXPECT_FALSE(daemon.call(Fn::PaneDirectory, Json::Array{"none", 1}, &error));
@@ -3106,7 +3110,7 @@ pid_t sleeper()
 {
     const pid_t pid = ::fork();
     if (pid == 0) {
-        ::execl("/bin/sleep", "sleep", "60", static_cast<char*>(nullptr));
+        ::execlp("sleep", "sleep", "60", static_cast<char*>(nullptr));
         ::_exit(127);
     }
     return pid;
@@ -4221,7 +4225,7 @@ TEST(MuxAttach, TheNextWindowAsksAgainForAnUploadAnswerThatWasLost)
         return uploadAsks(w) == 1;
     }));
     // A second pane, whose echo says that the daemon read what came before it.
-    const auto echo = newPane(daemon, "s", launchOf({"/bin/cat"}, daemon));
+    const auto echo = newPane(daemon, "s", launchOf({programInPath("cat")}, daemon));
     ASSERT_TRUE(echo) << daemon.lastError();
     ASSERT_TRUE(w.until([&] {
         return w.others.contains(*echo);
@@ -4358,8 +4362,12 @@ TEST(MuxControl, TheDaemonSetsColoursVariablesAndSignals)
             && contains(Json::write(listed->toArray()[0]["foreground"]["cmdline"]), "sleep");
     }));
     ASSERT_TRUE(ctl.call("signalProgram", Json::Array{pane, "SIGINT"})) << ctl.error.message;
+    // The typed af''ter cannot match: only the output of echo does. Not at
+    // the start of a line: a shell without line editing (BusyBox ash)
+    // echoes the input that came during the sleep, and the output follows
+    // its prompt.
     ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "echo af''ter\n"}));
-    EXPECT_TRUE(screenShows(ctl, pane, "\nafter"));
+    EXPECT_TRUE(screenShows(ctl, pane, "after"));
     EXPECT_FALSE(ctl.call("signalProgram", Json::Array{pane, "SIGNOPE"}));
     EXPECT_EQ(ctl.error.message, "no signal is named SIGNOPE");
     // The name first, as a window checks it, also for a pane that is not.
@@ -5926,7 +5934,7 @@ TEST(MuxAttach, AClearThatWaitsForAFullPtyGoesWhenTheWindowDetaches)
         return w.pane != 0 && contains(w.screen(), "before");
     })) << w.screen();
     // A second pane, whose echo says that the daemon read what came before it.
-    const auto echo = newPane(daemon, "s", launchOf({"/bin/cat"}, daemon));
+    const auto echo = newPane(daemon, "s", launchOf({programInPath("cat")}, daemon));
     ASSERT_TRUE(echo) << daemon.lastError();
     ASSERT_TRUE(w.until([&] {
         return w.others.contains(*echo);
@@ -5994,7 +6002,7 @@ TEST(MuxAttach, TheInputOfAPaneThatBrokeOutGoesWhenItsOldSessionEnds)
     }));
     // A second pane keeps the session, and its echo says that the daemon read
     // what came before it.
-    const auto echo = newPane(daemon, "s", launchOf({"/bin/cat"}, daemon));
+    const auto echo = newPane(daemon, "s", launchOf({programInPath("cat")}, daemon));
     ASSERT_TRUE(echo) << daemon.lastError();
     ASSERT_TRUE(w.until([&] {
         return w.others.contains(*echo);
@@ -6295,6 +6303,10 @@ TEST(MuxControl, TheDaemonRefusesWhatAWindowRefuses)
     // A command launch: a split without a launch runs the login shell.
     SessionOptions plain = daemon.options(Waiting, "plain");
     plain.launch.launchedProgram = "sleep";
+    // The prompt that the test waits for, also as root, whose default
+    // prompt ends in #.
+    plain.launch.environment.emplace_back("PS1", "$ ");
+    plain.launch.environment.emplace_back("ENV", "/dev/null");
     plain.control.allowReadText = true;
     ASSERT_TRUE(daemon.newSession(plain)) << daemon.lastError();
     ASSERT_EQ(ctl.select("plain"), "");
@@ -6315,7 +6327,7 @@ TEST(MuxControl, ASplitOfAShellSessionRunsTheShellOfItsFirstLaunch)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     const TempDir temp;
     // A shell with an argument that the login shell (/bin/sh) does not get.
-    const std::string shell = temp.script("shell", "printf 'argument %s\\n' \"$1\"; exec /bin/sh");
+    const std::string shell = temp.script("shell", "printf 'argument %s\\n' \"$1\"; PS1='$ ' exec /bin/sh");
     if (shell.empty())
         GTEST_SKIP() << "the temporary directory runs no program";
     SessionOptions options = shellOptions(daemon, "s");

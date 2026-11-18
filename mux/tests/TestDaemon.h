@@ -89,6 +89,38 @@ inline bool exists(const std::string& path)
     return ::lstat(path.c_str(), &info) == 0;
 }
 
+/// The path of @p name in this process's PATH, as a shell finds it, or
+/// @p name when no directory has it. A test that starts cat or sleep names
+/// it so: a system can keep them at no fixed path (NixOS has only /bin/sh),
+/// and a pane with no PATH of its own searches only /bin and /usr/bin.
+inline std::string programInPath(const std::string& name)
+{
+    const char* path = std::getenv("PATH");
+    std::string_view rest = path ? path : "";
+    while (!rest.empty()) {
+        const auto end = rest.find(':');
+        const std::string_view directory = rest.substr(0, end);
+        if (!directory.empty()) {
+            std::string candidate = std::string(directory) + '/' + name;
+            if (::access(candidate.c_str(), X_OK) == 0)
+                return candidate;
+        }
+        if (end == std::string_view::npos)
+            break;
+        rest.remove_prefix(end + 1);
+    }
+    return name;
+}
+
+/// The PATH of this process, for a pane or a fake host that must find the
+/// programs that the tests run: /usr/bin and /bin hold none of them on a
+/// system such as NixOS.
+inline std::string testPath()
+{
+    const char* path = std::getenv("PATH");
+    return path && *path ? path : "/usr/bin:/bin";
+}
+
 /// A program that keeps its session open until the test ends it: longer
 /// than any test runs, so that no session ends by itself. The end of the
 /// daemon (~TestDaemon) hangs it up.

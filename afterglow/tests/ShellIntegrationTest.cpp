@@ -896,7 +896,7 @@ TEST(Pty, ChildStartsWithDefaultSignalsAndUtf8Erase)
     sigaction(SIGUSR1, &ignore, &previous);
     Output status;
     SpawnOptions options;
-    options.argv = {"/bin/cat", "/proc/self/status"};
+    options.argv = {"cat", "/proc/self/status"};
     options.deferStart = true;
     auto pty = Pty::spawn(options, status);
     sigaction(SIGUSR1, &previous, nullptr);
@@ -1065,6 +1065,13 @@ struct FakeSsh
         if (!process.waitForFinished() || process.exitCode() != 0)
             return false;
         environment.set("TERMINFO_DIRS", dir.filePath("terminfo").toUtf8() + ':');
+        // ncurses reads no TERMINFO_DIRS for root, but -A names the
+        // directory for any user: an infocmp ahead of the real one on PATH.
+        file(dir.filePath("infocmp"),
+             QString("#!/bin/sh\nexec '" + QStandardPaths::findExecutable("infocmp") + "' -A '"
+                     + dir.filePath("terminfo") + "' \"$@\"\n")
+                 .toUtf8());
+        QFile::setPermissions(dir.filePath("infocmp"), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
         return true;
     }
 };
@@ -1122,7 +1129,10 @@ TEST(Ssh, TheProbeRunsInAnyShellAndMakesAPrivateDirectoryForEachHost)
     const auto probe = [&](const QString& home, const QString& runtime, int* status = nullptr) {
         QProcess sh;
         QProcessEnvironment env;
-        env.insert(QStringLiteral("PATH"), dir.filePath(QStringLiteral("bin")) + QStringLiteral(":/usr/bin:/bin"));
+        // The test's own PATH: /usr/bin and /bin hold no uname or mkdir on
+        // every system (NixOS).
+        env.insert(QStringLiteral("PATH"),
+                   dir.filePath(QStringLiteral("bin")) + QLatin1Char(':') + qEnvironmentVariable("PATH"));
         env.insert(QStringLiteral("HOME"), home);
         if (!runtime.isEmpty())
             env.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime);

@@ -33,6 +33,9 @@
   pcre2,
   gtest,
   glibc,
+  bashInteractive,
+  makeFontsConf,
+  dejavu_fonts,
   src,
   version,
   withTests ? false,
@@ -163,6 +166,9 @@ stdenv.mkDerivation {
   ];
 
   checkInputs = [ gtest ];
+  # The shell integration and completion tests run bash as a user does: the
+  # bash of stdenv has no readline, no prompt escapes and no complete.
+  nativeCheckInputs = [ bashInteractive ];
 
   cmakeFlags = [
     "-DCMAKE_BUILD_TYPE=Release"
@@ -179,7 +185,7 @@ stdenv.mkDerivation {
   # nixpkgs' Qt finds QML modules through NIXPKGS_QT6_QML_IMPORT_PATH and
   # plugins through QT_PLUGIN_PATH, and wrapQtAppsHook puts both only into the
   # wrapper arguments of installed programs. Export the same entries here.
-  # Then the offscreen platform for the GUI tests, and a writable HOME.
+  # Then fonts, the offscreen platform for the GUI tests, and a writable HOME.
   preCheck = ''
     for ((i = 0; i + 3 < ''${#qtWrapperArgs[@]}; i++)); do
       if [[ "''${qtWrapperArgs[i]}" == --prefix ]]; then
@@ -191,6 +197,10 @@ stdenv.mkDerivation {
       fi
     done
     export NIXPKGS_QT6_QML_IMPORT_PATH QT_PLUGIN_PATH
+    # A fontconfig configuration with the DejaVu families of the font tests.
+    # Without one, fontconfig writes an error that the tests of messages
+    # read, and every family is DejaVu Sans.
+    export FONTCONFIG_FILE=${makeFontsConf { fontDirectories = [ dejavu_fonts ]; }}
     export QT_QPA_PLATFORM=offscreen
     export HOME="$(mktemp -d)"
     export CTEST_OUTPUT_ON_FAILURE=1

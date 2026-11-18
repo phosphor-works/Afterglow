@@ -91,7 +91,7 @@ struct Shown
 Shown show(MuxTest::TestDaemon& daemon, const std::string& name, AfterglowMux::SessionOptions* made = nullptr)
 {
     Shown shown;
-    const AfterglowMux::SessionOptions options = daemon.options({"/bin/cat"}, name);
+    const AfterglowMux::SessionOptions options = daemon.options({MuxTest::programInPath("cat")}, name);
     if (made)
         *made = options;
     EXPECT_TRUE(daemon.newSession(options)) << daemon.lastError();
@@ -141,7 +141,7 @@ TEST(MuxClient, AWindowShowsMorePanesThanTheDefaultChannels)
     EXPECT_TRUE(shown.client->environment() == made.environment);
     std::vector<std::unique_ptr<Pane>> panes;
     for (int i = 0; i < 99; ++i) {
-        panes.push_back(newPane(*shown.client, shown.client, {"/bin/cat"}));
+        panes.push_back(newPane(*shown.client, shown.client, {MuxTest::programInPath("cat")}));
         ASSERT_TRUE(panes.back()) << i;
     }
     for (std::size_t i = 0; i < panes.size(); ++i) {
@@ -162,7 +162,7 @@ TEST(MuxClient, ADetachLeavesThePanesWithoutAnExit)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     Shown shown = show(daemon, "left");
     ASSERT_TRUE(shown.client && shown.first);
-    std::unique_ptr<Pane> second = newPane(*shown.client, shown.client, {"/bin/cat"});
+    std::unique_ptr<Pane> second = newPane(*shown.client, shown.client, {MuxTest::programInPath("cat")});
     ASSERT_TRUE(second);
     ASSERT_TRUE(waitFor([&] {
         return second->sessionSynced();
@@ -224,7 +224,7 @@ TEST(MuxClient, PanesThatGoFreeTheirChannels)
         {
             // The window closes it at once, maybe before its PaneOpened came:
             // its program ends, and its frames are read and dropped.
-            std::unique_ptr<Pane> pane = newPane(*shown.client, shown.client, {"/bin/cat"});
+            std::unique_ptr<Pane> pane = newPane(*shown.client, shown.client, {MuxTest::programInPath("cat")});
             ASSERT_TRUE(pane) << i;
         }
         // Its exit comes whole (its last frame and PaneClosed) before the
@@ -238,7 +238,7 @@ TEST(MuxClient, PanesThatGoFreeTheirChannels)
             << i << " " << daemon.errors();
         ASSERT_TRUE(shown.client->showing()) << i;
     }
-    std::unique_ptr<Pane> last = newPane(*shown.client, shown.client, {"/bin/cat"});
+    std::unique_ptr<Pane> last = newPane(*shown.client, shown.client, {MuxTest::programInPath("cat")});
     ASSERT_TRUE(last);
     EXPECT_TRUE(waitFor([&] {
         return last->sessionSynced();
@@ -263,8 +263,8 @@ TEST(MuxClient, TheJobsOfPanesComeTogether)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     Shown shown = show(daemon, "jobs");
     ASSERT_TRUE(shown.client && shown.first);
-    std::unique_ptr<Pane> first = newPane(*shown.client, shown.client, {"/bin/cat"}, "reader");
-    std::unique_ptr<Pane> second = newPane(*shown.client, shown.client, {"/bin/cat"}, "writer");
+    std::unique_ptr<Pane> first = newPane(*shown.client, shown.client, {MuxTest::programInPath("cat")}, "reader");
+    std::unique_ptr<Pane> second = newPane(*shown.client, shown.client, {MuxTest::programInPath("cat")}, "writer");
     ASSERT_TRUE(first && second);
     ASSERT_TRUE(waitFor([&] {
         return first->sessionSynced() && second->sessionSynced();
@@ -351,7 +351,7 @@ TEST(MuxClient, APaneThatShowsAfterItsFirstFramesHasTheWindowsSize)
     using AfterglowVt::Terminal;
     MuxTest::TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
-    ASSERT_TRUE(daemon.newSession(daemon.options({"/bin/cat"}, "late"))) << daemon.lastError();
+    ASSERT_TRUE(daemon.newSession(daemon.options({MuxTest::programInPath("cat")}, "late"))) << daemon.lastError();
     QString error;
     const auto client = MuxClient::attach(QStringLiteral("late"), false, &error,
                                           AfterglowMux::Route{daemon.sockets(), {}, {}}, std::size_t(1) << 20, 1000);
@@ -385,7 +385,7 @@ TEST(MuxClient, APaneThatShowsAfterItsFirstFramesHasTheWindowsSize)
         << replica();
 
     // A split: a new pane that the user sees from the start.
-    auto split = newPane(*client, client, {"/bin/cat"});
+    auto split = newPane(*client, client, {MuxTest::programInPath("cat")});
     ASSERT_TRUE(split);
     split->setSessionVisible(true);
     ASSERT_TRUE(waitFor([&] {
@@ -456,7 +456,7 @@ TEST(MuxClient, EachPaneHearsOfItsOwnRefresh)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     Shown shown = show(daemon, "each");
     ASSERT_TRUE(shown.client && shown.first);
-    std::unique_ptr<Pane> other = newPane(*shown.client, shown.client, {"/bin/cat"});
+    std::unique_ptr<Pane> other = newPane(*shown.client, shown.client, {MuxTest::programInPath("cat")});
     ASSERT_TRUE(other);
     ASSERT_TRUE(waitFor([&] {
         return other->sessionSynced();
@@ -546,7 +546,7 @@ TEST(MuxClient, ADetachSendsTheLayoutThatWaitsBeforeTheInputAndTheAnswers)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_GT(daemon.pid(), 0);
     const AfterglowMux::SessionOptions options =
-        daemon.options({"/bin/sh", "-c", "stty raw -echo; printf ready; exec /bin/sleep 600"}, "detaching");
+        daemon.options({"/bin/sh", "-c", "stty raw -echo; printf ready; exec sleep 600"}, "detaching");
     ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
     QString error;
     std::shared_ptr<MuxClient> client =
@@ -843,12 +843,13 @@ TEST(MuxClient, NewPaneLaterKeepsAPaneWhosePaneOpenedCameFirst)
         QString error;
     };
     const auto outcome = std::make_shared<Outcome>();
-    const QString refused = shown.client->newPaneLater(
-        launchOf({"/bin/cat"}), Size, [outcome](std::optional<std::uint32_t> pane, const QString& error) {
-            outcome->called = true;
-            outcome->pane = pane;
-            outcome->error = error;
-        });
+    const QString refused =
+        shown.client->newPaneLater(launchOf({MuxTest::programInPath("cat")}), Size,
+                                   [outcome](std::optional<std::uint32_t> pane, const QString& error) {
+                                       outcome->called = true;
+                                       outcome->pane = pane;
+                                       outcome->error = error;
+                                   });
     EXPECT_TRUE(refused.isEmpty()) << refused.toStdString();
     EXPECT_FALSE(outcome->called);
     // The daemon starts the pane, answers and sends PaneOpened meanwhile.
@@ -905,7 +906,7 @@ TEST(MuxClient, APaneThatTheWindowDoesNotPlaceEnds)
     };
     const auto outcome = std::make_shared<Outcome>();
     const QString refused = shown.client->newPaneLater(
-        launchOf({"/bin/cat"}), Size,
+        launchOf({MuxTest::programInPath("cat")}), Size,
         [outcome, client = std::weak_ptr<MuxClient>(shown.client)](std::optional<std::uint32_t> pane, const QString&) {
             outcome->called = true;
             outcome->pane = pane;
@@ -944,7 +945,7 @@ TEST(MuxClient, BreakOutLaterHoldsTheExitOfAPaneThatMoved)
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     Shown shown = show(daemon, "whole");
     ASSERT_TRUE(shown.client && shown.first);
-    std::unique_ptr<Pane> second = newPane(*shown.client, shown.client, {"/bin/cat"});
+    std::unique_ptr<Pane> second = newPane(*shown.client, shown.client, {MuxTest::programInPath("cat")});
     ASSERT_TRUE(second);
     ASSERT_TRUE(waitFor([&] {
         return second->sessionSynced();

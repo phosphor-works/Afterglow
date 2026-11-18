@@ -461,10 +461,10 @@ TEST(MuxImageDecoder, AServerThatDoesNotAnswerEndsAtTheDeadline)
     TempDir dir;
     ASSERT_FALSE(dir.path.empty());
     const std::string once = (dir.path / "once").string();
-    const std::string stuck =
-        dir.script("stuck",
-                   "if [ ! -e " + shellQuoted(once) + " ]; then : > " + shellQuoted(once)
-                       + "; exec /bin/sleep 60; fi\nexec " + shellQuoted(AFTERGLOW_MUX) + " \"$@\"");
+    const std::string stuck = dir.script("stuck",
+                                         "if [ ! -e " + shellQuoted(once) + " ]; then : > " + shellQuoted(once)
+                                             + "; exec " + shellQuoted(MuxTest::programInPath("sleep"))
+                                             + " 60; fi\nexec " + shellQuoted(AFTERGLOW_MUX) + " \"$@\"");
     SKIP_WITHOUT(stuck);
     ImageDecoder decoder(stuck, 300);
     const auto start = Clock::now();
@@ -489,7 +489,7 @@ TEST(MuxImageDecoder, ADecodeThatWaitsForAnotherEndsWhenItsPaneCloses)
     // when its own wait ends, 1 s after it began.
     TempDir dir;
     ASSERT_FALSE(dir.path.empty());
-    const std::string stuck = dir.script("stuck", "exec /bin/sleep 60");
+    const std::string stuck = dir.script("stuck", "exec " + shellQuoted(MuxTest::programInPath("sleep")) + " 60");
     SKIP_WITHOUT(stuck);
     ASSERT_FALSE(decodeRuns());
     ImageDecoder decoder(stuck, 1000);
@@ -665,6 +665,17 @@ TEST(MuxImageDecoder, ADecodingProcessHasItsLimitsAndItsFilter)
     ASSERT_TRUE(decode(decoder, Png, ImageFormats::Png).ok);
     const pid_t server = added(before, children());
     ASSERT_GT(server, 0);
+    // A process inherits the filters of its parent (a Nix build runs under
+    // one), so a filter alone does not tell the decoding process's own: it
+    // has one filter more than the server. A kernel before 5.9 counts no
+    // filters: then the server must have none.
+    const auto filters = [](pid_t process) {
+        const std::string line = procLines(process, "status", "Seccomp_filters:");
+        return line.empty() ? -1 : std::atoi(line.c_str() + std::strlen("Seccomp_filters:"));
+    };
+    const int inherited = filters(server);
+    if (inherited < 0 && procLines(server, "status", "Seccomp:").find("Seccomp:\t0") == std::string::npos)
+        GTEST_SKIP() << "the server runs under a filter, and the kernel counts no filters to tell the decoder's own";
     std::string status;
     std::string limits;
     std::thread watch([&] {
@@ -674,7 +685,7 @@ TEST(MuxImageDecoder, ADecodingProcessHasItsLimitsAndItsFilter)
                 const std::string seen =
                     procLines(process, "status", "Seccomp:") + procLines(process, "status", "NoNewPrivs:");
                 // Read once its filter is on: the limits are set before it.
-                if (seen.find("Seccomp:\t2") != std::string::npos) {
+                if (inherited >= 0 ? filters(process) > inherited : seen.find("Seccomp:\t2") != std::string::npos) {
                     status = seen;
                     limits = procLines(process, "limits", "Max");
                     return;
@@ -805,7 +816,8 @@ TEST(MuxImageDecoder, APaneThatClosesLeavesTheServerToTheOthers)
     // its request waits for the answer. exec keeps the process.
     TempDir dir;
     ASSERT_FALSE(dir.path.empty());
-    const std::string slow = dir.script("slow", "/bin/sleep 1\nexec " + shellQuoted(AFTERGLOW_MUX) + " \"$@\"");
+    const std::string slow = dir.script(
+        "slow", shellQuoted(MuxTest::programInPath("sleep")) + " 1\nexec " + shellQuoted(AFTERGLOW_MUX) + " \"$@\"");
     SKIP_WITHOUT(slow);
     if (!childrenListed())
         GTEST_SKIP() << "the kernel lists no children of a process (CONFIG_PROC_CHILDREN)";
