@@ -964,7 +964,9 @@ TEST(MuxAttach, TheAttachCallAnswersWithItsKeys)
     // The session's environment, as `afterglow mux new` sent it: the window
     // prepares the launches of new panes over it.
     SessionOptions o = daemon.options(Waiting, "env");
-    o.environment = {{"FROM_SESSION", "1"}, {"EMPTY", ""}};
+    // With a PATH that finds sleep, so that the session outlives the call
+    // (NixOS keeps no sleep in /bin or /usr/bin).
+    o.environment = {{"FROM_SESSION", "1"}, {"EMPTY", ""}, {"PATH", testPath()}};
     ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
     const auto answer = daemon.call(Fn::Attach, Json::Array{ProtocolVersion, "env", Json::Object{}}, &error);
     ASSERT_TRUE(answer) << error.message;

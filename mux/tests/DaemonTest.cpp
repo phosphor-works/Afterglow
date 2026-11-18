@@ -350,7 +350,9 @@ TEST(MuxDaemon, ASessionCanTakeTheEnvironmentOfItsCaller)
     IpcConnection connection;
     IpcConnection::Error error;
     ASSERT_TRUE(connection.connect(daemon.socket(), &error, 2000)) << error.message;
-    const std::string path = "/caller/bin:/usr/bin:/bin";
+    // Its PATH finds printf, mv and sleep: /usr/bin and /bin hold none of
+    // them on a system such as NixOS.
+    const std::string path = "/caller/bin:" + testPath();
     ASSERT_TRUE(connection.call(Target, Fn::CallerEnvironment,
                                 Json::Array{ProtocolVersion, environmentJson({{"PATH", path}, {"FROM_CLIENT", "no"}})},
                                 5000, &error))
