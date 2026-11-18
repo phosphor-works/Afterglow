@@ -20,7 +20,9 @@ namespace AfterglowConformance {
 /// The checks after each step. Returns what is wrong, or nothing.
 inline std::optional<std::string> checkScreen(const AfterglowVt::Screen& s, const char* name)
 {
-    const auto fail = [name](std::string what) { return std::optional<std::string>(std::string(name) + ": " + what); };
+    const auto fail = [name](std::string what) {
+        return std::optional<std::string>(std::string(name) + ": " + what);
+    };
     if (s.cursor.x < 0 || s.cursor.x >= s.cols() || s.cursor.y < 0 || s.cursor.y >= s.rows()) {
         return fail("cursor " + std::to_string(s.cursor.x) + "," + std::to_string(s.cursor.y) + " outside "
                     + std::to_string(s.cols()) + "x" + std::to_string(s.rows()));
@@ -29,8 +31,8 @@ inline std::optional<std::string> checkScreen(const AfterglowVt::Screen& s, cons
     for (std::size_t index = 0; index < s.totalRows(); ++index) {
         const AfterglowVt::Row& row = s.absoluteRow(index);
         const bool onScreen = index >= history;
-        const std::string where = onScreen ? "row " + std::to_string(index - history)
-                                           : "scrollback row -" + std::to_string(history - index);
+        const std::string where =
+            onScreen ? "row " + std::to_string(index - history) : "scrollback row -" + std::to_string(history - index);
         // History rows drop their trailing blanks; screen rows keep them all.
         if (onScreen ? row.cells.size() != std::size_t(s.cols()) : row.cells.size() > std::size_t(s.cols())) {
             return fail(where + " has " + std::to_string(row.cells.size()) + " cells, the screen "
@@ -44,7 +46,8 @@ inline std::optional<std::string> checkScreen(const AfterglowVt::Screen& s, cons
                 // to the left, and its parameters cover this offset.
                 const int dx = cell.multicellDx();
                 const int dy = cell.multicellDy();
-                if (std::size_t(dy) > index || dx > x) return fail(at + ": a sized block with no top-left cell");
+                if (std::size_t(dy) > index || dx > x)
+                    return fail(at + ": a sized block with no top-left cell");
                 const AfterglowVt::Row& origin = s.absoluteRow(index - std::size_t(dy));
                 const AfterglowVt::Cell& first = origin.at(x - dx);
                 const auto params = origin.multicell ? origin.multicell->find(std::uint16_t(x - dx))
@@ -72,11 +75,14 @@ inline std::optional<std::string> checkScreen(const AfterglowVt::Screen& s, cons
                 continue;
             }
             if (cell.width() == 2) {
-                if (x + 1 >= s.cols()) return fail(at + ": a wide character in the last column");
+                if (x + 1 >= s.cols())
+                    return fail(at + ": a wide character in the last column");
                 const AfterglowVt::Cell& tail = row.at(x + 1);
-                if (!tail.isTail() || tail.isMulticell()) return fail(at + ": a wide character with no tail cell");
+                if (!tail.isTail() || tail.isMulticell())
+                    return fail(at + ": a wide character with no tail cell");
             } else if (cell.isTail()) {
-                if (x == 0 || row.cells[std::size_t(x - 1)].width() != 2 || row.cells[std::size_t(x - 1)].isMulticell()) {
+                if (x == 0 || row.cells[std::size_t(x - 1)].width() != 2
+                    || row.cells[std::size_t(x - 1)].isMulticell()) {
                     return fail(at + ": a tail cell with no wide character");
                 }
             }
@@ -94,7 +100,8 @@ inline std::optional<std::string> checkTerminal(const AfterglowVt::Terminal& t)
     if (auto wrong = checkScreen(t.screen(), &t.screen() == &t.primaryScreen() ? "main screen" : "alternate screen")) {
         return wrong;
     }
-    if (&t.screen() != &t.primaryScreen()) return checkScreen(t.primaryScreen(), "main screen");
+    if (&t.screen() != &t.primaryScreen())
+        return checkScreen(t.primaryScreen(), "main screen");
     return std::nullopt;
 }
 

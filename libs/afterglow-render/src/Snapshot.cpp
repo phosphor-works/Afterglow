@@ -42,7 +42,9 @@ Rgb withContrast(Rgb fg, Rgb bg, double minimum)
     }
     const Rgb target = contrast(1.0, lb) >= contrast(0.0, lb) ? Rgb{255, 255, 255} : Rgb{0, 0, 0};
     auto mix = [&](double t) {
-        auto ch = [t](std::uint8_t a, std::uint8_t b) { return std::uint8_t(std::lround(a + (b - a) * t)); };
+        auto ch = [t](std::uint8_t a, std::uint8_t b) {
+            return std::uint8_t(std::lround(a + (b - a) * t));
+        };
         return Rgb{ch(fg.r, target.r), ch(fg.g, target.g), ch(fg.b, target.b)};
     };
     double lo = 0.0;
@@ -58,14 +60,19 @@ Rgb withContrast(Rgb fg, Rgb bg, double minimum)
 class ContrastCache
 {
 public:
-    explicit ContrastCache(double minimum) : m_minimum(minimum) {}
+    explicit ContrastCache(double minimum)
+        : m_minimum(minimum)
+    {
+    }
     Rgb operator()(Rgb fg, Rgb bg)
     {
-        const std::uint64_t key = (std::uint64_t(fg.r) << 40) | (std::uint64_t(fg.g) << 32) | (std::uint64_t(fg.b) << 24)
-            | (std::uint64_t(bg.r) << 16) | (std::uint64_t(bg.g) << 8) | bg.b;
-        if (m_hasLast && key == m_lastKey) return m_last;
+        const std::uint64_t key = (std::uint64_t(fg.r) << 40) | (std::uint64_t(fg.g) << 32)
+            | (std::uint64_t(fg.b) << 24) | (std::uint64_t(bg.r) << 16) | (std::uint64_t(bg.g) << 8) | bg.b;
+        if (m_hasLast && key == m_lastKey)
+            return m_last;
         auto [it, fresh] = m_results.try_emplace(key);
-        if (fresh) it->second = withContrast(fg, bg, m_minimum);
+        if (fresh)
+            it->second = withContrast(fg, bg, m_minimum);
         m_hasLast = true;
         m_lastKey = key;
         m_last = it->second;
@@ -112,7 +119,8 @@ std::uint64_t PaneSnapshot::Identity::next() noexcept
     return ++counter;
 }
 
-void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const SearchHighlight& search, int extra, bool reorder)
+void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const SearchHighlight& search, int extra,
+                           bool reorder)
 {
     const Screen& scr = t.screen();
     const Modes& modes = t.modes();
@@ -150,7 +158,8 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     // A style's text and background colours, before selection and contrast.
     auto resolveColors = [&](const Style& style) {
         Rgb fg = resolve(style.fg, defFg);
-        if (options.boldIsBright && style.has(Attr::Bold) && style.fg.kind() == Color::Kind::Palette && style.fg.index() < 8) {
+        if (options.boldIsBright && style.has(Attr::Bold) && style.fg.kind() == Color::Kind::Palette
+            && style.fg.index() < 8) {
             fg = t.paletteColor(style.fg.index() + 8);
         }
         Rgb bg = resolve(style.bg, defBg);
@@ -199,11 +208,13 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
             std::fill(rowHighlight.begin(), rowHighlight.end(), 0u);
             for (auto it = visibleMatches.rbegin(); it != visibleMatches.rend(); ++it) {
                 const SearchMatch& m = (*search.matches)[std::size_t(*it)];
-                if (rowId < m.start.row || rowId > m.end.row) continue;
+                if (rowId < m.start.row || rowId > m.end.row)
+                    continue;
                 const int from = rowId == m.start.row ? std::max(0, m.start.col) : 0;
                 const int to = rowId == m.end.row ? std::min(cols - 1, m.end.col) : cols - 1;
                 const std::uint32_t color = *it == search.current ? search.currentColor : search.matchColor;
-                for (int x = from; x <= to; ++x) rowHighlight[std::size_t(x)] = color;
+                for (int x = from; x <= to; ++x)
+                    rowHighlight[std::size_t(x)] = color;
             }
         }
         for (int x = 0; x < cols; ++x) {
@@ -262,7 +273,8 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
                 out.fg = (search.textColor & 0x00FFFFFFu) | (std::uint32_t(fgAlpha) << 24);
             }
             // An SGR 58 colour is concealed and faded with the text.
-            out.underlineColor = st.underlineColor.isDefault() ? out.fg : packRgba(resolve(st.underlineColor, fg), fgAlpha);
+            out.underlineColor =
+                st.underlineColor.isDefault() ? out.fg : packRgba(resolve(st.underlineColor, fg), fgAlpha);
             out.attrs = st.attrs;
             out.underline = st.underline;
             out.width = std::uint8_t(c.width());
@@ -319,37 +331,48 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     cursorColor = t.cursorColor() ? packRgba(*t.cursorColor()) : defaultFg;
     cursorTextColor = t.cursorTextColor() ? packRgba(*t.cursorTextColor()) : defaultBg;
     extraCursors.clear();
-    if (scr.viewportOffset() == 0) for (const auto& [point, shape] : t.extraCursors()) {
-        const int x = point.second, y = point.first;
-        if (x < 0 || x >= cols || y < 0 || y >= rows) continue;
-        const auto resolved = shape == 29 ? cursorShape : shape == 1 ? CursorShape::Block
-            : shape == 2 ? CursorShape::Bar : CursorShape::Underline;
-        const auto& cell = scr.absoluteRow(top + std::size_t(y)).at(x);
-        const auto [fg, bg] = resolveColors(scr.styles().get(cell.styleId()));
-        const auto color = [&](const ExtraCursorColor& spec, std::uint32_t main, Rgb reverse) {
-            switch (spec.mode) {
-            case ExtraCursorColor::Mode::Main: return main;
-            case ExtraCursorColor::Mode::Reverse: return packRgba(reverse);
-            case ExtraCursorColor::Mode::Rgb:
-            case ExtraCursorColor::Mode::Palette: return packRgba(t.resolve(spec.color, true));
-            }
-            return main;
-        };
-        const auto fill = color(t.extraCursorColor(), cursorColor, fg);
-        const auto text = t.extraCursorColor().mode == ExtraCursorColor::Mode::Reverse ? packRgba(bg)
-            : color(t.extraCursorTextColor(), cursorTextColor, bg);
-        extraCursors.push_back({x, y, resolved, fill, text});
-    }
+    if (scr.viewportOffset() == 0)
+        for (const auto& [point, shape] : t.extraCursors()) {
+            const int x = point.second, y = point.first;
+            if (x < 0 || x >= cols || y < 0 || y >= rows)
+                continue;
+            const auto resolved = shape == 29 ? cursorShape
+                : shape == 1                  ? CursorShape::Block
+                : shape == 2                  ? CursorShape::Bar
+                                              : CursorShape::Underline;
+            const auto& cell = scr.absoluteRow(top + std::size_t(y)).at(x);
+            const auto [fg, bg] = resolveColors(scr.styles().get(cell.styleId()));
+            const auto color = [&](const ExtraCursorColor& spec, std::uint32_t main, Rgb reverse) {
+                switch (spec.mode) {
+                case ExtraCursorColor::Mode::Main:
+                    return main;
+                case ExtraCursorColor::Mode::Reverse:
+                    return packRgba(reverse);
+                case ExtraCursorColor::Mode::Rgb:
+                case ExtraCursorColor::Mode::Palette:
+                    return packRgba(t.resolve(spec.color, true));
+                }
+                return main;
+            };
+            const auto fill = color(t.extraCursorColor(), cursorColor, fg);
+            const auto text = t.extraCursorColor().mode == ExtraCursorColor::Mode::Reverse
+                ? packRgba(bg)
+                : color(t.extraCursorTextColor(), cursorTextColor, bg);
+            extraCursors.push_back({x, y, resolved, fill, text});
+        }
     // Placeholder slices join the placements in z order, as the renderer
     // draws them in array order.
-    std::stable_sort(images.begin(), images.end(), [](const auto& a, const auto& b) { return a.z < b.z; });
+    std::stable_sort(images.begin(), images.end(), [](const auto& a, const auto& b) {
+        return a.z < b.z;
+    });
     generation = t.textGeneration();
     ++version;
     for (int i = 0; i < 256; ++i) {
         palette[std::size_t(i)] = packRgba(t.paletteColor(i));
     }
     colorIndexedImages();
-    if (reorder) applyBidi(t);
+    if (reorder)
+        applyBidi(t);
 }
 
 void PaneSnapshot::colorIndexedImages()
@@ -360,8 +383,9 @@ void PaneSnapshot::colorIndexedImages()
     // its text, the link hover colour and one reserved entry. Afterglow
     // shows a hovered link in its own text colour, so 254 is the default
     // foreground, as the reserved 255 is.
-    const bool anyIndexed
-        = std::any_of(images.begin(), images.end(), [](const VisiblePlacement& image) { return image.frame->indexed(); });
+    const bool anyIndexed = std::any_of(images.begin(), images.end(), [](const VisiblePlacement& image) {
+        return image.frame->indexed();
+    });
     if (!anyIndexed) {
         coloredFrames.clear();
         return;
@@ -380,7 +404,8 @@ void PaneSnapshot::colorIndexedImages()
         indexColors = colors;
     }
     for (VisiblePlacement& image : images) {
-        if (!image.frame->indexed()) continue;
+        if (!image.frame->indexed())
+            continue;
         ColoredFrame& entry = coloredFrames[image.frame.get()];
         // The address of a freed frame can come back for a new one.
         if (!entry.rgba || entry.source.lock() != image.frame) {
@@ -391,7 +416,9 @@ void PaneSnapshot::colorIndexedImages()
         image.frame = entry.rgba;
     }
     // Frames that no placement shows any more give their colours back.
-    std::erase_if(coloredFrames, [&](const auto& item) { return item.second.seen != version; });
+    std::erase_if(coloredFrames, [&](const auto& item) {
+        return item.second.seen != version;
+    });
 }
 
 } // namespace AfterglowRender

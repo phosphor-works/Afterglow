@@ -37,7 +37,8 @@ struct ShaderRefs
     {
         qsizetype count = background.size() + text.size() + cursor.size() + pane.size() + window.size();
         for (const QString* ref : {&overview, &tabTransition, &paneEffects, &overlayTransition}) {
-            if (!ref->isEmpty()) ++count;
+            if (!ref->isEmpty())
+                ++count;
         }
         return count;
     }

@@ -51,7 +51,10 @@ public:
     /// also ends the run. Call it for each cell of a row in order.
     std::optional<PlaceholderCell> next(const Screen& screen, const Row& row, int x);
     /// Starts a new row.
-    void reset() noexcept { m_previous = false; }
+    void reset() noexcept
+    {
+        m_previous = false;
+    }
 
 private:
     bool m_previous = false;
@@ -85,20 +88,36 @@ struct ImageFrame
     /// IndexedAlpha the index and then the alpha of each pixel.
     std::vector<std::uint8_t> indices;
 
-    bool indexed() const noexcept { return format != PixelFormat::Rgba; }
+    bool indexed() const noexcept
+    {
+        return format != PixelFormat::Rgba;
+    }
     /// The bytes that the frame holds: rgba, or indices for an indexed frame.
-    std::vector<std::uint8_t>& pixels() noexcept { return indexed() ? indices : rgba; }
-    const std::vector<std::uint8_t>& pixels() const noexcept { return indexed() ? indices : rgba; }
+    std::vector<std::uint8_t>& pixels() noexcept
+    {
+        return indexed() ? indices : rgba;
+    }
+    const std::vector<std::uint8_t>& pixels() const noexcept
+    {
+        return indexed() ? indices : rgba;
+    }
     /// What the frame counts for in the image quota: its RGBA size. An
     /// indexed frame keeps fewer bytes, but it is drawn as RGBA, and the
     /// quota bounds what the images of a screen cost when they show.
-    std::size_t byteSize() const noexcept { return indexed() ? std::size_t(width) * height * 4 : rgba.size(); }
+    std::size_t byteSize() const noexcept
+    {
+        return indexed() ? std::size_t(width) * height * 4 : rgba.size();
+    }
 };
 using FramePtr = std::shared_ptr<const ImageFrame>;
 
 struct Image
 {
-    enum class Animation : std::uint8_t { Stopped, Loading, Running };
+    enum class Animation : std::uint8_t {
+        Stopped,
+        Loading,
+        Running
+    };
 
     std::uint32_t id = 0;
     std::uint32_t number = 0;
@@ -234,9 +253,8 @@ public:
     /// the text and the cursor (z -1, as in kitty). @p placementId 0 takes
     /// any virtual placement of the image. A side of the grid that the
     /// placement leaves out is the image's own size in cells.
-    std::optional<VisiblePlacement> placeholderSlice(std::uint32_t imageId, std::uint32_t placementId, int row,
-                                                     int col, int cellX, int cellY, int cellWidth,
-                                                     int cellHeight) const;
+    std::optional<VisiblePlacement> placeholderSlice(std::uint32_t imageId, std::uint32_t placementId, int row, int col,
+                                                     int cellX, int cellY, int cellWidth, int cellHeight) const;
 
     /// Advances the running animations of images drawn in @p screen's
     /// viewport at the cell size: a placement in the scrollback, or a virtual
@@ -303,9 +321,15 @@ public:
     void setQuota(std::size_t bytes);
     /// Whether transmissions may read files, temporary files and shared
     /// memory (t=f, t=t, t=s). Off, they are refused and nothing is opened.
-    void setFileTransfer(bool allowed) noexcept { m_fileTransfer = allowed; }
+    void setFileTransfer(bool allowed) noexcept
+    {
+        m_fileTransfer = allowed;
+    }
     /// The $TMPDIR of the programs (Terminal::setTemporaryDirectory).
-    void setTemporaryDirectory(std::string directory) { m_temporaryDirectory = std::move(directory); }
+    void setTemporaryDirectory(std::string directory)
+    {
+        m_temporaryDirectory = std::move(directory);
+    }
     /// Sets the work budget (chargeWork()) and fills it: @p burst bytes at
     /// once, refilled at @p bytesPerSecond.
     void setWorkBudget(std::size_t burst, std::size_t bytesPerSecond);
@@ -321,17 +345,26 @@ public:
     /// runs and loops while it shows. @p gaps holds the milliseconds of
     /// each frame. Every frame has the size of the first. Frames past
     /// MaxFrames are dropped, and a gap above INT_MAX is INT_MAX.
-    void addInternalImage(std::vector<ImageFrame> frames, std::vector<std::uint32_t> gaps, const Screen& screen, int row,
-                          int col, int cellWidth, int cellHeight, std::uint32_t displayWidth = 0,
+    void addInternalImage(std::vector<ImageFrame> frames, std::vector<std::uint32_t> gaps, const Screen& screen,
+                          int row, int col, int cellWidth, int cellHeight, std::uint32_t displayWidth = 0,
                           std::uint32_t displayHeight = 0);
 
-    const std::map<std::uint32_t, Image>& images() const noexcept { return m_images; }
-    const std::vector<Placement>& placements() const noexcept { return m_placements; }
+    const std::map<std::uint32_t, Image>& images() const noexcept
+    {
+        return m_images;
+    }
+    const std::vector<Placement>& placements() const noexcept
+    {
+        return m_placements;
+    }
     std::size_t totalBytes() const;
     /// Grows with each change that may have changed the images or the
     /// placements: a writer of the codec (StateSync.h) looks at a store
     /// again only when it grew.
-    std::uint64_t changes() const noexcept { return m_changes; }
+    std::uint64_t changes() const noexcept
+    {
+        return m_changes;
+    }
 
 private:
     /// A replica takes the images and placements of the terminal that it

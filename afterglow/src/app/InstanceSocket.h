@@ -44,8 +44,14 @@ public:
     /// targets stay registered, for a later listen(). The destructor calls
     /// it; tests call it to free the path while the process runs on.
     void close();
-    bool listening() const { return !m_path.isEmpty(); }
-    PhosphorIpc::IpcRouter& router() { return *m_router; }
+    bool listening() const
+    {
+        return !m_path.isEmpty();
+    }
+    PhosphorIpc::IpcRouter& router()
+    {
+        return *m_router;
+    }
 
     /// Removes the sockets in $XDG_RUNTIME_DIR that a process left when it
     /// ended without its destructors (a crash, SIGKILL). Nothing else removes

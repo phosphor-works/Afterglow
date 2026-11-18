@@ -90,7 +90,8 @@ struct ScriptCommand;
 /// its border line (when @p border) with Window.popupCorners, the text
 /// colour for @p title (UTF-8) in Terminal.bidi's order, and Colors.popupDim
 /// over the pane around it.
-AfterglowRender::WindowRenderer::Pane::Overlay::Popup popupLook(const Settings& settings, bool border, const std::string& title);
+AfterglowRender::WindowRenderer::Pane::Overlay::Popup popupLook(const Settings& settings, bool border,
+                                                                const std::string& title);
 
 /// A top-level terminal window: a split tree of panes drawn in one render
 /// pass on the shared GpuDevice.
@@ -167,17 +168,35 @@ public:
     QString setWindowState(const QString& state, int cols, int rows);
 
     // For the control interface and scripts.
-    quint32 id() const noexcept { return m_id; }
+    quint32 id() const noexcept
+    {
+        return m_id;
+    }
     /// Developer diagnostics; collection is off unless explicitly enabled.
-    void setGpuTimingEnabled(bool enabled) { m_renderer->setGpuTimingEnabled(enabled); }
-    double completedGpuSeconds() const { return m_renderer->completedGpuSeconds(); }
-    std::uint64_t submittedFrames() const { return m_renderer->submittedFrames(); }
+    void setGpuTimingEnabled(bool enabled)
+    {
+        m_renderer->setGpuTimingEnabled(enabled);
+    }
+    double completedGpuSeconds() const
+    {
+        return m_renderer->completedGpuSeconds();
+    }
+    std::uint64_t submittedFrames() const
+    {
+        return m_renderer->submittedFrames();
+    }
     /// The layout waits to go to the daemon of the window's session
     /// (scheduleSessionLayout). For the tests.
-    bool sessionLayoutPending() const { return m_sessionLayoutTimer.isActive(); }
+    bool sessionLayoutPending() const
+    {
+        return m_sessionLayoutTimer.isActive();
+    }
     /// The size of the frames that the renderer draws, in device pixels:
     /// the size of a window screenshot. For the tests.
-    QSize framePixels() const { return m_renderer->pixelSize(); }
+    QSize framePixels() const
+    {
+        return m_renderer->pixelSize();
+    }
     /// @p pane moves to its place (a split, a resize). For the tests.
     bool paneMoving(const Pane* pane) const
     {
@@ -187,7 +206,10 @@ public:
 
     /// Every pane, tab by tab.
     QList<Pane*> panes() const;
-    int tabIndexOf(const Pane* pane) const { return tabOf(pane); }
+    int tabIndexOf(const Pane* pane) const
+    {
+        return tabOf(pane);
+    }
     quint32 tabIdOf(const Pane* pane) const;
     struct TabInfo
     {
@@ -198,12 +220,18 @@ public:
     };
     QList<TabInfo> tabs() const;
     quint32 activeTabId() const;
-    Pane* focusedPane() const { return m_focused; }
+    Pane* focusedPane() const
+    {
+        return m_focused;
+    }
     /// Splits @p pane using @p options (empty command: the shell); returns the new pane.
     Pane* splitPane(Pane* pane, SplitTree::Direction direction, const PaneLaunchOptions& options, QString* error);
     /// The error of a split that has no room for another pane, as a notice
     /// shows it: afterglow ctl and scripts give their own text for it.
-    static QString noRoomForPane() { return tr("There is not enough room for another pane."); }
+    static QString noRoomForPane()
+    {
+        return tr("There is not enough room for another pane.");
+    }
     /// Opens a tab using @p options; returns its pane. With @p from, the tab
     /// opens beside that pane's tab and inherits its directory; otherwise
     /// beside the current tab, from the focused pane. Without @p focus the
@@ -214,7 +242,10 @@ public:
     /// paths and values. Its new panes start where the pane that they open
     /// from is, there.
     QString remoteLaunchError(const PaneLaunchOptions& options) const;
-    void requestClosePane(Pane* pane) { closePane(pane); }
+    void requestClosePane(Pane* pane)
+    {
+        closePane(pane);
+    }
     /// Runs a keybind action as if it were pressed in @p pane. The tab
     /// actions of a pane in another tab (close, rename, move, detach, and a
     /// new tab beside it) act on that tab without showing it, as its tab menu
@@ -250,7 +281,8 @@ public:
     /// @p target, or by @p step cards when no target is given. "open" is
     /// refused while a script other than @p owner holds a key mode, with
     /// @p code "busy".
-    QString scriptOverview(const QString& owner, Pane* pane, const QString& operation, QVariantMap& result, QString* code = nullptr);
+    QString scriptOverview(const QString& owner, Pane* pane, const QString& operation, QVariantMap& result,
+                           QString* code = nullptr);
     QString scriptOverviewMove(Pane* pane, Pane* target, int step, QVariantMap& result);
     /// The overview for scripts: open, highlighted and its cards, by pane ID.
     QVariantMap overviewState() const;
@@ -271,7 +303,10 @@ public:
     std::pair<qreal, bool> overlayFade(const Pane* pane) const;
     /// The pane whose link is under the pointer and underlined, or null. For
     /// the tests.
-    const Pane* linkHoverPane() const { return m_hover.pane; }
+    const Pane* linkHoverPane() const
+    {
+        return m_hover.pane;
+    }
     /// Draws a frame and reads it back as the window shows it, cut to
     /// @p scope around @p pane: shader packs, an overlay over the pane and
     /// the chrome over it are in the image. A translucent background stays
@@ -296,7 +331,10 @@ public:
         quint32 from = 0;
         int edge = 0;
     };
-    PaneOrigin paneOrigin(const Pane* pane) const { return m_paneOrigin.value(pane); }
+    PaneOrigin paneOrigin(const Pane* pane) const
+    {
+        return m_paneOrigin.value(pane);
+    }
 
     /// The window as a project document. A pane whose command a project
     /// cannot keep (ProjectStore::keepsCommand) saves as the shell, with a
@@ -310,19 +348,36 @@ public:
     /// launches of the panes in that order, which the caller made already
     /// (ProjectStore::launchOf) with @p launchWarnings: the window does not
     /// look for the programs again.
-    QVariantMap restoreProject(const QJsonObject& document, const QList<Pane*>& started = {}, const QList<ProjectStore::Launch>& launches = {},
+    QVariantMap restoreProject(const QJsonObject& document, const QList<Pane*>& started = {},
+                               const QList<ProjectStore::Launch>& launches = {},
                                const QStringList& launchWarnings = {});
-    QString projectDirectory() const { return m_projectDirectory; }
-    void setProjectDirectory(const QString& path) { m_projectDirectory = path; }
-    QString projectName() const { return m_projectName; }
-    void setProjectName(const QString& name) { m_projectName = name; }
+    QString projectDirectory() const
+    {
+        return m_projectDirectory;
+    }
+    void setProjectDirectory(const QString& path)
+    {
+        m_projectDirectory = path;
+    }
+    QString projectName() const
+    {
+        return m_projectName;
+    }
+    void setProjectName(const QString& name)
+    {
+        m_projectName = name;
+    }
     /// Without @p beside, the pane goes to a new tab: after the tab of
     /// @p after when it is given, else at the end, as the daemon places a
     /// tab with a target.
-    QString movePaneTo(Pane* pane, TerminalWindow* destination, Pane* beside, SplitTree::Direction direction, Pane* after = nullptr);
+    QString movePaneTo(Pane* pane, TerminalWindow* destination, Pane* beside, SplitTree::Direction direction,
+                       Pane* after = nullptr);
     QString detachTabTo(Pane* pane, TerminalWindow* destination);
     /// The window shows a mux session: all of its panes are the session's.
-    bool showsSession() const { return m_session != nullptr; }
+    bool showsSession() const
+    {
+        return m_session != nullptr;
+    }
     /// The name of the session that the window shows, empty for none.
     QString sessionName() const;
     /// The ssh destination of the daemon of that session, empty for this
@@ -332,7 +387,10 @@ public:
     /// until then, but must not show again, nor be the window that a new
     /// attach reveals. Its delete releases the session as
     /// windowCloseRelease says.
-    bool closing() const { return m_closing; }
+    bool closing() const
+    {
+        return m_closing;
+    }
     /// With @p keep, the session keeps running when the window closes,
     /// whatever Mux.onClose says: Afterglow quits. Without, Mux.onClose
     /// decides again: the quit did not happen.
@@ -341,14 +399,18 @@ public:
     /// instance too (Control::openProjectSession): the session keeps running
     /// when the window closes, for the next open of the project, whatever
     /// Mux.onClose says. A save under a project name does not set it.
-    void keepSessionForProject() { m_projectSession = true; }
+    void keepSessionForProject()
+    {
+        m_projectSession = true;
+    }
     /// What a window kept for the panes that broke out of its session, for
     /// the window that shows them next (adoptBreakOut).
     struct BreakOut;
     /// The end of breakOutOfSession(): the name of the new session, which a
     /// new window then shows, and what this window kept for the panes
     /// (null when this window closed meanwhile); or an error.
-    using BrokeOut = std::function<void(const QString& error, const QString& session, std::shared_ptr<const BreakOut> kept)>;
+    using BrokeOut =
+        std::function<void(const QString& error, const QString& session, std::shared_ptr<const BreakOut> kept)>;
     /// Moves @p pane, or its whole tab with @p wholeTab, out of the session
     /// to a new session of the daemon, where its programs run on, and closes
     /// it here: a drag, a key, the menu, a script or afterglow ctl moves it
@@ -366,7 +428,8 @@ public:
     /// name of the session that holds the pane now. The daemon tells
     /// @p destination to place the pane. When the pane was the last of this
     /// window's session, that session ends, and this window closes.
-    QString joinSession(Pane* pane, TerminalWindow* destination, Pane* beside, std::optional<SplitTree::Direction> side, BrokeOut done);
+    QString joinSession(Pane* pane, TerminalWindow* destination, Pane* beside, std::optional<SplitTree::Direction> side,
+                        BrokeOut done);
     /// The panes of this window that show what broke out of another
     /// window's session get what that window kept for them: their split
     /// titles, notify on finish, clipboard grants, the looks that scripts
@@ -379,8 +442,8 @@ public:
     /// this computer, it keeps @p command, which a project saves. Then the
     /// window sends its layout. Null when the window is closing, or shows
     /// the pane already.
-    Pane* placeSessionPane(std::uint32_t id, Pane* beside, std::optional<SplitTree::Direction> side, const QStringList& command,
-                           double fraction = 0.5);
+    Pane* placeSessionPane(std::uint32_t id, Pane* beside, std::optional<SplitTree::Direction> side,
+                           const QStringList& command, double fraction = 0.5);
     /// The end of startSessionPane(): the new pane, or null and why not.
     using SessionPaneStarted = std::function<void(Pane* pane, const QString& error)>;
     /// splitPane() of @p from on @p side, or without a side openTab() beside
@@ -390,7 +453,8 @@ public:
     /// once, also when this window closes first. The window places the pane
     /// as placeSessionPane() does: when @p from closed meanwhile, or a split
     /// lost its room, in a tab.
-    QString startSessionPane(Pane* from, std::optional<SplitTree::Direction> side, const PaneLaunchOptions& options, SessionPaneStarted done);
+    QString startSessionPane(Pane* from, std::optional<SplitTree::Direction> side, const PaneLaunchOptions& options,
+                             SessionPaneStarted done);
     /// The session pane of this window that shows pane @p id of the daemon.
     Pane* sessionPane(std::uint32_t id) const;
     bool swapPane(Pane* pane, SplitTree::Neighbor direction);
@@ -403,17 +467,32 @@ public:
     /// Lists the shader settings loaded script packages suggest and writes
     /// the chosen one to the config file.
     bool usePackageShaders();
-    bool overviewOpen() const { return m_overview.open; }
+    bool overviewOpen() const
+    {
+        return m_overview.open;
+    }
     /// The highlighted pane, while the overview is open.
-    Pane* overviewHighlight() const { return m_overview.open ? m_overview.highlighted.data() : nullptr; }
+    Pane* overviewHighlight() const
+    {
+        return m_overview.open ? m_overview.highlighted.data() : nullptr;
+    }
     /// A tab switch is animating (Shaders.tabTransition).
-    bool tabSwitching() const { return m_tabTransition.progress.isAnimating(); }
+    bool tabSwitching() const
+    {
+        return m_tabTransition.progress.isAnimating();
+    }
     /// The overview deck's position and where it heads, in cards.
-    std::pair<qreal, qreal> overviewPosition() const { return {m_overview.position.value(), m_overview.positionTarget}; }
+    std::pair<qreal, qreal> overviewPosition() const
+    {
+        return {m_overview.position.value(), m_overview.positionTarget};
+    }
     /// Slides the quick terminal in or out (quick windows only).
     void toggleQuick();
     /// Whether the quick terminal shows or slides in (quick windows only).
-    bool quickShown() const { return m_quickShown; }
+    bool quickShown() const
+    {
+        return m_quickShown;
+    }
 
 Q_SIGNALS:
     /// The tab list, the current tab or a tab title changed.
@@ -432,7 +511,8 @@ Q_SIGNALS:
     /// on_dock_hover, on_dock_wheel, on_dock_drag or on_dock_layout. @p pane
     /// is a pane dock's pane, or the window's focused pane for a window
     /// dock. @p limited: the call counts toward the callback limit.
-    void scriptDockEvent(const QString& owner, const QString& handler, quint32 pane, const QVariantMap& event, bool limited);
+    void scriptDockEvent(const QString& owner, const QString& handler, quint32 pane, const QVariantMap& event,
+                         bool limited);
     /// The current tab changed; @p direction is 1 toward the right.
     void tabSwitched(quint32 fromTab, quint32 toTab, int direction);
 
@@ -463,7 +543,8 @@ private:
     /// @p failure when the daemon refuses. A project that opens into a
     /// session has its panes started by the daemon before the window shows,
     /// so restoreProject asks createPane for none there.
-    Pane* createPane(const QString& workingDirectory, const QRect& area, const QStringList& command = {}, QString* failure = nullptr, const QVariantMap& environment = {}, bool fallback = false);
+    Pane* createPane(const QString& workingDirectory, const QRect& area, const QStringList& command = {},
+                     QString* failure = nullptr, const QVariantMap& environment = {}, bool fallback = false);
     /// A pane that shows pane @p id of @p session: no program of its own.
     Pane* createSessionPane(const std::shared_ptr<MuxClient>& session, std::uint32_t id);
     /// createPane in a window that shows a session. The pane that the daemon
@@ -473,11 +554,12 @@ private:
     /// environment and what the launch changes in it. In a session of
     /// another host, it starts with @p command alone (the host's login
     /// shell for none), in @p workingDirectory there (newPaneDirectory).
-    Pane* createSessionLaunchPane(const QString& workingDirectory, const QRect& area, const QStringList& command, QString* failure,
-                                  const QVariantMap& environment);
+    Pane* createSessionLaunchPane(const QString& workingDirectory, const QRect& area, const QStringList& command,
+                                  QString* failure, const QVariantMap& environment);
     /// What the daemon of the window's session starts for a new pane, as
     /// createSessionLaunchPane says.
-    AfterglowMux::Launch sessionLaunch(const QString& workingDirectory, const QStringList& command, const QVariantMap& environment) const;
+    AfterglowMux::Launch sessionLaunch(const QString& workingDirectory, const QStringList& command,
+                                       const QVariantMap& environment) const;
     /// The cells of @p area, and their pixels, for a new pane's program.
     AfterglowMux::PaneSize paneSize(const QRect& area) const;
     /// The refusal of a window of a session that is closing.
@@ -545,12 +627,16 @@ private:
     Pane* pointerTarget(Pane* pane, const QPointF& pos) const;
     /// The pane in the tab for @p pane: the host of an overlay's pane, else
     /// @p pane itself.
-    static Pane* hostOf(Pane* pane) { return pane && pane->overlayHost() ? pane->overlayHost() : pane; }
+    static Pane* hostOf(Pane* pane)
+    {
+        return pane && pane->overlayHost() ? pane->overlayHost() : pane;
+    }
     /// @p pane still takes the input it got before: it is in a tab, or the
     /// overlay that still runs over a pane in a tab.
     bool takesInput(const Pane* pane) const
     {
-        if (pane && pane->overlayHost()) return inputPane(pane->overlayHost()) == pane && tabOf(pane->overlayHost()) >= 0;
+        if (pane && pane->overlayHost())
+            return inputPane(pane->overlayHost()) == pane && tabOf(pane->overlayHost()) >= 0;
         return pane && tabOf(pane) >= 0;
     }
     /// The title that shows for @p pane (window, tab, and the split label
@@ -598,11 +684,12 @@ private:
     /// that was current before (@p previousTab, by id, at @p previousIndex)
     /// counts as left when another one shows now.
     void finishTransfer(quint32 previousTab = 0, int previousIndex = -1);
-    Pane* splitFocused(SplitTree::Direction direction, const QStringList& command = {}, const PaneLaunchOptions& options = {}, QString* error = nullptr);
+    Pane* splitFocused(SplitTree::Direction direction, const QStringList& command = {},
+                       const PaneLaunchOptions& options = {}, QString* error = nullptr);
     /// Opens a tab at @p at (beside the current tab when negative), which
     /// shows unless @p focus is false.
-    Pane* newTab(const QString& workingDirectory, const QStringList& command = {}, const QVariantMap& environment = {}, QString* error = nullptr, int at = -1,
-                 bool focus = true);
+    Pane* newTab(const QString& workingDirectory, const QStringList& command = {}, const QVariantMap& environment = {},
+                 QString* error = nullptr, int at = -1, bool focus = true);
     /// The tabs and splits of the session that the window shows, as the
     /// daemon sent them, each pane a session pane.
     void restoreSession();
@@ -618,7 +705,8 @@ private:
     /// runs in one of @p panes. @p what names what closes: "this tab".
     void confirmClose(const QList<Pane*>& panes, const QString& what, std::function<void()> close);
     /// confirmClose with the @p jobs that closingJobs gave for @p panes.
-    void confirmClose(const QStringList& jobs, const QList<Pane*>& panes, const QString& what, std::function<void()> close);
+    void confirmClose(const QStringList& jobs, const QList<Pane*>& panes, const QString& what,
+                      std::function<void()> close);
     /// The jobs that confirmClose names for @p panes, as it shows them (an
     /// overlay's program too); empty when confirmClose is off or none runs.
     /// When the whole window of a session closes and the session runs on
@@ -736,10 +824,17 @@ private:
     bool scriptKeyModeKey(QKeyEvent* e, bool& shortcut);
     void stopCopyMode();
     QPointer<Pane> m_copyPane;
-    struct ScriptDialog { QString owner; QPointer<Pane> pane; ScriptReply reply; QString request; };
+    struct ScriptDialog
+    {
+        QString owner;
+        QPointer<Pane> pane;
+        ScriptReply reply;
+        QString request;
+    };
     std::optional<ScriptDialog> m_scriptDialog;
     void finishScriptDialog(bool accepted, const QString& value);
-    struct ScriptAppearance {
+    struct ScriptAppearance
+    {
         QString owner;
         QPointer<Pane> pane;
         QVariantMap values;
@@ -784,7 +879,8 @@ private:
     bool pressDock(QMouseEvent* e);
     /// @p limited: the click counts toward the script's callback limit.
     /// @p at, window logical pixels, is where a tab menu opens after it.
-    void emitDockClick(const DockArea& dock, const QString& item, const QString& button, bool limited, const QPointF& at);
+    void emitDockClick(const DockArea& dock, const QString& item, const QString& button, bool limited,
+                       const QPointF& at);
     void emitDockEvent(const DockArea& dock, const QString& handler, QVariantMap event, bool limited);
     /// The wheel over a dock: whole steps go to its script.
     void wheelDock(DockArea& dock, const QPoint& pixel, QWheelEvent* e);
@@ -866,7 +962,8 @@ private:
     /// nowhere once the mode has closed.
     QHash<quint32, bool> m_consumedKeys;
     /// A press that reached a pane's program, with what its release needs.
-    struct SentKey {
+    struct SentKey
+    {
         QPointer<Pane> pane;
         int key = 0;
         QString text;
@@ -988,7 +1085,10 @@ private:
     /// More rows than any history: a scroll by it goes to the top or the bottom.
     static constexpr double ScrollToEnd = double(1L << 30);
     /// The rows of a page scroll of @p pane: all but one, which stays in view.
-    static double pageRows(const Pane* pane) { return std::max(1, pane->rows() - 1); }
+    static double pageRows(const Pane* pane)
+    {
+        return std::max(1, pane->rows() - 1);
+    }
     /// Whether @p pane's view scrolls in history: not on the alternate
     /// screen of a full-screen program, which has none.
     static bool scrollsHistory(Pane* pane);
@@ -1032,14 +1132,16 @@ private:
 
     // Clipboard protocol (OSC 5522)
     void clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRequest& request);
-    void answerClipboardRead(Pane* pane, const AfterglowVt::ClipboardRequest& request, std::string_view oneTimePassword = {});
+    void answerClipboardRead(Pane* pane, const AfterglowVt::ClipboardRequest& request,
+                             std::string_view oneTimePassword = {});
     /// Who asks in a clipboard prompt, in words the program cannot disguise
     /// (@p name, else the pane's title), and where the pane is when it is
     /// not the one the user looks at.
     QString clipboardAsker(Pane* pane, const QString& name = {}) const;
     /// A program of @p pane asks to send or receive files with the file
     /// transfer protocol (OSC 5113, transfer @p token): the user answers.
-    void askFileTransfer(Pane* pane, const QString& token, bool writing, const QStringList& paths, int total, bool othersRefused);
+    void askFileTransfer(Pane* pane, const QString& token, bool writing, const QStringList& paths, int total,
+                         bool othersRefused);
     /// A program in @p pane wants to save a file (Pane::downloadRequested,
     /// question @p serial): Terminal.downloads decides, or the user does,
     /// before its data comes.
@@ -1085,7 +1187,10 @@ private:
     std::optional<PendingClipboardRead> m_pendingClipboardRead;
     void updateTitle();
     void restartBlink();
-    enum class ProblemSource { Config, Shaders };
+    enum class ProblemSource {
+        Config,
+        Shaders
+    };
     /// Shows what the config file (or the shader library) could not use as
     /// a notice, once for each new list, or @p again after a reload the user
     /// asked for.
@@ -1185,7 +1290,11 @@ private:
     std::unique_ptr<AfterglowRender::WindowRenderer> m_renderer;
     struct Tab
     {
-        Tab() { static quint32 next = 1; id = next++; }
+        Tab()
+        {
+            static quint32 next = 1;
+            id = next++;
+        }
         quint32 id = 0; ///< process-lifetime identity, independent of tab position
         std::unique_ptr<SplitTree> splits;
         QPointer<Pane> focused;
@@ -1315,7 +1424,14 @@ private:
     /// held, as it was when Qt made mouse events of it.
     struct TouchGesture
     {
-        enum class State { Idle, Pending, Scrolling, Selecting, Pointer, Ignored };
+        enum class State {
+            Idle,
+            Pending,
+            Scrolling,
+            Selecting,
+            Pointer,
+            Ignored
+        };
         State state = State::Idle;
         int id = -1;
         QPointF start;
@@ -1326,7 +1442,8 @@ private:
     TouchGesture m_touch;
     void touchScroll(const QPointF& at, double dy, Qt::ScrollPhase phase, Qt::KeyboardModifiers modifiers);
     /// A mouse event of the touch @p e, at @p at, with the left button.
-    void touchMouse(const QTouchEvent* e, QEvent::Type type, const QPointF& at, Qt::MouseButton button, Qt::MouseButtons held);
+    void touchMouse(const QTouchEvent* e, QEvent::Type type, const QPointF& at, Qt::MouseButton button,
+                    Qt::MouseButtons held);
     /// Ends the gesture of m_touch: a button it holds goes up, and a scroll
     /// stops without a coast.
     void cancelTouch(const QTouchEvent* e);
@@ -1411,12 +1528,13 @@ private:
     CurveCache m_bellCurve;
     CurveCache m_quickCurve;
     /// @p fallback is the setting's default, used when @p spec is not a curve.
-    PhosphorAnimation::MotionSpec<qreal> motionSpec(const QString& spec, int durationMs, CurveCache& cache, const char* setting,
-                                                    const QString& fallback = {});
+    PhosphorAnimation::MotionSpec<qreal> motionSpec(const QString& spec, int durationMs, CurveCache& cache,
+                                                    const char* setting, const QString& fallback = {});
     /// Another tab's panes for the renderer, prepared as visible panes are;
     /// only those in @p only when it is given.
     AfterglowRender::WindowRenderer::OverviewTab prepareOtherTab(int tab, const std::vector<Pane*>* only,
-                                                                  std::uint8_t backgroundAlpha, bool& holding, bool& animating);
+                                                                 std::uint8_t backgroundAlpha, bool& holding,
+                                                                 bool& animating);
     // A tab switch (Shaders.tabTransition): the tab being left keeps drawing
     // until the new one has arrived.
     struct TabTransition
@@ -1534,7 +1652,8 @@ private:
     bool overviewShowing() const;
     /// Applies the pane's script overrides (backgroundOpacity, cursorBlink)
     /// over the window's @p backgroundAlpha, and returns all of them.
-    QVariantMap applyScriptOverrides(Pane* pane, AfterglowRender::FrameBuilder::PaneParams& params, std::uint8_t backgroundAlpha) const;
+    QVariantMap applyScriptOverrides(Pane* pane, AfterglowRender::FrameBuilder::PaneParams& params,
+                                     std::uint8_t backgroundAlpha) const;
     void layoutOtherTabs();
     /// Focuses @p chosen and closes; nullptr cancels back to the original pane.
     void closeOverview(Pane* chosen);

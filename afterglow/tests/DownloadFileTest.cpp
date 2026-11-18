@@ -50,7 +50,9 @@ struct Ending
     bool wait()
     {
         std::unique_lock lock(mutex);
-        return done.wait_for(lock, std::chrono::seconds(10), [this] { return ended; });
+        return done.wait_for(lock, std::chrono::seconds(10), [this] {
+            return ended;
+        });
     }
 };
 
@@ -134,11 +136,23 @@ TEST(DownloadFile, AReleasedDownloadEndsWithoutItsOwnerAndReportsNothingAfter)
     ASSERT_TRUE(dir.isValid());
     const QString target = dir.filePath(QStringLiteral("whole.txt"));
     std::atomic<int> calls{0};
-    const auto count = [&calls](const QString&, bool, const QString&) { ++calls; };
+    const auto count = [&calls](const QString&, bool, const QString&) {
+        ++calls;
+    };
     QString error;
-    auto streaming = DownloadFile::create(dir.filePath(QStringLiteral("half.txt")), false, [&calls] { ++calls; }, count, error);
+    auto streaming = DownloadFile::create(
+        dir.filePath(QStringLiteral("half.txt")), false,
+        [&calls] {
+            ++calls;
+        },
+        count, error);
     ASSERT_NE(streaming, nullptr) << error.toStdString();
-    auto finished = DownloadFile::create(target, false, [&calls] { ++calls; }, count, error);
+    auto finished = DownloadFile::create(
+        target, false,
+        [&calls] {
+            ++calls;
+        },
+        count, error);
     ASSERT_NE(finished, nullptr) << error.toStdString();
     EXPECT_TRUE(streaming->write("half"));
     EXPECT_TRUE(finished->write("whole"));
@@ -151,7 +165,8 @@ TEST(DownloadFile, AReleasedDownloadEndsWithoutItsOwnerAndReportsNothingAfter)
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (namesIn(dir) != QStringList{QStringLiteral("whole.txt")} && std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    EXPECT_EQ(namesIn(dir), QStringList{QStringLiteral("whole.txt")}) << namesIn(dir).join(QLatin1Char(',')).toStdString();
+    EXPECT_EQ(namesIn(dir), QStringList{QStringLiteral("whole.txt")})
+        << namesIn(dir).join(QLatin1Char(',')).toStdString();
     EXPECT_EQ(contentOf(target), QByteArray("whole"));
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     EXPECT_EQ(calls.load(), reported);
@@ -229,7 +244,8 @@ TEST(DownloadFile, ARenameThatFailsKeepsTheWholeDownload)
 
 TEST(DownloadFile, ARenameToAFreeNameThatFailsKeepsTheWholeDownload)
 {
-    if (::geteuid() == 0) GTEST_SKIP() << "root writes in a directory without write permission";
+    if (::geteuid() == 0)
+        GTEST_SKIP() << "root writes in a directory without write permission";
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
     Ending ending;
@@ -261,7 +277,12 @@ TEST(DownloadFile, AFullQueuePausesTheProducerUntilHalfOfItIsWritten)
     std::atomic<int> rooms{0};
     Ending ending;
     QString error;
-    auto file = DownloadFile::create(target, false, [&rooms] { ++rooms; }, ending.callback(), error);
+    auto file = DownloadFile::create(
+        target, false,
+        [&rooms] {
+            ++rooms;
+        },
+        ending.callback(), error);
     ASSERT_NE(file, nullptr) << error.toStdString();
     const std::string chunk(DownloadFile::MaxQueued + 1, 'x');
     bool paused = false;
@@ -269,17 +290,21 @@ TEST(DownloadFile, AFullQueuePausesTheProducerUntilHalfOfItIsWritten)
     while (!paused && chunks < 10) {
         EXPECT_TRUE(file->write(chunk));
         ++chunks;
-        EXPECT_EQ(file->pauseIfFull([&paused] { paused = true; }), paused);
+        EXPECT_EQ(file->pauseIfFull([&paused] {
+            paused = true;
+        }),
+                  paused);
     }
     ASSERT_TRUE(paused);
     // room() comes once, when half the queue is written.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (rooms.load() == 0 && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    while (rooms.load() == 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     EXPECT_EQ(rooms.load(), 1);
     file->finish(true, {});
     ASSERT_TRUE(ending.wait());
     EXPECT_TRUE(ending.ok) << ending.error.toStdString();
-    EXPECT_FALSE(file->pauseIfFull([] {}));
+    EXPECT_FALSE(file->pauseIfFull([] { }));
     EXPECT_EQ(QFileInfo(target).size(), qint64(chunks) * qint64(chunk.size()));
     EXPECT_EQ(rooms.load(), 1);
 }
@@ -314,7 +339,8 @@ TEST(DownloadFile, AWriteThatFailsLosesTheDownload)
     EXPECT_TRUE(file->write(std::string(64 << 10, 'x')));
     // The writer fails once it reaches the chunk.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (file->write("more") && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    while (file->write("more") && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     EXPECT_FALSE(file->write("more"));
     file->finish(true, QStringLiteral("unused"));
     ASSERT_TRUE(ending.wait());

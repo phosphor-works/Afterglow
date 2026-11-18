@@ -22,8 +22,14 @@ struct Term
         : t(cols, rows, host)
     {
     }
-    void feed(std::string_view s) { t.feed(s); }
-    const Cell& at(int x, int y) const { return t.screen().row(y).at(x); }
+    void feed(std::string_view s)
+    {
+        t.feed(s);
+    }
+    const Cell& at(int x, int y) const
+    {
+        return t.screen().row(y).at(x);
+    }
 };
 } // namespace
 
@@ -117,8 +123,8 @@ TEST(TextSizing, InsertAndDeleteShiftOneRowBlocksWhole)
     auto block = [](const Term& t, int x) {
         const Row& r = t.t.screen().row(0);
         const MulticellParams* p = t.t.screen().multicellParams(r, x);
-        return p && r.at(x).multicellDx() == 0 && p->columns() == 2 && r.at(x).codepoint() == U'x'
-            && r.graphemes && r.graphemes->count(std::uint16_t(x)) && r.graphemes->at(std::uint16_t(x)) == U"y";
+        return p && r.at(x).multicellDx() == 0 && p->columns() == 2 && r.at(x).codepoint() == U'x' && r.graphemes
+            && r.graphemes->count(std::uint16_t(x)) && r.graphemes->at(std::uint16_t(x)) == U"y";
     };
     Term t(10, 4);
     t.feed("\x1b[1;4H\x1b]66;w=2;xy\x07"); // one block in columns 3 and 4
@@ -137,17 +143,20 @@ TEST(TextSizing, InsertAndDeleteShiftOneRowBlocksWhole)
     EXPECT_FALSE(t.t.screen().row(0).multicell && !t.t.screen().row(0).multicell->empty());
     // ICH that pushes it past the right edge.
     t.feed("\x1b[1;8H\x1b]66;w=2;xy\x07\x1b[1;1H\x1b[2@");
-    for (int x = 0; x < 10; ++x) EXPECT_FALSE(t.at(x, 0).isMulticell()) << x;
+    for (int x = 0; x < 10; ++x)
+        EXPECT_FALSE(t.at(x, 0).isMulticell()) << x;
     // DCH whose deleted cells take its first cell.
     t.feed("\x1b[1;4H\x1b]66;w=2;xy\x07\x1b[1;1H\x1b[4P");
-    for (int x = 0; x < 10; ++x) EXPECT_FALSE(t.at(x, 0).isMulticell()) << x;
+    for (int x = 0; x < 10; ++x)
+        EXPECT_FALSE(t.at(x, 0).isMulticell()) << x;
     // DCH of the cells right before it moves it onto them.
     t.feed("\x1b[1;4H\x1b]66;w=2;xy\x07\x1b[1;2H\x1b[2P");
     EXPECT_TRUE(block(t, 1));
     // A block of two rows goes, though it would fit.
     t.feed("\x1b[2J\x1b[1;4H\x1b]66;s=2;a\x07\x1b[1;1H\x1b[@");
     for (int y = 0; y < 2; ++y)
-        for (int x = 0; x < 10; ++x) EXPECT_FALSE(t.at(x, y).isMulticell()) << x << "," << y;
+        for (int x = 0; x < 10; ++x)
+            EXPECT_FALSE(t.at(x, y).isMulticell()) << x << "," << y;
     // With left and right margins, a block past the right margin stays, and
     // one across it goes.
     t.feed("\x1b[2J\x1b[?69h\x1b[1;6s\x1b[1;8H\x1b]66;w=2;xy\x07\x1b[1;1H\x1b[@");
@@ -179,7 +188,8 @@ TEST(TextSizing, AScrollWithinMarginsKeepsTheParametersOfTheBlocksItMoves)
     EXPECT_NE(s.multicellParams(s.row(3), 1), nullptr);
     // Text on the lower row of a goes past it.
     t.feed("\x1b[4;5Hx");
-    EXPECT_NE(t.t.text(Terminal::TextScope::Screen).find('x'), std::string::npos) << t.t.text(Terminal::TextScope::Screen);
+    EXPECT_NE(t.t.text(Terminal::TextScope::Screen).find('x'), std::string::npos)
+        << t.t.text(Terminal::TextScope::Screen);
 }
 
 TEST(TextSizing, AScrollDownWithinMarginsKeepsTheParametersOfTheBlocksItMoves)
@@ -192,7 +202,7 @@ TEST(TextSizing, AScrollDownWithinMarginsKeepsTheParametersOfTheBlocksItMoves)
         Term t(20, 5);
         t.feed("\x1b[?69h\x1b[2;6s");
         t.feed("\x1b[1;3H\x1b]66;s=2;a\x07"); // rows 0-1, columns 2-3
-        t.feed(scroll);                         // to rows 1-2
+        t.feed(scroll); // to rows 1-2
         const Screen& s = t.t.screen();
         EXPECT_FALSE(t.at(2, 0).isMulticell());
         ASSERT_TRUE(t.at(2, 1).isMulticell());
@@ -202,7 +212,8 @@ TEST(TextSizing, AScrollDownWithinMarginsKeepsTheParametersOfTheBlocksItMoves)
         EXPECT_NE(s.multicellParams(s.row(1), 2), nullptr);
         EXPECT_NE(s.multicellParams(s.row(2), 2), nullptr);
         t.feed("\x1b[3;4Hx");
-        EXPECT_NE(t.t.text(Terminal::TextScope::Screen).find('x'), std::string::npos) << t.t.text(Terminal::TextScope::Screen);
+        EXPECT_NE(t.t.text(Terminal::TextScope::Screen).find('x'), std::string::npos)
+            << t.t.text(Terminal::TextScope::Screen);
     }
 }
 
@@ -214,7 +225,7 @@ TEST(TextSizing, AScrollOfSeveralRowsWithinMarginsKeepsTheBlocksItMoves)
     Term t(20, 5);
     t.feed("\x1b[?69h\x1b[2;6s");
     t.feed("\x1b[3;3H\x1b]66;s=3;a\x07"); // rows 2-4, columns 2-4
-    t.feed("\x1b[2S");                     // to rows 0-2
+    t.feed("\x1b[2S"); // to rows 0-2
     const Screen& s = t.t.screen();
     for (int y = 0; y < 3; ++y) {
         ASSERT_TRUE(t.at(2, y).isMulticell()) << y;
@@ -224,7 +235,8 @@ TEST(TextSizing, AScrollOfSeveralRowsWithinMarginsKeepsTheBlocksItMoves)
     EXPECT_FALSE(t.at(2, 3).isMulticell());
     EXPECT_FALSE(t.at(2, 4).isMulticell());
     t.feed("\x1b[3;4Hx");
-    EXPECT_NE(t.t.text(Terminal::TextScope::Screen).find('x'), std::string::npos) << t.t.text(Terminal::TextScope::Screen);
+    EXPECT_NE(t.t.text(Terminal::TextScope::Screen).find('x'), std::string::npos)
+        << t.t.text(Terminal::TextScope::Screen);
 }
 
 // kitty's unscroll drops the last rows of the screen: a block that they cut
@@ -232,14 +244,15 @@ TEST(TextSizing, AScrollOfSeveralRowsWithinMarginsKeepsTheBlocksItMoves)
 TEST(TextSizing, AnUnscrollThatCutsABlockTakesItsRowsFromTheHistory)
 {
     Term t(10, 4);
-    t.feed("h\r\n\r\n\r\n\r\n");           // "h" in the history
-    t.feed("\x1b[H\x1b]66;s=4;a\x07");          // rows 0-3
-    t.feed("\x1b[4;1H\n");                      // rows -1 to 2
+    t.feed("h\r\n\r\n\r\n\r\n"); // "h" in the history
+    t.feed("\x1b[H\x1b]66;s=4;a\x07"); // rows 0-3
+    t.feed("\x1b[4;1H\n"); // rows -1 to 2
     ASSERT_EQ(t.t.screen().historySize(), 2u);
-    t.feed("\x1b[2+T");                          // rows 1 to 4, past the screen
+    t.feed("\x1b[2+T"); // rows 1 to 4, past the screen
     EXPECT_EQ(t.at(0, 0).codepoint(), U'h');
     for (int y = 0; y < 4; ++y) {
-        for (int x = 0; x < 4; ++x) EXPECT_FALSE(t.at(x, y).isMulticell()) << x << "," << y;
+        for (int x = 0; x < 4; ++x)
+            EXPECT_FALSE(t.at(x, y).isMulticell()) << x << "," << y;
         EXPECT_EQ(t.t.screen().multicellParams(t.t.screen().row(y), 0), nullptr) << y;
     }
 }
@@ -251,11 +264,13 @@ TEST(TextSizing, TextOnABlockThatAMarginScrollMovedGoesOn)
     Term t(47, 5);
     t.t.resize(47, 5, 10, 20);
     std::string pixels;
-    for (int i = 0; i < 40; ++i) pixels += std::string("\x01\x02\x03\xff", 4);
+    for (int i = 0; i < 40; ++i)
+        pixels += std::string("\x01\x02\x03\xff", 4);
     t.feed("\x1b[?69h\x1b[2;6s");
     t.feed("\x1b_Ga=T,f=32,s=1,v=40,i=1,q=2;" + AfterglowProto::base64Encode(pixels) + "\x1b\\");
     t.feed("\rhello world \x1b]66;s=2;ab\x1b\\x");
-    EXPECT_NE(t.t.text(Terminal::TextScope::Screen).find('x'), std::string::npos) << t.t.text(Terminal::TextScope::Screen);
+    EXPECT_NE(t.t.text(Terminal::TextScope::Screen).find('x'), std::string::npos)
+        << t.t.text(Terminal::TextScope::Screen);
 }
 
 TEST(TextSizing, EraseCharactersAndDisplayTakeWholeBlocks)
@@ -263,7 +278,9 @@ TEST(TextSizing, EraseCharactersAndDisplayTakeWholeBlocks)
     // kitty 0.50.0 fixed erasing multi-cell characters. Each erase that
     // reaches one cell of a block, from any row or column, erases all of it.
     Term t(20, 5);
-    auto blockAt = [&](int x) { return t.at(x, 0).isMulticell() || t.at(x, 1).isMulticell(); };
+    auto blockAt = [&](int x) {
+        return t.at(x, 0).isMulticell() || t.at(x, 1).isMulticell();
+    };
     t.feed("\x1b]66;s=2;ab\x07"); // blocks at columns 0-1 and 2-3, rows 0-1
     t.feed("\x1b[2;4H\x1b[X"); // ECH on the last cell of the lower row of b
     EXPECT_TRUE(blockAt(0));
@@ -307,15 +324,17 @@ TEST(TextSizing, ALongClusterOfNaturalWidthStaysWhole)
 {
     // kitty 0.49.0 overflowed a buffer with natural-width clusters of more
     // than four code points. A family emoji is seven.
-    const std::string family = "\xf0\x9f\x91\xa8\xe2\x80\x8d\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x91\xa7"
-                               "\xe2\x80\x8d\xf0\x9f\x91\xa6";
+    const std::string family =
+        "\xf0\x9f\x91\xa8\xe2\x80\x8d\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x91\xa7"
+        "\xe2\x80\x8d\xf0\x9f\x91\xa6";
     Term t(20, 5);
     t.feed("\x1b]66;s=2;" + family + "\x07x");
     EXPECT_EQ(t.t.text(Terminal::TextScope::Screen), family + "x");
     EXPECT_EQ(t.t.screen().cursor.x, 5); // two columns at scale 2, then x
     // Combining marks: one base and twelve marks.
     std::string marks = "e";
-    for (int i = 0; i < 12; ++i) marks += "\xcc\x81";
+    for (int i = 0; i < 12; ++i)
+        marks += "\xcc\x81";
     t.t.reset();
     t.feed("\x1b]66;s=2;" + marks + "\x07");
     EXPECT_EQ(t.t.text(Terminal::TextScope::Screen), marks);
@@ -438,7 +457,9 @@ TEST(TextSizing, IllFormedBytesBecomeReplacementsAndControlsGo)
     Term t(20, 3);
     // A cut sequence (E2 82) gives one U+FFFD for each byte. An encoded C1
     // control (U+0085) and a DEL are dropped.
-    t.feed("\x1b]66;s=1;a\xe2\x82\xc2\x85\x7f" "b\x07");
+    t.feed(
+        "\x1b]66;s=1;a\xe2\x82\xc2\x85\x7f"
+        "b\x07");
     EXPECT_EQ(t.at(0, 0).codepoint(), U'a');
     EXPECT_EQ(t.at(1, 0).codepoint(), Unicode::ReplacementCharacter);
     EXPECT_EQ(t.at(2, 0).codepoint(), Unicode::ReplacementCharacter);

@@ -26,8 +26,14 @@ public:
         : m_bytes(bytes)
     {
     }
-    bool atEnd() const { return m_at >= m_bytes.size(); }
-    bool truncated() const { return m_truncated; }
+    bool atEnd() const
+    {
+        return m_at >= m_bytes.size();
+    }
+    bool truncated() const
+    {
+        return m_truncated;
+    }
     std::uint8_t byte()
     {
         if (atEnd()) {
@@ -102,7 +108,11 @@ private:
     // Draws the image data of one frame. Data that ends early leaves the
     // rest of the frame as it was, as in browsers. Data that ends before its
     // first pixel draws no frame: Cut.
-    enum class Raster : std::uint8_t { Drawn, Corrupt, Cut };
+    enum class Raster : std::uint8_t {
+        Drawn,
+        Corrupt,
+        Cut
+    };
     Raster raster(const Palette& palette, const Rect& rect, bool interlaced);
 
     Reader m_in;
@@ -122,7 +132,7 @@ void GifDecoder::readTable(Palette& table, std::size_t count)
         const auto red = m_in.byte();
         const auto green = m_in.byte();
         const auto blue = m_in.byte();
-        table[i] = { red, green, blue, 255 };
+        table[i] = {red, green, blue, 255};
     }
 }
 
@@ -183,8 +193,8 @@ GifDecoder::Raster GifDecoder::raster(const Palette& palette, const Rect& rect, 
     std::size_t column = 0;
     std::size_t row = 0;
     int pass = 0;
-    static constexpr std::size_t PassStart[4] = { 0, 4, 2, 1 };
-    static constexpr std::size_t PassStep[4] = { 8, 8, 4, 2 };
+    static constexpr std::size_t PassStart[4] = {0, 4, 2, 1};
+    static constexpr std::size_t PassStep[4] = {8, 8, 4, 2};
     std::size_t step = interlaced ? PassStep[0] : 1;
     // Moves @p n pixels on, up to the end of the row or of the pass at most.
     auto advance = [&](std::size_t n) {
@@ -314,7 +324,8 @@ GifDecoder::Raster GifDecoder::raster(const Palette& palette, const Rect& rect, 
         m_in.skip(blockLeft);
         m_in.skipBlocks();
     }
-    if (corrupt) return Raster::Corrupt;
+    if (corrupt)
+        return Raster::Corrupt;
     return done == 0 && m_in.truncated() ? Raster::Cut : Raster::Drawn;
 }
 
@@ -332,8 +343,9 @@ bool GifDecoder::run(const FrameSink& sink, std::string& error, std::string& war
     }
     int width = 0;
     int height = 0;
-    if (refused(sized(m_width, m_height, width, height), "GIF", error)) return false;
-    Palette global {};
+    if (refused(sized(m_width, m_height, width, height), "GIF", error))
+        return false;
+    Palette global{};
     std::size_t globalCount = 0;
     if (flags & 0x80) {
         globalCount = std::size_t(2) << (flags & 7);
@@ -362,20 +374,24 @@ bool GifDecoder::run(const FrameSink& sink, std::string& error, std::string& war
             error = m_in.truncated() ? "the GIF is truncated" : "the GIF has no image";
             return false;
         }
-        if (m_in.truncated()) warning = "the GIF is cut short, so it ends in frame " + std::to_string(frames);
+        if (m_in.truncated())
+            warning = "the GIF is cut short, so it ends in frame " + std::to_string(frames);
         return true;
     };
     for (;;) {
         // A GIF without its trailer ends like one with it.
-        if (m_in.atEnd()) return ended();
+        if (m_in.atEnd())
+            return ended();
         const auto kind = m_in.byte();
-        if (kind == 0x3B) return ended();
+        if (kind == 0x3B)
+            return ended();
         if (kind == 0x21) {
             const auto label = m_in.byte();
             if (label == 0xF9) {
                 const std::size_t length = m_in.byte();
                 // An empty first block is the terminator of the extension.
-                if (length == 0) continue;
+                if (length == 0)
+                    continue;
                 if (length >= 4) {
                     const auto packed = m_in.byte();
                     delay = int(m_in.u16()) * 10;
@@ -400,11 +416,13 @@ bool GifDecoder::run(const FrameSink& sink, std::string& error, std::string& war
         rect.height = m_in.u16();
         const auto local = m_in.byte();
         // Cut off in its descriptor: no frame from it.
-        if (m_in.truncated()) return ended();
-        Palette palette {};
+        if (m_in.truncated())
+            return ended();
+        Palette palette{};
         if (local & 0x80) {
             readTable(palette, std::size_t(2) << (local & 7));
-            if (m_in.truncated()) return ended();
+            if (m_in.truncated())
+                return ended();
         } else if (globalCount > 0) {
             palette = global;
         } else {
@@ -421,14 +439,15 @@ bool GifDecoder::run(const FrameSink& sink, std::string& error, std::string& war
             return damaged("the image data of the GIF is corrupt");
         }
         // Cut off before its first pixel: no frame from it either.
-        if (drawn == Raster::Cut) return ended();
+        if (drawn == Raster::Cut)
+            return ended();
         ++frames;
         if (!sink(m_canvas.data(), int(m_width), int(m_height), delay)) {
             return true;
         }
         // The frame's disposal, before the next frame is drawn.
         if (disposal == 2) {
-            fillRect(rect, { 0, 0, 0, 0 });
+            fillRect(rect, {0, 0, 0, 0});
         } else if (disposal == 3) {
             m_canvas.swap(saved);
         }
@@ -443,7 +462,8 @@ bool GifDecoder::run(const FrameSink& sink, std::string& error, std::string& war
 Probe probeGif(std::string_view bytes, int& width, int& height)
 {
     width = height = 0;
-    if (bytes.size() < 10) return Probe::Unknown;
+    if (bytes.size() < 10)
+        return Probe::Unknown;
     return sized(little(bytes, 6, 2), little(bytes, 8, 2), width, height);
 }
 

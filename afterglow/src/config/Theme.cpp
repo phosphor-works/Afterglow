@@ -45,7 +45,11 @@ std::optional<AfterglowVt::Rgb> color(QString value)
     return rgbFromName(value);
 }
 
-enum class Assigned { Unused, Invalid, Set };
+enum class Assigned {
+    Unused,
+    Invalid,
+    Set
+};
 
 /// Sets the colour @p key names (in any of the three spellings) to @p value.
 /// Unused for keys that are not colours afterglow uses, Invalid for one of
@@ -172,7 +176,8 @@ std::optional<AfterglowVt::Rgb> rgbFromName(const QString& name)
     // The mux daemon reads the colours of afterglow ctl --session with the same rules.
     const QByteArray utf8 = name.toUtf8();
     AfterglowVt::Rgb rgb;
-    if (!AfterglowProto::parseSettingColor(std::string_view(utf8.constData(), std::size_t(utf8.size())), rgb.r, rgb.g, rgb.b)) {
+    if (!AfterglowProto::parseSettingColor(std::string_view(utf8.constData(), std::size_t(utf8.size())), rgb.r, rgb.g,
+                                           rgb.b)) {
         return std::nullopt;
     }
     return rgb;
@@ -180,7 +185,10 @@ std::optional<AfterglowVt::Rgb> rgbFromName(const QString& name)
 
 QString hexName(AfterglowVt::Rgb rgb)
 {
-    return QStringLiteral("#%1%2%3").arg(rgb.r, 2, 16, QLatin1Char('0')).arg(rgb.g, 2, 16, QLatin1Char('0')).arg(rgb.b, 2, 16, QLatin1Char('0'));
+    return QStringLiteral("#%1%2%3")
+        .arg(rgb.r, 2, 16, QLatin1Char('0'))
+        .arg(rgb.g, 2, 16, QLatin1Char('0'))
+        .arg(rgb.b, 2, 16, QLatin1Char('0'));
 }
 
 bool isColorName(const QString& name)
@@ -225,7 +233,8 @@ QString bundledDirectory()
 #if defined(AFTERGLOW_INSTALLED_THEME_DIR)
     // A build-tree binary reads the checkout; an installed one its own prefix,
     // which need not be in XDG_DATA_DIRS.
-    return runningFromBuildTree() ? QStringLiteral(AFTERGLOW_SOURCE_THEME_DIR) : QStringLiteral(AFTERGLOW_INSTALLED_THEME_DIR);
+    return runningFromBuildTree() ? QStringLiteral(AFTERGLOW_SOURCE_THEME_DIR)
+                                  : QStringLiteral(AFTERGLOW_INSTALLED_THEME_DIR);
 #elif defined(AFTERGLOW_SOURCE_THEME_DIR)
     return QStringLiteral(AFTERGLOW_SOURCE_THEME_DIR);
 #else
@@ -252,10 +261,11 @@ QStringList searchDirs(const QString& configDirectory)
 {
     // Beside the config file, as its scripts are: afterglow --config
     // DIR/config.json takes DIR/themes in place of the user's own.
-    QStringList dirs{(configDirectory.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
-                                                      + QStringLiteral("/afterglow")
-                                                : configDirectory)
-                     + QStringLiteral("/themes")};
+    QStringList dirs{
+        (configDirectory.isEmpty()
+             ? QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + QStringLiteral("/afterglow")
+             : configDirectory)
+        + QStringLiteral("/themes")};
     const QString bundled = bundledDirectory();
     // A build-tree binary puts the checkout above the data directories, so
     // that an installed copy does not shadow the themes that it is testing.
@@ -442,7 +452,8 @@ bool isPlasma(const QString& name, QString* base)
 {
     static const QLatin1String Prefix("plasma");
     // In any case, as the light: and dark: of pick().
-    if (name.compare(Prefix, Qt::CaseInsensitive) != 0 && !name.startsWith(Prefix + QLatin1Char(':'), Qt::CaseInsensitive)) {
+    if (name.compare(Prefix, Qt::CaseInsensitive) != 0
+        && !name.startsWith(Prefix + QLatin1Char(':'), Qt::CaseInsensitive)) {
         return false;
     }
     if (base) {
@@ -455,8 +466,8 @@ QStringList plasmaSources()
 {
     // locateAll lists the user's file first; KDE reads the system's first.
     QStringList files = QStandardPaths::locateAll(QStandardPaths::GenericConfigLocation, QStringLiteral("kdeglobals"));
-    const QString user = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
-        + QStringLiteral("/kdeglobals");
+    const QString user =
+        QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + QStringLiteral("/kdeglobals");
     files.removeAll(user);
     std::reverse(files.begin(), files.end());
     files << user;
@@ -504,8 +515,10 @@ Theme plasmaColors(const QStringList& sources)
     // it keeps its own.
     const bool gui = hasGuiApplication();
     const QPalette palette = gui ? QGuiApplication::palette() : QPalette();
-    auto from = [&](const std::optional<AfterglowVt::Rgb>& set, QPalette::ColorRole role) -> std::optional<AfterglowVt::Rgb> {
-        if (set || !gui) return set;
+    auto from = [&](const std::optional<AfterglowVt::Rgb>& set,
+                    QPalette::ColorRole role) -> std::optional<AfterglowVt::Rgb> {
+        if (set || !gui)
+            return set;
         const QColor c = palette.color(QPalette::Active, role);
         return AfterglowVt::Rgb{std::uint8_t(c.red()), std::uint8_t(c.green()), std::uint8_t(c.blue())};
     };

@@ -19,9 +19,15 @@ struct ScriptCommand
     bool input = false; ///< gets the client's stdin
     bool runtime = false; ///< added by afterglow.set_commands, not the manifest
     bool remote = false; ///< `aglow run` on a remote host can run it (Terminal.sshRemoteCommands)
-    QString token() const { return script + QLatin1Char('.') + name; }
+    QString token() const
+    {
+        return script + QLatin1Char('.') + name;
+    }
     /// The palette title, else "<script> <name>": the title of its notifications.
-    QString title() const { return palette.isEmpty() ? script + QLatin1Char(' ') + name : palette; }
+    QString title() const
+    {
+        return palette.isEmpty() ? script + QLatin1Char(' ') + name : palette;
+    }
     bool operator==(const ScriptCommand&) const = default;
 };
 /// The limits of the commands field (package.json, metadata) and of set_commands.

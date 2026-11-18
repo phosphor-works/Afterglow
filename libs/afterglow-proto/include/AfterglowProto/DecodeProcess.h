@@ -42,7 +42,8 @@ namespace AfterglowProto {
 [[nodiscard]] inline bool startDecodingProcess(pid_t parent, int input, int output, bool keepStandardError)
 {
     ::prctl(PR_SET_PDEATHSIG, SIGKILL);
-    if (::getppid() != parent) return false;
+    if (::getppid() != parent)
+        return false;
 
     // aglow-mux's server blocks SIGCHLD for its signalfd: the signals of the
     // limits must arrive here.
@@ -51,7 +52,8 @@ namespace AfterglowProto {
     ::sigprocmask(SIG_SETMASK, &none, nullptr);
     for (const int number : {SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGWINCH, SIGCONT}) {
         struct sigaction inherited{};
-        if (::sigaction(number, nullptr, &inherited) == 0 && inherited.sa_handler != SIG_IGN) std::signal(number, SIG_DFL);
+        if (::sigaction(number, nullptr, &inherited) == 0 && inherited.sa_handler != SIG_IGN)
+            std::signal(number, SIG_DFL);
     }
     std::signal(SIGPIPE, SIG_DFL);
 
@@ -63,15 +65,21 @@ namespace AfterglowProto {
     const bool nullError = !keepStandardError || input == STDERR_FILENO || output == STDERR_FILENO;
     if (input > STDIN_FILENO && input <= STDERR_FILENO) {
         input = ::fcntl(input, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
-        if (input < 0) return false;
+        if (input < 0)
+            return false;
     }
-    if (::dup2(output, STDOUT_FILENO) < 0) return false;
-    if (input >= 0 && ::dup2(input, STDIN_FILENO) < 0) return false;
+    if (::dup2(output, STDOUT_FILENO) < 0)
+        return false;
+    if (input >= 0 && ::dup2(input, STDIN_FILENO) < 0)
+        return false;
     if (input < 0 || nullError) {
         const int null = ::open("/dev/null", O_RDWR | O_CLOEXEC);
-        if (null < 0) return false;
-        if (input < 0 && ::dup2(null, STDIN_FILENO) < 0) return false;
-        if (nullError && ::dup2(null, STDERR_FILENO) < 0) return false;
+        if (null < 0)
+            return false;
+        if (input < 0 && ::dup2(null, STDIN_FILENO) < 0)
+            return false;
+        if (nullError && ::dup2(null, STDERR_FILENO) < 0)
+            return false;
     }
     AfterglowPty::closeFrom(STDERR_FILENO + 1);
 

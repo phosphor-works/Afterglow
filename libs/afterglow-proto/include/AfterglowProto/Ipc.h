@@ -88,19 +88,28 @@ public:
     int release(Error* error);
     /// Also after a send found that the server closed its end, until the
     /// reads reach that end: no request goes then.
-    bool connected() const { return m_fd >= 0; }
+    bool connected() const
+    {
+        return m_fd >= 0;
+    }
     /// The socket, for a poll of the caller's own: readable when bytes come
     /// or the server closes the connection. -1 when not connected. A read
     /// takes all that the socket holds, and call() sets aside the frames
     /// that are not its answer: frames can wait here while the socket has
     /// nothing. next() with a timeout of 0, until it gives no frame, takes
     /// them before such a poll.
-    int fd() const { return m_fd; }
+    int fd() const
+    {
+        return m_fd;
+    }
     /// Closes the connection and drops the frames that wait for next().
     void close();
     /// Why the connection closed by itself. Empty while connected, and after
     /// close() or connect().
-    const std::string& closeReason() const { return m_closeReason; }
+    const std::string& closeReason() const
+    {
+        return m_closeReason;
+    }
 
     /// Whether a call of @p fn with @p args fits in one request, whatever
     /// its id: a caller can check that before the calls that must come first.

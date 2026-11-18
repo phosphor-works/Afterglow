@@ -7,7 +7,8 @@ namespace Afterglow {
 namespace {
 void appendCodePoint(QString& text, char32_t c)
 {
-    if (c > 0x10ffff || (c >= 0xd800 && c <= 0xdfff)) c = 0xfffd;
+    if (c > 0x10ffff || (c >= 0xd800 && c <= 0xdfff))
+        c = 0xfffd;
     if (QChar::requiresSurrogates(c)) {
         text += QChar(QChar::highSurrogate(c));
         text += QChar(QChar::lowSurrogate(c));
@@ -20,16 +21,20 @@ qsizetype commonPrefix(QStringView a, QStringView b)
 {
     qsizetype n = 0;
     const auto limit = std::min(a.size(), b.size());
-    while (n < limit && a[n] == b[n]) ++n;
-    if (n && a[n - 1].isHighSurrogate()) --n;
+    while (n < limit && a[n] == b[n])
+        ++n;
+    if (n && a[n - 1].isHighSurrogate())
+        --n;
     return n;
 }
 qsizetype commonSuffix(QStringView a, QStringView b, qsizetype prefix)
 {
     qsizetype n = 0;
     const auto limit = std::min(a.size(), b.size()) - prefix;
-    while (n < limit && a[a.size() - 1 - n] == b[b.size() - 1 - n]) ++n;
-    if (n && a[a.size() - n].isLowSurrogate()) --n;
+    while (n < limit && a[a.size() - 1 - n] == b[b.size() - 1 - n])
+        ++n;
+    if (n && a[a.size() - n].isLowSurrogate())
+        --n;
     return n;
 }
 void appendReplacement(QList<TextEdit>& edits, QStringView before, QStringView after, int offset)
@@ -43,7 +48,8 @@ void appendReplacement(QList<TextEdit>& edits, QStringView before, QStringView a
 }
 }
 
-TerminalText TerminalText::capture(const AfterglowVt::Screen& s, const AfterglowVt::Selection* selection, bool cursorRow, std::u32string_view wordBoundaries)
+TerminalText TerminalText::capture(const AfterglowVt::Screen& s, const AfterglowVt::Selection* selection,
+                                   bool cursorRow, std::u32string_view wordBoundaries)
 {
     TerminalText out;
     const auto first = cursorRow ? s.historySize() + std::size_t(s.cursor.y) : s.viewportTop();
@@ -57,26 +63,36 @@ TerminalText TerminalText::capture(const AfterglowVt::Screen& s, const Afterglow
         const auto& row = s.absoluteRow(y);
         int end = s.cols();
         if (!row.wrapped) {
-            while (end > 0 && row.at(end - 1).isEmpty()) --end;
-            if (y == s.historySize() + std::size_t(s.cursor.y)) end = std::max(end, s.cursor.x);
+            while (end > 0 && row.at(end - 1).isEmpty())
+                --end;
+            if (y == s.historySize() + std::size_t(s.cursor.y))
+                end = std::max(end, s.cursor.x);
         }
         for (int x = 0; x < end; ++x) {
             const auto& cell = row.at(x);
-            if (cell.isTail() || cell.isSpacerHead() || (cell.isMulticell() && (cell.multicellDx() || cell.multicellDy()))) continue;
+            if (cell.isTail() || cell.isSpacerHead()
+                || (cell.isMulticell() && (cell.multicellDx() || cell.multicellDy())))
+                continue;
             const AfterglowVt::SelectionPoint point{s.rowsDropped() + y, x};
             const auto start = out.text.size();
             appendCodePoint(out.text, cell.isEmpty() ? U' ' : cell.codepoint());
-            for (const char32_t c : s.graphemeExtra(row, x)) appendCodePoint(out.text, c);
+            for (const char32_t c : s.graphemeExtra(row, x))
+                appendCodePoint(out.text, c);
             if (selected && range.contains(point.row, x)) {
-                if (out.selectionStart < 0) out.selectionStart = int(start);
+                if (out.selectionStart < 0)
+                    out.selectionStart = int(start);
                 out.selectionEnd = int(out.text.size());
             }
-            for (auto i = start; i < out.text.size(); ++i) out.cells.append(point);
+            for (auto i = start; i < out.text.size(); ++i)
+                out.cells.append(point);
         }
         if (y == s.historySize() + std::size_t(s.cursor.y)) {
             out.cursor = int(out.text.size());
             for (int i = 0; i < out.cells.size(); ++i) {
-                if (out.cells[i].row == s.rowsDropped() + y && out.cells[i].col >= s.cursor.x) { out.cursor = i; break; }
+                if (out.cells[i].row == s.rowsDropped() + y && out.cells[i].col >= s.cursor.x) {
+                    out.cursor = i;
+                    break;
+                }
             }
         }
         if (y + 1 < last && !row.wrapped) {
@@ -90,7 +106,8 @@ TerminalText TerminalText::capture(const AfterglowVt::Screen& s, const Afterglow
 QList<TextEdit> textEdits(const QString& before, const QString& after)
 {
     QList<TextEdit> edits;
-    if (before == after) return edits;
+    if (before == after)
+        return edits;
     // Output that scrolls the viewport changes the first line. Report the lines that
     // left the top and the new text, not a replacement of the whole viewport.
     const auto firstLineEnd = before.indexOf(QLatin1Char('\n'));

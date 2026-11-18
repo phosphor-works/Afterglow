@@ -46,14 +46,16 @@ struct WindowSettings
     /// not get a dark divider.
     static inline const std::uint32_t DefaultDividerColor = [] {
         const AfterglowVt::TerminalOptions defaults;
-        return AfterglowRender::packRgba(Themes::derivedDivider(defaults.defaultBackground, defaults.defaultForeground));
+        return AfterglowRender::packRgba(
+            Themes::derivedDivider(defaults.defaultBackground, defaults.defaultForeground));
     }();
     std::uint32_t dividerColor = DefaultDividerColor; ///< RGBA8 in memory order
     /// Unset, halfway from the background to the text in use: here the
     /// defaults.
     static inline const std::uint32_t DefaultPopupBorderColor = [] {
         const AfterglowVt::TerminalOptions defaults;
-        return AfterglowRender::packRgba(Themes::derivedPopupBorder(defaults.defaultBackground, defaults.defaultForeground));
+        return AfterglowRender::packRgba(
+            Themes::derivedPopupBorder(defaults.defaultBackground, defaults.defaultForeground));
     }();
     std::uint32_t popupBorderColor = DefaultPopupBorderColor; ///< RGBA8 in memory order
     double unfocusedDim = 0.19;
@@ -65,21 +67,36 @@ struct WindowSettings
     /// The largest Window.resizeStepCells: as many cells as afterglow ctl
     /// resize takes (Control::MaxResizeCells).
     static constexpr int MaxResizeStepCells = 10000;
-    enum class PopupCorners { Rounded, Square };
+    enum class PopupCorners {
+        Rounded,
+        Square
+    };
     PopupCorners popupCorners = PopupCorners::Rounded; ///< of a popup overlay's border
     /// Where new tabs, splits and windows start: "inherit" (the focused
     /// pane's directory, or the launcher's), "home", or a path.
     QString workingDirectory = QStringLiteral("inherit");
-    enum class StartMode { Normal, Maximized, Fullscreen };
+    enum class StartMode {
+        Normal,
+        Maximized,
+        Fullscreen
+    };
     StartMode startMode = StartMode::Normal;
     bool decorations = true; ///< the compositor's title bar and borders
     bool balancePadding = false; ///< share the space a grid leaves over between opposite edges
     /// The tab bar: shown while there are several tabs, always, or never.
-    enum class TabBar { Auto, Always, Never };
+    enum class TabBar {
+        Auto,
+        Always,
+        Never
+    };
     TabBar tabBar = TabBar::Auto;
     int tabBarHeight = 30; ///< logical pixels
     /// The history scrollbar: shown while scrolling or hovered, always, or never.
-    enum class Scrollbar { Auto, Always, Never };
+    enum class Scrollbar {
+        Auto,
+        Always,
+        Never
+    };
     Scrollbar scrollbar = Scrollbar::Auto;
     int scrollbarHideDelay = 1200; ///< milliseconds before an auto scrollbar fades
     int scrollbarWidth = 12; ///< the history scrollbar's width, logical pixels
@@ -90,10 +107,19 @@ struct MouseSettings
 {
     /// Right-click: the context menu, paste, copy a selection (or paste
     /// without one), or extend the selection to the click.
-    enum class RightClick { Menu, Paste, CopyOrPaste, Extend };
+    enum class RightClick {
+        Menu,
+        Paste,
+        CopyOrPaste,
+        Extend
+    };
     RightClick rightClick = RightClick::Menu;
     /// Middle-click pastes the primary selection, the clipboard, or nothing.
-    enum class MiddleClick { Primary, Clipboard, None };
+    enum class MiddleClick {
+        Primary,
+        Clipboard,
+        None
+    };
     MiddleClick middleClick = MiddleClick::Primary;
     /// Milliseconds between the rows a selection scrolls while it is
     /// extended past the top or bottom of its pane.
@@ -121,7 +147,11 @@ struct MouseSettings
     /// integration marks (OSC 133): its output in Terminal.pager, as in
     /// Kitty (mouse_show_command_output), its output selected
     /// (mouse_select_command_output), or a plain right-click.
-    enum class CommandOutputClick { Pager, Select, None };
+    enum class CommandOutputClick {
+        Pager,
+        Select,
+        None
+    };
     CommandOutputClick commandOutputClick = CommandOutputClick::Pager;
     /// The modifiers held, and no others, for commandOutputClick: Ctrl+Shift,
     /// as in Kitty.
@@ -140,8 +170,8 @@ struct LinkSettings
     /// Held to hover and click links; none opens them with a plain click.
     Qt::KeyboardModifiers modifier = Qt::ControlModifier;
     /// Lower-case URL schemes that open without asking; other links ask first.
-    QStringList schemes{QStringLiteral("http"), QStringLiteral("https"), QStringLiteral("mailto"), QStringLiteral("ftp"),
-                        QStringLiteral("file")};
+    QStringList schemes{QStringLiteral("http"), QStringLiteral("https"), QStringLiteral("mailto"),
+                        QStringLiteral("ftp"), QStringLiteral("file")};
     bool operator==(const LinkSettings&) const = default;
 };
 
@@ -153,7 +183,10 @@ struct QuickTerminalSettings
     QString curve = QStringLiteral("spring:22,1"); ///< the slide, as AnimationSettings::splitCurve
     int duration = 150; ///< milliseconds of the slide for curves other than springs
     /// The screen edge it slides from.
-    enum class Position { Top, Bottom };
+    enum class Position {
+        Top,
+        Bottom
+    };
     Position position = Position::Top;
     QString screen; ///< output name (QScreen::name); empty for the primary screen
     bool operator==(const QuickTerminalSettings&) const = default;
@@ -163,7 +196,10 @@ struct MuxSettings
 {
     /// What closing the window that shows a mux session, or its last tab or
     /// pane, does. Closing another tab or pane ends only its programs.
-    enum class Close { Kill, Detach };
+    enum class Close {
+        Kill,
+        Detach
+    };
     /// Kill ends the session and its programs, as a window that is not in a
     /// session ends its programs. Detach keeps the session running. A quit
     /// of Afterglow always detaches, and so does the window of a project
@@ -182,8 +218,9 @@ struct MuxSettings
     /// that start later get them. At most AfterglowMux::MaxUpdatedVariables
     /// names. The default is tmux 3.8's without MSYSTEM, WINDOWID and the
     /// XDG_ desktop names.
-    QStringList updateEnvironment{QStringLiteral("DISPLAY"),       QStringLiteral("WAYLAND_DISPLAY"), QStringLiteral("XAUTHORITY"),
-                                  QStringLiteral("SSH_AUTH_SOCK"), QStringLiteral("SSH_AGENT_PID"),   QStringLiteral("SSH_CONNECTION"),
+    QStringList updateEnvironment{QStringLiteral("DISPLAY"),       QStringLiteral("WAYLAND_DISPLAY"),
+                                  QStringLiteral("XAUTHORITY"),    QStringLiteral("SSH_AUTH_SOCK"),
+                                  QStringLiteral("SSH_AGENT_PID"), QStringLiteral("SSH_CONNECTION"),
                                   QStringLiteral("SSH_ASKPASS"),   QStringLiteral("KRB5CCNAME")};
     /// The command line that ssh gives the login shell of another host for
     /// its sessions (`<remoteCommand> proxy`): a name that the shell finds,
@@ -311,7 +348,8 @@ struct Settings
     /// read() leaves it in lowercase, each switch once, apart by one space.
     QString shellIntegration = QStringLiteral("enabled");
     bool sshIntegration = true; ///< integrated shells run ssh through `afterglow ssh`
-    QString sshTerminfo = QStringLiteral("install"); ///< TERM=afterglow on a host without its entry: install or fallback
+    QString sshTerminfo =
+        QStringLiteral("install"); ///< TERM=afterglow on a host without its entry: install or fallback
     bool sshRemoteCommands = false; ///< `afterglow ssh` forwards a socket for the commands marked remote
     /// Seconds of ControlPersist of Afterglow's own ssh master for the mux
     /// sessions of another host (Ssh::sharedCommand): `afterglow mux --ssh`
@@ -322,9 +360,18 @@ struct Settings
     QString term = QStringLiteral("xterm-256color");
     /// Where a finished selection is copied: nowhere, the primary selection
     /// (middle-click paste), or the clipboard too (Ctrl+V anywhere).
-    enum class CopyOnSelect { Off, Primary, Clipboard };
+    enum class CopyOnSelect {
+        Off,
+        Primary,
+        Clipboard
+    };
     CopyOnSelect copyOnSelect = CopyOnSelect::Primary;
-    enum class Bell { None, Attention, Visual, Both };
+    enum class Bell {
+        None,
+        Attention,
+        Visual,
+        Both
+    };
     Bell bell = Bell::Attention;
     /// OSC 9, 99 and 777 notifications, and OSC 7501 status notifications
     /// (Notifications.enabled).
@@ -363,7 +410,11 @@ struct Settings
     /// Minutes that the files of a remote drag remain after its drop, for a
     /// drop target that copies them later.
     int dragTreeLifetime = 10;
-    enum class Permission { Allow, Ask, Deny };
+    enum class Permission {
+        Allow,
+        Ask,
+        Deny
+    };
     /// Programs reading the clipboard (OSC 52, OSC 5522).
     Permission clipboardRead = Permission::Ask;
     /// Seconds after a paste in which its password lets a program read the
@@ -445,8 +496,14 @@ public:
     /// this one is for the tests that check the schema against the structs.
     static PhosphorConfig::Schema schema();
 
-    const Settings& settings() const noexcept { return m_settings; }
-    QString path() const { return m_path; }
+    const Settings& settings() const noexcept
+    {
+        return m_settings;
+    }
+    QString path() const
+    {
+        return m_path;
+    }
     /// Creates the config file if it does not exist, holding {} and readable
     /// by the owner only, so that an editor can open it. False if it cannot.
     bool ensureFile();
@@ -455,10 +512,16 @@ public:
     /// The set follows each that is a symbolic link itself, so a link target
     /// is not in this list. Only the tests read it: the store watches them
     /// itself.
-    QStringList watchedPaths() const { return m_files.paths(); }
+    QStringList watchedPaths() const
+    {
+        return m_files.paths();
+    }
     /// What the last read could not use: a file that does not parse, unknown
     /// keys, bad values, missing themes. Each is logged when it appears.
-    QStringList problems() const { return m_fileProblems + m_readProblems; }
+    QStringList problems() const
+    {
+        return m_fileProblems + m_readProblems;
+    }
 
     /// Re-reads the file. A file that cannot be read, does not parse or does
     /// not hold a JSON object keeps the current settings, also after an

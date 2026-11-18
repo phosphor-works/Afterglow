@@ -71,7 +71,8 @@ inline bool waitFor(const std::function<bool()>& done, std::chrono::milliseconds
 {
     const auto deadline = std::chrono::steady_clock::now() + wait;
     while (std::chrono::steady_clock::now() < deadline) {
-        if (done()) return true;
+        if (done())
+            return true;
         std::this_thread::sleep_for(20ms);
     }
     return done();
@@ -112,14 +113,19 @@ inline void removeDeadDirectories()
     for (std::filesystem::directory_iterator it("/tmp", error), end; !error && it != end; it.increment(error)) {
         const std::filesystem::directory_entry& entry = *it;
         const std::string name = entry.path().filename().string();
-        if (!name.starts_with(DirectoryPrefix)) continue;
+        if (!name.starts_with(DirectoryPrefix))
+            continue;
         const std::string rest = name.substr(std::strlen(DirectoryPrefix));
         const std::size_t dash = rest.find('-');
-        if (dash == 0 || dash == std::string::npos || rest.find_first_not_of("0123456789") != dash) continue;
+        if (dash == 0 || dash == std::string::npos || rest.find_first_not_of("0123456789") != dash)
+            continue;
         const long owner = std::strtol(rest.c_str(), nullptr, 10);
         struct stat info{};
-        if (owner <= 0 || ::lstat(entry.path().c_str(), &info) != 0 || !S_ISDIR(info.st_mode) || info.st_uid != ::getuid()) continue;
-        if (::kill(pid_t(owner), 0) == 0 || errno != ESRCH) continue;
+        if (owner <= 0 || ::lstat(entry.path().c_str(), &info) != 0 || !S_ISDIR(info.st_mode)
+            || info.st_uid != ::getuid())
+            continue;
+        if (::kill(pid_t(owner), 0) == 0 || errno != ESRCH)
+            continue;
         std::error_code ignored;
         std::filesystem::remove_all(entry.path(), ignored);
     }
@@ -140,7 +146,8 @@ public:
         }
         m_dir = dir;
         for (const std::string& sub : {runtime(), m_dir + "/home"}) {
-            if (::mkdir(sub.c_str(), 0700) != 0) ADD_FAILURE() << "cannot create " << sub << ": " << std::strerror(errno);
+            if (::mkdir(sub.c_str(), 0700) != 0)
+                ADD_FAILURE() << "cannot create " << sub << ": " << std::strerror(errno);
         }
         m_environment = cleanEnvironment();
         m_callSocket = socket();
@@ -148,24 +155,50 @@ public:
     ~TestDaemon()
     {
         for (const pid_t pid : {m_pid, m_other}) {
-            if (pid <= 0) continue;
+            if (pid <= 0)
+                continue;
             ::kill(pid, SIGKILL);
             ::waitpid(pid, nullptr, 0);
         }
         std::error_code ignored;
-        if (!m_dir.empty()) std::filesystem::remove_all(m_dir, ignored);
+        if (!m_dir.empty())
+            std::filesystem::remove_all(m_dir, ignored);
     }
 
-    const std::string& dir() const { return m_dir; }
-    std::string runtime() const { return m_dir + "/run"; }
-    std::string socket() const { return runtime() + "/aglow-mux/socket"; }
+    const std::string& dir() const
+    {
+        return m_dir;
+    }
+    std::string runtime() const
+    {
+        return m_dir + "/run";
+    }
+    std::string socket() const
+    {
+        return runtime() + "/aglow-mux/socket";
+    }
     /// XDG_STATE_HOME of the daemon and of the clients that find it.
-    std::string stateHome() const { return m_dir + "/state"; }
-    std::string stateDirectory() const { return stateHome() + "/aglow-mux"; }
-    std::string stateSocket() const { return stateDirectory() + "/" + AfterglowProto::muxStateSocketName(); }
-    pid_t pid() const { return m_pid; }
+    std::string stateHome() const
+    {
+        return m_dir + "/state";
+    }
+    std::string stateDirectory() const
+    {
+        return stateHome() + "/aglow-mux";
+    }
+    std::string stateSocket() const
+    {
+        return stateDirectory() + "/" + AfterglowProto::muxStateSocketName();
+    }
+    pid_t pid() const
+    {
+        return m_pid;
+    }
     /// The socket that call() connects to.
-    void callOn(std::string path) { m_callSocket = std::move(path); }
+    void callOn(std::string path)
+    {
+        m_callSocket = std::move(path);
+    }
 
     /// The variables of this process that the daemon and its sessions get:
     /// an allow list, so that no variable leads to the user's Afterglow, mux
@@ -176,9 +209,11 @@ public:
     /// the log. Then the test's directories, and /bin/sh as the login shell.
     static bool allowed(std::string_view name)
     {
-        static constexpr std::array<std::string_view, 8> Names{"PATH", "LANG", "LANGUAGE", "TZ", "USER", "LOGNAME", "TMPDIR", "LD_LIBRARY_PATH"};
+        static constexpr std::array<std::string_view, 8> Names{"PATH", "LANG",    "LANGUAGE", "TZ",
+                                                               "USER", "LOGNAME", "TMPDIR",   "LD_LIBRARY_PATH"};
         // The options of the sanitizers (tools/sanitizers): ASAN_OPTIONS and the others.
-        return std::find(Names.begin(), Names.end(), name) != Names.end() || name.starts_with("LC_") || (name.ends_with("SAN_OPTIONS") && name.size() > 11);
+        return std::find(Names.begin(), Names.end(), name) != Names.end() || name.starts_with("LC_")
+            || (name.ends_with("SAN_OPTIONS") && name.size() > 11);
     }
     std::vector<std::pair<std::string, std::string>> cleanEnvironment() const
     {
@@ -186,9 +221,11 @@ public:
         for (char** e = environ; *e; ++e) {
             const std::string entry(*e);
             const auto eq = entry.find('=');
-            if (eq == std::string::npos) continue;
+            if (eq == std::string::npos)
+                continue;
             const std::string name = entry.substr(0, eq);
-            if (allowed(name)) env.emplace_back(name, entry.substr(eq + 1));
+            if (allowed(name))
+                env.emplace_back(name, entry.substr(eq + 1));
         }
         env.emplace_back("XDG_RUNTIME_DIR", runtime());
         // The daemon listens under the state directory too: never the user's.
@@ -204,7 +241,8 @@ public:
     /// and a connection, the daemon ends.
     bool start(bool keep = true, bool ignoreHangup = false)
     {
-        if (spawnDaemon(ignoreHangup) <= 0) return false;
+        if (spawnDaemon(ignoreHangup) <= 0)
+            return false;
         const bool answers = waitFor([this] {
             IpcConnection connection;
             IpcConnection::Error error;
@@ -214,11 +252,17 @@ public:
     }
 
     /// The soft RLIMIT_NOFILE that the daemon starts with, below the hard one.
-    void startFileLimit(rlim_t soft) { m_startFileLimit = soft; }
+    void startFileLimit(rlim_t soft)
+    {
+        m_startFileLimit = soft;
+    }
 
     /// A variable that the daemon has and the sessions have not, in place
     /// of one of the same name.
-    void daemonOnly(std::string name, std::string value) { m_daemonOnly.emplace_back(std::move(name), std::move(value)); }
+    void daemonOnly(std::string name, std::string value)
+    {
+        m_daemonOnly.emplace_back(std::move(name), std::move(value));
+    }
 
     /// Starts a daemon that this test kills at its end whatever happens: the
     /// test's daemon, or with @p other a second one. With @p ignoreHangup
@@ -243,34 +287,46 @@ public:
         }
         std::vector<std::string> store;
         for (const auto& [name, value] : m_environment) {
-            const bool replaced = std::any_of(m_daemonOnly.begin(), m_daemonOnly.end(), [&](const auto& only) { return only.first == name; });
-            if (!replaced) store.push_back(name + "=" + value);
+            const bool replaced = std::any_of(m_daemonOnly.begin(), m_daemonOnly.end(), [&](const auto& only) {
+                return only.first == name;
+            });
+            if (!replaced)
+                store.push_back(name + "=" + value);
         }
-        for (const auto& [name, value] : m_daemonOnly) store.push_back(name + "=" + value);
-        if (report >= 0) store.push_back(std::string(AfterglowMux::ReportFdVariable) + "=3");
+        for (const auto& [name, value] : m_daemonOnly)
+            store.push_back(name + "=" + value);
+        if (report >= 0)
+            store.push_back(std::string(AfterglowMux::ReportFdVariable) + "=3");
         std::vector<char*> envp;
-        for (auto& entry : store) envp.push_back(entry.data());
+        for (auto& entry : store)
+            envp.push_back(entry.data());
         envp.push_back(nullptr);
         const std::string err = m_dir + "/daemon.err";
         const std::string script = std::string("trap '' HUP; exec '") + AFTERGLOW_MUX + "'";
         std::vector<char*> argv;
-        if (ignoreHangup) argv = {const_cast<char*>("/bin/sh"), const_cast<char*>("-c"), const_cast<char*>(script.c_str()), nullptr};
-        else argv = {const_cast<char*>(AFTERGLOW_MUX), nullptr};
+        if (ignoreHangup)
+            argv = {const_cast<char*>("/bin/sh"), const_cast<char*>("-c"), const_cast<char*>(script.c_str()), nullptr};
+        else
+            argv = {const_cast<char*>(AFTERGLOW_MUX), nullptr};
         const pid_t parent = ::getpid();
         const pid_t pid = ::fork();
-        if (pid < 0) return -1;
+        if (pid < 0)
+            return -1;
         if (pid == 0) {
             ::prctl(PR_SET_PDEATHSIG, SIGKILL);
-            if (::getppid() != parent) ::_exit(127);
+            if (::getppid() != parent)
+                ::_exit(127);
             // The report goes to 3 first, from above 10: the files opened
             // below then never take 3, and the report is never one of them.
             if (report >= 0) {
                 const int high = ::fcntl(report, F_DUPFD, 10);
-                if (high < 0 || ::dup2(high, 3) != 3) ::_exit(127);
+                if (high < 0 || ::dup2(high, 3) != 3)
+                    ::_exit(127);
             }
             const int in = ::open("/dev/null", O_RDONLY);
             const int out = ::open(err.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0600);
-            if (in < 0 || out < 0) ::_exit(127);
+            if (in < 0 || out < 0)
+                ::_exit(127);
             if (rlimit limit{}; m_startFileLimit > 0 && ::getrlimit(RLIMIT_NOFILE, &limit) == 0) {
                 limit.rlim_cur = m_startFileLimit;
                 ::setrlimit(RLIMIT_NOFILE, &limit);
@@ -286,7 +342,10 @@ public:
         return pid;
     }
 
-    std::string errors() const { return readFile(m_dir + "/daemon.err"); }
+    std::string errors() const
+    {
+        return readFile(m_dir + "/daemon.err");
+    }
 
     /// Whether the daemon still runs. It is not reaped here: a later
     /// waitExit() still gets its status.
@@ -309,7 +368,8 @@ public:
         int status = 0;
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         while (::waitpid(pid, &status, WNOHANG) != pid) {
-            if (std::chrono::steady_clock::now() >= deadline) return std::nullopt;
+            if (std::chrono::steady_clock::now() >= deadline)
+                return std::nullopt;
             std::this_thread::sleep_for(20ms);
         }
         pid = -1;
@@ -324,14 +384,19 @@ public:
         IpcConnection::Error& e = error ? *error : m_lastError;
         e = {};
         std::optional<Json::Value> result;
-        if (connection.connect(m_callSocket, &e, 2000)) result = connection.call(target, fn, std::move(args), 5000, &e);
+        if (connection.connect(m_callSocket, &e, 2000))
+            result = connection.call(target, fn, std::move(args), 5000, &e);
         // lastError() describes this call, also when it got no connection.
-        if (&e != &m_lastError) m_lastError = e;
+        if (&e != &m_lastError)
+            m_lastError = e;
         return result;
     }
 
     /// Why the last call failed.
-    std::string lastError() const { return m_lastError.code + ": " + m_lastError.message + " " + errors(); }
+    std::string lastError() const
+    {
+        return m_lastError.code + ": " + m_lastError.message + " " + errors();
+    }
 
     SessionOptions options(std::vector<std::string> argv, std::string name = {}) const
     {
@@ -366,7 +431,8 @@ public:
         for (const Json::Value& item : result->toArray()) {
             auto info = sessionInfo(item);
             EXPECT_TRUE(info) << Json::write(item);
-            if (info) list.push_back(std::move(*info));
+            if (info)
+                list.push_back(std::move(*info));
         }
         return list;
     }
@@ -377,7 +443,8 @@ public:
     {
         return AfterglowProto::muxSockets([this](const char* name) -> const char* {
             for (const auto& [key, value] : m_environment) {
-                if (key == name) return value.c_str();
+                if (key == name)
+                    return value.c_str();
             }
             return nullptr;
         });
@@ -414,23 +481,34 @@ public:
     }
     ~RawClient()
     {
-        if (m_fd >= 0) ::close(m_fd);
+        if (m_fd >= 0)
+            ::close(m_fd);
     }
-    bool connected() const { return m_fd >= 0; }
+    bool connected() const
+    {
+        return m_fd >= 0;
+    }
     bool send(std::string_view text)
     {
         while (!text.empty()) {
             const ssize_t n = ::send(m_fd, text.data(), text.size(), MSG_NOSIGNAL);
-            if (n <= 0) return false;
+            if (n <= 0)
+                return false;
             text.remove_prefix(std::size_t(n));
         }
         return true;
     }
     /// Ends this side of the connection, as a client that sent its last
     /// call does: the daemon reads the end, and can still answer.
-    bool endSending() { return ::shutdown(m_fd, SHUT_WR) == 0; }
+    bool endSending()
+    {
+        return ::shutdown(m_fd, SHUT_WR) == 0;
+    }
     /// A line() read the end of the connection.
-    bool ended() const { return m_ended; }
+    bool ended() const
+    {
+        return m_ended;
+    }
     /// The next line, without its '\n'; empty after five seconds or at the end.
     std::string line()
     {
@@ -441,11 +519,14 @@ public:
                 return line;
             }
             pollfd p{m_fd, POLLIN, 0};
-            if (::poll(&p, 1, 5000) <= 0) return {};
+            if (::poll(&p, 1, 5000) <= 0)
+                return {};
             char buffer[4096];
             const ssize_t n = ::read(m_fd, buffer, sizeof buffer);
-            if (n == 0) m_ended = true;
-            if (n <= 0) return {};
+            if (n == 0)
+                m_ended = true;
+            if (n <= 0)
+                return {};
             m_buffer.append(buffer, std::size_t(n));
         }
     }
@@ -459,7 +540,8 @@ private:
 inline std::vector<std::string> names(const std::vector<SessionInfo>& sessions)
 {
     std::vector<std::string> list;
-    for (const auto& s : sessions) list.push_back(s.name);
+    for (const auto& s : sessions)
+        list.push_back(s.name);
     return list;
 }
 
@@ -483,7 +565,8 @@ inline bool shellSession(TestDaemon& daemon, const std::string& name)
 inline std::optional<SessionInfo> sessionNamed(TestDaemon& daemon, const std::string& name)
 {
     for (SessionInfo& s : daemon.sessions()) {
-        if (s.name == name) return std::move(s);
+        if (s.name == name)
+            return std::move(s);
     }
     return std::nullopt;
 }
@@ -496,7 +579,8 @@ inline std::uint32_t firstPaneOf(TestDaemon& daemon, const std::string& name, st
     for (std::uint32_t id = 1; id <= last; ++id) {
         IpcConnection::Error error;
         const auto session = daemon.call(Fn::PaneSession, Json::Array{std::int64_t(id)}, &error);
-        if (session && session->toString() == name) return id;
+        if (session && session->toString() == name)
+            return id;
     }
     return 0;
 }
@@ -515,7 +599,8 @@ inline bool running(pid_t pid)
 /// that came before) and waits for one byte of input before it asks: a
 /// window that attaches first then gets the query. It waits for the answer
 /// longer than a test's own waits, so that the test sets the time limit.
-inline std::vector<std::string> ask(const std::string& query, const std::string& end, const std::string& file, bool afterByte = false)
+inline std::vector<std::string> ask(const std::string& query, const std::string& end, const std::string& file,
+                                    bool afterByte = false)
 {
     const std::string script = R"(import os, select, sys, tty
 fd = sys.stdin.fileno()
@@ -546,12 +631,14 @@ struct TempDir
     TempDir()
     {
         std::string pattern = (std::filesystem::temp_directory_path() / "aglow-mux-test-XXXXXX").string();
-        if (::mkdtemp(pattern.data())) path = pattern;
+        if (::mkdtemp(pattern.data()))
+            path = pattern;
     }
     ~TempDir()
     {
         std::error_code ignored;
-        if (!path.empty()) std::filesystem::remove_all(path, ignored);
+        if (!path.empty())
+            std::filesystem::remove_all(path, ignored);
     }
     TempDir(const TempDir&) = delete;
     TempDir& operator=(const TempDir&) = delete;
@@ -589,8 +676,8 @@ inline std::string greyPng(std::uint32_t width, std::uint32_t height)
         rows.append(width, char(y));
     }
     const std::string header = be(width) + be(height) + std::string{8, 0, 0, 0, 0};
-    return std::string("\x89PNG\r\n\x1a\n", 8) + chunk("IHDR", header) + chunk("IDAT", AfterglowProto::zlibCompress(rows))
-        + chunk("IEND", {});
+    return std::string("\x89PNG\r\n\x1a\n", 8) + chunk("IHDR", header)
+        + chunk("IDAT", AfterglowProto::zlibCompress(rows)) + chunk("IEND", {});
 }
 
 } // namespace MuxTest

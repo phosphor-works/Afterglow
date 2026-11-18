@@ -37,8 +37,11 @@ std::unique_ptr<AfterglowRender::GpuDevice> s_device;
 std::string s_noDevice;
 bool s_noVulkan = false;
 
-struct QuietHost : AfterglowVt::ITerminalHost {
-    void writeToPty(std::string_view) override {}
+struct QuietHost : AfterglowVt::ITerminalHost
+{
+    void writeToPty(std::string_view) override
+    {
+    }
 };
 
 /// Whether some pixel of @p rect is within a small distance of @p color.
@@ -47,7 +50,9 @@ bool showsColor(const QImage& image, const QRect& rect, QRgb color)
     for (int y = rect.top(); y <= rect.bottom(); ++y) {
         for (int x = rect.left(); x <= rect.right(); ++x) {
             const QRgb got = image.pixel(x, y);
-            if (std::abs(qRed(got) - qRed(color)) + std::abs(qGreen(got) - qGreen(color)) + std::abs(qBlue(got) - qBlue(color)) <= 30)
+            if (std::abs(qRed(got) - qRed(color)) + std::abs(qGreen(got) - qGreen(color))
+                    + std::abs(qBlue(got) - qBlue(color))
+                <= 30)
                 return true;
         }
     }
@@ -59,7 +64,8 @@ bool showsColor(const QImage& image, const QRect& rect, QRgb color)
 TEST(PopupLook, TheBorderTitleAndDimComeFromTheSettings)
 {
     if (!s_device) {
-        if (s_noVulkan) GTEST_SKIP() << s_noDevice;
+        if (s_noVulkan)
+            GTEST_SKIP() << s_noDevice;
         FAIL() << s_noDevice;
     }
     QTemporaryDir directory;
@@ -76,8 +82,9 @@ TEST(PopupLook, TheBorderTitleAndDimComeFromTheSettings)
         }
         return file.fileName();
     };
-    const QString boxed = write(QStringLiteral("boxed.json"),
-                                R"({"background": "#000000", "foreground": "#ffffff", "divider": "#ff0000", "popupBorder": "#0000ff"})");
+    const QString boxed =
+        write(QStringLiteral("boxed.json"),
+              R"({"background": "#000000", "foreground": "#ffffff", "divider": "#ff0000", "popupBorder": "#0000ff"})");
     const QString plain = write(QStringLiteral("plain.json"), R"({"background": "#000000", "foreground": "#00ff00"})");
     ASSERT_FALSE(boxed.isEmpty() || plain.isEmpty());
     // The config's own border, a theme's, and the fallback of a theme
@@ -94,10 +101,10 @@ TEST(PopupLook, TheBorderTitleAndDimComeFromTheSettings)
         {R"({"Colors": {"background": "#000000", "foreground": "#ffffff", "divider": "#ff0000", "popupBorder": "#00ff00"}})",
          qRgb(0, 255, 0), qRgb(255, 255, 255), qRgb(0, 0, 0)},
         {R"({"Colors": {"theme": ")" + boxed.toUtf8() + R"("}})", qRgb(0, 0, 255), qRgb(255, 255, 255), qRgb(0, 0, 0)},
-        {R"({"Colors": {"theme": ")" + plain.toUtf8() + R"(", "popupBorder": "#ff00ff"}})", qRgb(0, 127, 0), qRgb(0, 255, 0),
-         qRgb(0, 0, 0)},
-        {R"({"Colors": {"background": "#ffffff", "foreground": "#000000", "popupDim": 0.2}})", qRgb(128, 128, 128), qRgb(0, 0, 0),
-         qRgb(204, 204, 204)},
+        {R"({"Colors": {"theme": ")" + plain.toUtf8() + R"(", "popupBorder": "#ff00ff"}})", qRgb(0, 127, 0),
+         qRgb(0, 255, 0), qRgb(0, 0, 0)},
+        {R"({"Colors": {"background": "#ffffff", "foreground": "#000000", "popupDim": 0.2}})", qRgb(128, 128, 128),
+         qRgb(0, 0, 0), qRgb(204, 204, 204)},
     };
     AfterglowRender::WindowRenderer renderer(*s_device, nullptr);
     renderer.setDevicePixelRatio(1.0);
@@ -131,7 +138,8 @@ TEST(PopupLook, TheBorderTitleAndDimComeFromTheSettings)
         drawn.overlay = overlay;
         const QImage image = renderer.renderToImage(drawn.params.rect.size(), {drawn}, {}, paneSnapshot.defaultBg);
         // The left and right edges, and the bottom.
-        for (const QRect& edge : {QRect(4 * cw, 2 * ch, cw, ch), QRect(13 * cw, 3 * ch, cw, ch), QRect(8 * cw, 4 * ch, cw, ch)}) {
+        for (const QRect& edge :
+             {QRect(4 * cw, 2 * ch, cw, ch), QRect(13 * cw, 3 * ch, cw, ch), QRect(8 * cw, 4 * ch, cw, ch)}) {
             EXPECT_TRUE(showsColor(image, edge, each.border)) << edge.x() / cw << "," << edge.y() / ch;
             EXPECT_FALSE(showsColor(image, edge, qRgb(255, 0, 0))) << "the divider's color";
             EXPECT_FALSE(showsColor(image, edge, qRgb(255, 0, 255))) << "the config's color under a theme";

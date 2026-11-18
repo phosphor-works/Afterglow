@@ -19,8 +19,10 @@ int keyCount(QString text)
             if (p == text.size() - 1) {
                 p = -1;
             } else {
-                if (text.at(p + 1) == QLatin1Char(',')) ++p;
-                if (p + 1 < text.size() && text.at(p + 1) == QLatin1Char(' ')) ++p;
+                if (text.at(p + 1) == QLatin1Char(','))
+                    ++p;
+                if (p + 1 < text.size() && text.at(p + 1) == QLatin1Char(' '))
+                    ++p;
             }
         }
         text = p == -1 ? QString() : text.mid(p + 1);
@@ -58,7 +60,8 @@ void arm(KeyModes::State& state)
     } else if (state.prefix.isEmpty()) {
         state.deadline = state.tableDeadline;
     } else {
-        state.deadline = state.table.isEmpty() ? state.prefixDeadline : std::min(state.prefixDeadline, state.tableDeadline);
+        state.deadline =
+            state.table.isEmpty() ? state.prefixDeadline : std::min(state.prefixDeadline, state.tableDeadline);
     }
 }
 } // namespace
@@ -66,20 +69,26 @@ void arm(KeyModes::State& state)
 QString KeyModes::State::label() const
 {
     QStringList keys;
-    for (int key : prefix) keys << QKeySequence(key).toString(QKeySequence::NativeText);
-    return table.isEmpty() ? keys.join(QStringLiteral(", "))
+    for (int key : prefix)
+        keys << QKeySequence(key).toString(QKeySequence::NativeText);
+    return table.isEmpty()
+        ? keys.join(QStringLiteral(", "))
         : table + (keys.isEmpty() ? QString() : QStringLiteral(": ") + keys.join(QStringLiteral(", ")));
 }
 
-KeyModes KeyModes::fromConfig(const QVariantMap& bindings, const QVariantMap& tables,
-    const QString& leader, int sequenceTimeout, int tableTimeout, const Keybinds& singles, QStringList* errors)
+KeyModes KeyModes::fromConfig(const QVariantMap& bindings, const QVariantMap& tables, const QString& leader,
+                              int sequenceTimeout, int tableTimeout, const Keybinds& singles, QStringList* errors)
 {
     KeyModes result;
     result.m_sequenceTimeout = sequenceTimeout;
     result.m_tableTimeout = tableTimeout;
-    auto error = [&](const QString& text) { if (errors) errors->append(text); };
+    auto error = [&](const QString& text) {
+        if (errors)
+            errors->append(text);
+    };
     QStringList actions;
-    for (Action a : Keybinds::allActions()) actions << Keybinds::token(a);
+    for (Action a : Keybinds::allActions())
+        actions << Keybinds::token(a);
     auto add = [&](const QString& name, const QVariantMap& map) {
         // Keybinds::fromMap reads the root map too and reports its unknown
         // actions, bad text escapes and unparsable first keys; say them once.
@@ -91,12 +100,15 @@ KeyModes KeyModes::fromConfig(const QVariantMap& bindings, const QVariantMap& ta
             const bool pop = target == Keybinds::PopKeyTable;
             if (!actions.contains(target) && !target.startsWith(Keybinds::ScriptPrefix)
                 && !target.startsWith(Keybinds::TextPrefix) && !tableAction && !pop) {
-                if (!root) error(QStringLiteral("unknown key-table action %1").arg(target));
+                if (!root)
+                    error(QStringLiteral("unknown key-table action %1").arg(target));
                 continue;
             }
             if (target.startsWith(Keybinds::ScriptPrefix) && !Keybinds::isScriptTarget(target)) {
                 // Keybinds::fromMap reports the root's.
-                if (!root) error(QStringLiteral("\"%1\" names no script command. Use script:<script id>.<command>").arg(target));
+                if (!root)
+                    error(
+                        QStringLiteral("\"%1\" names no script command. Use script:<script id>.<command>").arg(target));
                 continue;
             }
             if (root && pop) {
@@ -108,27 +120,36 @@ KeyModes KeyModes::fromConfig(const QVariantMap& bindings, const QVariantMap& ta
                 error(QStringLiteral("unknown key table %1").arg(target.mid(Keybinds::TablePrefix.size())));
                 continue;
             }
-            if (target.startsWith(Keybinds::TextPrefix) && Keybinds::unescape(target.mid(Keybinds::TextPrefix.size())).isEmpty()) {
-                if (!root) error(QStringLiteral("invalid text binding %1").arg(target));
+            if (target.startsWith(Keybinds::TextPrefix)
+                && Keybinds::unescape(target.mid(Keybinds::TextPrefix.size())).isEmpty()) {
+                if (!root)
+                    error(QStringLiteral("invalid text binding %1").arg(target));
                 continue;
             }
             QStringList sequences;
             if (it.value().typeId() == QMetaType::QString) {
                 sequences << it.value().toString();
-            } else if (it.value().typeId() == QMetaType::QVariantList || it.value().typeId() == QMetaType::QStringList) {
+            } else if (it.value().typeId() == QMetaType::QVariantList
+                       || it.value().typeId() == QMetaType::QStringList) {
                 for (const QVariant& v : it.value().toList()) {
-                    if (v.typeId() == QMetaType::QString) sequences << v.toString();
-                    else if (!root || tableAction) error(QStringLiteral("binding for %1 must be a key string or a list of them").arg(target));
+                    if (v.typeId() == QMetaType::QString)
+                        sequences << v.toString();
+                    else if (!root || tableAction)
+                        error(QStringLiteral("binding for %1 must be a key string or a list of them").arg(target));
                 }
             } else if (!root || tableAction) {
                 error(QStringLiteral("binding for %1 must be a key string or a list of them").arg(target));
             }
             for (QString text : std::as_const(sequences)) {
                 text = text.trimmed();
-                if (text.isEmpty()) continue;
+                if (text.isEmpty())
+                    continue;
                 const bool leaderUsed = Keybinds::usesLeader(text);
                 if (leaderUsed) {
-                    if (leader.isEmpty()) { error(QStringLiteral("Leader used without Keybinds.leader")); continue; }
+                    if (leader.isEmpty()) {
+                        error(QStringLiteral("Leader used without Keybinds.leader"));
+                        continue;
+                    }
                     // Only a leading Leader token is substituted.
                     text.replace(0, 6, leader.trimmed());
                 }
@@ -143,25 +164,34 @@ KeyModes KeyModes::fromConfig(const QVariantMap& bindings, const QVariantMap& ta
                     valid &= sequence[i].key() != Qt::Key_unknown && sequence[i].key() != 0;
                     // The same modifiers as Keybinds::combinations, so keypad keys match.
                     binding.keys << QKeyCombination(sequence[i].keyboardModifiers() & Keybinds::RelevantMods,
-                                                    sequence[i].key()).toCombined();
+                                                    sequence[i].key())
+                                        .toCombined();
                 }
                 if (!valid) {
-                    const bool reported = root && !leaderUsed && (sequence.isEmpty() || sequence[0].key() == Qt::Key_unknown);
-                    if (!reported) error(QStringLiteral("invalid key sequence %1").arg(text));
+                    const bool reported =
+                        root && !leaderUsed && (sequence.isEmpty() || sequence[0].key() == Qt::Key_unknown);
+                    if (!reported)
+                        error(QStringLiteral("invalid key sequence %1").arg(text));
                     continue;
                 }
                 // Root single keys are Keybinds' own, except a bare Leader and table entries.
-                if (root && binding.keys.size() == 1 && !tableAction && !leaderUsed) continue;
+                if (root && binding.keys.size() == 1 && !tableAction && !leaderUsed)
+                    continue;
                 if (root && singles.isBound(binding.keys.front())) {
-                    error(QStringLiteral("sequence %1 conflicts with an existing single-key binding. Unbind it first").arg(text));
+                    error(QStringLiteral("sequence %1 conflicts with an existing single-key binding. Unbind it first")
+                              .arg(text));
                     continue;
                 }
                 bool conflict = false;
                 for (const auto& previous : out) {
                     const auto n = std::min(previous.keys.size(), binding.keys.size());
-                    if (std::equal(previous.keys.begin(), previous.keys.begin() + n, binding.keys.begin())) conflict = true;
+                    if (std::equal(previous.keys.begin(), previous.keys.begin() + n, binding.keys.begin()))
+                        conflict = true;
                 }
-                if (conflict) { error(QStringLiteral("ambiguous key sequence %1 in table %2").arg(text, name)); continue; }
+                if (conflict) {
+                    error(QStringLiteral("ambiguous key sequence %1 in table %2").arg(text, name));
+                    continue;
+                }
                 out << binding;
             }
         }
@@ -170,7 +200,8 @@ KeyModes KeyModes::fromConfig(const QVariantMap& bindings, const QVariantMap& ta
     for (auto it = tables.begin(); it != tables.end(); ++it) {
         if (it.key().isEmpty() || it.value().typeId() != QMetaType::QVariantMap) {
             error(QStringLiteral("key tables require a nonempty name and an action map"));
-        } else add(it.key(), it.value().toMap());
+        } else
+            add(it.key(), it.value().toMap());
     }
     return result;
 }
@@ -178,28 +209,37 @@ KeyModes KeyModes::fromConfig(const QVariantMap& bindings, const QVariantMap& ta
 void KeyModes::expire(State& state, qint64 now)
 {
     // A table outlives a prefix that timed out inside it.
-    if (!state.prefix.isEmpty() && now >= state.prefixDeadline) state.prefix.clear();
-    if (!state.table.isEmpty() && now >= state.tableDeadline) state = {};
+    if (!state.prefix.isEmpty() && now >= state.prefixDeadline)
+        state.prefix.clear();
+    if (!state.table.isEmpty() && now >= state.tableDeadline)
+        state = {};
     arm(state);
 }
 
 KeyModes::Result KeyModes::press(const QKeyEvent* event, State& state, qint64 now, char32_t base) const
 {
     expire(state, now);
-    if (modifierOnly(event->key())) return {state.active(), {}};
-    if (event->isAutoRepeat() && !state.prefix.isEmpty()) return {true, {}};
+    if (modifierOnly(event->key()))
+        return {state.active(), {}};
+    if (event->isAutoRepeat() && !state.prefix.isEmpty())
+        return {true, {}};
     const auto combinations = Keybinds::combinations(event, base);
     // On mismatch discard the prefix/table and reconsider only this key at root.
     for (int attempt = 0; attempt < 2; ++attempt) {
         const auto entries = m_tables.constFind(state.table);
         if (entries != m_tables.constEnd()) {
             for (int key : combinations) {
-                QList<int> prefix = state.prefix; prefix << key;
+                QList<int> prefix = state.prefix;
+                prefix << key;
                 for (const auto& binding : *entries) {
-                    if (binding.keys.size() < prefix.size() || !std::equal(prefix.begin(), prefix.end(), binding.keys.begin())) continue;
-                    if (!state.table.isEmpty()) state.tableDeadline = now + m_tableTimeout;
+                    if (binding.keys.size() < prefix.size()
+                        || !std::equal(prefix.begin(), prefix.end(), binding.keys.begin()))
+                        continue;
+                    if (!state.table.isEmpty())
+                        state.tableDeadline = now + m_tableTimeout;
                     if (binding.keys.size() > prefix.size()) {
-                        state.prefix = prefix; state.prefixDeadline = now + m_sequenceTimeout;
+                        state.prefix = prefix;
+                        state.prefixDeadline = now + m_sequenceTimeout;
                         arm(state);
                         return {true, {}};
                     }
@@ -211,17 +251,25 @@ KeyModes::Result KeyModes::press(const QKeyEvent* event, State& state, qint64 no
                         return {true, {}};
                     }
                     // Leaves every table, not one level.
-                    if (binding.target == Keybinds::PopKeyTable) { state = {}; return {true, {}}; }
+                    if (binding.target == Keybinds::PopKeyTable) {
+                        state = {};
+                        return {true, {}};
+                    }
                     arm(state);
                     return {true, binding.target};
                 }
             }
         }
-        if (!state.active()) break;
+        if (!state.active())
+            break;
         // Checked after the table, so a table can bind Escape itself.
-        if (event->key() == Qt::Key_Escape) { state = {}; return {true, {}}; }
+        if (event->key() == Qt::Key_Escape) {
+            state = {};
+            return {true, {}};
+        }
         // Holding the key that entered a table must not type it.
-        if (event->isAutoRepeat()) return {true, {}};
+        if (event->isAutoRepeat())
+            return {true, {}};
         state = {};
     }
     return {};
@@ -231,9 +279,11 @@ QStringList KeyModes::bindingsOf(const QString& target) const
 {
     QStringList out;
     for (const auto& binding : m_tables.value(QString())) {
-        if (binding.target != target) continue;
+        if (binding.target != target)
+            continue;
         int keys[MaxSequenceKeys] = {};
-        for (qsizetype i = 0; i < binding.keys.size() && i < MaxSequenceKeys; ++i) keys[i] = binding.keys[i];
+        for (qsizetype i = 0; i < binding.keys.size() && i < MaxSequenceKeys; ++i)
+            keys[i] = binding.keys[i];
         out << QKeySequence(keys[0], keys[1], keys[2], keys[3]).toString(QKeySequence::NativeText);
     }
     return out;

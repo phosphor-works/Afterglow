@@ -18,7 +18,8 @@ constexpr double Step = MomentumScroll::StepMs;
 bool flick(MomentumScroll& m, double delta, double start = 0)
 {
     m.begin(start);
-    for (int i = 0; i < 5; ++i) m.move(delta, start + i * Step);
+    for (int i = 0; i < 5; ++i)
+        m.move(delta, start + i * Step);
     return m.release(start + 5 * Step);
 }
 /// The speed that flick() gives, by kitty's rule: the mean of the five moves
@@ -36,7 +37,8 @@ std::vector<double> kittySteps(double speed, double friction)
     double total = 0;
     for (;;) {
         speed *= friction;
-        if (std::abs(speed) < 0.5 || at.size() > 100000) break;
+        if (std::abs(speed) < 0.5 || at.size() > 100000)
+            break;
         total += speed;
         at.push_back(total);
     }
@@ -66,7 +68,8 @@ TEST(MomentumScroll, TheCoastIsAtKittysStepsAtEachStepTime)
     const std::vector<double> ours = coast(m, 5 * Step + Step, Step);
     EXPECT_FALSE(m.coasting());
     ASSERT_EQ(ours.size(), kitty.size());
-    for (std::size_t i = 0; i < kitty.size(); ++i) EXPECT_NEAR(ours[i], kitty[i], 1e-9) << "step " << i + 1;
+    for (std::size_t i = 0; i < kitty.size(); ++i)
+        EXPECT_NEAR(ours[i], kitty[i], 1e-9) << "step " << i + 1;
     EXPECT_EQ(m.advance(100000), 0);
 }
 
@@ -83,7 +86,8 @@ TEST(MomentumScroll, EachFrameShowsTheCoastAtItsOwnTime)
     ASSERT_GT(b.size(), 5u);
     for (std::size_t k = 0; k < b.size(); ++k) {
         const std::size_t i = (k + 1) * 33 - 1;
-        if (i >= a.size()) break;
+        if (i >= a.size())
+            break;
         EXPECT_NEAR(a[i], b[k], 1e-9) << "at " << (k + 1) * 33 << " ms";
     }
     EXPECT_NEAR(a.back(), b.back(), 1e-9);
@@ -118,7 +122,8 @@ TEST(MomentumScroll, TheLiftCountsAndAFingerThatStoppedCoastsSlower)
     MomentumScroll now, held, gone;
     for (MomentumScroll* m : {&now, &held, &gone}) {
         m->begin(0);
-        for (int i = 0; i < 5; ++i) m->move(20, i * Step);
+        for (int i = 0; i < 5; ++i)
+            m->move(20, i * Step);
     }
     ASSERT_TRUE(now.release(5 * Step));
     // Still for 140 ms: the first moves are older than 150 ms, and the two
@@ -196,7 +201,8 @@ TEST(MomentumScroll, FrictionZeroTurnsItOffOneKeepsTheSpeedAndNaNChangesNothing)
     ASSERT_TRUE(flick(endless, 30));
     // 100 steps, 40 ms apart so that no frame is late.
     double total = 0;
-    for (int i = 1; i <= 20; ++i) total += endless.advance(5 * Step + i * 5 * Step);
+    for (int i = 1; i <= 20; ++i)
+        total += endless.advance(5 * Step + i * 5 * Step);
     EXPECT_NEAR(total, flickSpeed(30) * 100, 1e-6);
     EXPECT_TRUE(endless.coasting());
 }
@@ -234,7 +240,8 @@ TEST(MomentumScroll, RepeatedFlicksAddUpToTheCapAndAReverseStartsAgain)
     // A finger the other way: its own speed counts alone.
     m.begin(200);
     EXPECT_FALSE(m.coasting());
-    for (int i = 0; i < 5; ++i) m.move(-5, 200 + i * Step);
+    for (int i = 0; i < 5; ++i)
+        m.move(-5, 200 + i * Step);
     ASSERT_TRUE(m.release(200 + 5 * Step));
     EXPECT_NEAR(m.advance(200 + 5 * Step + Step), flickSpeed(-5), 1e-9);
 }

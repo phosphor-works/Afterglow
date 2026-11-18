@@ -79,7 +79,9 @@ TEST(Selection, Block)
 TEST(Selection, WideCharacterSelectedWhole)
 {
     Term t(10, 2);
-    t.t.feed("a\xE4\xB8\xAD" "b");
+    t.t.feed(
+        "a\xE4\xB8\xAD"
+        "b");
     EXPECT_EQ(t.select(0, 0, 0, 1).text(t.t.screen()), "a\xE4\xB8\xAD");
 }
 
@@ -119,7 +121,9 @@ TEST(Selection, WideTailStartAndBoundedUtf8)
 TEST(Selection, KeyboardMovementSkipsWideTailsAndClampsHistory)
 {
     Term t(6, 2);
-    t.t.feed("a\xe7\x95\x8c" "e\xcc\x81");
+    t.t.feed(
+        "a\xe7\x95\x8c"
+        "e\xcc\x81");
     const auto& screen = t.t.screen();
     SelectionPoint p{screen.rowsDropped(), 0};
     p = moveSelectionCursor(screen, p, 1, 0);
@@ -263,7 +267,10 @@ TEST(Selection, HostLearnsWhichRowsAScrollMoved)
     struct Host : RecordingHost
     {
         std::vector<RegionScroll> scrolls;
-        void regionScrolled(const RegionScroll& s) override { scrolls.push_back(s); }
+        void regionScrolled(const RegionScroll& s) override
+        {
+            scrolls.push_back(s);
+        }
     } host;
     Terminal t(20, 6, host);
     t.feed("\n\n\n\n\n\n\n\n"); // three rows of history: line feeds move no row ids

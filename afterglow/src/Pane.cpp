@@ -87,7 +87,8 @@ Pane::~Pane()
     // Its overlay answers "cancelled" while this pane is whole, and its
     // program gets SIGHUP.
     delete m_overlay;
-    if (m_searchJob) m_searchJob->cancelled = true;
+    if (m_searchJob)
+        m_searchJob->cancelled = true;
     // A decode that runs ends at once, and so does each one after it.
     if (m_stopDecode.valid()) {
         const std::uint64_t one = 1;
@@ -95,7 +96,8 @@ Pane::~Pane()
     }
     // Stop the pty thread before the terminal it feeds goes away. A thread
     // that paused its output for a download stops too.
-    if (m_pty) m_pty->stop();
+    if (m_pty)
+        m_pty->stop();
     // A download that streams loses its part file; the writers of those
     // that finished end their renames. The pane does not wait for the disk
     // (DownloadFile::release). Without m_mutex, which a writer takes to
@@ -111,19 +113,23 @@ Pane::~Pane()
     // window that took the session, a break out): nothing else tells the
     // user that the file was not saved.
     if (open && m_session) {
-        NotificationCenter::instance().showNotice(nullptr, tr("Download not saved"),
-                                                  tr("%1: the pane left this window before the whole file came.").arg(open->target()));
+        NotificationCenter::instance().showNotice(
+            nullptr, tr("Download not saved"),
+            tr("%1: the pane left this window before the whole file came.").arg(open->target()));
     }
     DownloadFile::release(std::move(open));
-    for (auto& entry : ending) DownloadFile::release(std::move(entry.second));
+    for (auto& entry : ending)
+        DownloadFile::release(std::move(entry.second));
     m_dragDrop.reset();
     m_fileTransfers.reset();
     m_pty.reset();
     // A session pane that the user closes ends its program, or its session,
     // or leaves it running (Mux.onClose): the window said which. One that
     // the session left ends nothing.
-    if (m_session) m_session->release(m_sessionPane, m_sessionGone ? MuxRelease::Nothing : m_sessionRelease);
-    for (const auto& dock : m_docks) releaseDockAccessibility(dock.get());
+    if (m_session)
+        m_session->release(m_sessionPane, m_sessionGone ? MuxRelease::Nothing : m_sessionRelease);
+    for (const auto& dock : m_docks)
+        releaseDockAccessibility(dock.get());
 }
 
 bool Pane::start(AfterglowPty::SpawnOptions opts, const QString& term, int cols, int rows, int cellWidth,
@@ -141,8 +147,10 @@ bool Pane::start(AfterglowPty::SpawnOptions opts, const QString& term, int cols,
     AfterglowPty::setVariable(opts, "AFTERGLOW_PANE_ID", std::to_string(m_overlayHost ? m_overlayHost->id() : m_id));
     // Marks the overlay's own terminal: an `afterglow ssh` there gets an
     // OSC 24569 answer of its own, apart from the pane's (RemoteSockets).
-    if (m_overlayHost) AfterglowPty::setVariable(opts, "AFTERGLOW_OVERLAY", "1");
-    else AfterglowPty::unsetVariable(opts, "AFTERGLOW_OVERLAY");
+    if (m_overlayHost)
+        AfterglowPty::setVariable(opts, "AFTERGLOW_OVERLAY", "1");
+    else
+        AfterglowPty::unsetVariable(opts, "AFTERGLOW_OVERLAY");
     // Only the daemon sets it, for a program of its session: one that a
     // launch's env gave a pane of the window would send `afterglow ctl` and
     // `afterglow mux detach` to a session that holds another pane of that ID.
@@ -161,7 +169,8 @@ bool Pane::start(AfterglowPty::SpawnOptions opts, const QString& term, int cols,
     offerTerminalEnvironment(opts, term);
     std::string err;
     opts.deferStart = true;
-    if (m_pty) m_pty->stop();
+    if (m_pty)
+        m_pty->stop();
     m_pty = AfterglowPty::Pty::spawn(std::move(opts), *this, &err);
     if (m_pty && !m_pty->start(&err)) {
         m_pty->stop();
@@ -178,8 +187,10 @@ void Pane::setOptions(const AfterglowVt::TerminalOptions& options)
     const auto lock = lockTerminal();
     // A session pane's colors, cursor and modes are the session's, which
     // its frames carry once the daemon applied the options too.
-    if (m_session) m_terminal.setViewOptions(options);
-    else m_terminal.setOptions(options);
+    if (m_session)
+        m_terminal.setViewOptions(options);
+    else
+        m_terminal.setOptions(options);
 }
 
 void Pane::resize(int cols, int rows, int cellWidth, int cellHeight)
@@ -201,34 +212,40 @@ void Pane::resize(int cols, int rows, int cellWidth, int cellHeight)
     // is ahead of it.
     const bool same = m_pendingSize ? *m_pendingSize == size
                                     : cols == m_terminal.cols() && rows == m_terminal.rows()
-                                          && cellWidth == m_terminal.cellWidth() && cellHeight == m_terminal.cellHeight();
-    if (same) return;
+            && cellWidth == m_terminal.cellWidth() && cellHeight == m_terminal.cellHeight();
+    if (same)
+        return;
     // While the reader thread decodes an image, the terminal is its own: it
     // takes the size, and the PTY with it, at the end of its feed. The window
     // draws the pane at the size it has meanwhile, as it does a session pane
     // until the daemon's frame, and a drag of the window goes on.
     m_pendingSize = size;
-    if (!m_decoding) applyPendingLocked();
+    if (!m_decoding)
+        applyPendingLocked();
 }
 
 void Pane::setVisible(bool visible)
 {
-    if (visible == m_visible) return;
+    if (visible == m_visible)
+        return;
     m_visible = visible;
     std::lock_guard lock(m_mutex);
     // As a size: the reader thread gives the terminal the state at the end
     // of its feed, when the program can hear of it (mode 2033).
     m_pendingVisible = visible;
-    if (!m_decoding) applyPendingLocked();
+    if (!m_decoding)
+        applyPendingLocked();
 }
 
 void Pane::applyPendingLocked()
 {
     if (const std::optional<PendingSize> size = std::exchange(m_pendingSize, std::nullopt)) {
         m_terminal.resize(size->cols, size->rows, size->cellWidth, size->cellHeight);
-        if (m_pty) m_pty->resize(size->cols, size->rows, size->cols * size->cellWidth, size->rows * size->cellHeight);
+        if (m_pty)
+            m_pty->resize(size->cols, size->rows, size->cols * size->cellWidth, size->rows * size->cellHeight);
     }
-    if (const std::optional<bool> visible = std::exchange(m_pendingVisible, std::nullopt)) m_terminal.setVisible(*visible);
+    if (const std::optional<bool> visible = std::exchange(m_pendingVisible, std::nullopt))
+        m_terminal.setVisible(*visible);
 }
 
 int Pane::cols() const
@@ -254,12 +271,19 @@ bool Pane::sendInput(std::string_view bytes, bool reportFailure)
             m_terminal.resetViewport();
             // The snap shows now, not with the next output: input a program
             // does not echo draws nothing else.
-            QMetaObject::invokeMethod(this, [this] { Q_EMIT contentChanged(); }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(
+                this,
+                [this] {
+                    Q_EMIT contentChanged();
+                },
+                Qt::QueuedConnection);
         }
     }
     const bool accepted = writeProgram(bytes);
-    if (accepted) m_inputFailureReported.store(false);
-    else if (reportFailure) reportInputFailure();
+    if (accepted)
+        m_inputFailureReported.store(false);
+    else if (reportFailure)
+        reportInputFailure();
     return accepted;
 }
 
@@ -286,7 +310,8 @@ bool Pane::refreshSnapshot(int extraRows)
             m_syncHoldTimer.start();
         }
         if (m_syncTimer.elapsed() < SyncTimeoutMs && m_syncHoldTimer.elapsed() < SyncHoldLimitMs) {
-            m_holdDeadline.setRemainingTime(std::min(SyncTimeoutMs - m_syncTimer.elapsed(), SyncHoldLimitMs - m_syncHoldTimer.elapsed()));
+            m_holdDeadline.setRemainingTime(
+                std::min(SyncTimeoutMs - m_syncTimer.elapsed(), SyncHoldLimitMs - m_syncHoldTimer.elapsed()));
             return false;
         }
     } else {
@@ -320,7 +345,8 @@ bool Pane::refreshSnapshot(int extraRows)
         || extraRows != m_snapshotExtraRows) {
         const bool selectionHere = m_selection.active && m_selectionOnAltScreen == m_terminal.modes().altScreen;
         AfterglowRender::SearchHighlight highlight;
-        if (m_searchActive && m_searchEpoch == m_terminal.screen().layoutEpoch() && m_searchAlt == m_terminal.modes().altScreen) {
+        if (m_searchActive && m_searchEpoch == m_terminal.screen().layoutEpoch()
+            && m_searchAlt == m_terminal.modes().altScreen) {
             highlight.matches = &m_searchMatches;
             highlight.current = m_searchCurrent;
             highlight.matchColor = m_searchColors.match;
@@ -367,7 +393,8 @@ void Pane::selectAll()
     std::lock_guard lock(m_mutex);
     const AfterglowVt::Screen& scr = m_terminal.screen();
     startSelectionLocked({scr.rowsDropped(), 0}, AfterglowVt::SelectionMode::Normal, true);
-    extendSelectionLocked({scr.rowsDropped() + scr.historySize() + std::size_t(std::max(0, scr.cursor.y)), scr.cols() - 1});
+    extendSelectionLocked(
+        {scr.rowsDropped() + scr.historySize() + std::size_t(std::max(0, scr.cursor.y)), scr.cols() - 1});
 }
 
 void Pane::startSelection(AfterglowVt::SelectionPoint anchor, AfterglowVt::SelectionMode mode, bool activeNow)
@@ -430,8 +457,8 @@ bool Pane::selectionContains(int col, int row) const
     std::lock_guard lock(m_mutex);
     // Copy mode draws its cursor as a selection of one cell. A selection
     // that the mouse made meanwhile is a selection.
-    const bool copyCursor = m_copyMode && !m_copySelecting && m_selection.anchor == m_copyCursor
-        && m_selection.head == m_copyCursor;
+    const bool copyCursor =
+        m_copyMode && !m_copySelecting && m_selection.anchor == m_copyCursor && m_selection.head == m_copyCursor;
     if (!selectionShown() || copyCursor) {
         return false;
     }
@@ -472,10 +499,13 @@ void Pane::beginCopyMode()
 {
     std::lock_guard lock(m_mutex);
     const auto& screen = m_terminal.screen();
-    m_copyCursor = {screen.rowsDropped() + (screen.viewportOffset() ? screen.viewportTop() : screen.historySize() + std::size_t(screen.cursor.y)),
-                    screen.viewportOffset() ? 0 : screen.cursor.x};
+    m_copyCursor = {
+        screen.rowsDropped()
+            + (screen.viewportOffset() ? screen.viewportTop() : screen.historySize() + std::size_t(screen.cursor.y)),
+        screen.viewportOffset() ? 0 : screen.cursor.x};
     m_copyCursor = AfterglowVt::moveSelectionCursor(screen, m_copyCursor, 0, 0);
-    m_copyMode = true; m_copySelecting = false;
+    m_copyMode = true;
+    m_copySelecting = false;
     m_selection = {};
     m_selection.anchor = m_selection.head = m_copyCursor;
     m_selection.layoutEpoch = screen.layoutEpoch();
@@ -487,13 +517,19 @@ bool Pane::moveCopyCursor(int dx, int dy, int edge)
 {
     std::lock_guard lock(m_mutex);
     const auto& screen = m_terminal.screen();
-    if (!m_copyMode || !m_selection.validFor(screen) || m_selectionOnAltScreen != m_terminal.modes().altScreen) return false;
-    if (edge == 1) m_copyCursor.col = 0;
-    if (edge == 2) m_copyCursor.col = screen.cols() - 1;
-    if (edge == 3) m_copyCursor = {screen.rowsDropped(), 0};
-    if (edge == 4) m_copyCursor = {screen.rowsDropped() + screen.totalRows() - 1, 0};
+    if (!m_copyMode || !m_selection.validFor(screen) || m_selectionOnAltScreen != m_terminal.modes().altScreen)
+        return false;
+    if (edge == 1)
+        m_copyCursor.col = 0;
+    if (edge == 2)
+        m_copyCursor.col = screen.cols() - 1;
+    if (edge == 3)
+        m_copyCursor = {screen.rowsDropped(), 0};
+    if (edge == 4)
+        m_copyCursor = {screen.rowsDropped() + screen.totalRows() - 1, 0};
     m_copyCursor = AfterglowVt::moveSelectionCursor(screen, m_copyCursor, dx, dy);
-    if (!m_copySelecting) m_selection.anchor = m_copyCursor;
+    if (!m_copySelecting)
+        m_selection.anchor = m_copyCursor;
     m_selection.head = m_copyCursor;
     revealRow(m_terminal, std::size_t(m_copyCursor.row - screen.rowsDropped()));
     ++m_selectionSerial;
@@ -509,7 +545,9 @@ void Pane::toggleCopySelection(AfterglowVt::SelectionMode mode)
 void Pane::endCopyMode()
 {
     std::lock_guard lock(m_mutex);
-    m_copyMode = false; m_copySelecting = false; m_selection.active = false;
+    m_copyMode = false;
+    m_copySelecting = false;
+    m_selection.active = false;
     ++m_selectionSerial;
 }
 QVariantMap Pane::historyPosition() const
@@ -525,7 +563,8 @@ void Pane::scrollHistory(double fraction)
     const auto& screen = m_terminal.screen();
     // Rounded: the bottom of the scroll bar is 1 - size, whose product with
     // the row count can fall just short of the live view's top row.
-    const long top = std::clamp(std::lround(std::clamp(fraction, 0.0, 1.0) * double(screen.totalRows())), 0L, long(screen.historySize()));
+    const long top = std::clamp(std::lround(std::clamp(fraction, 0.0, 1.0) * double(screen.totalRows())), 0L,
+                                long(screen.historySize()));
     m_terminal.scrollViewport(long(screen.viewportTop()) - top);
 }
 
@@ -567,7 +606,8 @@ QString searchError(const AfterglowVt::TextSearchResult& result)
 
 void Pane::captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string query, bool regex)
 {
-    if (job != m_searchJob || job->cancelled) return;
+    if (job != m_searchJob || job->cancelled)
+        return;
     bool more = false;
     {
         std::lock_guard lock(m_mutex);
@@ -578,7 +618,8 @@ void Pane::captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string q
             const auto begin = std::max(job->nextRow, screen.rowsDropped());
             const auto end = std::min({begin + 128, job->lastRow, screen.rowsDropped() + screen.totalRows()});
             for (auto row = begin; row < end; ++row) {
-                if (!AfterglowVt::appendTextRow(job->text, screen, std::size_t(row - screen.rowsDropped()))) break;
+                if (!AfterglowVt::appendTextRow(job->text, screen, std::size_t(row - screen.rowsDropped())))
+                    break;
             }
             job->nextRow = end;
             more = end < std::min(job->lastRow, screen.rowsDropped() + screen.totalRows()) && !job->text.truncated;
@@ -593,14 +634,17 @@ void Pane::captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string q
         return;
     }
     if (more) {
-        QTimer::singleShot(0, this, [this, job, query = std::move(query), regex] { captureSearch(job, query, regex); });
+        QTimer::singleShot(0, this, [this, job, query = std::move(query), regex] {
+            captureSearch(job, query, regex);
+        });
         return;
     }
     auto* watcher = new QFutureWatcher<AfterglowVt::TextSearchResult>(this);
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, job] {
         auto result = watcher->result();
         watcher->deleteLater();
-        if (job != m_searchJob || result.cancelled) return;
+        if (job != m_searchJob || result.cancelled)
+            return;
         m_searchJob.reset();
         bool scrolled = false;
         {
@@ -615,18 +659,26 @@ void Pane::captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string q
             // A program that keeps scrolling would restart a search forever,
             // so the next search starts again instead.
             const std::size_t found = result.matches.size();
-            std::erase_if(result.matches, [this](const auto& match) { return match.end.row >= m_movedFrom; });
+            std::erase_if(result.matches, [this](const auto& match) {
+                return match.end.row >= m_movedFrom;
+            });
             scrolled = result.matches.size() != found || m_movedFrom != NoRow;
-            std::erase_if(result.matches, [this](const auto& match) { return m_terminal.screen().absoluteIndexOf(match.start.row) < 0; });
+            std::erase_if(result.matches, [this](const auto& match) {
+                return m_terminal.screen().absoluteIndexOf(match.start.row) < 0;
+            });
             m_searchMatches = std::move(result.matches);
             m_searchCurrent = int(m_searchMatches.size()) - 1;
             m_searchNotice = scrolled ? tr("Text moved during the search. Search again") : searchError(result);
             if (result.truncated)
-                m_searchNotice = m_searchNotice.isEmpty() ? tr("Limited results") : tr("%1 (limited results)").arg(m_searchNotice);
+                m_searchNotice =
+                    m_searchNotice.isEmpty() ? tr("Limited results") : tr("%1 (limited results)").arg(m_searchNotice);
             if (job->partial)
-                m_searchNotice = m_searchNotice.isEmpty() ? tr("Older lines are still arriving")
-                                                          : tr("%1 (older lines are still arriving)").arg(m_searchNotice);
-            if (m_searchCurrent >= 0) revealRow(m_terminal, std::size_t(m_terminal.screen().absoluteIndexOf(m_searchMatches.back().start.row)));
+                m_searchNotice = m_searchNotice.isEmpty()
+                    ? tr("Older lines are still arriving")
+                    : tr("%1 (older lines are still arriving)").arg(m_searchNotice);
+            if (m_searchCurrent >= 0)
+                revealRow(m_terminal,
+                          std::size_t(m_terminal.screen().absoluteIndexOf(m_searchMatches.back().start.row)));
             ++m_selectionSerial;
         }
         search(QString::fromStdU32String(m_searchQuery), 0, m_searchRegex);
@@ -649,21 +701,26 @@ void Pane::search(const QString& query, int direction, bool regex)
     bool arrived = false;
     {
         std::lock_guard lock(m_mutex);
-        layoutChanged = m_searchEpoch != m_terminal.screen().layoutEpoch() || m_searchAlt != m_terminal.modes().altScreen;
+        layoutChanged =
+            m_searchEpoch != m_terminal.screen().layoutEpoch() || m_searchAlt != m_terminal.modes().altScreen;
         // Older rows that came add to the history without a new layout: a
         // search that stepped through the matches would never see them.
         arrived = m_searchPartial && !historyArrivingLocked();
     }
-    if (layoutChanged || arrived || m_searchStale || needle != m_searchQuery || regex != m_searchRegex || !m_searchActive) {
+    if (layoutChanged || arrived || m_searchStale || needle != m_searchQuery || regex != m_searchRegex
+        || !m_searchActive) {
         clearSearch();
         m_searchStale = false;
-        m_searchActive = true; m_searchRegex = regex; m_searchQuery = needle;
+        m_searchActive = true;
+        m_searchRegex = regex;
+        m_searchQuery = needle;
         m_searchNotice.clear();
         auto job = std::make_shared<SearchJob>();
         {
             std::lock_guard lock(m_mutex);
             const auto& screen = m_terminal.screen();
-            job->epoch = m_searchEpoch = screen.layoutEpoch(); job->alt = m_searchAlt = m_terminal.modes().altScreen;
+            job->epoch = m_searchEpoch = screen.layoutEpoch();
+            job->alt = m_searchAlt = m_terminal.modes().altScreen;
             m_movedFrom = NoRow;
             job->lastRow = screen.rowsDropped() + screen.totalRows();
             job->nextRow = screen.rowsDropped();
@@ -674,17 +731,21 @@ void Pane::search(const QString& query, int direction, bool regex)
         captureSearch(job, needle, regex);
         return;
     }
-    if (m_searchJob) return;
+    if (m_searchJob)
+        return;
     QString status;
     {
         std::lock_guard lock(m_mutex);
         if (!m_searchMatches.empty()) {
             const int count = int(m_searchMatches.size());
             m_searchCurrent = (m_searchCurrent + direction + count) % count;
-            const auto row = m_terminal.screen().absoluteIndexOf(m_searchMatches[std::size_t(m_searchCurrent)].start.row);
-            if (row >= 0) revealRow(m_terminal, std::size_t(row));
+            const auto row =
+                m_terminal.screen().absoluteIndexOf(m_searchMatches[std::size_t(m_searchCurrent)].start.row);
+            if (row >= 0)
+                revealRow(m_terminal, std::size_t(row));
             status = tr("%1 of %2").arg(m_searchCurrent + 1).arg(count);
-        } else status = tr("No matches");
+        } else
+            status = tr("No matches");
         ++m_selectionSerial;
     }
     Q_EMIT searchStatusChanged(m_searchNotice.isEmpty() ? status : status + QStringLiteral(" · ") + m_searchNotice);
@@ -692,7 +753,10 @@ void Pane::search(const QString& query, int direction, bool regex)
 
 void Pane::clearSearch()
 {
-    if (m_searchJob) { m_searchJob->cancelled = true; m_searchJob.reset(); }
+    if (m_searchJob) {
+        m_searchJob->cancelled = true;
+        m_searchJob.reset();
+    }
     std::lock_guard lock(m_mutex);
     if (!m_searchActive) {
         return;
@@ -737,15 +801,18 @@ void Pane::applyPreedit()
     const auto flush = [&](std::size_t end) {
         std::u32string cluster = m_preedit.substr(clusterStart, end - clusterStart);
         const int width = std::clamp(m_terminal.clusterWidth(cluster), 1, 2);
-        if (m_preeditCursor >= int(clusterStart) && m_preeditCursor < int(end)) caretCol = total;
+        if (m_preeditCursor >= int(clusterStart) && m_preeditCursor < int(end))
+            caretCol = total;
         cells.emplace_back(std::move(cluster), width);
         total += width;
         clusterStart = end;
     };
     for (std::size_t i = 0; i < m_preedit.size(); ++i) {
-        if (segmenter.breaksBefore(m_preedit[i]) && i > clusterStart) flush(i);
+        if (segmenter.breaksBefore(m_preedit[i]) && i > clusterStart)
+            flush(i);
     }
-    if (clusterStart < m_preedit.size()) flush(m_preedit.size());
+    if (clusterStart < m_preedit.size())
+        flush(m_preedit.size());
     if (caretCol < 0) {
         caretCol = total;
     }
@@ -760,7 +827,8 @@ void Pane::applyPreedit()
         c.width = 1;
         c.grapheme = 0;
     };
-    if (start > 0 && cellAt(start).width == 0) blank(cellAt(start - 1));
+    if (start > 0 && cellAt(start).width == 0)
+        blank(cellAt(start - 1));
     int x = start;
     for (const auto& [cluster, w] : cells) {
         if (x + w > s.cols) {
@@ -782,14 +850,16 @@ void Pane::applyPreedit()
         }
         c.link = 0;
         if (w == 2 && x + 1 < s.cols) {
-            AfterglowRender::SnapshotCell& tail = s.cells[std::size_t(s.cursorY) * std::size_t(s.cols) + std::size_t(x + 1)];
+            AfterglowRender::SnapshotCell& tail =
+                s.cells[std::size_t(s.cursorY) * std::size_t(s.cols) + std::size_t(x + 1)];
             tail = c;
             tail.cp = 0;
             tail.width = 0;
         }
         x += w;
     }
-    if (x > start && x < s.cols && cellAt(x).width == 0) blank(cellAt(x));
+    if (x > start && x < s.cols && cellAt(x).width == 0)
+        blank(cellAt(x));
     s.cursorX = std::min(start + caretCol, s.cols - 1);
     s.cursorShape = AfterglowVt::CursorShape::Bar;
 }
@@ -806,7 +876,8 @@ bool Pane::jumpToPrompt(int direction)
         for (std::size_t abs = top; abs-- > 0;) {
             if (scr.absoluteRow(abs).promptStart) {
                 m_terminal.scrollViewport(long(top) - long(abs));
-                if (const auto output = m_terminal.commandOutputAt(scr.rowsDropped() + abs)) m_lastVisitedOutput = output;
+                if (const auto output = m_terminal.commandOutputAt(scr.rowsDropped() + abs))
+                    m_lastVisitedOutput = output;
                 return true;
             }
         }
@@ -817,9 +888,11 @@ bool Pane::jumpToPrompt(int direction)
             // Past the live screen's top is the live screen itself: from
             // there, a prompt on the live screen is no place to move to.
             const long target = std::min<long>(long(abs), long(scr.historySize()));
-            if (target == long(top)) return false;
+            if (target == long(top))
+                return false;
             m_terminal.scrollViewport(long(top) - target);
-            if (const auto output = m_terminal.commandOutputAt(scr.rowsDropped() + abs)) m_lastVisitedOutput = output;
+            if (const auto output = m_terminal.commandOutputAt(scr.rowsDropped() + abs))
+                m_lastVisitedOutput = output;
             return true;
         }
     }
@@ -832,7 +905,8 @@ std::optional<std::uint64_t> Pane::commandOutputAtRow(int row) const
     refreshSession();
     std::lock_guard lock(m_mutex);
     const AfterglowVt::Screen& scr = m_terminal.screen();
-    if (m_terminal.modes().altScreen || row < 0 || row >= scr.rows()) return std::nullopt;
+    if (m_terminal.modes().altScreen || row < 0 || row >= scr.rows())
+        return std::nullopt;
     return m_terminal.commandOutputAt(scr.rowsDropped() + scr.viewportTop() + std::uint64_t(row));
 }
 
@@ -841,7 +915,8 @@ std::optional<std::uint64_t> Pane::firstOutputOnScreen() const
     refreshSession();
     std::lock_guard lock(m_mutex);
     const AfterglowVt::Screen& scr = m_terminal.screen();
-    if (m_terminal.modes().altScreen) return std::nullopt;
+    if (m_terminal.modes().altScreen)
+        return std::nullopt;
     const std::uint64_t top = scr.rowsDropped() + scr.viewportTop();
     return m_terminal.firstCommandOutputIn(top, top + std::uint64_t(std::max(1, scr.rows())) - 1);
 }
@@ -867,15 +942,20 @@ bool Pane::selectOutput(std::uint64_t id)
     // screen between them would make it there.
     std::lock_guard lock(m_mutex);
     {
-        if (m_terminal.modes().altScreen) return false;
+        if (m_terminal.modes().altScreen)
+            return false;
         const auto regions = m_terminal.semanticRegions();
-        const auto region = std::find_if(regions.begin(), regions.end(), [&](const auto& r) { return r.id == id; });
-        if (region == regions.end() || !region->available || region->startTrimmed) return false;
+        const auto region = std::find_if(regions.begin(), regions.end(), [&](const auto& r) {
+            return r.id == id;
+        });
+        if (region == regions.end() || !region->available || region->startTrimmed)
+            return false;
         const int cols = m_terminal.screen().cols();
         first = {region->start.row, region->start.col};
         // C comes where the command line ends: the output starts on the row
         // after it.
-        if (first.col > 0 && region->end.row > first.row) first = {first.row + 1, 0};
+        if (first.col > 0 && region->end.row > first.row)
+            first = {first.row + 1, 0};
         // The end is the cell before D, which a last line feed puts at the
         // start of a row.
         if (region->end.col > 0) {
@@ -885,7 +965,8 @@ bool Pane::selectOutput(std::uint64_t id)
         } else {
             return false;
         }
-        if (last.row < first.row || (last.row == first.row && last.col < first.col)) return false;
+        if (last.row < first.row || (last.row == first.row && last.col < first.col))
+            return false;
     }
     startSelectionLocked(first, AfterglowVt::SelectionMode::Normal, true);
     extendSelectionLocked(last);
@@ -921,13 +1002,15 @@ void Pane::setSignals(const QList<QPair<int, float>>& values, std::chrono::stead
             changed = true;
         }
     }
-    if (changed) Q_EMIT shaderSignalsChanged();
+    if (changed)
+        Q_EMIT shaderSignalsChanged();
 }
 
 void Pane::setSearchColors(std::uint32_t match, std::uint32_t current, std::uint32_t text)
 {
     std::lock_guard lock(m_mutex);
-    if (m_searchColors.match == match && m_searchColors.current == current && m_searchColors.text == text) return;
+    if (m_searchColors.match == match && m_searchColors.current == current && m_searchColors.text == text)
+        return;
     m_searchColors = {match, current, text};
     ++m_selectionSerial; // the next snapshot draws the highlights again
 }
@@ -942,7 +1025,8 @@ void Pane::setUserTitle(const QString& title)
         m_shownTitle = m_userTitle.isEmpty() ? m_title : m_userTitle;
     }
     announceTitle();
-    if (changed) Q_EMIT userTitleChanged();
+    if (changed)
+        Q_EMIT userTitleChanged();
 }
 
 pid_t Pane::programPid() const
@@ -959,7 +1043,8 @@ QMap<QString, QString> Pane::userVars() const
 {
     std::lock_guard lock(m_mutex);
     QMap<QString, QString> out;
-    for (auto it = m_userVars.constBegin(); it != m_userVars.constEnd(); ++it) out.insert(it.key(), it.value());
+    for (auto it = m_userVars.constBegin(); it != m_userVars.constEnd(); ++it)
+        out.insert(it.key(), it.value());
     return out;
 }
 
@@ -992,13 +1077,15 @@ bool Pane::applyColors(const std::vector<std::string>& payloads)
             ++count;
         }
     }
-    if (count > 0) Q_EMIT contentChanged();
+    if (count > 0)
+        Q_EMIT contentChanged();
     return applied;
 }
 
 bool Pane::signalProgram(int signal)
 {
-    if (m_pty) return m_pty->signalForeground(signal);
+    if (m_pty)
+        return m_pty->signalForeground(signal);
     errno = 0;
     return false;
 }
@@ -1006,19 +1093,25 @@ bool Pane::signalProgram(int signal)
 bool Pane::uploadRequested()
 {
     // m_mutex held, on the reader thread or for a session pane the GUI thread.
-    if (m_uploadAsked.exchange(true)) return false;
+    if (m_uploadAsked.exchange(true))
+        return false;
     m_uploadOrphaned.store(false);
     // Without shell integration no command end comes: a change of the
     // foreground group at the answer says that the command ended.
     m_uploadGroup.store(ptyForegroundGroup());
-    queueRequest([this] { Q_EMIT uploadAsked(); });
+    queueRequest([this] {
+        Q_EMIT uploadAsked();
+    });
     return true;
 }
 
 void Pane::orphanUploadLocked()
 {
-    if (!m_uploadAsked.load() || m_uploadOrphaned.exchange(true)) return;
-    queueRequest([this] { Q_EMIT uploadCancelled(); });
+    if (!m_uploadAsked.load() || m_uploadOrphaned.exchange(true))
+        return;
+    queueRequest([this] {
+        Q_EMIT uploadCancelled();
+    });
 }
 
 pid_t Pane::ptyForegroundGroup() const
@@ -1054,15 +1147,18 @@ bool Pane::answerUpload(const std::optional<std::string>& answer)
     }
     // The command that asked ended: the shell reads the input now, and would
     // take each line of the answer for a command.
-    if (orphaned || (group > 0 && ptyForegroundGroup() != group)) return !answer;
+    if (orphaned || (group > 0 && ptyForegroundGroup() != group))
+        return !answer;
     // One write: the answer goes whole, or the program gets the cancel. The
     // daemon of a session pane writes it in one piece too. A reply, not
     // typing: the view stays where it is.
     const auto send = [this](std::string_view bytes) {
-        if (m_session) return !m_sessionGone && m_session->sendUploadAnswer(m_sessionPane, bytes);
+        if (m_session)
+            return !m_sessionGone && m_session->sendUploadAnswer(m_sessionPane, bytes);
         return sendReply(bytes);
     };
-    if (answer && send(*answer)) return true;
+    if (answer && send(*answer))
+        return true;
     send(UploadArchive::Cancel);
     return !answer;
 }
@@ -1071,7 +1167,8 @@ bool Pane::setUserVar(const QString& name, const QString& value)
 {
     const QByteArray n = name.toUtf8(), v = value.toUtf8();
     std::lock_guard lock(m_mutex);
-    return keepUserVar(std::string_view(n.constData(), std::size_t(n.size())), std::string_view(v.constData(), std::size_t(v.size())));
+    return keepUserVar(std::string_view(n.constData(), std::size_t(n.size())),
+                       std::string_view(v.constData(), std::size_t(v.size())));
 }
 
 bool Pane::atShellPrompt() const
@@ -1087,7 +1184,8 @@ void Pane::announceTitle()
         std::lock_guard lock(m_mutex);
         shown = m_shownTitle;
     }
-    if (shown == m_announcedTitle) return;
+    if (shown == m_announcedTitle)
+        return;
     m_announcedTitle = shown;
     Q_EMIT titleUpdated(shown);
 }
@@ -1101,7 +1199,8 @@ QString Pane::text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::Te
         text = m_terminal.text(scope, MaxText, nullptr, format);
         if (arriving) {
             using Scope = AfterglowVt::Terminal::TextScope;
-            *arriving = scope == Scope::LastOutput ? lastOutputArrivingLocked() : scope == Scope::All && historyArrivingLocked();
+            *arriving = scope == Scope::LastOutput ? lastOutputArrivingLocked()
+                                                   : scope == Scope::All && historyArrivingLocked();
         }
     }
     // Converted after the lock: the reader thread waits on it.
@@ -1121,7 +1220,8 @@ QVariantMap Pane::readText(AfterglowVt::Terminal::TextScope scope, std::size_t l
         available = scope != Scope::LastOutput || m_terminal.hasCommandOutput();
         // Rows on their way are blank places in the text: it is not the
         // program's yet.
-        if ((scope == Scope::LastOutput && lastOutputArrivingLocked()) || (scope == Scope::All && historyArrivingLocked())) {
+        if ((scope == Scope::LastOutput && lastOutputArrivingLocked())
+            || (scope == Scope::All && historyArrivingLocked())) {
             available = false;
             truncated = false;
             text.clear();
@@ -1129,7 +1229,8 @@ QVariantMap Pane::readText(AfterglowVt::Terminal::TextScope scope, std::size_t l
     }
     // Converted after the lock: the text can be many megabytes, and the
     // reader thread waits on the lock.
-    return {{QStringLiteral("text"), QString::fromStdString(text)}, {QStringLiteral("truncated"), truncated},
+    return {{QStringLiteral("text"), QString::fromStdString(text)},
+            {QStringLiteral("truncated"), truncated},
             {QStringLiteral("available"), available}};
 }
 
@@ -1141,9 +1242,11 @@ bool Pane::lastOutputArriving() const
 
 bool Pane::historyArrivingLocked() const
 {
-    if (!m_session || m_terminal.modes().altScreen) return false;
+    if (!m_session || m_terminal.modes().altScreen)
+        return false;
     const AfterglowVt::Screen& screen = m_terminal.screen();
-    if (screen.totalRows() == 0) return false;
+    if (screen.totalRows() == 0)
+        return false;
     // From id 0: received() then counts the older rows that the daemon has
     // and did not send yet, as well as the blank places of newer ones.
     return !m_stateReader.received(0, screen.rowsDropped() + screen.totalRows() - 1);
@@ -1169,8 +1272,11 @@ void Pane::commandStarted(std::string_view command)
     // m_mutex held
     m_command = QString::fromUtf8(command.data(), qsizetype(command.size()));
     m_commandStart = std::chrono::steady_clock::now();
-    const bool queued = queueEvent([this, command = m_command] { Q_EMIT commandBegan(command); },
-                                   std::size_t(m_command.size()) * sizeof(QChar), m_commandBudget);
+    const bool queued = queueEvent(
+        [this, command = m_command] {
+            Q_EMIT commandBegan(command);
+        },
+        std::size_t(m_command.size()) * sizeof(QChar), m_commandBudget);
     m_commandStartEvent = queued ? CommandStart::Queued : CommandStart::Dropped;
 }
 
@@ -1189,13 +1295,17 @@ void Pane::finishCommand(int exitCode, qint64 ms)
     // An end alone would end a command that, for the receivers, never ran:
     // its start was dropped, or a session pane's window never got it.
     const CommandStart start = std::exchange(m_commandStartEvent, CommandStart::None);
-    if (start == CommandStart::None) return;
+    if (start == CommandStart::None)
+        return;
     if (start == CommandStart::Dropped) {
         ++m_commandBudget.dropped;
         return;
     }
-    queueEvent([this, command, exitCode, ms] { Q_EMIT commandEnded(command, exitCode, ms); }, std::size_t(command.size()) * sizeof(QChar),
-               m_commandBudget, start == CommandStart::Queued);
+    queueEvent(
+        [this, command, exitCode, ms] {
+            Q_EMIT commandEnded(command, exitCode, ms);
+        },
+        std::size_t(command.size()) * sizeof(QChar), m_commandBudget, start == CommandStart::Queued);
 }
 
 QString Pane::foregroundJob() const
@@ -1215,7 +1325,8 @@ QString Pane::foregroundJob() const
 
 std::optional<std::uint32_t> Pane::sessionJobPane() const
 {
-    if (!m_session || m_sessionGone || m_held.load()) return std::nullopt;
+    if (!m_session || m_sessionGone || m_held.load())
+        return std::nullopt;
     return m_sessionPane;
 }
 
@@ -1224,7 +1335,8 @@ QString Pane::knownDirectory() const
     // The program of a session of another host runs there: what its shell
     // reports names a path on that host, and a directory here of the same
     // name is not the one the program is in.
-    if (m_session && m_session->remote()) return {};
+    if (m_session && m_session->remote())
+        return {};
     QString reported;
     {
         std::lock_guard lock(m_mutex);
@@ -1237,7 +1349,8 @@ QString Pane::knownDirectory() const
         m_checkedDirectory = reported;
         m_checkedDirectoryExists = !reported.isEmpty() && QFileInfo(reported).isDir();
     }
-    if (m_checkedDirectoryExists) return reported;
+    if (m_checkedDirectoryExists)
+        return reported;
     return m_pty ? QFile::decodeName(QByteArray::fromStdString(m_pty->currentWorkingDirectory())) : QString();
 }
 
@@ -1247,7 +1360,8 @@ QString Pane::workingDirectory() const
     // A daemon on another host answers through its ssh link, and with a path
     // there: the window asks it itself where a new pane of that session
     // starts (TerminalWindow::createSessionLaunchPane).
-    if (!known.isEmpty() || !m_session || m_sessionGone || m_session->remote()) return known;
+    if (!known.isEmpty() || !m_session || m_sessionGone || m_session->remote())
+        return known;
     // A local daemon shares the machine with the window, so its path is one
     // here, though the directory can go before the window uses it.
     const QString asked = m_session->directory(m_sessionPane);
@@ -1259,8 +1373,14 @@ void Pane::reportInputFailure()
     // One notice for each run of rejected input, not one for each key typed
     // at a program that stopped reading: the next comes only after some
     // input got through.
-    if (m_inputFailureReported.exchange(true)) return;
-    QMetaObject::invokeMethod(this, [this] { Q_EMIT inputRejected(); }, Qt::QueuedConnection);
+    if (m_inputFailureReported.exchange(true))
+        return;
+    QMetaObject::invokeMethod(
+        this,
+        [this] {
+            Q_EMIT inputRejected();
+        },
+        Qt::QueuedConnection);
 }
 
 namespace {
@@ -1297,7 +1417,8 @@ void Pane::writeToPty(std::string_view bytes)
                 {
                     std::lock_guard lock(m_mutex);
                     reports = std::move(*batch);
-                    if (m_openReports == batch) m_openReports.reset();
+                    if (m_openReports == batch)
+                        m_openReports.reset();
                 }
                 // The file transfer commands before this batch have begun
                 // their holds, and no command after it has run.
@@ -1317,21 +1438,27 @@ void Pane::writeToPty(std::string_view bytes)
     }
     // A held pane's program exited: nothing reads a report (a resize's,
     // mode 2048), and no input failed.
-    if (!hasProgram() || m_held.load()) return;
-    if (writeProgram(bytes)) m_inputFailureReported.store(false);
-    else reportInputFailure();
+    if (!hasProgram() || m_held.load())
+        return;
+    if (writeProgram(bytes))
+        m_inputFailureReported.store(false);
+    else
+        reportInputFailure();
 }
 
 void Pane::writeReports(const std::string& reports)
 {
     m_protocolBytes.fetch_sub(qsizetype(reports.size()));
-    if (hasProgram() && !m_held.load() && !writeProgram(reports)) reportInputFailure();
+    if (hasProgram() && !m_held.load() && !writeProgram(reports))
+        reportInputFailure();
 }
 
 bool Pane::sendReply(std::string_view bytes)
 {
-    if (bytes.empty()) return true;
-    if (!hasProgram() || m_held.load()) return false;
+    if (bytes.empty())
+        return true;
+    if (!hasProgram() || m_held.load())
+        return false;
     return writeProgram(bytes);
 }
 
@@ -1344,13 +1471,15 @@ bool Pane::hasProgram() const
 
 bool Pane::writeProgram(std::string_view bytes)
 {
-    if (m_session) return !m_sessionGone && m_session->sendInput(m_sessionPane, bytes);
+    if (m_session)
+        return !m_sessionGone && m_session->sendInput(m_sessionPane, bytes);
     return m_pty && m_pty->write(bytes);
 }
 
 bool Pane::showsSession(const QString& name, const QString& host) const
 {
-    return m_session && !m_sessionGone && m_session->showing() && m_session->session() == name && m_session->host() == host;
+    return m_session && !m_sessionGone && m_session->showing() && m_session->session() == name
+        && m_session->host() == host;
 }
 
 void Pane::showSession(std::shared_ptr<MuxClient> session, std::uint32_t id)
@@ -1367,13 +1496,15 @@ bool Pane::closeEndsProgram() const
 
 bool Pane::setSessionVisible(bool visible)
 {
-    if (!m_session || m_sessionGone || m_sessionVisible == int(visible)) return false;
+    if (!m_session || m_sessionGone || m_sessionVisible == int(visible))
+        return false;
     m_sessionVisible = int(visible);
     // Until a refresh, also once visible again: the screens that the daemon
     // held are on their way, and a read must not take the old ones. The
     // answer to a Refresh asked before this change lacks the screens that
     // the daemon holds after it: its ticket goes.
-    if (!visible) m_sessionHeld = true;
+    if (!visible)
+        m_sessionHeld = true;
     m_sessionRefresh = 0;
     m_session->sendVisible(m_sessionPane, visible);
     return true;
@@ -1381,23 +1512,28 @@ bool Pane::setSessionVisible(bool visible)
 
 std::uint64_t Pane::askSessionRefresh() const
 {
-    if (!sessionScreensHeld()) return 0;
-    if (m_sessionRefresh != 0 && m_sessionVisible == 1) return m_sessionRefresh;
+    if (!sessionScreensHeld())
+        return 0;
+    if (m_sessionRefresh != 0 && m_sessionVisible == 1)
+        return m_sessionRefresh;
     m_sessionRefresh = m_session->askRefresh(m_sessionPane);
     // Nothing comes: the replica has all that it gets.
-    if (m_sessionRefresh == 0) m_sessionHeld = m_sessionVisible == 0;
+    if (m_sessionRefresh == 0)
+        m_sessionHeld = m_sessionVisible == 0;
     return m_sessionRefresh;
 }
 
 void Pane::refreshSession() const
 {
-    if (const std::uint64_t ticket = askSessionRefresh()) m_session->waitRefreshed({{m_sessionPane, ticket}});
+    if (const std::uint64_t ticket = askSessionRefresh())
+        m_session->waitRefreshed({{m_sessionPane, ticket}});
 }
 
 void Pane::sessionRefreshed(std::uint64_t ticket) const
 {
     // The answer to a Refresh asked before the pane's sight changed.
-    if (m_sessionRefresh == 0 || ticket < m_sessionRefresh) return;
+    if (m_sessionRefresh == 0 || ticket < m_sessionRefresh)
+        return;
     m_sessionRefresh = 0;
     // A pane that the user cannot see gets held frames again.
     m_sessionHeld = m_sessionVisible == 0;
@@ -1425,20 +1561,26 @@ bool Pane::applySessionFrame(std::string_view frame)
         // As for output of a program of its own: a frame that changed the
         // screen, its images included, is that output. History that catches
         // up is none.
-        if (m_scrollOnOutput.load(std::memory_order_relaxed) && m_stateReader.screenChanged()) m_terminal.resetViewport();
+        if (m_scrollOnOutput.load(std::memory_order_relaxed) && m_stateReader.screenChanged())
+            m_terminal.resetViewport();
         // The replica takes them as they are: the pane hears of a change
         // as it does from a program of its own.
-        if (m_terminal.title() != title) titleChanged(m_terminal.title());
-        if (m_terminal.workingDirectory() != directory) workingDirectoryChanged(m_terminal.workingDirectory());
+        if (m_terminal.title() != title)
+            titleChanged(m_terminal.title());
+        if (m_terminal.workingDirectory() != directory)
+            workingDirectoryChanged(m_terminal.workingDirectory());
     }
     // As after output (ptyData): an animated image that came starts its
     // clock, and one that went stops it. Once for the frames that came
     // together, as output is coalesced: each tick scans the viewport.
     if (!std::exchange(m_sessionTickQueued, true)) {
-        QMetaObject::invokeMethod(this, [this] {
-            m_sessionTickQueued = false;
-            tickAnimations();
-        }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(
+            this,
+            [this] {
+                m_sessionTickQueued = false;
+                tickAnimations();
+            },
+            Qt::QueuedConnection);
     }
     Q_EMIT contentChanged();
     return true;
@@ -1451,22 +1593,44 @@ void Pane::applySessionHostCall(const AfterglowMux::Host::Call& call)
     // holds it, here the GUI thread.
     std::lock_guard lock(m_mutex);
     switch (call.kind) {
-    case Kind::Bell: bell(); break;
-    case Kind::Flash: flash(); break;
-    case Kind::Notify: queueNotification(call.title, call.text, call.missed); break;
-    case Kind::DesktopNotification: queueDesktopNotification(call.notification, call.missed); break;
-    case Kind::ClipboardWrite: clipboardWrite(call.title, call.text); break;
+    case Kind::Bell:
+        bell();
+        break;
+    case Kind::Flash:
+        flash();
+        break;
+    case Kind::Notify:
+        queueNotification(call.title, call.text, call.missed);
+        break;
+    case Kind::DesktopNotification:
+        queueDesktopNotification(call.notification, call.missed);
+        break;
+    case Kind::ClipboardWrite:
+        clipboardWrite(call.title, call.text);
+        break;
     case Kind::ClipboardRequest:
         clipboardRequest(call.clipboard);
         break;
-    case Kind::TerminalProtocol: terminalProtocol(call.number, call.text); break;
-    case Kind::PointerShape: pointerShapeChanged(call.text); break;
-    case Kind::UserVar: userVarChanged(call.title, call.text); break;
-    case Kind::CommandStarted: commandStarted(call.text); break;
+    case Kind::TerminalProtocol:
+        terminalProtocol(call.number, call.text);
+        break;
+    case Kind::PointerShape:
+        pointerShapeChanged(call.text);
+        break;
+    case Kind::UserVar:
+        userVarChanged(call.title, call.text);
+        break;
+    case Kind::CommandStarted:
+        commandStarted(call.text);
+        break;
     // The daemon measured the command: the start and the end can come here
     // together.
-    case Kind::CommandFinished: finishCommand(call.number, qint64(std::min<std::uint64_t>(call.value, std::numeric_limits<qint64>::max()))); break;
-    case Kind::DownloadBegin: downloadBegin(call.title, call.value ? std::int64_t(call.value - 1) : -1); break;
+    case Kind::CommandFinished:
+        finishCommand(call.number, qint64(std::min<std::uint64_t>(call.value, std::numeric_limits<qint64>::max())));
+        break;
+    case Kind::DownloadBegin:
+        downloadBegin(call.title, call.value ? std::int64_t(call.value - 1) : -1);
+        break;
     case Kind::DownloadData:
         // A write that fails stops the download in the daemon too. The data
         // waits for the disk on the download's own thread. Past its queue,
@@ -1476,19 +1640,28 @@ void Pane::applySessionHostCall(const AfterglowMux::Host::Call& call)
         if (m_download) {
             if (!downloadData(call.text)) {
                 downloadEnd(false);
-                if (m_session) m_session->answerDownload(m_sessionPane, AfterglowMux::Attach::DownloadReply::Stop);
+                if (m_session)
+                    m_session->answerDownload(m_sessionPane, AfterglowMux::Attach::DownloadReply::Stop);
             } else if (m_session) {
-                m_download->pauseIfFull([this] { m_session->holdEvents(m_sessionPane, true); });
+                m_download->pauseIfFull([this] {
+                    m_session->holdEvents(m_sessionPane, true);
+                });
             }
         }
         break;
-    case Kind::DownloadEnd: downloadEnd(call.number == 1); break;
+    case Kind::DownloadEnd:
+        downloadEnd(call.number == 1);
+        break;
     // The daemon's terminal let the window answer. A request while another
     // waits is refused as a window's terminal refuses it: with nothing.
-    case Kind::UploadRequest: uploadRequested(); break;
-    case Kind::Report: writeToPty(call.text); break;
+    case Kind::UploadRequest:
+        uploadRequested();
+        break;
+    case Kind::Report:
+        writeToPty(call.text);
+        break;
     case Kind::ProtocolLost:
-        loseProtocolCommands(call.number == AfterglowMux::Host::LostPackets ? DragDrop::Lost::Packets
+        loseProtocolCommands(call.number == AfterglowMux::Host::LostPackets     ? DragDrop::Lost::Packets
                                  : call.number == AfterglowMux::Host::LostReset ? DragDrop::Lost::Reset
                                                                                 : DragDrop::Lost::Nothing,
                              call.value != 0);
@@ -1499,13 +1672,15 @@ void Pane::applySessionHostCall(const AfterglowMux::Host::Call& call)
 void Pane::sessionPaneExited(int status)
 {
     // Once: the pane may have heard of the end of its session already.
-    if (m_sessionGone.exchange(true)) return;
+    if (m_sessionGone.exchange(true))
+        return;
     ptyClosed(status);
 }
 
 bool Pane::sessionLost(MuxLoss loss, bool notice)
 {
-    if (m_sessionGone.exchange(true)) return false;
+    if (m_sessionGone.exchange(true))
+        return false;
     // A detach or a kill that the user asked for closes the pane as asked.
     // The others close it without a word from the user: say why, once for
     // the window.
@@ -1515,23 +1690,34 @@ bool Pane::sessionLost(MuxLoss loss, bool notice)
     const QString name = !m_session ? QString()
         : host.isEmpty()            ? m_session->session()
                                     : tr("%1 on %2").arg(m_session->session(), host);
-    const QString list = host.isEmpty() ? QStringLiteral("afterglow mux ls") : QStringLiteral("afterglow mux ls --ssh %1").arg(host);
+    const QString list =
+        host.isEmpty() ? QStringLiteral("afterglow mux ls") : QStringLiteral("afterglow mux ls --ssh %1").arg(host);
     if (notice && loss == MuxLoss::TakenOver) {
-        NotificationCenter::instance().showNotice(this, tr("Session %1 moved").arg(name), tr("Another window shows session %1 now.").arg(name));
+        NotificationCenter::instance().showNotice(this, tr("Session %1 moved").arg(name),
+                                                  tr("Another window shows session %1 now.").arg(name));
     } else if (notice && loss == MuxLoss::Broken) {
         // The daemon ended, or the window let the session go (a frame that
         // did not apply, a full queue of calls): the session can run on.
-        NotificationCenter::instance().showNotice(this, tr("Session %1 is gone from this window").arg(name),
-                                                  tr("This window lost its link to session %1. Run %2 to see whether the session still runs.").arg(name, list));
+        NotificationCenter::instance().showNotice(
+            this, tr("Session %1 is gone from this window").arg(name),
+            tr("This window lost its link to session %1. Run %2 to see whether the session still runs.")
+                .arg(name, list));
     } else if (notice && loss == MuxLoss::MovedOut) {
         // A break out or a join whose answer did not come in time: the
         // daemon moved the pane all the same, to a new session that no
         // window shows, or to the session that it joined.
         NotificationCenter::instance().showNotice(this, tr("Pane moved to another session"),
-                                                  tr("The mux daemon moved the pane to another session, but its answer came too late. Run %1 to find the session.").arg(list));
+                                                  tr("The mux daemon moved the pane to another session, but its answer "
+                                                     "came too late. Run %1 to find the session.")
+                                                      .arg(list));
     }
     m_leftSession = true;
-    QMetaObject::invokeMethod(this, [this] { Q_EMIT sessionLeft(); }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(
+        this,
+        [this] {
+            Q_EMIT sessionLeft();
+        },
+        Qt::QueuedConnection);
     return true;
 }
 
@@ -1539,7 +1725,8 @@ void Pane::clearScreen()
 {
     clearSelection();
     if (m_session) {
-        if (!m_sessionGone) m_session->sendClear(m_sessionPane);
+        if (!m_sessionGone)
+            m_session->sendClear(m_sessionPane);
         return;
     }
     // At a prompt the shell redraws it on the cleared screen.
@@ -1547,17 +1734,21 @@ void Pane::clearScreen()
         t.clearScreenAndHistory();
         return t.atShellPrompt() && !t.modes().altScreen;
     });
-    if (atPrompt) sendInput("\x0c");
+    if (atPrompt)
+        sendInput("\x0c");
 }
 
 void Pane::resetTerminal()
 {
     clearSelection();
     if (m_session) {
-        if (!m_sessionGone) m_session->sendReset(m_sessionPane);
+        if (!m_sessionGone)
+            m_session->sendReset(m_sessionPane);
         return;
     }
-    withTerminal([](AfterglowVt::Terminal& t) { t.reset(); });
+    withTerminal([](AfterglowVt::Terminal& t) {
+        t.reset();
+    });
 }
 
 void Pane::titleChanged(std::string_view title)
@@ -1567,9 +1758,12 @@ void Pane::titleChanged(std::string_view title)
     // loop can set thousands in a second: the GUI thread gets the newest one.
     m_title = QString::fromUtf8(title.data(), qsizetype(title.size()));
     const QString shown = m_userTitle.isEmpty() ? m_title : m_userTitle;
-    if (shown == m_shownTitle) return;
+    if (shown == m_shownTitle)
+        return;
     m_shownTitle = shown;
-    queueOnce(m_titleQueued, [this] { announceTitle(); });
+    queueOnce(m_titleQueued, [this] {
+        announceTitle();
+    });
 }
 
 void Pane::workingDirectoryChanged(std::string_view directory)
@@ -1595,7 +1789,10 @@ void Pane::workingDirectoryChanged(std::string_view directory)
         path = QByteArray(directory.data(), qsizetype(directory.size()));
     }
     // Decoded, the path may hold a control byte that the URI hid.
-    if (std::any_of(path.cbegin(), path.cend(), [](char c) { return (unsigned char)c < 0x20 || c == 0x7F; })) path.clear();
+    if (std::any_of(path.cbegin(), path.cend(), [](char c) {
+            return (unsigned char)c < 0x20 || c == 0x7F;
+        }))
+        path.clear();
     m_reportedDirectory = QFile::decodeName(path);
 }
 
@@ -1604,7 +1801,8 @@ void Pane::queueOnce(std::atomic_bool& queued, std::function<void()> deliver)
     // One delivery of each kind at a time, so a burst of output (a binary
     // file full of BEL bytes) cannot flood the GUI thread. These are few
     // (one for each kind), so the limits of queueEvent leave them alone.
-    if (queued.exchange(true)) return;
+    if (queued.exchange(true))
+        return;
     m_events.push_back([&queued, deliver = std::move(deliver)] {
         queued = false;
         deliver();
@@ -1618,7 +1816,8 @@ bool Pane::queueEvent(std::function<void()> event, std::size_t bytes, EventBudge
     // a title is: bounds keep a flood of them (a program that writes OSC 9
     // in a loop, or clipboard writes of 128 MiB each) from growing without end.
     // A paired end goes past them by one at most: each start has one end.
-    if (!paired && (budget.events >= MaxQueuedEvents || (budget.bytes > 0 && budget.bytes + bytes > MaxQueuedEventBytes))) {
+    if (!paired
+        && (budget.events >= MaxQueuedEvents || (budget.bytes > 0 && budget.bytes + bytes > MaxQueuedEventBytes))) {
         ++budget.dropped;
         return false;
     }
@@ -1631,8 +1830,14 @@ bool Pane::queueEvent(std::function<void()> event, std::size_t bytes, EventBudge
 
 void Pane::postEvents()
 {
-    if (m_eventsPosted.exchange(true)) return;
-    QMetaObject::invokeMethod(this, [this] { deliverEvents(); }, Qt::QueuedConnection);
+    if (m_eventsPosted.exchange(true))
+        return;
+    QMetaObject::invokeMethod(
+        this,
+        [this] {
+            deliverEvents();
+        },
+        Qt::QueuedConnection);
 }
 
 void Pane::deliverEvents()
@@ -1650,13 +1855,17 @@ void Pane::deliverEvents()
         droppedCommands = std::exchange(m_commandBudget, {}).dropped;
     }
     if (droppedRequests > 0)
-        qCWarning(lcPane) << "dropped" << droppedRequests << "notifications or clipboard requests that came faster than the window took them";
+        qCWarning(lcPane) << "dropped" << droppedRequests
+                          << "notifications or clipboard requests that came faster than the window took them";
     if (droppedCommands > 0)
-        qCWarning(lcPane) << "dropped" << droppedCommands << "command events that came faster than the window took them";
-    for (const auto& event : events) event();
+        qCWarning(lcPane) << "dropped" << droppedCommands
+                          << "command events that came faster than the window took them";
+    for (const auto& event : events)
+        event();
 }
 
-void Pane::setRemoteSocket(const AfterglowProto::Remote::Answer& answer, const std::optional<AfterglowProto::Remote::Answer>& overlay)
+void Pane::setRemoteSocket(const AfterglowProto::Remote::Answer& answer,
+                           const std::optional<AfterglowProto::Remote::Answer>& overlay)
 {
     {
         std::lock_guard lock(m_mutex);
@@ -1664,7 +1873,8 @@ void Pane::setRemoteSocket(const AfterglowProto::Remote::Answer& answer, const s
     }
     // The overlay's program has the pane's AFTERGLOW_PANE_ID. Its terminal
     // answers for an ssh session that it runs itself, else as the pane does.
-    if (m_overlay) m_overlay->pane()->setRemoteSocket(overlay.value_or(answer));
+    if (m_overlay)
+        m_overlay->pane()->setRemoteSocket(overlay.value_or(answer));
 }
 
 AfterglowProto::Remote::Answer Pane::remoteSocketAnswer() const
@@ -1675,7 +1885,9 @@ AfterglowProto::Remote::Answer Pane::remoteSocketAnswer() const
 
 void Pane::bell()
 {
-    queueOnce(m_bellQueued, [this] { Q_EMIT bellRang(); });
+    queueOnce(m_bellQueued, [this] {
+        Q_EMIT bellRang();
+    });
 }
 
 void Pane::clipboardWrite(std::string_view selection, std::string_view data)
@@ -1699,8 +1911,10 @@ void Pane::clipboardWrite(std::string_view selection, std::string_view data)
             clipboard.swap(m_pendingClipboard);
             primary.swap(m_pendingPrimary);
         }
-        if (clipboard) Q_EMIT clipboardWriteRequested(*clipboard, false);
-        if (primary) Q_EMIT clipboardWriteRequested(*primary, true);
+        if (clipboard)
+            Q_EMIT clipboardWriteRequested(*clipboard, false);
+        if (primary)
+            Q_EMIT clipboardWriteRequested(*primary, true);
     });
 }
 
@@ -1713,7 +1927,8 @@ QString localUser()
     passwd entry{};
     passwd* found = nullptr;
     std::vector<char> buffer(16384);
-    if (getpwuid_r(getuid(), &entry, buffer.data(), buffer.size(), &found) != 0 || !found) return {};
+    if (getpwuid_r(getuid(), &entry, buffer.data(), buffer.size(), &found) != 0 || !found)
+        return {};
     return QString::fromLocal8Bit(found->pw_name);
 }
 
@@ -1728,7 +1943,9 @@ QString localUser()
 std::unique_lock<std::mutex> Pane::lockTerminal() const
 {
     std::unique_lock lock(m_mutex);
-    m_decodeDone.wait(lock, [this] { return !m_decoding; });
+    m_decodeDone.wait(lock, [this] {
+        return !m_decoding;
+    });
     return lock;
 }
 
@@ -1738,7 +1955,10 @@ void Pane::feedLocked(std::unique_lock<std::mutex>& lock, const std::function<vo
     struct Unset
     {
         std::unique_lock<std::mutex>*& lock;
-        ~Unset() { lock = nullptr; }
+        ~Unset()
+        {
+            lock = nullptr;
+        }
     } unset{m_feedLock};
     feed();
     // What the GUI thread changed during a decode of this feed: it saw
@@ -1753,7 +1973,8 @@ bool Pane::decodeOutsideLock(const std::function<bool()>& decode)
     // parse finishes after the decode: the GUI thread reads it meanwhile,
     // and what changes it waits (lockTerminal). Without a feed of the reader
     // (one that the GUI thread makes, withTerminal), the decode keeps the lock.
-    if (!m_feedLock) return decode();
+    if (!m_feedLock)
+        return decode();
     m_decoding = true;
     m_feedLock->unlock();
     struct Relock
@@ -1773,7 +1994,8 @@ bool Pane::decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& 
 {
     return decodeOutsideLock([&] {
         AfterglowMux::ImageDecoder* decoder = ProgramImages::decoder();
-        return decoder && decoder->decode(png, AfterglowMux::ImageFormats::Png, width, height, rgba, m_stopDecode.get());
+        return decoder
+            && decoder->decode(png, AfterglowMux::ImageFormats::Png, width, height, rgba, m_stopDecode.get());
     });
 }
 
@@ -1796,7 +2018,9 @@ void Pane::contextChanged()
     QString host;
     QString kind;
     for (const AfterglowVt::ShellContext& c : m_terminal.contexts().stack()) {
-        auto str = [](const std::string& v) { return QString::fromStdString(v); };
+        auto str = [](const std::string& v) {
+            return QString::fromStdString(v);
+        };
         if (!c.user.empty()) {
             user = str(c.user);
         }
@@ -1832,11 +2056,14 @@ void Pane::contextChanged()
         kind = otherHost ? QStringLiteral("remote") : QStringLiteral("elevated");
     }
     // A container named like this host has no label, and then no kind.
-    if (label.isEmpty()) kind.clear();
+    if (label.isEmpty())
+        kind.clear();
     if (label != m_contextLabel || kind != m_contextKind) {
         m_contextLabel = label;
         m_contextKind = kind;
-        queueOnce(m_contextQueued, [this] { Q_EMIT contextUpdated(); });
+        queueOnce(m_contextQueued, [this] {
+            Q_EMIT contextUpdated();
+        });
     }
 }
 
@@ -1849,11 +2076,14 @@ void Pane::regionScrolled(const AfterglowVt::RegionScroll& scroll)
     bool changed = false;
     // A running search may have taken rows before the text moved between
     // them. The other screen's rows have ids of their own.
-    if (altScreen == m_searchAlt) m_movedFrom = std::min(m_movedFrom, scroll.top);
+    if (altScreen == m_searchAlt)
+        m_movedFrom = std::min(m_movedFrom, scroll.top);
     if (m_copyMode && m_selectionOnAltScreen == altScreen && scroll.contains(m_copyCursor)) {
         // A cursor whose row left stays at the edge the text went past.
-        if (const auto moved = scroll.map(m_copyCursor)) m_copyCursor = *moved;
-        else m_copyCursor.row = scroll.delta < 0 ? scroll.top : scroll.bottom;
+        if (const auto moved = scroll.map(m_copyCursor))
+            m_copyCursor = *moved;
+        else
+            m_copyCursor.row = scroll.delta < 0 ? scroll.top : scroll.bottom;
         changed = true;
     }
     if (m_selection.active && m_selectionOnAltScreen == altScreen) {
@@ -1883,25 +2113,29 @@ void Pane::regionScrolled(const AfterglowVt::RegionScroll& scroll)
                 const auto start = scroll.map(match.start);
                 const auto end = scroll.map(match.end);
                 if (!scroll.fullWidth || !start || !end || scroll.contains(match.start) != scroll.contains(match.end)) {
-                    if (i == current) keptBefore = int(kept.size()) - 1;
+                    if (i == current)
+                        keptBefore = int(kept.size()) - 1;
                     continue;
                 }
                 match = {*start, *end};
                 changed = true;
             }
-            if (i == current) newCurrent = int(kept.size());
+            if (i == current)
+                newCurrent = int(kept.size());
             kept.push_back(match);
         }
         if (kept.size() != m_searchMatches.size()) {
             changed = true;
             // The current match went: the nearest one before it that stays
             // is current, else the first one after it.
-            if (newCurrent < 0 && m_searchCurrent >= 0 && !kept.empty()) newCurrent = std::max(0, keptBefore);
+            if (newCurrent < 0 && m_searchCurrent >= 0 && !kept.empty())
+                newCurrent = std::max(0, keptBefore);
         }
         m_searchMatches = std::move(kept);
         m_searchCurrent = newCurrent;
     }
-    if (changed) ++m_selectionSerial;
+    if (changed)
+        ++m_selectionSerial;
 }
 
 void Pane::userVarChanged(std::string_view name, std::string_view value)
@@ -1926,7 +2160,9 @@ bool Pane::keepUserVar(std::string_view name, std::string_view value)
     m_userVars.insert(n, v);
     // Only the newest value of each name reaches the GUI thread, in the order
     // of the last changes.
-    std::erase_if(m_pendingUserVars, [&n](const auto& p) { return p.first == n; });
+    std::erase_if(m_pendingUserVars, [&n](const auto& p) {
+        return p.first == n;
+    });
     m_pendingUserVars.emplace_back(n, v);
     queueOnce(m_userVarsQueued, [this] {
         std::vector<std::pair<QString, QString>> changed;
@@ -1934,7 +2170,8 @@ bool Pane::keepUserVar(std::string_view name, std::string_view value)
             std::lock_guard lock(m_mutex);
             changed.swap(m_pendingUserVars);
         }
-        for (const auto& [name, value] : changed) Q_EMIT userVarUpdated(name, value);
+        for (const auto& [name, value] : changed)
+            Q_EMIT userVarUpdated(name, value);
     });
     return true;
 }
@@ -1953,7 +2190,8 @@ QString Pane::contextKind() const
 
 void Pane::setSeen(bool seen)
 {
-    if (seen == m_seen) return;
+    if (seen == m_seen)
+        return;
     m_seen = seen;
     if (seen) {
         tickAnimations();
@@ -1977,7 +2215,8 @@ bool Pane::advanceAnimations()
         // The images are the reader thread's while it decodes one in the
         // middle of its feed. The timer stays stopped: the call that the
         // feed's end queues (ptyData) ticks them, and starts it again.
-        if (m_decoding) return false;
+        if (m_decoding)
+            return false;
         const std::uint64_t before = m_terminal.generation();
         next = m_terminal.advanceAnimations(now);
         changed = m_terminal.generation() != before;
@@ -2009,8 +2248,11 @@ void Pane::queueNotification(std::string_view title, std::string_view body, bool
     QString heading = QString::fromUtf8(title.data(), qsizetype(title.size()));
     QString text = QString::fromUtf8(body.data(), qsizetype(body.size()));
     const std::size_t bytes = std::size_t(heading.size() + text.size()) * sizeof(QChar);
-    queueEvent([this, heading = std::move(heading), text = std::move(text), missed] { Q_EMIT notificationRequested(heading, text, missed); },
-               bytes, m_requestBudget);
+    queueEvent(
+        [this, heading = std::move(heading), text = std::move(text), missed] {
+            Q_EMIT notificationRequested(heading, text, missed);
+        },
+        bytes, m_requestBudget);
 }
 
 void Pane::pointerShapeChanged(std::string_view shape)
@@ -2035,11 +2277,15 @@ void Pane::desktopNotification(const AfterglowVt::NotificationRequest& request)
 void Pane::queueDesktopNotification(const AfterglowVt::NotificationRequest& request, bool missed)
 {
     // The icon data is what can be large.
-    const bool queued = queueEvent([this, request, missed] { Q_EMIT desktopNotificationRequested(request, missed); },
-                                   request.title.size() + request.body.size() + request.iconData.size(), m_requestBudget);
+    const bool queued = queueEvent(
+        [this, request, missed] {
+            Q_EMIT desktopNotificationRequested(request, missed);
+        },
+        request.title.size() + request.body.size() + request.iconData.size(), m_requestBudget);
     // A query that finds the queue full still gets an answer, as a program
     // waits for it: none that the window did not show.
-    if (!queued && request.kind == AfterglowVt::NotificationRequest::Kind::Alive) writeToPty(request.aliveReply());
+    if (!queued && request.kind == AfterglowVt::NotificationRequest::Kind::Alive)
+        writeToPty(request.aliveReply());
 }
 
 bool Pane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
@@ -2048,8 +2294,13 @@ bool Pane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
     // again. ENOSYS, the answer to a false return, would tell it that the
     // terminal has no clipboard, and a client remembers that.
     std::size_t bytes = 0;
-    for (const auto& [mime, data] : request.data) bytes += mime.size() + data.size();
-    if (!queueEvent([this, request] { Q_EMIT clipboardRequested(request); }, bytes, m_requestBudget))
+    for (const auto& [mime, data] : request.data)
+        bytes += mime.size() + data.size();
+    if (!queueEvent(
+            [this, request] {
+                Q_EMIT clipboardRequested(request);
+            },
+            bytes, m_requestBudget))
         writeToPty(request.refusal("EBUSY"));
     return true;
 }
@@ -2061,7 +2312,9 @@ std::string Pane::notificationCapabilities()
 
 void Pane::flash()
 {
-    queueOnce(m_flashQueued, [this] { Q_EMIT flashRequested(); });
+    queueOnce(m_flashQueued, [this] {
+        Q_EMIT flashRequested();
+    });
 }
 
 void Pane::programStatusChanged()
@@ -2069,7 +2322,9 @@ void Pane::programStatusChanged()
     // Called on the pty thread, or on the GUI thread by a reset through
     // withTerminal or a session pane's frame: either way m_mutex is held, and
     // the receivers read status().
-    queueOnce(m_statusQueued, [this] { Q_EMIT statusChanged(); });
+    queueOnce(m_statusQueued, [this] {
+        Q_EMIT statusChanged();
+    });
 }
 
 QList<PaneStatusRecord> Pane::status() const
@@ -2078,7 +2333,9 @@ QList<PaneStatusRecord> Pane::status() const
     const AfterglowVt::ProgramStatus& ps = m_terminal.programStatus();
     QList<PaneStatusRecord> out;
     out.reserve(qsizetype(ps.records().size()));
-    auto str = [](std::string_view s) { return QString::fromUtf8(s.data(), qsizetype(s.size())); };
+    auto str = [](std::string_view s) {
+        return QString::fromUtf8(s.data(), qsizetype(s.size()));
+    };
     for (const AfterglowVt::StatusRecord& r : ps.records()) {
         out.append(PaneStatusRecord{str(r.id), r.state, r.kind, r.progress, str(ps.effectiveApp(r)), str(r.title),
                                     str(r.msg), r.serial});
@@ -2092,7 +2349,9 @@ void Pane::ptyData(std::string_view bytes)
         std::unique_lock lock(m_mutex);
         // No bytes after a pause: the output that the terminal held, which
         // can ask again.
-        feedLocked(lock, [&] { m_terminal.feed(bytes); });
+        feedLocked(lock, [&] {
+            m_terminal.feed(bytes);
+        });
         // A download's question holds the output, and so does a download's
         // data that waits for the disk: the PTY reads no more of it, so the
         // program waits, as iTerm2 pauses it, while what the user types still
@@ -2100,8 +2359,12 @@ void Pane::ptyData(std::string_view bytes)
         // writer resume it (resumeOutputLocked), under this lock or after
         // the pause.
         if (m_pty) {
-            if (m_terminal.holdsInput()) m_pty->pauseOutput(true);
-            else if (m_download) m_download->pauseIfFull([this] { m_pty->pauseOutput(true); });
+            if (m_terminal.holdsInput())
+                m_pty->pauseOutput(true);
+            else if (m_download)
+                m_download->pauseIfFull([this] {
+                    m_pty->pauseOutput(true);
+                });
         }
         if (m_scrollOnOutput.load(std::memory_order_relaxed)) {
             m_terminal.resetViewport();
@@ -2127,14 +2390,16 @@ void Pane::ptyOutput(std::string_view bytes)
     std::lock_guard lock(m_outputMutex);
     const std::size_t room = m_outputLimit > m_output.size() ? m_outputLimit - m_output.size() : 0;
     // Read on to the end, so the program never blocks on a full pipe.
-    if (bytes.size() > room) m_outputTruncated = true;
+    if (bytes.size() > room)
+        m_outputTruncated = true;
     m_output.append(bytes.substr(0, room));
 }
 
 std::string Pane::takeOutput(bool* truncated)
 {
     std::lock_guard lock(m_outputMutex);
-    if (truncated) *truncated = m_outputTruncated;
+    if (truncated)
+        *truncated = m_outputTruncated;
     return std::exchange(m_output, {});
 }
 
@@ -2152,7 +2417,9 @@ void Pane::ptyClosed(int status)
     }
     {
         std::unique_lock lock(m_mutex);
-        feedLocked(lock, [this] { m_terminal.programExited(); });
+        feedLocked(lock, [this] {
+            m_terminal.programExited();
+        });
         // The command that asked for files is gone. A reset (protocol code
         // 0) is not its end: it still waits for the answer.
         orphanUploadLocked();
@@ -2162,25 +2429,39 @@ void Pane::ptyClosed(int status)
             const QString ending = status == -1 ? tr("The program ended")
                 : WIFSIGNALED(status)           ? tr("The program was killed by signal %1").arg(WTERMSIG(status))
                                                 : tr("The program exited with status %1").arg(WEXITSTATUS(status));
-            m_terminal.feed("\r\n\x1b[0;2m[" + tr("%1. Press any key to close.").arg(ending).toStdString() + "]\x1b[0m\x1b[?25l");
+            m_terminal.feed("\r\n\x1b[0;2m[" + tr("%1. Press any key to close.").arg(ending).toStdString()
+                            + "]\x1b[0m\x1b[?25l");
             m_held.store(true);
         }
     }
     if (m_held.load()) {
-        QMetaObject::invokeMethod(this, [this] { Q_EMIT contentChanged(); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(
+            this,
+            [this] {
+                Q_EMIT contentChanged();
+            },
+            Qt::QueuedConnection);
         return;
     }
     // On the GUI thread, after the events queued before it, and to the
     // window the pane is in by then.
-    QMetaObject::invokeMethod(this, [this] { Q_EMIT closed(); }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(
+        this,
+        [this] {
+            Q_EMIT closed();
+        },
+        Qt::QueuedConnection);
 }
 
 void Pane::holdStartFailure()
 {
     {
         const auto lock = lockTerminal();
-        m_terminal.feed("\r\n[" + tr("Unable to start a process. Check the project or the configuration. Press any key to close.").toStdString()
-                        + "]\r\n");
+        m_terminal.feed(
+            "\r\n["
+            + tr("Unable to start a process. Check the project or the configuration. Press any key to close.")
+                  .toStdString()
+            + "]\r\n");
         m_held.store(true);
     }
     Q_EMIT contentChanged();
@@ -2193,7 +2474,8 @@ TerminalText Pane::accessibleText(bool cursorRow) const
 {
     std::lock_guard lock(m_mutex);
     return TerminalText::capture(m_terminal.screen(),
-        m_selectionOnAltScreen == m_terminal.modes().altScreen ? &m_selection : nullptr, cursorRow, m_terminal.options().wordBoundaries);
+                                 m_selectionOnAltScreen == m_terminal.modes().altScreen ? &m_selection : nullptr,
+                                 cursorRow, m_terminal.options().wordBoundaries);
 }
 }
 
@@ -2210,10 +2492,18 @@ std::unique_ptr<DownloadFile> Pane::createDownload(const QString& path, quint64 
     // pauseOutput() is thread-safe; m_pty outlives the calls of each writer
     // (~Pane, DownloadFile::release).
     auto room = [this] {
-        if (m_pty) m_pty->pauseOutput(false);
+        if (m_pty)
+            m_pty->pauseOutput(false);
         // A session pane held its session's events (applySessionHostCall).
         // Queued: the writer thread; the call goes with the pane.
-        else QMetaObject::invokeMethod(this, [this] { if (m_session) m_session->holdEvents(m_sessionPane, false); }, Qt::QueuedConnection);
+        else
+            QMetaObject::invokeMethod(
+                this,
+                [this] {
+                    if (m_session)
+                        m_session->holdEvents(m_sessionPane, false);
+                },
+                Qt::QueuedConnection);
     };
     // The writer's report, in the order of the program's other events.
     auto ended = [this, serial](const QString& target, bool ok, const QString& why) {
@@ -2231,8 +2521,11 @@ void Pane::reapDownload(quint64 serial)
     std::unique_ptr<DownloadFile> ended;
     {
         std::lock_guard lock(m_mutex);
-        const auto it = std::find_if(m_endingDownloads.begin(), m_endingDownloads.end(), [serial](const auto& d) { return d.first == serial; });
-        if (it == m_endingDownloads.end()) return;
+        const auto it = std::find_if(m_endingDownloads.begin(), m_endingDownloads.end(), [serial](const auto& d) {
+            return d.first == serial;
+        });
+        if (it == m_endingDownloads.end())
+            return;
         ended = std::move(it->second);
         m_endingDownloads.erase(it);
     }
@@ -2241,7 +2534,8 @@ void Pane::reapDownload(quint64 serial)
 
 void Pane::resumeOutputLocked()
 {
-    if (m_pty) m_pty->pauseOutput(false);
+    if (m_pty)
+        m_pty->pauseOutput(false);
 }
 
 bool Pane::downloadBegin(std::string_view name, std::int64_t size)
@@ -2251,7 +2545,9 @@ bool Pane::downloadBegin(std::string_view name, std::int64_t size)
     // output, and the reader pauses it (ptyData()).
     m_downloadAsked = true;
     const quint64 serial = ++m_downloadSerial;
-    queueRequest([this, clean = cleanDownloadName(name), size, serial] { Q_EMIT downloadRequested(clean, size, serial); });
+    queueRequest([this, clean = cleanDownloadName(name), size, serial] {
+        Q_EMIT downloadRequested(clean, size, serial);
+    });
     return true;
 }
 
@@ -2262,7 +2558,8 @@ void Pane::answerDownload(const QString& path, quint64 serial, bool replace)
     // that a newer one took the place of.
     {
         std::lock_guard lock(m_mutex);
-        if (!m_downloadAsked || (serial != 0 && serial != m_downloadSerial)) return;
+        if (!m_downloadAsked || (serial != 0 && serial != m_downloadSerial))
+            return;
         serial = m_downloadSerial;
     }
     // Made without the lock: an open waits as long as its file system does.
@@ -2270,25 +2567,36 @@ void Pane::answerDownload(const QString& path, quint64 serial, bool replace)
     if (!path.isEmpty()) {
         QString error;
         file = createDownload(path, serial, replace, error);
-        if (!file) QMetaObject::invokeMethod(this, [this, path, error] { Q_EMIT downloadFinished(path, false, error); }, Qt::QueuedConnection);
+        if (!file)
+            QMetaObject::invokeMethod(
+                this,
+                [this, path, error] {
+                    Q_EMIT downloadFinished(path, false, error);
+                },
+                Qt::QueuedConnection);
     }
     // Declared after the file: a file that the question no longer wants goes
     // after the lock.
     const auto lock = lockTerminal();
-    if (!m_downloadAsked || serial != m_downloadSerial) return;
+    if (!m_downloadAsked || serial != m_downloadSerial)
+        return;
     m_downloadAsked = false;
     const bool accept = file != nullptr;
     m_download = std::move(file);
     if (m_session) {
-        m_session->answerDownload(m_sessionPane, accept ? AfterglowMux::Attach::DownloadReply::Accept : AfterglowMux::Attach::DownloadReply::Refuse);
+        m_session->answerDownload(m_sessionPane,
+                                  accept ? AfterglowMux::Attach::DownloadReply::Accept
+                                         : AfterglowMux::Attach::DownloadReply::Refuse);
         return;
     }
     m_terminal.answerDownload(accept);
     // The reader parses the output that waited, on its own thread: nothing
     // of the download waits for the GUI thread. A pane without a PTY (a
     // test's feed) has no reader.
-    if (m_pty) resumeOutputLocked();
-    else m_terminal.feed({});
+    if (m_pty)
+        resumeOutputLocked();
+    else
+        m_terminal.feed({});
 }
 
 bool Pane::downloadData(std::string_view bytes)
@@ -2302,11 +2610,14 @@ void Pane::downloadEnd(bool complete)
     // m_mutex held. Before an answer: the window's question goes, and the
     // output that it paused goes on (a reset ended it on the GUI thread).
     if (std::exchange(m_downloadAsked, false)) {
-        queueRequest([this] { Q_EMIT downloadCancelled(); });
+        queueRequest([this] {
+            Q_EMIT downloadCancelled();
+        });
         resumeOutputLocked();
         return;
     }
-    if (!m_download) return;
+    if (!m_download)
+        return;
     // The writer renames or removes the file once its queue is written, and
     // reports downloadFinished().
     m_download->finish(complete, tr("The program did not send the whole file."));
@@ -2324,7 +2635,8 @@ FileTransfer* Pane::fileTransfers()
         m_fileTransfers->setInputBacklog([this] {
             return m_session ? m_session->pendingInput(m_sessionPane) : m_pty ? m_pty->pendingInput() : std::size_t(0);
         });
-        connect(m_fileTransfers.get(), &FileTransfer::permissionRequested, this, &Pane::fileTransferPermissionRequested);
+        connect(m_fileTransfers.get(), &FileTransfer::permissionRequested, this,
+                &Pane::fileTransferPermissionRequested);
         // The worker writes the replies of a command after its command
         // closure returned. Until then the reports after it wait.
         connect(m_fileTransfers.get(), &FileTransfer::answering, this, [this] {
@@ -2333,10 +2645,12 @@ FileTransfer* Pane::fileTransfers()
         });
         connect(m_fileTransfers.get(), &FileTransfer::answered, this, &Pane::endAnswerHold);
         connect(m_fileTransfers.get(), &FileTransfer::reply, this, [this](const QByteArray& bytes) {
-            if (sendReply(std::string_view(bytes.constData(), std::size_t(bytes.size())))) return;
+            if (sendReply(std::string_view(bytes.constData(), std::size_t(bytes.size()))))
+                return;
             // A held pane's program has exited, and a session pane's window
             // no longer shows it: no input failed, nothing reads it.
-            if (hasProgram() && !isHeld()) reportInputFailure();
+            if (hasProgram() && !isHeld())
+                reportInputFailure();
             m_fileTransfers->reset();
         });
     }
@@ -2356,14 +2670,18 @@ DragDrop* Pane::dragDrop()
         m_dragDrop->setInputBacklog([this] {
             return m_session ? m_session->pendingInput(m_sessionPane) : m_pty ? m_pty->pendingInput() : std::size_t(0);
         });
-        m_dragDrop->setCommandDelivery([this](int waitMs) { deliverProtocolCommands(waitMs); });
+        m_dragDrop->setCommandDelivery([this](int waitMs) {
+            deliverProtocolCommands(waitMs);
+        });
         m_dragDrop->setAnswerWait(m_dragAnswerWait);
         connect(m_dragDrop.get(), &DragDrop::dragStarting, this, &Pane::programDragStarting);
         connect(m_dragDrop.get(), &DragDrop::reply, this, [this](const QByteArray& bytes) {
-            if (sendReply(std::string_view(bytes.constData(), std::size_t(bytes.size())))) return;
+            if (sendReply(std::string_view(bytes.constData(), std::size_t(bytes.size()))))
+                return;
             // A held pane's program has exited, and a session pane's window
             // no longer shows it: no input failed, nothing reads it.
-            if (hasProgram() && !isHeld()) reportInputFailure();
+            if (hasProgram() && !isHeld())
+                reportInputFailure();
             // Not a terminal reset: the chunks that the program still sends are dropped.
             m_dragDrop->end();
         });
@@ -2390,7 +2708,10 @@ void Pane::terminalProtocol(int code, std::string_view payload)
     if (code == 72) {
         // Capability replies must precede a DA query in the same PTY read.
         const auto response = DragDrop::queryReply(bytes);
-        if (!response.isEmpty()) { writeToPty(std::string_view(response.constData(), std::size_t(response.size()))); return; }
+        if (!response.isEmpty()) {
+            writeToPty(std::string_view(response.constData(), std::size_t(response.size())));
+            return;
+        }
     }
     if (m_protocolBlocked) {
         loseProtocolCommands(lostAfter(DragDrop::Lost::Nothing, code), code == 0);
@@ -2405,7 +2726,8 @@ void Pane::terminalProtocol(int code, std::string_view payload)
     const auto generation = m_protocolGeneration.load();
     postProtocolCommand([this, code, bytes, generation, charge] {
         m_protocolBytes.fetch_sub(charge);
-        if (generation == m_protocolGeneration.load()) Q_EMIT terminalProtocolRequested(code, bytes);
+        if (generation == m_protocolGeneration.load())
+            Q_EMIT terminalProtocolRequested(code, bytes);
         else {
             m_protocolStale = lostAfter(m_protocolStale, code);
             m_protocolStaleReset = m_protocolStaleReset || code == 0;
@@ -2417,7 +2739,8 @@ void Pane::loseProtocolCommands(DragDrop::Lost lost, bool reset)
     if (m_protocolBlocked) {
         // Later commands of the same gap: the last that holds something for
         // drag and drop says what.
-        if (lost != DragDrop::Lost::Nothing) m_protocolLost = lost;
+        if (lost != DragDrop::Lost::Nothing)
+            m_protocolLost = lost;
         m_protocolLostReset = m_protocolLostReset || reset;
         return;
     }
@@ -2450,10 +2773,13 @@ void Pane::postProtocolCommand(std::function<void()> command)
     // A report after this command follows its replies.
     m_openReports.reset();
     // The count drops after the command and the replies that it wrote.
-    QMetaObject::invokeMethod(&m_protocolCommands, [this, command = std::move(command)] {
-        command();
-        m_protocolQueued.fetch_sub(1);
-    }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(
+        &m_protocolCommands,
+        [this, command = std::move(command)] {
+            command();
+            m_protocolQueued.fetch_sub(1);
+        },
+        Qt::QueuedConnection);
     {
         std::lock_guard lock(m_postedMutex);
         ++m_postedSerial;
@@ -2491,13 +2817,16 @@ void Pane::deliverProtocolCommands(int waitMs)
         // A session pane's commands come on the session's stream, which only
         // this thread reads: the wait reads it, or it would always time out.
         // A session that no longer shows sends none: the wait below sleeps.
-        if (!m_session->waitForHostCalls(waitMs, posted)) return;
+        if (!m_session->waitForHostCalls(waitMs, posted))
+            return;
         std::lock_guard lock(m_postedMutex);
         m_deliveredSerial = m_postedSerial;
     } else {
         // A command posted after the delivery above ends the wait at once.
         std::unique_lock lock(m_postedMutex);
-        if (!m_posted.wait_for(lock, std::chrono::milliseconds(waitMs), [&] { return m_postedSerial != seen; }))
+        if (!m_posted.wait_for(lock, std::chrono::milliseconds(waitMs), [&] {
+                return m_postedSerial != seen;
+            }))
             return;
         m_deliveredSerial = m_postedSerial;
     }

@@ -36,7 +36,10 @@ public:
     /// that is not a number changes nothing. A coast under way goes on from
     /// where it is, with the new value.
     void setFriction(double friction);
-    double friction() const noexcept { return m_friction; }
+    double friction() const noexcept
+    {
+        return m_friction;
+    }
 
     /// Fingers came down for a new gesture at @p ms. A coast stops, but
     /// keeps its speed for the next flick, so repeated flicks go faster.
@@ -54,8 +57,14 @@ public:
     void cancel();
 
     /// Fingers are down: begin() or a move came, and no release since.
-    bool gesture() const noexcept { return m_gesture; }
-    bool coasting() const noexcept { return m_coasting; }
+    bool gesture() const noexcept
+    {
+        return m_gesture;
+    }
+    bool coasting() const noexcept
+    {
+        return m_coasting;
+    }
     /// The distance that the coast moved from the last call to @p ms. The
     /// coast ends when its speed falls below half a pixel for each step.
     double advance(double ms);

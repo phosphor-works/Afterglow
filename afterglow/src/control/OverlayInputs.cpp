@@ -14,15 +14,18 @@ bool OverlayInputs::validName(const QString& name)
 
 QString OverlayInputs::add(const QString& owner, const QString& name, const QString& chunk, bool eof)
 {
-    if (!validName(name)) return QStringLiteral("an input name is 1 to 64 letters, digits, _ and -");
+    if (!validName(name))
+        return QStringLiteral("an input name is 1 to 64 letters, digits, _ and -");
     // Looked up, not made: a refused first part leaves no books behind.
     const auto books = m_inputs.constFind(owner);
     const qsizetype waitingInputs = books == m_inputs.cend() ? 0 : books->size();
     const auto known = books == m_inputs.cend() ? nullptr : &*books;
     const auto entry = known ? known->constFind(name) : QHash<QString, Waiting>::const_iterator();
     const bool exists = known && entry != known->cend();
-    if (!exists && waitingInputs >= MaxWaiting) return QStringLiteral("%1 inputs wait for their overlay already").arg(MaxWaiting);
-    if (exists && entry->eof) return QStringLiteral("the input %1 has ended").arg(name);
+    if (!exists && waitingInputs >= MaxWaiting)
+        return QStringLiteral("%1 inputs wait for their overlay already").arg(MaxWaiting);
+    if (exists && entry->eof)
+        return QStringLiteral("the input %1 has ended").arg(name);
     const QByteArray bytes = chunk.toUtf8();
     const qsizetype size = exists ? entry->bytes.size() : 0;
     if (size + bytes.size() > OverlaySpec::MaxInput) {
@@ -30,7 +33,8 @@ QString OverlayInputs::add(const QString& owner, const QString& name, const QStr
         return QStringLiteral("the overlay's stdin is over %1 MiB").arg(OverlaySpec::MaxInput >> 20);
     }
     if (m_bytes + bytes.size() > MaxWaitingBytes)
-        return QStringLiteral("afterglow keeps at most %1 MiB of input for overlays that have not started").arg(MaxWaitingBytes >> 20);
+        return QStringLiteral("afterglow keeps at most %1 MiB of input for overlays that have not started")
+            .arg(MaxWaitingBytes >> 20);
     Waiting& waiting = m_inputs[owner][name];
     waiting.bytes += bytes;
     waiting.eof = eof;
@@ -40,7 +44,8 @@ QString OverlayInputs::add(const QString& owner, const QString& name, const QStr
 
 QString OverlayInputs::resolve(const QString& owner, QVariantMap& options)
 {
-    if (!options.contains(QStringLiteral("input"))) return {};
+    if (!options.contains(QStringLiteral("input")))
+        return {};
     const QString name = options.take(QStringLiteral("input")).toString();
     QByteArray bytes;
     bool complete = false;
@@ -51,8 +56,10 @@ QString OverlayInputs::resolve(const QString& owner, QVariantMap& options)
         }
     }
     drop(owner, name);
-    if (options.contains(QStringLiteral("stdin"))) return QStringLiteral("the overlay options stdin and input exclude each other");
-    if (!complete) return QStringLiteral("no complete input %1 for this client").arg(name);
+    if (options.contains(QStringLiteral("stdin")))
+        return QStringLiteral("the overlay options stdin and input exclude each other");
+    if (!complete)
+        return QStringLiteral("no complete input %1 for this client").arg(name);
     options.insert(QStringLiteral("stdin"), QString::fromUtf8(bytes));
     return {};
 }
@@ -60,14 +67,17 @@ QString OverlayInputs::resolve(const QString& owner, QVariantMap& options)
 void OverlayInputs::drop(const QString& owner, const QString& name)
 {
     const auto inputs = m_inputs.find(owner);
-    if (inputs == m_inputs.end()) return;
+    if (inputs == m_inputs.end())
+        return;
     m_bytes -= inputs->take(name).bytes.size();
-    if (inputs->isEmpty()) m_inputs.erase(inputs);
+    if (inputs->isEmpty())
+        m_inputs.erase(inputs);
 }
 
 void OverlayInputs::drop(const QString& owner)
 {
-    for (const Waiting& input : m_inputs.take(owner)) m_bytes -= input.bytes.size();
+    for (const Waiting& input : m_inputs.take(owner))
+        m_bytes -= input.bytes.size();
 }
 
 void OverlayInputs::dropPrefix(const QString& prefix)
@@ -77,7 +87,8 @@ void OverlayInputs::dropPrefix(const QString& prefix)
             ++it;
             continue;
         }
-        for (const Waiting& input : *it) m_bytes -= input.bytes.size();
+        for (const Waiting& input : *it)
+            m_bytes -= input.bytes.size();
         it = m_inputs.erase(it);
     }
 }

@@ -12,38 +12,38 @@ namespace TransferPath {
 
 namespace {
 
-    // Go's Clean, for a path that is rooted at / or not rooted at all.
-    std::string cleanPlain(std::string_view path)
-    {
-        const bool rooted = !path.empty() && path.front() == '/';
-        std::vector<std::string_view> parts;
-        std::size_t start = 0;
-        while (start <= path.size()) {
-            const auto end = std::min(path.find('/', start), path.size());
-            const auto part = path.substr(start, end - start);
-            start = end + 1;
-            if (part.empty() || part == ".") {
-                continue;
-            }
-            if (part == "..") {
-                if (!parts.empty() && parts.back() != "..") {
-                    parts.pop_back();
-                } else if (!rooted) {
-                    parts.push_back(part);
-                }
-                continue;
-            }
-            parts.push_back(part);
+// Go's Clean, for a path that is rooted at / or not rooted at all.
+std::string cleanPlain(std::string_view path)
+{
+    const bool rooted = !path.empty() && path.front() == '/';
+    std::vector<std::string_view> parts;
+    std::size_t start = 0;
+    while (start <= path.size()) {
+        const auto end = std::min(path.find('/', start), path.size());
+        const auto part = path.substr(start, end - start);
+        start = end + 1;
+        if (part.empty() || part == ".") {
+            continue;
         }
-        std::string out = rooted ? "/" : "";
-        for (std::size_t i = 0; i < parts.size(); ++i) {
-            if (i) {
-                out += '/';
+        if (part == "..") {
+            if (!parts.empty() && parts.back() != "..") {
+                parts.pop_back();
+            } else if (!rooted) {
+                parts.push_back(part);
             }
-            out += parts[i];
+            continue;
         }
-        return out.empty() ? "." : out;
+        parts.push_back(part);
     }
+    std::string out = rooted ? "/" : "";
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        if (i) {
+            out += '/';
+        }
+        out += parts[i];
+    }
+    return out.empty() ? "." : out;
+}
 
 } // namespace
 

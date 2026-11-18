@@ -27,7 +27,10 @@ struct Term
         }())
     {
     }
-    void feed(std::string_view s) { t.feed(s); }
+    void feed(std::string_view s)
+    {
+        t.feed(s);
+    }
 };
 } // namespace
 
@@ -142,7 +145,9 @@ TEST(Terminal, WideCharactersOverwriteNarrowAndWideCellsCleanly)
     EXPECT_EQ(row.cells[0].width(), 2);
     EXPECT_TRUE(row.cells[1].isTail());
     EXPECT_EQ(row.cells[0].styleId(), row.cells[1].styleId());
-    EXPECT_EQ(rowText(t.t, 0), "\xe4\xb8\x81" "cd");
+    EXPECT_EQ(rowText(t.t, 0),
+              "\xe4\xb8\x81"
+              "cd");
     // Red is gone with the cells that held it: default and green are left.
     EXPECT_EQ(t.t.screen().styles().liveCount(), 2u);
 
@@ -214,7 +219,9 @@ TEST(Terminal, StylesAreReleased)
 TEST(Terminal, WideCharacters)
 {
     Term t(5, 2);
-    t.feed("a\xE4\xB8\xAD" "b");
+    t.feed(
+        "a\xE4\xB8\xAD"
+        "b");
     const Row& r = t.t.screen().row(0);
     EXPECT_EQ(r.cells[1].width(), 2);
     EXPECT_TRUE(r.cells[2].isTail());
@@ -282,7 +289,9 @@ TEST(Terminal, CursorColorQueryMatchesConfiguredOverrideAndReset)
 TEST(Terminal, Vs16WidensEmoji)
 {
     Term t(10, 2);
-    t.feed("\xE2\x9D\xA4\xEF\xB8\x8F" "a"); // heart + VS16
+    t.feed(
+        "\xE2\x9D\xA4\xEF\xB8\x8F"
+        "a"); // heart + VS16
     EXPECT_EQ(t.t.screen().row(0).cells[0].width(), 2);
     EXPECT_EQ(t.t.screen().cursor.x, 3);
 }
@@ -292,21 +301,29 @@ TEST(Terminal, Vs15NarrowsAWideEmoji)
     // kitty's text sizing spec: VS15 right after a wide emoji makes its cell
     // one cell wide, and the cursor comes back by one.
     Term t(10, 2);
-    t.feed("\xE2\x8C\x9A\xEF\xB8\x8E" "a"); // watch + VS15
+    t.feed(
+        "\xE2\x8C\x9A\xEF\xB8\x8E"
+        "a"); // watch + VS15
     EXPECT_EQ(t.t.screen().row(0).cells[0].width(), 1);
     EXPECT_EQ(t.t.screen().row(0).cells[1].codepoint(), U'a');
     EXPECT_EQ(t.t.screen().cursor.x, 2);
     Term edge(4, 2); // in the last two columns: the freed cell takes the next character
-    edge.feed("ab\xF0\x9F\x98\x80\xEF\xB8\x8E" "c");
+    edge.feed(
+        "ab\xF0\x9F\x98\x80\xEF\xB8\x8E"
+        "c");
     EXPECT_EQ(rowText(edge.t, 0), "ab\U0001F600\uFE0Ec");
     EXPECT_EQ(rowText(edge.t, 1), "");
     Term plain(10, 2); // VS15 after a narrow character, or not right after the emoji, changes nothing
-    plain.feed("\xE2\x9D\xA4\xEF\xB8\x8E\xF0\x9F\x91\xA8\xE2\x80\x8D\xEF\xB8\x8E" "a");
+    plain.feed(
+        "\xE2\x9D\xA4\xEF\xB8\x8E\xF0\x9F\x91\xA8\xE2\x80\x8D\xEF\xB8\x8E"
+        "a");
     EXPECT_EQ(plain.t.screen().row(0).cells[0].width(), 1);
     EXPECT_EQ(plain.t.screen().row(0).cells[1].width(), 2);
     EXPECT_EQ(plain.t.screen().cursor.x, 4);
     Term sized(10, 2); // a sized block keeps the width its program gave it
-    sized.feed("\x1b]66;w=2;\xE2\x8C\x9A\x07\xEF\xB8\x8E" "a");
+    sized.feed(
+        "\x1b]66;w=2;\xE2\x8C\x9A\x07\xEF\xB8\x8E"
+        "a");
     EXPECT_EQ(sized.t.screen().cursor.x, 3);
 }
 
@@ -357,7 +374,9 @@ TEST(Terminal, AJoinedCharacterWithAWidthWidensItsCluster)
 TEST(Terminal, ZwjFamilyIsOneWideCell)
 {
     Term t(10, 2);
-    t.feed("\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7" "a");
+    t.feed(
+        "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7"
+        "a");
     EXPECT_EQ(t.t.screen().cursor.x, 3);
     EXPECT_EQ(t.t.screen().row(0).cells[2].codepoint(), U'a');
 }
@@ -478,7 +497,9 @@ TEST(Terminal, Osc8Hyperlinks)
     Term t(20, 2);
     t.feed("\x1b]8;id=a;https://example.com\x1b\\link\x1b[1mbold\x1b[0m\x1b]8;;\x1b\\ plain");
     const Screen& s = t.t.screen();
-    const auto linkAt = [&](int x) { return s.styles().get(s.row(0).cells[std::size_t(x)].styleId()).link; };
+    const auto linkAt = [&](int x) {
+        return s.styles().get(s.row(0).cells[std::size_t(x)].styleId()).link;
+    };
     ASSERT_NE(linkAt(0), 0u);
     EXPECT_EQ(s.styles().linkUri(linkAt(0)), "https://example.com");
     EXPECT_EQ(linkAt(5), linkAt(0)); // SGR changes keep the link
@@ -537,7 +558,9 @@ TEST(Terminal, ShellIntegrationCommands)
     EXPECT_EQ(host.commandsFinished[1], -1);
     EXPECT_EQ(t.text(Terminal::TextScope::Screen), "$ make test\nok 1\nok 2\n$ sleep 9");
     // A negative code is not reported: -1, as the region has none.
-    t.feed("\x1b]133;B\x07" "false\r\n\x1b]133;C\x07\x1b]133;D;-7\x07");
+    t.feed(
+        "\x1b]133;B\x07"
+        "false\r\n\x1b]133;C\x07\x1b]133;D;-7\x07");
     ASSERT_EQ(host.commandsFinished.size(), 3u);
     EXPECT_EQ(host.commandsFinished[2], -1);
     ASSERT_FALSE(t.semanticRegions().empty());
@@ -590,8 +613,10 @@ TEST(Terminal, BatchedPrintingMatchesBytewise)
         "plain ascii that wraps past the edge of this narrow terminal\r\n",
         "Ελληνικά кириллица 日本語の文字 한국어 \xed\x95\x9c\xea\xb8\x80 wide at the edge: 中中中中中中中中中中中\r\n",
         "e\xcc\x81 n\xcc\x83 a\xcc\x8a\xcc\x8a combining after simple letters\r\n",
-        "flags \xf0\x9f\x87\xaf\xf0\x9f\x87\xb5\xf0\x9f\x87\xba\xf0\x9f\x87\xb8 zwj \xf0\x9f\x91\xa8\xe2\x80\x8d\xf0\x9f\x91\xa9 vs16 \xe2\x9d\xa4\xef\xb8\x8f\r\n",
-        "prepend \xd8\x80" "a then devanagari \xe0\xa4\x95\xe0\xa5\x8d\xe0\xa4\xb7 hangul \xe1\x84\x80\xe1\x85\xa1\xe1\x86\xa8\r\n",
+        "flags \xf0\x9f\x87\xaf\xf0\x9f\x87\xb5\xf0\x9f\x87\xba\xf0\x9f\x87\xb8 zwj "
+        "\xf0\x9f\x91\xa8\xe2\x80\x8d\xf0\x9f\x91\xa9 vs16 \xe2\x9d\xa4\xef\xb8\x8f\r\n",
+        "prepend \xd8\x80"
+        "a then devanagari \xe0\xa4\x95\xe0\xa5\x8d\xe0\xa4\xb7 hangul \xe1\x84\x80\xe1\x85\xa1\xe1\x86\xa8\r\n",
         "\x1b[31mred \xc3\xa9t\xc3\xa9\x1b[0m \x1b[1mbold \xce\xb1\xce\xb2\x1b[m\r\n",
         "bad \xc3 \xe2\x82 \xed\xa0\x80 \xc0\xaf \xf4\x90\x80\x80 \xff end\r\n",
         "\x1b[4h insert \xc3\xa9\xc3\xa9 \x1b[4l \x1b(0lqqk\x1b(B mixed\r\n",
@@ -666,7 +691,9 @@ TEST(Terminal, BidiControlsAreRetainedAndCopiedOnlyForBidiShellContent)
     // Bidi off: the control takes no cell, as everywhere else.
     RecordingHost host;
     Terminal off(20, 3, host);
-    off.feed("\xe2\x80\xae" "abc");
+    off.feed(
+        "\xe2\x80\xae"
+        "abc");
     EXPECT_EQ(off.screen().row(0).at(0).codepoint(), U'a');
     EXPECT_EQ(off.text(Terminal::TextScope::All), "abc");
 }
@@ -677,7 +704,7 @@ TEST(Terminal, SemanticRegionsRetainTextThroughReflow)
     t.feed("\x1b]133;A\a$ \x1b]133;B\aprint abc\x1b]133;C\a\r\nabcdefghijklmno\x1b]133;D;0\a");
     auto regions = t.t.semanticRegions();
     ASSERT_EQ(regions.size(), 3u);
-    EXPECT_EQ(t.t.semanticRegionText(regions[0].id), "$" );
+    EXPECT_EQ(t.t.semanticRegionText(regions[0].id), "$");
     EXPECT_EQ(t.t.semanticRegionText(regions[1].id), "print abc");
     EXPECT_EQ(t.t.semanticRegionText(regions[2].id), "\nabcdefghijklmno");
     t.t.resize(6, 5, 10, 20);
@@ -706,9 +733,11 @@ TEST(Terminal, TheCommandOfARowAndTheFirstOutputOfRows)
     ASSERT_EQ(t.t.semanticRegionText(one), "\nout1\nout1b\n");
     // The prompt, the input and the output of a command give its output;
     // a running command holds the rows down to the cursor.
-    for (const std::uint64_t row : {0, 1, 2}) EXPECT_EQ(t.t.commandOutputAt(row), one) << row;
+    for (const std::uint64_t row : {0, 1, 2})
+        EXPECT_EQ(t.t.commandOutputAt(row), one) << row;
     EXPECT_EQ(t.t.commandOutputAt(3), two);
-    for (const std::uint64_t row : {4, 5, 6}) EXPECT_EQ(t.t.commandOutputAt(row), three) << row;
+    for (const std::uint64_t row : {4, 5, 6})
+        EXPECT_EQ(t.t.commandOutputAt(row), three) << row;
     EXPECT_EQ(t.t.commandOutputAt(7), std::nullopt);
     // The first output with a row in a range: one that ends at the start of
     // a row has nothing there.
@@ -878,8 +907,12 @@ TEST(Terminal, SemanticRegionBegunAfterARegionScrollMovesWithTheNext)
 TEST(Terminal, SavedCursorRetainsHyperlinkAndAltScreenReinternsIt)
 {
     Term t(20, 4);
-    t.feed("\x1b]8;id=one;https://one.example\a\x1b" "7\x1b]8;;\a");
-    t.feed("\x1b]8;id=two;https://two.example\aX\x1b]8;;\a\x1b" "8A");
+    t.feed(
+        "\x1b]8;id=one;https://one.example\a\x1b"
+        "7\x1b]8;;\a");
+    t.feed(
+        "\x1b]8;id=two;https://two.example\aX\x1b]8;;\a\x1b"
+        "8A");
     const auto& screen = t.t.screen();
     EXPECT_EQ(screen.styles().linkUri(screen.styles().get(screen.row(0).at(0).styleId()).link), "https://one.example");
     t.feed("\x1b[?1049hB");
@@ -1000,7 +1033,9 @@ TEST(Terminal, ResetDuringACommandKeepsItsFinish)
     // RIS (as `reset` sends it) in the middle of a command: the shell's D
     // still finishes the command.
     Term t(20, 4);
-    t.feed("\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07\x1b" "c\x1b]133;D;0\x07");
+    t.feed(
+        "\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07\x1b"
+        "c\x1b]133;D;0\x07");
     ASSERT_EQ(t.host.commandsStarted.size(), 1u);
     EXPECT_EQ(t.host.commandsFinished, std::vector<int>{0});
 }
@@ -1039,9 +1074,14 @@ TEST(Terminal, PlainCommandLinesLoseControlsToo)
     // The parser keeps DEL and C1 controls in an OSC string: C1 CSI as UTF-8
     // goes, and a raw C1 byte, which is no UTF-8, becomes U+FFFD.
     Term t(20, 4);
-    t.feed("\x1b]133;C;cmdline=a\xc2\x9b" "31mb\x7f\x9b" "c\x07");
+    t.feed(
+        "\x1b]133;C;cmdline=a\xc2\x9b"
+        "31mb\x7f\x9b"
+        "c\x07");
     ASSERT_EQ(t.host.commandsStarted.size(), 1u);
-    EXPECT_EQ(t.host.commandsStarted[0], "a31mb\xef\xbf\xbd" "c");
+    EXPECT_EQ(t.host.commandsStarted[0],
+              "a31mb\xef\xbf\xbd"
+              "c");
 }
 
 TEST(Terminal, ACommandLineOverTheLimitKeepsItsMark)
@@ -1092,7 +1132,9 @@ TEST(Terminal, AnOsc8LinkOverTheLimitEndsTheLinkBefore)
     Term t(20, 2);
     t.feed("\x1b]8;;https://a.example\x07" "a\x1b]8;;https://" + std::string(9000, 'b') + "\x07" "b");
     const Screen& s = t.t.screen();
-    const auto linkAt = [&](int x) { return s.styles().get(s.row(0).cells[std::size_t(x)].styleId()).link; };
+    const auto linkAt = [&](int x) {
+        return s.styles().get(s.row(0).cells[std::size_t(x)].styleId()).link;
+    };
     EXPECT_NE(linkAt(0), 0u);
     EXPECT_EQ(linkAt(1), 0u);
 }
@@ -1102,8 +1144,16 @@ TEST(Terminal, TitlesLoseControlsSeparatorsAndBidiControls)
     // DEL, C1 NEL, a line separator and a right-to-left override go; a byte
     // that is no UTF-8 becomes U+FFFD.
     Term t(20, 2);
-    t.feed("\x1b]2;a\x7f" "b\xc2\x85" "c\xe2\x80\xa8" "d\xe2\x80\xae" "e\xff" "f\x07");
-    EXPECT_EQ(t.host.title, "abcde\xef\xbf\xbd" "f");
+    t.feed(
+        "\x1b]2;a\x7f"
+        "b\xc2\x85"
+        "c\xe2\x80\xa8"
+        "d\xe2\x80\xae"
+        "e\xff"
+        "f\x07");
+    EXPECT_EQ(t.host.title,
+              "abcde\xef\xbf\xbd"
+              "f");
     EXPECT_EQ(t.t.title(), t.host.title);
 }
 
@@ -1111,7 +1161,9 @@ TEST(Terminal, C1ControlsSentAsUtf8AreNotPrinted)
 {
     // Not a mark on the cell before: a copy of the text would carry them.
     Term t(10, 2);
-    t.feed("a\xc2\x85" "b\xc2\x9b");
+    t.feed(
+        "a\xc2\x85"
+        "b\xc2\x9b");
     EXPECT_EQ(rowText(t.t, 0), "ab");
     EXPECT_FALSE(t.t.screen().row(0).cells[0].hasGrapheme());
     EXPECT_FALSE(t.t.screen().row(0).cells[1].hasGrapheme());
@@ -1157,7 +1209,9 @@ TEST(Terminal, SavedCursorKeepsItsPendingWrapThroughReflow)
     Term saved(80, 5);
     saved.feed(std::string(80, 'a') + "\x1b" "7");
     saved.t.resize(100, 5, 8, 16);
-    saved.feed("\x1b" "8b");
+    saved.feed(
+        "\x1b"
+        "8b");
     EXPECT_EQ(rowText(saved.t, 0), std::string(80, 'a') + "b");
 }
 
@@ -1258,13 +1312,20 @@ TEST(Terminal, DoubleWidthLinesKeepTheCursorVisible)
     EXPECT_EQ(wrap.t.screen().row(0).at(39).codepoint(), U'A');
     EXPECT_TRUE(wrap.t.screen().row(0).at(79).isEmpty());
     Term restore(80, 4);
-    restore.feed("\x1b[1;70H\x1b" "7\x1b#6\x1b" "8"); // DECRC onto a line made double width since
+    restore.feed(
+        "\x1b[1;70H\x1b"
+        "7\x1b#6\x1b"
+        "8"); // DECRC onto a line made double width since
     EXPECT_LE(restore.t.screen().cursor.x, 39);
     Term vt52(80, 4);
-    vt52.feed("\x1b[2;1H\x1b#6\x1b[1;70H\x1b[?2l\x1b" "B"); // VT52 cursor down onto it
+    vt52.feed(
+        "\x1b[2;1H\x1b#6\x1b[1;70H\x1b[?2l\x1b"
+        "B"); // VT52 cursor down onto it
     EXPECT_EQ(vt52.t.screen().cursor.y, 1);
     EXPECT_LE(vt52.t.screen().cursor.x, 39);
-    vt52.feed("\x1b<\x1b[3;70H\x1b[?2l\x1b" "A"); // and up onto it
+    vt52.feed(
+        "\x1b<\x1b[3;70H\x1b[?2l\x1b"
+        "A"); // and up onto it
     EXPECT_EQ(vt52.t.screen().cursor.y, 1);
     EXPECT_LE(vt52.t.screen().cursor.x, 39);
     // 47 keeps each screen's line sizes while the screens share the cursor.
@@ -1488,7 +1549,8 @@ TEST(Terminal, DecimalValuesIgnoreTheLocale)
     t.feed("\x1b]4;1;rgbi:0.5/0.5/0.5\x07\x1b]4;1;?\x07");
     t.feed("\x1b]21;transparent_background_color1=#102030@0.25\x07\x1b]21;transparent_background_color1=?\x07");
     std::setlocale(LC_NUMERIC, previous.c_str());
-    EXPECT_EQ(t.host.written, "\x1b]4;1;rgb:8080/8080/8080\x07\x1b]21;transparent_background_color1=rgb:10/20/30@0.25\x07");
+    EXPECT_EQ(t.host.written,
+              "\x1b]4;1;rgb:8080/8080/8080\x07\x1b]21;transparent_background_color1=rgb:10/20/30@0.25\x07");
 }
 
 TEST(Terminal, RepeatMapsTheCharacterThroughTheCharsetOfNow)
@@ -1566,8 +1628,8 @@ TEST(Terminal, MalformedPrivateCsiLeavesTheNextSgrIntact)
 {
     // In kitty before 0.49.0, ESC [ ? : left the parser in a state where
     // later SGR colours were ignored.
-    for (std::string_view bad : {"\x1b[?:", "\x1b[?:m", "\x1b[?:;:5h", "\x1b[?::::::::::::::::::::::::::::::::m",
-                                 "\x1b[?:\x1b[?:"}) {
+    for (std::string_view bad :
+         {"\x1b[?:", "\x1b[?:m", "\x1b[?:;:5h", "\x1b[?::::::::::::::::::::::::::::::::m", "\x1b[?:\x1b[?:"}) {
         Term t(10, 2);
         t.feed(std::string(bad) + "\x1b[31mA");
         const auto& s = t.t.screen();
@@ -1655,7 +1717,9 @@ TEST(Terminal, ResetClearsKeyboardStacksAndImagesOfBothScreens)
     // keeps it, so only the reset can clear it.
     t.feed("\x1b_Ga=t,i=9,f=24,s=1,v=1,q=2;AAAA\x1b\\");
     ASSERT_EQ(t.t.graphics().images().count(9), 1u);
-    t.feed("\x1b" "c");
+    t.feed(
+        "\x1b"
+        "c");
     t.host.written.clear();
     t.feed("\x1b[?u\x1b[?1049h\x1b[?u");
     EXPECT_TRUE(t.t.graphics().images().empty());
@@ -1710,7 +1774,9 @@ TEST(Terminal, ResetKeepsShellContexts)
     t.feed("\x1b]3008;start=a;type=shell\x1b\\");
     ASSERT_EQ(t.t.contexts().stack().size(), 1u);
     const int changes = t.host.contextChanges;
-    t.feed("\x1b" "c");
+    t.feed(
+        "\x1b"
+        "c");
     EXPECT_EQ(t.t.contexts().stack().size(), 1u);
     EXPECT_EQ(t.host.contextChanges, changes);
 }
@@ -1764,10 +1830,10 @@ TEST(Terminal, StyledTextCutsNoEscapeSequence)
         // Only the blank row after it left out: nothing is lost.
         EXPECT_EQ(truncated, limit < whole.size()) << limit;
         const std::string expected = limit == 0 ? ""
-            : limit < 11                         ? "a"
-            : limit == 11                        ? "a\x1b[0;31m\x1b[m"
-            : limit == 12                        ? "a\x1b[0;31mb\x1b[m"
-                                                 : whole;
+            : limit < 11                        ? "a"
+            : limit == 11                       ? "a\x1b[0;31m\x1b[m"
+            : limit == 12                       ? "a\x1b[0;31mb\x1b[m"
+                                                : whole;
         EXPECT_EQ(text, expected) << limit;
     }
     // A link: its end goes with the cut.
@@ -1810,7 +1876,8 @@ TEST(Terminal, TheHostSetsAndResetsColoursByName)
     Term t(10, 2);
     const auto named = [&t](std::string_view name) -> std::optional<Rgb> {
         for (const auto& color : t.t.namedColors())
-            if (color.name == name) return color.rgb;
+            if (color.name == name)
+                return color.rgb;
         ADD_FAILURE() << "no colour " << name;
         return std::nullopt;
     };
@@ -1819,21 +1886,24 @@ TEST(Terminal, TheHostSetsAndResetsColoursByName)
     const Rgb configured = *color1;
     ASSERT_EQ(t.t.namedColors().size(), 5u + 256u);
     EXPECT_FALSE(named("cursor"));
-    for (const auto& [name, rgb] : {std::pair{"background", Rgb{1, 2, 3}}, std::pair{"color1", Rgb{0xff, 0, 0x10}},
-                                    std::pair{"cursor", Rgb{9, 9, 9}}, std::pair{"selection_background", Rgb{4, 5, 6}}}) {
+    for (const auto& [name, rgb] :
+         {std::pair{"background", Rgb{1, 2, 3}}, std::pair{"color1", Rgb{0xff, 0, 0x10}},
+          std::pair{"cursor", Rgb{9, 9, 9}}, std::pair{"selection_background", Rgb{4, 5, 6}}}) {
         const auto osc = Terminal::colorOscOf(name, rgb);
         ASSERT_TRUE(osc) << name;
         EXPECT_TRUE(t.t.applyColorOsc(*osc)) << *osc;
         EXPECT_EQ(named(name), rgb) << name;
     }
     EXPECT_EQ(*Terminal::colorOscOf("color1", Rgb{0xff, 0, 0x10}), "4;1;#ff0010");
-    for (const char* bad : {"color256", "color01", "color-1", "colour1", "bg"}) EXPECT_FALSE(Terminal::colorOscOf(bad, Rgb{})) << bad;
+    for (const char* bad : {"color256", "color01", "color-1", "colour1", "bg"})
+        EXPECT_FALSE(Terminal::colorOscOf(bad, Rgb{})) << bad;
     // Only colours, and no query, which would answer the program.
     EXPECT_FALSE(t.t.applyColorOsc("4;1;?"));
     EXPECT_FALSE(t.t.applyColorOsc("52;c;aGk="));
     EXPECT_FALSE(t.t.applyColorOsc("0;title"));
     EXPECT_TRUE(t.host.written.empty());
-    for (const std::string& reset : Terminal::colorResetOscs()) EXPECT_TRUE(t.t.applyColorOsc(reset)) << reset;
+    for (const std::string& reset : Terminal::colorResetOscs())
+        EXPECT_TRUE(t.t.applyColorOsc(reset)) << reset;
     EXPECT_EQ(named("color1"), configured);
     EXPECT_FALSE(named("cursor"));
     EXPECT_FALSE(named("selection_background"));

@@ -43,7 +43,8 @@ struct Direction
 int nonblocking(int fd)
 {
     const int flags = ::fcntl(fd, F_GETFL);
-    if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) return -1;
+    if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
+        return -1;
     return flags;
 }
 
@@ -55,8 +56,10 @@ void fill(Direction& d)
     char buffer[65536];
     while (d.waiting.size() < MaxWaiting) {
         const ssize_t n = ::read(d.from, buffer, sizeof buffer);
-        if (n < 0 && errno == EINTR) continue;
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+            return;
         if (n <= 0) {
             d.ended = true;
             return;
@@ -70,8 +73,10 @@ bool drain(Direction& d)
 {
     while (!d.waiting.empty()) {
         const ssize_t n = ::write(d.to, d.waiting.data(), d.waiting.size());
-        if (n < 0 && errno == EINTR) continue;
-        if (n < 0) return errno == EAGAIN || errno == EWOULDBLOCK;
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n < 0)
+            return errno == EAGAIN || errno == EWOULDBLOCK;
         d.waiting.erase(0, std::size_t(n));
     }
     return true;
@@ -85,7 +90,8 @@ struct Standard
     std::array<int, 2> flags{-1, -1};
     void restore(int fd)
     {
-        if (flags[std::size_t(fd)] >= 0) ::fcntl(fd, F_SETFL, flags[std::size_t(fd)]);
+        if (flags[std::size_t(fd)] >= 0)
+            ::fcntl(fd, F_SETFL, flags[std::size_t(fd)]);
         flags[std::size_t(fd)] = -1;
     }
     ~Standard()
@@ -105,8 +111,8 @@ int bridge(int socket)
     for (const int fd : {0, 1}) {
         standard.flags[std::size_t(fd)] = nonblocking(fd);
         if (standard.flags[std::size_t(fd)] < 0) {
-            std::fprintf(stderr, "aglow-mux proxy: cannot make standard %s non-blocking: %s\n", fd == 0 ? "input" : "output",
-                         std::strerror(errno));
+            std::fprintf(stderr, "aglow-mux proxy: cannot make standard %s non-blocking: %s\n",
+                         fd == 0 ? "input" : "output", std::strerror(errno));
             return 1;
         }
     }
@@ -125,13 +131,16 @@ int bridge(int socket)
         // The reads of each direction while its buffer has room, and its
         // writes while it holds bytes.
         for (Direction& d : directions) {
-            if (!d.ended && d.waiting.size() < MaxWaiting) fds[count++] = {d.from, POLLIN, 0};
-            if (!d.waiting.empty()) fds[count++] = {d.to, POLLOUT, 0};
+            if (!d.ended && d.waiting.size() < MaxWaiting)
+                fds[count++] = {d.from, POLLIN, 0};
+            if (!d.waiting.empty())
+                fds[count++] = {d.to, POLLOUT, 0};
         }
         // Once the output ended, the daemon's close shows as a hangup: what
         // the client sends then goes nowhere.
         const nfds_t hangup = count;
-        if (outputEnded) fds[count++] = {socket, 0, 0};
+        if (outputEnded)
+            fds[count++] = {socket, 0, 0};
         // Each iteration that does not end the loop waits for something.
         if (::poll(fds.data(), count, -1) < 0 && errno != EINTR) {
             std::fprintf(stderr, "aglow-mux proxy: poll failed: %s\n", std::strerror(errno));
@@ -142,16 +151,19 @@ int bridge(int socket)
             input.waiting.clear();
             inputEnded = true;
         }
-        if (!input.ended) fill(input);
+        if (!input.ended)
+            fill(input);
         // A daemon that takes no more ends the input the same way.
         if (!inputEnded && !drain(input)) {
             input.ended = true;
             input.waiting.clear();
             inputEnded = true;
         }
-        if (!output.ended) fill(output);
+        if (!output.ended)
+            fill(output);
         // The client went: nothing reads what either end sends.
-        if (!drain(output)) return 0;
+        if (!drain(output))
+            return 0;
         if (!inputEnded && input.ended && input.waiting.empty()) {
             // Standard input ended and all of it went: the daemon hears the
             // end of the client's side.
@@ -170,7 +182,8 @@ int bridge(int socket)
             // the end restores it (Standard).
             if (!inputEnded) {
                 const int flags = ::fcntl(0, F_GETFL);
-                if (flags >= 0 && !(flags & O_NONBLOCK)) ::fcntl(0, F_SETFL, flags | O_NONBLOCK);
+                if (flags >= 0 && !(flags & O_NONBLOCK))
+                    ::fcntl(0, F_SETFL, flags | O_NONBLOCK);
             }
             ::shutdown(1, SHUT_WR);
             ::close(1);
@@ -185,7 +198,8 @@ std::string ownPath()
 {
     char path[PATH_MAX];
     const ssize_t n = ::readlink("/proc/self/exe", path, sizeof path - 1);
-    if (n <= 0) return {};
+    if (n <= 0)
+        return {};
     return std::string(path, std::size_t(n));
 }
 
@@ -214,7 +228,8 @@ int runProxy(bool start)
         reached = connectAny(sockets, &error);
     }
     if (!reached.connection) {
-        if (error.empty()) return ProxyNoDaemon;
+        if (error.empty())
+            return ProxyNoDaemon;
         std::fprintf(stderr, "aglow-mux proxy: %s\n", error.c_str());
         return 1;
     }

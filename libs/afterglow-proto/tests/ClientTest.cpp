@@ -62,7 +62,10 @@ struct TempDir
         }
         path = pattern;
     }
-    ~TempDir() { std::filesystem::remove_all(path); }
+    ~TempDir()
+    {
+        std::filesystem::remove_all(path);
+    }
     std::string write(const std::string& name, const std::string& bytes) const
     {
         const auto file = path / name;
@@ -97,7 +100,7 @@ std::vector<TransferFields> messages(const std::string& stream)
 
 std::string reply(const std::string& id, std::vector<std::pair<std::string, std::string>> fields)
 {
-    TransferFields f { { "id", id } };
+    TransferFields f{{"id", id}};
     for (auto& [key, value] : fields) {
         f[key] = value;
     }
@@ -124,13 +127,13 @@ TEST(Client, AWakeEndsAWriteThatASignalCutShort)
     ASSERT_GT(::fcntl(pipeFds[1], F_SETPIPE_SZ, 4096), 0);
     const auto room = std::size_t(::fcntl(pipeFds[1], F_GETPIPE_SZ));
     g_testWake = wakeFds[1];
-    struct sigaction action { };
+    struct sigaction action{};
     action.sa_handler = wakeOnSignal;
     sigemptyset(&action.sa_mask);
-    struct sigaction old { };
+    struct sigaction old{};
     ::sigaction(SIGUSR1, &action, &old);
     const pthread_t writer = ::pthread_self();
-    std::atomic<bool> done { false };
+    std::atomic<bool> done{false};
     std::thread helper([&] {
         // The pipe is full only while the writer is inside its write(2).
         int queued = 0;
@@ -144,8 +147,7 @@ TEST(Client, AWakeEndsAWriteThatASignalCutShort)
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         std::string sink(room * 2, '\0');
-        while (!done && ::read(pipeFds[0], sink.data(), sink.size()) > 0) {
-        }
+        while (!done && ::read(pipeFds[0], sink.data(), sink.size()) > 0) { }
     });
     const bool wrote = writeAll(pipeFds[1], std::string(room * 2, 'x'), wakeFds[0]);
     const int failure = errno;
@@ -154,7 +156,7 @@ TEST(Client, AWakeEndsAWriteThatASignalCutShort)
     helper.join();
     ::sigaction(SIGUSR1, &old, nullptr);
     g_testWake = -1;
-    for (const int fd : { pipeFds[0], wakeFds[0], wakeFds[1] }) {
+    for (const int fd : {pipeFds[0], wakeFds[0], wakeFds[1]}) {
         ::close(fd);
     }
     EXPECT_FALSE(wrote);
@@ -304,7 +306,10 @@ struct FakeTerminal
     std::vector<TransferFields> sent;
     bool finished = false;
 
-    void say(Pairs fields) { client.receive(reply(client.id(), std::move(fields))); }
+    void say(Pairs fields)
+    {
+        client.receive(reply(client.id(), std::move(fields)));
+    }
     // Data in packets of the size that the protocol allows, as a terminal sends it.
     void sendData(const std::string& fid, const std::string& data)
     {
@@ -312,7 +317,7 @@ struct FakeTerminal
         do {
             const auto take = std::min(data.size() - at, TransferMaxData);
             const bool last = at + take == data.size();
-            say({ { "ac", last ? "end_data" : "data" }, { "fid", fid }, { "d", data.substr(at, take) } });
+            say({{"ac", last ? "end_data" : "data"}, {"fid", fid}, {"d", data.substr(at, take)}});
             at += take;
         } while (at < data.size());
     }
@@ -327,33 +332,37 @@ struct FakeTerminal
             if (action == "receive" || action == "send") {
                 specs = action == "receive" ? std::stoul(m.at("sz")) : 0;
                 if (!specs) {
-                    say({ { "ac", "status" }, { "st", "OK" } });
+                    say({{"ac", "status"}, {"st", "OK"}});
                 }
             } else if (action == "cancel") {
-                say({ { "ac", "status" }, { "st", "CANCELED" } });
+                say({{"ac", "status"}, {"st", "CANCELED"}});
             } else if (action == "finish") {
                 finished = true;
             } else if (action == "file" && specs > 0) {
                 if (--specs == 0) {
-                    say({ { "ac", "status" }, { "st", "OK" } });
+                    say({{"ac", "status"}, {"st", "OK"}});
                     for (auto entry : listing) {
                         entry.emplace_back("ac", "file");
                         say(entry);
                     }
-                    say({ { "ac", "status" }, { "st", "OK" }, { "n", home } });
+                    say({{"ac", "status"}, {"st", "OK"}, {"n", home}});
                 }
             } else if (action == "file" && m.contains("ft")) {
                 const auto& name = m.at("n");
                 paths[m.at("fid")] = name;
-                Pairs answer { { "ac", "status" }, { "fid", m.at("fid") },
-                    { "st", refused.contains(name) ? "EPERM:refused" : m.at("ft") == "directory" ? "OK" : "STARTED" } };
+                Pairs answer{{"ac", "status"},
+                             {"fid", m.at("fid")},
+                             {"st",
+                              refused.contains(name)          ? "EPERM:refused"
+                                  : m.at("ft") == "directory" ? "OK"
+                                                              : "STARTED"}};
                 if (started.contains(name)) {
                     answer.emplace_back("tt", started.at(name));
                 }
                 say(answer);
             } else if (action == "end_data" && paths.contains(m.at("fid"))) {
                 if (!silent.contains(paths.at(m.at("fid")))) {
-                    say({ { "ac", "status" }, { "fid", m.at("fid") }, { "st", "OK" } });
+                    say({{"ac", "status"}, {"fid", m.at("fid")}, {"st", "OK"}});
                 }
             } else if (action == "file" && answerRequests) {
                 sendData(m.at("fid"), contents.contains(m.at("n")) ? contents.at(m.at("n")) : std::string());
@@ -377,7 +386,7 @@ TEST(Client, SenderAsksFirstWithThePasswordHash)
     auto options = optionsIn(dir);
     options.password = "secret";
     std::string error;
-    auto sender = makeTransferSender(options, { "file", "/remote/dest" }, error);
+    auto sender = makeTransferSender(options, {"file", "/remote/dest"}, error);
     ASSERT_TRUE(sender) << error;
     std::string out;
     sender->pull(out, 65536);
@@ -393,7 +402,7 @@ std::map<std::string, TransferFields> announced(TransferClient& sender)
 {
     std::string out;
     sender.pull(out, 65536);
-    sender.receive(reply(sender.id(), { { "ac", "status" }, { "st", "OK" } }));
+    sender.receive(reply(sender.id(), {{"ac", "status"}, {"st", "OK"}}));
     out.clear();
     sender.pull(out, 1 << 20);
     std::map<std::string, TransferFields> byName;
@@ -413,7 +422,7 @@ TEST(Client, SenderMapsATreeAsKittenDoes)
     ASSERT_EQ(::symlink("a.txt", (dir.path / "tree/link").c_str()), 0);
     ASSERT_EQ(::link((dir.path / "tree/a.txt").c_str(), (dir.path / "tree/hard").c_str()), 0);
     std::string error;
-    auto sender = makeTransferSender(optionsIn(dir), { "tree", "/dest/" }, error);
+    auto sender = makeTransferSender(optionsIn(dir), {"tree", "/dest/"}, error);
     ASSERT_TRUE(sender) << error;
     const auto byName = announced(*sender);
     ASSERT_EQ(byName.size(), 6u);
@@ -433,7 +442,7 @@ TEST(Client, ADirectorySentToAPathWithoutASlashBecomesThatPath)
     TempDir dir;
     dir.write("tree/a", "a");
     std::string error;
-    auto sender = makeTransferSender(optionsIn(dir), { "tree", "/dest" }, error);
+    auto sender = makeTransferSender(optionsIn(dir), {"tree", "/dest"}, error);
     ASSERT_TRUE(sender) << error;
     const auto byName = announced(*sender);
     // As cp -r: the children go into the directory's own path.
@@ -449,7 +458,7 @@ TEST(Client, AMirrorOfTheHomeDirectoryGoesToTheOtherHome)
     auto options = optionsIn(dir);
     options.mode = TransferClientOptions::Mode::Mirror;
     std::string error;
-    auto sender = makeTransferSender(options, { "~" }, error);
+    auto sender = makeTransferSender(options, {"~"}, error);
     ASSERT_TRUE(sender) << error;
     const auto byName = announced(*sender);
     EXPECT_TRUE(byName.contains("~"));
@@ -459,7 +468,7 @@ TEST(Client, AMirrorOfTheHomeDirectoryGoesToTheOtherHome)
 TEST(Client, CompressionSkipsCompressedFormats)
 {
     TempDir dir;
-    for (const char* name : { "notes.txt", "Makefile", "photo.JPG", "archive.tar.gz", "song.flac" }) {
+    for (const char* name : {"notes.txt", "Makefile", "photo.JPG", "archive.tar.gz", "song.flac"}) {
         dir.write(std::string("files/") + name, std::string(5000, 'a'));
     }
     dir.write("files/small.txt", "small");
@@ -468,7 +477,7 @@ TEST(Client, CompressionSkipsCompressedFormats)
         auto options = optionsIn(dir);
         options.compress = strategy;
         std::string error;
-        auto sender = makeTransferSender(options, { "files", "/d/" }, error);
+        auto sender = makeTransferSender(options, {"files", "/d/"}, error);
         std::set<std::string> out;
         for (const auto& [name, m] : announced(*sender)) {
             if (m.contains("zip")) {
@@ -477,9 +486,10 @@ TEST(Client, CompressionSkipsCompressedFormats)
         }
         return out;
     };
-    EXPECT_EQ(zipped(C::Auto), (std::set<std::string> { "Makefile", "notes.txt" }));
+    EXPECT_EQ(zipped(C::Auto), (std::set<std::string>{"Makefile", "notes.txt"}));
     // A small file goes whole under every strategy.
-    EXPECT_EQ(zipped(C::Always), (std::set<std::string> { "Makefile", "archive.tar.gz", "notes.txt", "photo.JPG", "song.flac" }));
+    EXPECT_EQ(zipped(C::Always),
+              (std::set<std::string>{"Makefile", "archive.tar.gz", "notes.txt", "photo.JPG", "song.flac"}));
     EXPECT_TRUE(zipped(C::Never).empty());
 }
 
@@ -488,19 +498,19 @@ TEST(Client, EmptyPathsAndRelativeDirectoriesAreRefused)
     TempDir dir;
     dir.write("file", "x");
     std::string error;
-    EXPECT_FALSE(makeTransferSender(optionsIn(dir), { "file", "" }, error));
-    EXPECT_FALSE(makeTransferSender(optionsIn(dir), { "", "/dest" }, error));
-    EXPECT_FALSE(makeTransferReceiver(optionsIn(dir), { "/r/a", "" }, error));
+    EXPECT_FALSE(makeTransferSender(optionsIn(dir), {"file", ""}, error));
+    EXPECT_FALSE(makeTransferSender(optionsIn(dir), {"", "/dest"}, error));
+    EXPECT_FALSE(makeTransferReceiver(optionsIn(dir), {"/r/a", ""}, error));
     auto options = optionsIn(dir);
     options.home = "relative";
-    EXPECT_FALSE(makeTransferReceiver(options, { "/r/a", "x" }, error));
+    EXPECT_FALSE(makeTransferReceiver(options, {"/r/a", "x"}, error));
 }
 
 TEST(Client, ReceiverListsItsSpecsAfterTheStart)
 {
     TempDir dir;
     std::string error;
-    auto receiver = makeTransferReceiver(optionsIn(dir), { "/remote/a", "~/b", "local" }, error);
+    auto receiver = makeTransferReceiver(optionsIn(dir), {"/remote/a", "~/b", "local"}, error);
     ASSERT_TRUE(receiver) << error;
     std::string out;
     receiver->pull(out, 65536);
@@ -511,7 +521,7 @@ TEST(Client, ReceiverListsItsSpecsAfterTheStart)
     EXPECT_EQ(sent[1].at("n"), "/remote/a");
     EXPECT_EQ(sent[1].at("fid"), "0");
     EXPECT_EQ(sent[2].at("n"), "~/b");
-    receiver->receive(reply(receiver->id(), { { "ac", "status" }, { "st", "EPERM:refused" } }));
+    receiver->receive(reply(receiver->id(), {{"ac", "status"}, {"st", "EPERM:refused"}}));
     EXPECT_EQ(receiver->state(), TransferClient::State::Failed);
 }
 
@@ -520,7 +530,7 @@ TEST(Client, CancelWaitsForTheTerminal)
     TempDir dir;
     dir.write("file", "data");
     std::string error;
-    auto sender = makeTransferSender(optionsIn(dir), { "file", "dest" }, error);
+    auto sender = makeTransferSender(optionsIn(dir), {"file", "dest"}, error);
     ASSERT_TRUE(sender);
     sender->cancel();
     std::string out;
@@ -529,9 +539,9 @@ TEST(Client, CancelWaitsForTheTerminal)
     EXPECT_EQ(sender->state(), TransferClient::State::Canceling);
     EXPECT_FALSE(sender->over());
     // A file's CANCELED is not the session's.
-    sender->receive(reply(sender->id(), { { "ac", "status" }, { "fid", "1" }, { "st", "CANCELED" } }));
+    sender->receive(reply(sender->id(), {{"ac", "status"}, {"fid", "1"}, {"st", "CANCELED"}}));
     EXPECT_FALSE(sender->over());
-    sender->receive(reply(sender->id(), { { "ac", "status" }, { "st", "CANCELED" } }));
+    sender->receive(reply(sender->id(), {{"ac", "status"}, {"st", "CANCELED"}}));
     EXPECT_TRUE(sender->over());
 }
 
@@ -540,13 +550,13 @@ TEST(Client, ACanceledAfterTheFinishLeavesTheSessionDone)
     TempDir dir;
     dir.write("file", "data");
     std::string error;
-    auto sender = makeTransferSender(optionsIn(dir), { "file", "/dest" }, error);
+    auto sender = makeTransferSender(optionsIn(dir), {"file", "/dest"}, error);
     ASSERT_TRUE(sender) << error;
-    FakeTerminal terminal { *sender, "/home/r" };
+    FakeTerminal terminal{*sender, "/home/r"};
     terminal.run();
     ASSERT_EQ(sender->state(), TransferClient::State::Done) << sender->error();
     EXPECT_TRUE(terminal.finished);
-    sender->receive(reply(sender->id(), { { "ac", "status" }, { "st", "CANCELED" } }));
+    sender->receive(reply(sender->id(), {{"ac", "status"}, {"st", "CANCELED"}}));
     EXPECT_EQ(sender->state(), TransferClient::State::Done);
 }
 
@@ -556,12 +566,12 @@ TEST(Client, SenderFinishesWhenTheTargetOfALinkFails)
     dir.write("tree/b", "target");
     ASSERT_EQ(::symlink("b", (dir.path / "tree/a").c_str()), 0);
     std::string error;
-    auto sender = makeTransferSender(optionsIn(dir), { "tree", "/d/" }, error);
+    auto sender = makeTransferSender(optionsIn(dir), {"tree", "/d/"}, error);
     ASSERT_TRUE(sender) << error;
-    FakeTerminal terminal { *sender, "/home/r" };
+    FakeTerminal terminal{*sender, "/home/r"};
     // Afterglow holds a link whose target it never got, without an answer.
-    terminal.refused = { "/d/tree/b" };
-    terminal.silent = { "/d/tree/a" };
+    terminal.refused = {"/d/tree/b"};
+    terminal.silent = {"/d/tree/a"};
     terminal.run();
     EXPECT_EQ(sender->state(), TransferClient::State::Done) << sender->error();
     EXPECT_TRUE(terminal.finished);
@@ -582,9 +592,9 @@ TEST(Client, ALinkWaitsForTheMetadataOfItsTarget)
     // "a" sorts first, its target last: 40 files wait for the cap on open files between them.
     ASSERT_EQ(::symlink("z", (dir.path / "tree/a").c_str()), 0);
     std::string error;
-    auto sender = makeTransferSender(optionsIn(dir), { "tree", "/d/" }, error);
+    auto sender = makeTransferSender(optionsIn(dir), {"tree", "/d/"}, error);
     ASSERT_TRUE(sender) << error;
-    FakeTerminal terminal { *sender, "/home/r" };
+    FakeTerminal terminal{*sender, "/home/r"};
     terminal.run();
     ASSERT_EQ(sender->state(), TransferClient::State::Done) << sender->error();
     std::string linkFid;
@@ -620,17 +630,21 @@ TEST(Client, AHeldDeltaUploadDoesNotHoldBackTheFilesAfterIt)
     auto options = optionsIn(dir);
     options.deltas = true;
     std::string error;
-    auto sender = makeTransferSender(options, { "tree", "/d/" }, error);
+    auto sender = makeTransferSender(options, {"tree", "/d/"}, error);
     ASSERT_TRUE(sender) << error;
     const auto byName = announced(*sender);
     EXPECT_TRUE(byName.contains("/d/tree/z"));
     EXPECT_FALSE(byName.contains("/d/tree/d132"));
-    EXPECT_EQ(std::count_if(byName.begin(), byName.end(), [](const auto& entry) { return entry.second.contains("tt"); }), 32);
+    EXPECT_EQ(std::count_if(byName.begin(), byName.end(),
+                            [](const auto& entry) {
+                                return entry.second.contains("tt");
+                            }),
+              32);
 
     // The held delta upload is named when one finishes, and the session ends.
-    auto again = makeTransferSender(options, { "tree", "/d/" }, error);
+    auto again = makeTransferSender(options, {"tree", "/d/"}, error);
     ASSERT_TRUE(again) << error;
-    FakeTerminal terminal { *again, "/home/r" };
+    FakeTerminal terminal{*again, "/home/r"};
     terminal.run();
     ASSERT_EQ(again->state(), TransferClient::State::Done) << again->error();
     std::map<std::string, int> named;
@@ -640,7 +654,9 @@ TEST(Client, AHeldDeltaUploadDoesNotHoldBackTheFilesAfterIt)
         }
     }
     EXPECT_EQ(named.size(), 35u);
-    EXPECT_TRUE(std::all_of(named.begin(), named.end(), [](const auto& entry) { return entry.second == 1; }));
+    EXPECT_TRUE(std::all_of(named.begin(), named.end(), [](const auto& entry) {
+        return entry.second == 1;
+    }));
 }
 
 TEST(Client, AFileThatShrankAfterTheScanFails)
@@ -648,10 +664,10 @@ TEST(Client, AFileThatShrankAfterTheScanFails)
     TempDir dir;
     const auto path = dir.write("file", noise(10000, 9));
     std::string error;
-    auto sender = makeTransferSender(optionsIn(dir), { "file", "/d/file" }, error);
+    auto sender = makeTransferSender(optionsIn(dir), {"file", "/d/file"}, error);
     ASSERT_TRUE(sender) << error;
     std::filesystem::resize_file(path, 100);
-    FakeTerminal terminal { *sender, "/home/r" };
+    FakeTerminal terminal{*sender, "/home/r"};
     terminal.run();
     ASSERT_EQ(sender->items().size(), 1u);
     EXPECT_NE(sender->items()[0].error.find("shrank"), std::string::npos) << sender->items()[0].error;
@@ -665,17 +681,18 @@ TEST(Client, ADeltaOfAnUnchangedFileReadsInSteps)
     auto options = optionsIn(dir);
     options.deltas = true;
     std::string error;
-    auto sender = makeTransferSender(options, { "big", "/d/big" }, error);
+    auto sender = makeTransferSender(options, {"big", "/d/big"}, error);
     ASSERT_TRUE(sender) << error;
     const auto byName = announced(*sender);
     ASSERT_EQ(byName.at("/d/big").at("tt"), "rsync");
     const auto fid = byName.at("/d/big").at("fid");
-    sender->receive(reply(sender->id(), { { "ac", "status" }, { "fid", fid }, { "st", "STARTED" }, { "tt", "rsync" } }));
+    sender->receive(reply(sender->id(), {{"ac", "status"}, {"fid", fid}, {"st", "STARTED"}, {"tt", "rsync"}}));
     const auto signature = makeSignature(bytes);
     for (std::size_t at = 0; at < signature.size(); at += TransferMaxData) {
         const bool last = at + TransferMaxData >= signature.size();
-        sender->receive(reply(sender->id(), { { "ac", last ? "end_data" : "data" }, { "fid", fid },
-            { "d", signature.substr(at, TransferMaxData) } }));
+        sender->receive(
+            reply(sender->id(),
+                  {{"ac", last ? "end_data" : "data"}, {"fid", fid}, {"d", signature.substr(at, TransferMaxData)}}));
     }
     // The delta is a few copy operations: the output budget would not stop the reads.
     std::string out;
@@ -705,16 +722,16 @@ TEST(Client, TheSignaturesOfASessionStopAtTheirMemory)
     options.deltas = true;
     options.signatureMemory = 6000;
     std::string error;
-    auto sender = makeTransferSender(options, { "a", "b", "/d/" }, error);
+    auto sender = makeTransferSender(options, {"a", "b", "/d/"}, error);
     ASSERT_TRUE(sender) << error;
     const auto byName = announced(*sender);
     const std::string part(TransferMaxData, 's');
-    for (const auto* name : { "/d/a", "/d/b" }) {
+    for (const auto* name : {"/d/a", "/d/b"}) {
         ASSERT_EQ(byName.at(name).at("tt"), "rsync");
         const auto fid = byName.at(name).at("fid");
-        sender->receive(reply(sender->id(), { { "ac", "status" }, { "fid", fid }, { "st", "STARTED" }, { "tt", "rsync" } }));
+        sender->receive(reply(sender->id(), {{"ac", "status"}, {"fid", fid}, {"st", "STARTED"}, {"tt", "rsync"}}));
         EXPECT_EQ(sender->state(), TransferClient::State::Running);
-        sender->receive(reply(sender->id(), { { "ac", "data" }, { "fid", fid }, { "d", part } }));
+        sender->receive(reply(sender->id(), {{"ac", "data"}, {"fid", fid}, {"d", part}}));
     }
     EXPECT_EQ(sender->state(), TransferClient::State::Canceling);
     EXPECT_EQ(sender->error(), "The terminal sent more signatures than this side can hold");
@@ -730,23 +747,26 @@ TEST(Client, AReceiverSignsALargeFileInSteps)
     auto options = optionsIn(dir);
     options.deltas = true;
     std::string error;
-    auto client = makeTransferReceiver(options, { "/r/f", (dir.path / "f").string() }, error);
+    auto client = makeTransferReceiver(options, {"/r/f", (dir.path / "f").string()}, error);
     ASSERT_TRUE(client) << error;
-    FakeTerminal terminal { *client, "/home/r" };
-    terminal.listing = { { { "fid", "0" }, { "n", "/r/f" }, { "st", "1" }, { "sz", std::to_string(size) } } };
+    FakeTerminal terminal{*client, "/home/r"};
+    terminal.listing = {{{"fid", "0"}, {"n", "/r/f"}, {"st", "1"}, {"sz", std::to_string(size)}}};
     terminal.answerRequests = false;
     const auto sentSince = [&](std::size_t from, const std::string& action) {
         return std::any_of(terminal.sent.begin() + std::ptrdiff_t(from), terminal.sent.end(),
-                           [&](const TransferFields& m) { return m.at("ac") == action; });
+                           [&](const TransferFields& m) {
+                               return m.at("ac") == action;
+                           });
     };
     std::size_t from = 0;
     bool requested = false;
     for (int round = 0; round < 20 && !requested; ++round) {
         from = terminal.sent.size();
         terminal.step();
-        requested = std::any_of(terminal.sent.begin() + std::ptrdiff_t(from), terminal.sent.end(), [](const TransferFields& m) {
-            return m.at("ac") == "file" && m.contains("tt") && m.at("tt") == "rsync";
-        });
+        requested =
+            std::any_of(terminal.sent.begin() + std::ptrdiff_t(from), terminal.sent.end(), [](const TransferFields& m) {
+                return m.at("ac") == "file" && m.contains("tt") && m.at("tt") == "rsync";
+            });
     }
     ASSERT_TRUE(requested);
     EXPECT_TRUE(client->hasWork());
@@ -797,10 +817,10 @@ void receiveLargeDelta(TransferClientOptions::Compress compress, bool cancel)
     options.deltas = true;
     options.compress = compress;
     std::string error;
-    auto client = makeTransferReceiver(options, { "/r/f", path }, error);
+    auto client = makeTransferReceiver(options, {"/r/f", path}, error);
     ASSERT_TRUE(client) << error;
-    FakeTerminal terminal { *client, "/home/r" };
-    terminal.listing = { { { "fid", "0" }, { "n", "/r/f" }, { "st", "1" }, { "sz", std::to_string(changed.size()) } } };
+    FakeTerminal terminal{*client, "/home/r"};
+    terminal.listing = {{{"fid", "0"}, {"n", "/r/f"}, {"st", "1"}, {"sz", std::to_string(changed.size())}}};
     terminal.answerRequests = false;
     // The request, then the signature in steps.
     std::string fid;
@@ -832,7 +852,8 @@ void receiveLargeDelta(TransferClientOptions::Compress compress, bool cancel)
         EXPECT_TRUE(readFile(path) == basis);
         client.reset();
         // No temporary file is left next to the destination.
-        EXPECT_EQ(std::distance(std::filesystem::directory_iterator(dir.path), std::filesystem::directory_iterator()), 1);
+        EXPECT_EQ(std::distance(std::filesystem::directory_iterator(dir.path), std::filesystem::directory_iterator()),
+                  1);
         return;
     }
     int pulls = 0;
@@ -875,8 +896,12 @@ struct Hostile : testing::Test
         std::filesystem::create_directories(victim);
         ::chmod(victim.c_str(), 0700);
     }
-    void TearDown() override { ::umask(savedMask); }
-    std::unique_ptr<TransferClient> receiver(std::vector<std::string> args, TransferClientOptions::Mode mode = TransferClientOptions::Mode::Normal,
+    void TearDown() override
+    {
+        ::umask(savedMask);
+    }
+    std::unique_ptr<TransferClient> receiver(std::vector<std::string> args,
+                                             TransferClientOptions::Mode mode = TransferClientOptions::Mode::Normal,
                                              TransferClientOptions options = {})
     {
         if (options.home.empty()) {
@@ -893,7 +918,7 @@ struct Hostile : testing::Test
     }
     bool victimTouched() const
     {
-        struct stat st { };
+        struct stat st{};
         return ::stat(victim.c_str(), &st) != 0 || (st.st_mode & 07777) != 0700
             || std::filesystem::directory_iterator(victim) != std::filesystem::directory_iterator();
     }
@@ -903,7 +928,7 @@ struct Hostile : testing::Test
     }
     static mode_t modeOf(const std::filesystem::path& path)
     {
-        struct stat st { };
+        struct stat st{};
         return ::lstat(path.c_str(), &st) == 0 ? st.st_mode & 07777 : mode_t(~0u);
     }
 };
@@ -913,15 +938,15 @@ TEST_F(Hostile, AnEntryUnderASymlinkOfTheSameTransferIsRefused)
     // A link x to the victim, then a hard link x/k: written through x, it
     // would land in the victim's directory. x is not a directory of the
     // listing, so x/k has no parent to go in.
-    auto client = receiver({ "/r/tree", (dir.path / "dest").string() + "/" });
-    FakeTerminal terminal { *client, "/home/r" };
+    auto client = receiver({"/r/tree", (dir.path / "dest").string() + "/"});
+    FakeTerminal terminal{*client, "/home/r"};
     terminal.listing = {
-        { { "fid", "0" }, { "n", "/r/tree" }, { "st", "1" }, { "ft", "directory" } },
-        { { "fid", "0" }, { "n", "/r/tree/a" }, { "st", "2" }, { "pr", "1" }, { "sz", "5" } },
-        { { "fid", "0" }, { "n", "/r/tree/x" }, { "st", "3" }, { "pr", "1" }, { "ft", "symlink" } },
-        { { "fid", "0" }, { "n", "/r/tree/x/k" }, { "st", "4" }, { "pr", "3" }, { "ft", "link" }, { "d", "2" } },
+        {{"fid", "0"}, {"n", "/r/tree"}, {"st", "1"}, {"ft", "directory"}},
+        {{"fid", "0"}, {"n", "/r/tree/a"}, {"st", "2"}, {"pr", "1"}, {"sz", "5"}},
+        {{"fid", "0"}, {"n", "/r/tree/x"}, {"st", "3"}, {"pr", "1"}, {"ft", "symlink"}},
+        {{"fid", "0"}, {"n", "/r/tree/x/k"}, {"st", "4"}, {"pr", "3"}, {"ft", "link"}, {"d", "2"}},
     };
-    terminal.contents = { { "/r/tree/a", "hello" }, { "/r/tree/x", victim } };
+    terminal.contents = {{"/r/tree/a", "hello"}, {"/r/tree/x", victim}};
     terminal.run();
     EXPECT_TRUE(ended(*client));
     EXPECT_FALSE(victimTouched());
@@ -930,14 +955,14 @@ TEST_F(Hostile, AnEntryUnderASymlinkOfTheSameTransferIsRefused)
 TEST_F(Hostile, AHardLinkToASymlinkIsRefused)
 {
     // A second name for the link x would let a later write through it reach the victim.
-    auto client = receiver({ "/r/tree", (dir.path / "dest").string() + "/" });
-    FakeTerminal terminal { *client, "/home/r" };
+    auto client = receiver({"/r/tree", (dir.path / "dest").string() + "/"});
+    FakeTerminal terminal{*client, "/home/r"};
     terminal.listing = {
-        { { "fid", "0" }, { "n", "/r/tree" }, { "st", "1" }, { "ft", "directory" } },
-        { { "fid", "0" }, { "n", "/r/tree/x" }, { "st", "2" }, { "pr", "1" }, { "ft", "symlink" } },
-        { { "fid", "0" }, { "n", "/r/tree/k" }, { "st", "3" }, { "pr", "1" }, { "ft", "link" }, { "d", "2" } },
+        {{"fid", "0"}, {"n", "/r/tree"}, {"st", "1"}, {"ft", "directory"}},
+        {{"fid", "0"}, {"n", "/r/tree/x"}, {"st", "2"}, {"pr", "1"}, {"ft", "symlink"}},
+        {{"fid", "0"}, {"n", "/r/tree/k"}, {"st", "3"}, {"pr", "1"}, {"ft", "link"}, {"d", "2"}},
     };
-    terminal.contents = { { "/r/tree/x", victim } };
+    terminal.contents = {{"/r/tree/x", victim}};
     terminal.run();
     EXPECT_EQ(client->state(), TransferClient::State::Done) << client->error();
     ASSERT_EQ(client->items().size(), 3u);
@@ -949,14 +974,14 @@ TEST_F(Hostile, AHardLinkToASymlinkIsRefused)
 TEST_F(Hostile, ADuplicateNameCannotChangeTheModeThroughALink)
 {
     // A link s to the victim, then a directory s with mode 0777.
-    auto client = receiver({ "/r/tree", (dir.path / "dest").string() + "/" });
-    FakeTerminal terminal { *client, "/home/r" };
+    auto client = receiver({"/r/tree", (dir.path / "dest").string() + "/"});
+    FakeTerminal terminal{*client, "/home/r"};
     terminal.listing = {
-        { { "fid", "0" }, { "n", "/r/tree" }, { "st", "1" }, { "ft", "directory" } },
-        { { "fid", "0" }, { "n", "/r/tree/s" }, { "st", "2" }, { "pr", "1" }, { "ft", "symlink" } },
-        { { "fid", "0" }, { "n", "/r/tree/s" }, { "st", "3" }, { "pr", "1" }, { "ft", "directory" }, { "prm", "511" } },
+        {{"fid", "0"}, {"n", "/r/tree"}, {"st", "1"}, {"ft", "directory"}},
+        {{"fid", "0"}, {"n", "/r/tree/s"}, {"st", "2"}, {"pr", "1"}, {"ft", "symlink"}},
+        {{"fid", "0"}, {"n", "/r/tree/s"}, {"st", "3"}, {"pr", "1"}, {"ft", "directory"}, {"prm", "511"}},
     };
-    terminal.contents = { { "/r/tree/s", victim } };
+    terminal.contents = {{"/r/tree/s", victim}};
     terminal.run();
     EXPECT_TRUE(ended(*client));
     EXPECT_FALSE(victimTouched());
@@ -967,13 +992,13 @@ TEST_F(Hostile, AFileUnderALinkThatWasThereBeforeIsNotWrittenThroughIt)
     const auto dest = dir.path / "dest";
     std::filesystem::create_directories(dest);
     std::filesystem::create_directory_symlink(victim, dest / "tree");
-    auto client = receiver({ "/r/tree", dest.string() + "/" });
-    FakeTerminal terminal { *client, "/home/r" };
+    auto client = receiver({"/r/tree", dest.string() + "/"});
+    FakeTerminal terminal{*client, "/home/r"};
     terminal.listing = {
-        { { "fid", "0" }, { "n", "/r/tree" }, { "st", "1" }, { "ft", "directory" } },
-        { { "fid", "0" }, { "n", "/r/tree/f" }, { "st", "2" }, { "pr", "1" }, { "sz", "3" } },
+        {{"fid", "0"}, {"n", "/r/tree"}, {"st", "1"}, {"ft", "directory"}},
+        {{"fid", "0"}, {"n", "/r/tree/f"}, {"st", "2"}, {"pr", "1"}, {"sz", "3"}},
     };
-    terminal.contents = { { "/r/tree/f", "bad" } };
+    terminal.contents = {{"/r/tree/f", "bad"}};
     terminal.run();
     EXPECT_FALSE(victimTouched());
     ASSERT_EQ(client->items().size(), 2u);
@@ -984,12 +1009,12 @@ TEST_F(Hostile, TheRootMustBeTheSourceThatWasAskedFor)
 {
     // Received into a directory, the root's name would name the file here: .bashrc, .ssh.
     const auto dest = dir.path / "dest";
-    auto client = receiver({ "/r/tree", dest.string() + "/" });
-    FakeTerminal terminal { *client, "/home/r" };
+    auto client = receiver({"/r/tree", dest.string() + "/"});
+    FakeTerminal terminal{*client, "/home/r"};
     terminal.listing = {
-        { { "fid", "0" }, { "n", "/r/.bashrc" }, { "st", "1" }, { "sz", "3" } },
+        {{"fid", "0"}, {"n", "/r/.bashrc"}, {"st", "1"}, {"sz", "3"}},
     };
-    terminal.contents = { { "/r/.bashrc", "bad" } };
+    terminal.contents = {{"/r/.bashrc", "bad"}};
     terminal.run();
     EXPECT_TRUE(ended(*client));
     EXPECT_FALSE(std::filesystem::exists(dest / ".bashrc"));
@@ -999,13 +1024,13 @@ TEST_F(Hostile, TheRootMustBeTheSourceThatWasAskedFor)
 TEST_F(Hostile, MirrorModeWritesOnlyThePathsThatWereAskedFor)
 {
     const auto asked = (dir.path / "asked").string();
-    auto client = receiver({ asked }, TransferClientOptions::Mode::Mirror);
-    FakeTerminal terminal { *client, "/home/r" };
+    auto client = receiver({asked}, TransferClientOptions::Mode::Mirror);
+    FakeTerminal terminal{*client, "/home/r"};
     terminal.listing = {
-        { { "fid", "0" }, { "n", victim }, { "st", "1" }, { "ft", "directory" } },
-        { { "fid", "0" }, { "n", victim + "/planted" }, { "st", "2" }, { "pr", "1" }, { "sz", "3" } },
+        {{"fid", "0"}, {"n", victim}, {"st", "1"}, {"ft", "directory"}},
+        {{"fid", "0"}, {"n", victim + "/planted"}, {"st", "2"}, {"pr", "1"}, {"sz", "3"}},
     };
-    terminal.contents = { { victim + "/planted", "bad" } };
+    terminal.contents = {{victim + "/planted", "bad"}};
     terminal.run();
     EXPECT_TRUE(ended(*client));
     EXPECT_FALSE(victimTouched());
@@ -1017,10 +1042,10 @@ TEST_F(Hostile, AnAbsoluteMirrorPathIgnoresTheRemoteHome)
     // here, the file would replace dir/f (as ~/.bashrc).
     const auto remoteHome = (dir.path / "remote").string();
     const auto asked = remoteHome + "/f";
-    auto client = receiver({ asked }, TransferClientOptions::Mode::Mirror);
-    FakeTerminal terminal { *client, remoteHome };
-    terminal.listing = { { { "fid", "0" }, { "n", asked }, { "st", "1" }, { "sz", "2" } } };
-    terminal.contents = { { asked, "ok" } };
+    auto client = receiver({asked}, TransferClientOptions::Mode::Mirror);
+    FakeTerminal terminal{*client, remoteHome};
+    terminal.listing = {{{"fid", "0"}, {"n", asked}, {"st", "1"}, {"sz", "2"}}};
+    terminal.contents = {{asked, "ok"}};
     terminal.run();
     EXPECT_EQ(client->state(), TransferClient::State::Done) << client->error();
     EXPECT_FALSE(std::filesystem::exists(dir.path / "f"));
@@ -1033,13 +1058,13 @@ TEST_F(Hostile, AHomeMirrorPathGoesUnderTheLocalHome)
     // would be the local path.
     const auto remoteHome = (dir.path / "rhome").string();
     const auto other = (dir.path / "abs/g").string();
-    auto client = receiver({ "~/f", other }, TransferClientOptions::Mode::Mirror);
-    FakeTerminal terminal { *client, remoteHome };
+    auto client = receiver({"~/f", other}, TransferClientOptions::Mode::Mirror);
+    FakeTerminal terminal{*client, remoteHome};
     terminal.listing = {
-        { { "fid", "0" }, { "n", remoteHome + "/f" }, { "st", "1" }, { "sz", "1" } },
-        { { "fid", "1" }, { "n", other }, { "st", "2" }, { "sz", "1" } },
+        {{"fid", "0"}, {"n", remoteHome + "/f"}, {"st", "1"}, {"sz", "1"}},
+        {{"fid", "1"}, {"n", other}, {"st", "2"}, {"sz", "1"}},
     };
-    terminal.contents = { { remoteHome + "/f", "f" }, { other, "g" } };
+    terminal.contents = {{remoteHome + "/f", "f"}, {other, "g"}};
     terminal.run();
     EXPECT_EQ(client->state(), TransferClient::State::Done) << client->error();
     EXPECT_FALSE(std::filesystem::exists(remoteHome + "/f"));
@@ -1054,14 +1079,14 @@ TEST_F(Hostile, ADirectoryThatWasThereBeforeKeepsItsMode)
     options.home = (dir.path / "home").string();
     std::filesystem::create_directories(options.home);
     ::chmod(options.home.c_str(), 0700);
-    auto client = receiver({ "~" }, TransferClientOptions::Mode::Mirror, options);
-    FakeTerminal terminal { *client, "/home/r" };
+    auto client = receiver({"~"}, TransferClientOptions::Mode::Mirror, options);
+    FakeTerminal terminal{*client, "/home/r"};
     terminal.listing = {
-        { { "fid", "0" }, { "n", "/home/r" }, { "st", "1" }, { "ft", "directory" }, { "prm", "511" } },
-        { { "fid", "0" }, { "n", "/home/r/sub" }, { "st", "2" }, { "pr", "1" }, { "ft", "directory" }, { "prm", "511" } },
-        { { "fid", "0" }, { "n", "/home/r/f" }, { "st", "3" }, { "pr", "1" }, { "sz", "1" } },
+        {{"fid", "0"}, {"n", "/home/r"}, {"st", "1"}, {"ft", "directory"}, {"prm", "511"}},
+        {{"fid", "0"}, {"n", "/home/r/sub"}, {"st", "2"}, {"pr", "1"}, {"ft", "directory"}, {"prm", "511"}},
+        {{"fid", "0"}, {"n", "/home/r/f"}, {"st", "3"}, {"pr", "1"}, {"sz", "1"}},
     };
-    terminal.contents = { { "/home/r/f", "f" } };
+    terminal.contents = {{"/home/r/f", "f"}};
     terminal.run();
     EXPECT_EQ(client->state(), TransferClient::State::Done) << client->error();
     EXPECT_EQ(modeOf(options.home), 0700u);
@@ -1072,11 +1097,11 @@ TEST_F(Hostile, ADirectoryThatWasThereBeforeKeepsItsMode)
 
 TEST_F(Hostile, OverlappingMirrorSourcesAreRefused)
 {
-    auto client = receiver({ "/r/a", "/r/a/b" }, TransferClientOptions::Mode::Mirror);
-    FakeTerminal terminal { *client, "/home/r" };
+    auto client = receiver({"/r/a", "/r/a/b"}, TransferClientOptions::Mode::Mirror);
+    FakeTerminal terminal{*client, "/home/r"};
     terminal.listing = {
-        { { "fid", "0" }, { "n", "/r/a" }, { "st", "1" }, { "ft", "directory" } },
-        { { "fid", "1" }, { "n", "/r/a/b" }, { "st", "2" }, { "sz", "1" } },
+        {{"fid", "0"}, {"n", "/r/a"}, {"st", "1"}, {"ft", "directory"}},
+        {{"fid", "1"}, {"n", "/r/a/b"}, {"st", "2"}, {"sz", "1"}},
     };
     terminal.run();
     EXPECT_TRUE(ended(*client));
@@ -1085,11 +1110,11 @@ TEST_F(Hostile, OverlappingMirrorSourcesAreRefused)
 
 TEST_F(Hostile, SourcesWithTheSameNameAreRefused)
 {
-    auto client = receiver({ "/r/a/x", "/r/b/x", (dir.path / "dest").string() + "/" });
-    FakeTerminal terminal { *client, "/home/r" };
+    auto client = receiver({"/r/a/x", "/r/b/x", (dir.path / "dest").string() + "/"});
+    FakeTerminal terminal{*client, "/home/r"};
     terminal.listing = {
-        { { "fid", "0" }, { "n", "/r/a/x" }, { "st", "1" }, { "sz", "1" } },
-        { { "fid", "1" }, { "n", "/r/b/x" }, { "st", "2" }, { "sz", "1" } },
+        {{"fid", "0"}, {"n", "/r/a/x"}, {"st", "1"}, {"sz", "1"}},
+        {{"fid", "1"}, {"n", "/r/b/x"}, {"st", "2"}, {"sz", "1"}},
     };
     terminal.run();
     EXPECT_TRUE(ended(*client));
@@ -1100,13 +1125,13 @@ TEST_F(Hostile, ADirectoryReceivedToANewPathBecomesThatPath)
 {
     // As cp -r, whatever the directory holds: the decision does not depend on the listing.
     const auto dest = dir.path / "copy";
-    auto client = receiver({ "/r/tree", dest.string() });
-    FakeTerminal terminal { *client, "/home/r" };
+    auto client = receiver({"/r/tree", dest.string()});
+    FakeTerminal terminal{*client, "/home/r"};
     terminal.listing = {
-        { { "fid", "0" }, { "n", "/r/tree" }, { "st", "1" }, { "ft", "directory" } },
-        { { "fid", "0" }, { "n", "/r/tree/f" }, { "st", "2" }, { "pr", "1" }, { "sz", "1" } },
+        {{"fid", "0"}, {"n", "/r/tree"}, {"st", "1"}, {"ft", "directory"}},
+        {{"fid", "0"}, {"n", "/r/tree/f"}, {"st", "2"}, {"pr", "1"}, {"sz", "1"}},
     };
-    terminal.contents = { { "/r/tree/f", "f" } };
+    terminal.contents = {{"/r/tree/f", "f"}};
     terminal.run();
     EXPECT_EQ(client->state(), TransferClient::State::Done) << client->error();
     EXPECT_EQ(readFile((dest / "f").string()), "f");
@@ -1116,12 +1141,12 @@ TEST_F(Hostile, AChildWhosePathIsNotUnderItsParentIsRefused)
 {
     // Short paths for a deep chain: the local paths would grow with the
     // square of the depth while the listing stays small.
-    auto client = receiver({ "/r/tree", (dir.path / "dest").string() + "/" });
-    FakeTerminal terminal { *client, "/home/r" };
+    auto client = receiver({"/r/tree", (dir.path / "dest").string() + "/"});
+    FakeTerminal terminal{*client, "/home/r"};
     terminal.listing = {
-        { { "fid", "0" }, { "n", "/r/tree" }, { "st", "1" }, { "ft", "directory" } },
-        { { "fid", "0" }, { "n", "/x" }, { "st", "2" }, { "pr", "1" }, { "ft", "directory" } },
-        { { "fid", "0" }, { "n", "/x" }, { "st", "3" }, { "pr", "2" }, { "ft", "directory" } },
+        {{"fid", "0"}, {"n", "/r/tree"}, {"st", "1"}, {"ft", "directory"}},
+        {{"fid", "0"}, {"n", "/x"}, {"st", "2"}, {"pr", "1"}, {"ft", "directory"}},
+        {{"fid", "0"}, {"n", "/x"}, {"st", "3"}, {"pr", "2"}, {"ft", "directory"}},
     };
     terminal.run();
     EXPECT_TRUE(ended(*client));
@@ -1132,14 +1157,14 @@ TEST_F(Hostile, AParentListedWithAnUncleanPathComesBeforeItsChild)
 {
     // /r/tree/./././d is longer than its child /r/tree/d/c. The child must
     // still take its base and its local path from that parent.
-    auto client = receiver({ "/r/tree", (dir.path / "dest").string() + "/" });
-    FakeTerminal terminal { *client, "/home/r" };
+    auto client = receiver({"/r/tree", (dir.path / "dest").string() + "/"});
+    FakeTerminal terminal{*client, "/home/r"};
     terminal.listing = {
-        { { "fid", "0" }, { "n", "/r/tree" }, { "st", "1" }, { "ft", "directory" } },
-        { { "fid", "0" }, { "n", "/r/tree/./././././././d" }, { "st", "2" }, { "pr", "1" }, { "ft", "directory" } },
-        { { "fid", "0" }, { "n", "/r/tree/d/c" }, { "st", "3" }, { "pr", "2" }, { "sz", "1" } },
+        {{"fid", "0"}, {"n", "/r/tree"}, {"st", "1"}, {"ft", "directory"}},
+        {{"fid", "0"}, {"n", "/r/tree/./././././././d"}, {"st", "2"}, {"pr", "1"}, {"ft", "directory"}},
+        {{"fid", "0"}, {"n", "/r/tree/d/c"}, {"st", "3"}, {"pr", "2"}, {"sz", "1"}},
     };
-    terminal.contents = { { "/r/tree/d/c", "x" } };
+    terminal.contents = {{"/r/tree/d/c", "x"}};
     terminal.run();
     ASSERT_EQ(client->state(), TransferClient::State::Done) << client->error();
     const auto tree = dir.path / "dest/tree";
@@ -1152,11 +1177,11 @@ TEST_F(Hostile, AParentListedWithAnUncleanPathComesBeforeItsChild)
 TEST_F(Hostile, APathLongerThanPathMaxIsRefused)
 {
     const std::string deep = "/r/tree/" + std::string(250, 'a') + std::string(4000, '/');
-    auto client = receiver({ "/r/tree", (dir.path / "dest").string() + "/" });
-    FakeTerminal terminal { *client, "/home/r" };
+    auto client = receiver({"/r/tree", (dir.path / "dest").string() + "/"});
+    FakeTerminal terminal{*client, "/home/r"};
     terminal.listing = {
-        { { "fid", "0" }, { "n", "/r/tree" }, { "st", "1" }, { "ft", "directory" } },
-        { { "fid", "0" }, { "n", deep }, { "st", "2" }, { "pr", "1" }, { "sz", "1" } },
+        {{"fid", "0"}, {"n", "/r/tree"}, {"st", "1"}, {"ft", "directory"}},
+        {{"fid", "0"}, {"n", deep}, {"st", "2"}, {"pr", "1"}, {"sz", "1"}},
     };
     terminal.run();
     EXPECT_TRUE(ended(*client));
@@ -1164,19 +1189,19 @@ TEST_F(Hostile, APathLongerThanPathMaxIsRefused)
 
 TEST_F(Hostile, ARelativeListingPathIsRefused)
 {
-    auto client = receiver({ "tree" }, TransferClientOptions::Mode::Mirror);
-    FakeTerminal terminal { *client, "/home/r" };
-    terminal.listing = { { { "fid", "0" }, { "n", "tree" }, { "st", "1" }, { "sz", "1" } } };
+    auto client = receiver({"tree"}, TransferClientOptions::Mode::Mirror);
+    FakeTerminal terminal{*client, "/home/r"};
+    terminal.listing = {{{"fid", "0"}, {"n", "tree"}, {"st", "1"}, {"sz", "1"}}};
     terminal.run(50);
     EXPECT_TRUE(ended(*client));
 }
 
 TEST_F(Hostile, AFileWithoutASizeIsRefused)
 {
-    auto client = receiver({ "/r/f", (dir.path / "f").string() });
-    FakeTerminal terminal { *client, "/home/r" };
-    terminal.listing = { { { "fid", "0" }, { "n", "/r/f" }, { "st", "1" } } };
-    terminal.contents = { { "/r/f", "anything" } };
+    auto client = receiver({"/r/f", (dir.path / "f").string()});
+    FakeTerminal terminal{*client, "/home/r"};
+    terminal.listing = {{{"fid", "0"}, {"n", "/r/f"}, {"st", "1"}}};
+    terminal.contents = {{"/r/f", "anything"}};
     terminal.run();
     EXPECT_TRUE(ended(*client));
     EXPECT_FALSE(std::filesystem::exists(dir.path / "f"));
@@ -1186,29 +1211,33 @@ TEST_F(Hostile, AStatusForAFileBeforeItsRequestEndsTheSession)
 {
     // Unanswered, the request would count against the open files for good:
     // the session would wait with nothing in flight.
-    std::vector<Pairs> listing { { { "fid", "0" }, { "n", "/r/tree" }, { "st", "1" }, { "ft", "directory" } } };
+    std::vector<Pairs> listing{{{"fid", "0"}, {"n", "/r/tree"}, {"st", "1"}, {"ft", "directory"}}};
     for (int i = 0; i < 40; ++i) {
-        listing.push_back({ { "fid", "0" }, { "n", "/r/tree/f" + std::to_string(i) }, { "st", std::to_string(i + 2) }, { "pr", "1" }, { "sz", "1" } });
+        listing.push_back({{"fid", "0"},
+                           {"n", "/r/tree/f" + std::to_string(i)},
+                           {"st", std::to_string(i + 2)},
+                           {"pr", "1"},
+                           {"sz", "1"}});
     }
-    auto client = receiver({ "/r/tree", (dir.path / "dest").string() + "/" });
-    FakeTerminal terminal { *client, "/home/r" };
+    auto client = receiver({"/r/tree", (dir.path / "dest").string() + "/"});
+    FakeTerminal terminal{*client, "/home/r"};
     terminal.listing = listing;
     terminal.answerRequests = false;
     terminal.run(4);
     // Entry 40 (f39) waits behind the 32 requests in flight.
-    terminal.say({ { "ac", "status" }, { "fid", "r40" }, { "st", "EIO" } });
+    terminal.say({{"ac", "status"}, {"fid", "r40"}, {"st", "EIO"}});
     terminal.run();
     EXPECT_TRUE(ended(*client));
 }
 
 TEST_F(Hostile, AnEmptyStatusIsAnError)
 {
-    auto client = receiver({ "/r/f", (dir.path / "f").string() });
-    FakeTerminal terminal { *client, "/home/r" };
-    terminal.listing = { { { "fid", "0" }, { "n", "/r/f" }, { "st", "1" }, { "sz", "1" } } };
+    auto client = receiver({"/r/f", (dir.path / "f").string()});
+    FakeTerminal terminal{*client, "/home/r"};
+    terminal.listing = {{{"fid", "0"}, {"n", "/r/f"}, {"st", "1"}, {"sz", "1"}}};
     terminal.answerRequests = false;
     terminal.run(4);
-    terminal.say({ { "ac", "status" }, { "fid", "r0" }, { "st", "" } });
+    terminal.say({{"ac", "status"}, {"fid", "r0"}, {"st", ""}});
     terminal.run();
     ASSERT_EQ(client->items().size(), 1u);
     EXPECT_FALSE(client->items()[0].error.empty());
@@ -1217,22 +1246,22 @@ TEST_F(Hostile, AnEmptyStatusIsAnError)
 
 TEST_F(Hostile, AnErrorOfTheSessionAfterTheListingEndsIt)
 {
-    auto client = receiver({ "/r/f", (dir.path / "f").string() });
-    FakeTerminal terminal { *client, "/home/r" };
-    terminal.listing = { { { "fid", "0" }, { "n", "/r/f" }, { "st", "1" }, { "sz", "1" } } };
+    auto client = receiver({"/r/f", (dir.path / "f").string()});
+    FakeTerminal terminal{*client, "/home/r"};
+    terminal.listing = {{{"fid", "0"}, {"n", "/r/f"}, {"st", "1"}, {"sz", "1"}}};
     terminal.answerRequests = false;
     terminal.run(4);
-    terminal.say({ { "ac", "status" }, { "st", "ENOMEM" } });
+    terminal.say({{"ac", "status"}, {"st", "ENOMEM"}});
     EXPECT_EQ(client->state(), TransferClient::State::Failed);
     EXPECT_TRUE(client->over());
 }
 
 TEST_F(Hostile, AnAnswerBeforeThePermissionCancels)
 {
-    auto client = receiver({ "/r/f", (dir.path / "f").string() });
+    auto client = receiver({"/r/f", (dir.path / "f").string()});
     std::string out;
     client->pull(out, 65536);
-    client->receive(reply(client->id(), { { "ac", "file" }, { "fid", "0" }, { "n", "/r/f" }, { "st", "1" } }));
+    client->receive(reply(client->id(), {{"ac", "file"}, {"fid", "0"}, {"n", "/r/f"}, {"st", "1"}}));
     EXPECT_EQ(client->state(), TransferClient::State::Canceling);
     out.clear();
     client->pull(out, 65536);
@@ -1244,9 +1273,9 @@ TEST_F(Hostile, ADeclinedConfirmationLeavesNoDirectory)
     auto options = optionsIn(dir);
     options.confirmPaths = true;
     const auto dest = dir.path / "new/dest";
-    auto client = receiver({ "/r/f", dest.string() + "/" }, TransferClientOptions::Mode::Normal, options);
-    FakeTerminal terminal { *client, "/home/r" };
-    terminal.listing = { { { "fid", "0" }, { "n", "/r/f" }, { "st", "1" }, { "sz", "1" } } };
+    auto client = receiver({"/r/f", dest.string() + "/"}, TransferClientOptions::Mode::Normal, options);
+    FakeTerminal terminal{*client, "/home/r"};
+    terminal.listing = {{{"fid", "0"}, {"n", "/r/f"}, {"st", "1"}, {"sz", "1"}}};
     terminal.run(4);
     ASSERT_EQ(client->state(), TransferClient::State::Confirm);
     client->confirm(false);
@@ -1257,10 +1286,10 @@ TEST_F(Hostile, ADeclinedConfirmationLeavesNoDirectory)
 
 TEST_F(Hostile, ModesLoseSetIdAndStickyBits)
 {
-    auto client = receiver({ "/r/f", (dir.path / "f").string() });
-    FakeTerminal terminal { *client, "/home/r" };
-    terminal.listing = { { { "fid", "0" }, { "n", "/r/f" }, { "st", "1" }, { "sz", "2" }, { "prm", std::to_string(06777) } } };
-    terminal.contents = { { "/r/f", "ok" } };
+    auto client = receiver({"/r/f", (dir.path / "f").string()});
+    FakeTerminal terminal{*client, "/home/r"};
+    terminal.listing = {{{"fid", "0"}, {"n", "/r/f"}, {"st", "1"}, {"sz", "2"}, {"prm", std::to_string(06777)}}};
+    terminal.contents = {{"/r/f", "ok"}};
     terminal.run();
     EXPECT_EQ(client->state(), TransferClient::State::Done);
     // Under the umask of 022 that SetUp() sets.
@@ -1270,14 +1299,14 @@ TEST_F(Hostile, ModesLoseSetIdAndStickyBits)
 TEST_F(Hostile, ReceivedModesFollowTheUmask)
 {
     ::umask(077);
-    auto client = receiver({ "/r/tree", (dir.path / "dest").string() + "/" });
-    FakeTerminal terminal { *client, "/home/r" };
+    auto client = receiver({"/r/tree", (dir.path / "dest").string() + "/"});
+    FakeTerminal terminal{*client, "/home/r"};
     terminal.listing = {
-        { { "fid", "0" }, { "n", "/r/tree" }, { "st", "1" }, { "ft", "directory" }, { "prm", "493" } },
-        { { "fid", "0" }, { "n", "/r/tree/f" }, { "st", "2" }, { "pr", "1" }, { "sz", "1" }, { "prm", "420" } },
-        { { "fid", "0" }, { "n", "/r/tree/g" }, { "st", "3" }, { "pr", "1" }, { "sz", "1" } },
+        {{"fid", "0"}, {"n", "/r/tree"}, {"st", "1"}, {"ft", "directory"}, {"prm", "493"}},
+        {{"fid", "0"}, {"n", "/r/tree/f"}, {"st", "2"}, {"pr", "1"}, {"sz", "1"}, {"prm", "420"}},
+        {{"fid", "0"}, {"n", "/r/tree/g"}, {"st", "3"}, {"pr", "1"}, {"sz", "1"}},
     };
-    terminal.contents = { { "/r/tree/f", "f" }, { "/r/tree/g", "g" } };
+    terminal.contents = {{"/r/tree/f", "f"}, {"/r/tree/g", "g"}};
     terminal.run();
     EXPECT_EQ(client->state(), TransferClient::State::Done) << client->error();
     EXPECT_EQ(modeOf(dir.path / "dest/tree"), 0700u);
@@ -1288,17 +1317,28 @@ TEST_F(Hostile, ReceivedModesFollowTheUmask)
 TEST_F(Hostile, ATreeArrivesWithItsMetadata)
 {
     const std::int64_t modified = 1600000000LL * 1000000000LL + 5;
-    auto client = receiver({ "/r/tree", (dir.path / "dest").string() + "/" });
-    FakeTerminal terminal { *client, "/home/r" };
+    auto client = receiver({"/r/tree", (dir.path / "dest").string() + "/"});
+    FakeTerminal terminal{*client, "/home/r"};
     const auto text = noise(9000, 11);
     terminal.listing = {
-        { { "fid", "0" }, { "n", "/r/tree" }, { "st", "1" }, { "ft", "directory" }, { "prm", "488" }, { "mod", std::to_string(modified) } },
-        { { "fid", "0" }, { "n", "/r/tree/f.txt" }, { "st", "2" }, { "pr", "1" }, { "sz", "9000" }, { "prm", "416" }, { "mod", std::to_string(modified) } },
-        { { "fid", "0" }, { "n", "/r/tree/l" }, { "st", "3" }, { "pr", "1" }, { "ft", "symlink" }, { "d", "2" } },
-        { { "fid", "0" }, { "n", "/r/tree/h" }, { "st", "4" }, { "pr", "1" }, { "ft", "link" }, { "d", "2" } },
+        {{"fid", "0"},
+         {"n", "/r/tree"},
+         {"st", "1"},
+         {"ft", "directory"},
+         {"prm", "488"},
+         {"mod", std::to_string(modified)}},
+        {{"fid", "0"},
+         {"n", "/r/tree/f.txt"},
+         {"st", "2"},
+         {"pr", "1"},
+         {"sz", "9000"},
+         {"prm", "416"},
+         {"mod", std::to_string(modified)}},
+        {{"fid", "0"}, {"n", "/r/tree/l"}, {"st", "3"}, {"pr", "1"}, {"ft", "symlink"}, {"d", "2"}},
+        {{"fid", "0"}, {"n", "/r/tree/h"}, {"st", "4"}, {"pr", "1"}, {"ft", "link"}, {"d", "2"}},
     };
     // Compressed, in packets of 4 KiB.
-    terminal.contents = { { "/r/tree/f.txt", zlibCompress(text) }, { "/r/tree/l", "/r/tree/f.txt" } };
+    terminal.contents = {{"/r/tree/f.txt", zlibCompress(text)}, {"/r/tree/l", "/r/tree/f.txt"}};
     terminal.run();
     ASSERT_EQ(client->state(), TransferClient::State::Done) << client->error();
     for (const auto& item : client->items()) {
@@ -1310,7 +1350,7 @@ TEST_F(Hostile, ATreeArrivesWithItsMetadata)
     EXPECT_EQ(modeOf(tree / "f.txt"), 0640u);
     EXPECT_EQ(std::filesystem::read_symlink(tree / "l"), tree / "f.txt");
     EXPECT_TRUE(std::filesystem::equivalent(tree / "h", tree / "f.txt"));
-    struct stat st { };
+    struct stat st{};
     ASSERT_EQ(::stat((tree / "f.txt").c_str(), &st), 0);
     EXPECT_EQ(st.st_mtim.tv_sec, 1600000000);
     EXPECT_EQ(st.st_mtim.tv_nsec, 5);
@@ -1320,10 +1360,10 @@ TEST_F(Hostile, ATreeArrivesWithItsMetadata)
 
 TEST_F(Hostile, DataPastTheListedSizeIsRefused)
 {
-    auto client = receiver({ "/r/f", (dir.path / "f").string() });
-    FakeTerminal terminal { *client, "/home/r" };
-    terminal.listing = { { { "fid", "0" }, { "n", "/r/f" }, { "st", "1" }, { "sz", "2" } } };
-    terminal.contents = { { "/r/f", "much more than two bytes" } };
+    auto client = receiver({"/r/f", (dir.path / "f").string()});
+    FakeTerminal terminal{*client, "/home/r"};
+    terminal.listing = {{{"fid", "0"}, {"n", "/r/f"}, {"st", "1"}, {"sz", "2"}}};
+    terminal.contents = {{"/r/f", "much more than two bytes"}};
     terminal.run();
     EXPECT_FALSE(std::filesystem::exists(dir.path / "f"));
     ASSERT_EQ(client->items().size(), 1u);
@@ -1332,13 +1372,13 @@ TEST_F(Hostile, DataPastTheListedSizeIsRefused)
 
 TEST_F(Hostile, DataAfterTheEndOfTheZlibStreamIsRefused)
 {
-    auto client = receiver({ "/r/f.txt", (dir.path / "f.txt").string() });
-    FakeTerminal terminal { *client, "/home/r" };
+    auto client = receiver({"/r/f.txt", (dir.path / "f.txt").string()});
+    FakeTerminal terminal{*client, "/home/r"};
     const auto text = noise(5000, 7);
-    terminal.listing = { { { "fid", "0" }, { "n", "/r/f.txt" }, { "st", "1" }, { "sz", "5000" } } };
+    terminal.listing = {{{"fid", "0"}, {"n", "/r/f.txt"}, {"st", "1"}, {"sz", "5000"}}};
     // The whole file, then bytes that would be written raw after it. The
     // packets are of the allowed size: the error is the tail, not the size.
-    terminal.contents = { { "/r/f.txt", zlibCompress(text) + "tail" } };
+    terminal.contents = {{"/r/f.txt", zlibCompress(text) + "tail"}};
     terminal.run();
     EXPECT_FALSE(std::filesystem::exists(dir.path / "f.txt"));
     ASSERT_EQ(client->items().size(), 1u);
@@ -1347,9 +1387,9 @@ TEST_F(Hostile, DataAfterTheEndOfTheZlibStreamIsRefused)
 
 TEST_F(Hostile, AnEndedSessionLeavesNoTemporaryFile)
 {
-    auto client = receiver({ "/r/f", (dir.path / "out" / "f").string() });
-    FakeTerminal terminal { *client, "/home/r" };
-    terminal.listing = { { { "fid", "0" }, { "n", "/r/f" }, { "st", "1" }, { "sz", "100" } } };
+    auto client = receiver({"/r/f", (dir.path / "out" / "f").string()});
+    FakeTerminal terminal{*client, "/home/r"};
+    terminal.listing = {{{"fid", "0"}, {"n", "/r/f"}, {"st", "1"}, {"sz", "100"}}};
     terminal.answerRequests = false;
     terminal.run(3);
     // One packet of the file arrives, then the session ends without its end.
@@ -1360,7 +1400,7 @@ TEST_F(Hostile, AnEndedSessionLeavesNoTemporaryFile)
         }
     }
     ASSERT_FALSE(fid.empty());
-    terminal.say({ { "ac", "data" }, { "fid", fid }, { "d", "partial" } });
+    terminal.say({{"ac", "data"}, {"fid", fid}, {"d", "partial"}});
     ASSERT_TRUE(std::filesystem::exists(dir.path / "out"));
     EXPECT_FALSE(std::filesystem::is_empty(dir.path / "out"));
     client.reset();
@@ -1372,27 +1412,27 @@ TEST_F(Hostile, ASignatureForAFileSentWholeIsRefused)
     dir.write("big", noise(10000, 8));
     auto options = optionsIn(dir);
     std::string error;
-    auto client = makeTransferSender(options, { "big", "/remote/big" }, error);
+    auto client = makeTransferSender(options, {"big", "/remote/big"}, error);
     ASSERT_TRUE(client) << error;
-    FakeTerminal terminal { *client, "/home/r" };
-    terminal.started = { { "/remote/big", "rsync" } };
+    FakeTerminal terminal{*client, "/home/r"};
+    terminal.started = {{"/remote/big", "rsync"}};
     terminal.run();
     EXPECT_TRUE(ended(*client));
 }
 
 TEST(Client, RemoteEntriesNameTheirParents)
 {
-    EXPECT_EQ(dndRemoteEntry(2, 0, 0, DndFileKind), (DndMeta { { "t", "k" }, { "x", "2" }, { "X", "0" } }));
-    EXPECT_EQ(dndRemoteEntry(1, 5, 3, 7), (DndMeta { { "t", "k" }, { "x", "1" }, { "X", "7" }, { "Y", "5" }, { "y", "3" } }));
-    EXPECT_EQ(dndReadEntry(4, 0, 2), (DndMeta { { "t", "r" }, { "x", "4" }, { "y", "2" } }));
-    EXPECT_EQ(dndReadEntry(0, 9, 1), (DndMeta { { "t", "r" }, { "Y", "9" }, { "x", "1" } }));
-    EXPECT_EQ(dndReadEntry(0, 9, 0), (DndMeta { { "t", "r" }, { "Y", "9" } }));
+    EXPECT_EQ(dndRemoteEntry(2, 0, 0, DndFileKind), (DndMeta{{"t", "k"}, {"x", "2"}, {"X", "0"}}));
+    EXPECT_EQ(dndRemoteEntry(1, 5, 3, 7), (DndMeta{{"t", "k"}, {"x", "1"}, {"X", "7"}, {"Y", "5"}, {"y", "3"}}));
+    EXPECT_EQ(dndReadEntry(4, 0, 2), (DndMeta{{"t", "r"}, {"x", "4"}, {"y", "2"}}));
+    EXPECT_EQ(dndReadEntry(0, 9, 1), (DndMeta{{"t", "r"}, {"Y", "9"}, {"x", "1"}}));
+    EXPECT_EQ(dndReadEntry(0, 9, 0), (DndMeta{{"t", "r"}, {"Y", "9"}}));
 }
 
 TEST(Client, DataPacketsDecodeAloneAndEndEmpty)
 {
     const auto bytes = noise(DndDataChunk * 2 + 10, 5);
-    const auto packets = dndDataPackets({ { "t", "e" }, { "y", "0" } }, bytes);
+    const auto packets = dndDataPackets({{"t", "e"}, {"y", "0"}}, bytes);
     ASSERT_EQ(packets.size(), 4u);
     std::string joined;
     DndBase64Stream stream;
@@ -1428,14 +1468,17 @@ TEST(Client, Base64StreamJoinsGroupsAcrossPackets)
     // One character left at the end decodes to nothing: the data was cut.
     DndBase64Stream cut;
     out.clear();
-    ASSERT_TRUE(cut.feed("QUJD" "R", out));
+    ASSERT_TRUE(
+        cut.feed("QUJD"
+                 "R",
+                 out));
     EXPECT_EQ(out, "ABC");
     EXPECT_FALSE(cut.finish(out));
 }
 
 TEST(Client, ListingsRefuseUnsafeNames)
 {
-    EXPECT_EQ(dndSplitNames(dndJoinNames({ "a", "b c", "ü" })), (std::vector<std::string> { "a", "b c", "ü" }));
+    EXPECT_EQ(dndSplitNames(dndJoinNames({"a", "b c", "ü"})), (std::vector<std::string>{"a", "b c", "ü"}));
     EXPECT_EQ(dndSplitNames(""), std::vector<std::string>());
     EXPECT_FALSE(dndSplitNames(std::string("a\0..", 4)));
     EXPECT_FALSE(dndSplitNames(std::string("a\0a", 3)));

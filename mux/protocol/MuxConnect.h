@@ -76,7 +76,10 @@ public:
     /// caller that keeps the connection open (a window's stream) watches it
     /// and calls drainError() when it is readable: a command that writes
     /// much would else block on a full pipe and stop the connection.
-    int errorFd() const { return m_errorFd; }
+    int errorFd() const
+    {
+        return m_errorFd;
+    }
     /// Reads what waits on errorFd(). False once the pipe ended: nothing
     /// more comes, and errorFd() stays open until this goes.
     bool drainError();

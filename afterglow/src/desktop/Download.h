@@ -73,8 +73,8 @@ public:
     /// takes no lock that is held around pauseIfFull(). @p ended runs on the
     /// writer thread once a finish() is done, and never for a download that
     /// is destroyed before its finish().
-    static std::unique_ptr<DownloadFile> create(const QString& path, bool replace, std::function<void()> room, Ended ended,
-                                                QString& error);
+    static std::unique_ptr<DownloadFile> create(const QString& path, bool replace, std::function<void()> room,
+                                                Ended ended, QString& error);
     /// A download that did not finish loses its part file. One that did
     /// waits for its writer to rename or remove it.
     ~DownloadFile();
@@ -104,7 +104,10 @@ public:
     /// The file that the download asks for. It becomes another when that
     /// name is taken at the end and the download does not replace it: Ended
     /// names the file.
-    const QString& target() const { return m_target; }
+    const QString& target() const
+    {
+        return m_target;
+    }
 
 private:
     struct Released;

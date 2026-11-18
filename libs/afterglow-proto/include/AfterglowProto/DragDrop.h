@@ -86,7 +86,8 @@ public:
     };
 
     /// A whole message.
-    struct Message {
+    struct Message
+    {
         /// The metadata of the first packet, with the m of the last.
         DndMeta meta;
         std::string payload;
@@ -115,9 +116,15 @@ public:
     /// message that is being dropped stays so.
     void abandon();
     /// A message is being put together.
-    bool active() const { return !m_meta.empty(); }
+    bool active() const
+    {
+        return !m_meta.empty();
+    }
     /// The chunks of a dropped message are being dropped.
-    bool discarding() const { return m_discarding; }
+    bool discarding() const
+    {
+        return m_discarding;
+    }
     /// The type of the message being put together: its t, or "a" when it
     /// gives none. "a" also when no message is being put together.
     std::string type() const;

@@ -56,8 +56,10 @@ public:
     /// split, newTab and newWindow with @p options, as Control::clientSplit
     /// takes them: cwd (over @p workingDirectory), env, vars, focus, hold,
     /// stdin_text and stdin_ansi, and size for a split only.
-    Q_INVOKABLE uint split(double pane, const QString& direction, const QStringList& command, const QVariantMap& options);
-    Q_INVOKABLE uint newTab(double pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options);
+    Q_INVOKABLE uint split(double pane, const QString& direction, const QStringList& command,
+                           const QVariantMap& options);
+    Q_INVOKABLE uint newTab(double pane, const QString& workingDirectory, const QStringList& command,
+                            const QVariantMap& options);
     Q_INVOKABLE uint newWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options);
     Q_INVOKABLE void focus(double pane);
     Q_INVOKABLE void close(double pane);
@@ -157,20 +159,30 @@ public:
     /// reason version or length. @p overlay: `afterglow ssh` runs in the
     /// pane's overlay, whose terminal answers for the session.
     Q_INVOKABLE QVariantMap openRemoteSocket(double pane, double pid, const QString& host, const QString& directory,
-                                             double protocol, const QStringList& ssh, const QString& destination, bool overlay);
+                                             double protocol, const QStringList& ssh, const QString& destination,
+                                             bool overlay);
     /// `ssh -O forward` added the forward of @p token: the pane answers with
     /// its path. It fails when the session has ended, and the client then
     /// cancels the forward (RemoteSockets::forwarded).
     Q_INVOKABLE void remoteSocketForwarded(const QString& token);
     /// `ssh -O forward` failed for @p token: @p reason is forward.
     Q_INVOKABLE void remoteSocketFailed(const QString& token, const QString& reason);
-    void setRemoteSockets(RemoteSockets* sockets) { m_remote = sockets; }
+    void setRemoteSockets(RemoteSockets* sockets)
+    {
+        m_remote = sockets;
+    }
     /// Whether a process runs in a pane, or in its overlay (Control::runsIn).
     using PaneProcesses = std::function<bool(quint32 pane, qint64 process, bool overlay)>;
-    void setPaneProcesses(PaneProcesses check) { m_paneProcesses = std::move(check); }
+    void setPaneProcesses(PaneProcesses check)
+    {
+        m_paneProcesses = std::move(check);
+    }
 
     /// Whose overlays a connection's are, as Control knows them.
-    static QString overlayOwner(quint64 connection) { return QStringLiteral("control:%1").arg(connection); }
+    static QString overlayOwner(quint64 connection)
+    {
+        return QStringLiteral("control:%1").arg(connection);
+    }
     /// Cancels the overlays of every control client with @p message.
     void cancelOverlays(const QString& message);
     /// Drops the inputs that wait for overlay(), of every connection.
@@ -237,12 +249,21 @@ public:
 
     /// The control target is on the router. For the tests: the router is
     /// what clients see.
-    bool enabled() const { return m_enabled; }
+    bool enabled() const
+    {
+        return m_enabled;
+    }
     /// The sockets of remote commands, for the calls of `afterglow ssh`.
-    void setRemoteSockets(RemoteSockets* sockets) { m_api.setRemoteSockets(sockets); }
+    void setRemoteSockets(RemoteSockets* sockets)
+    {
+        m_api.setRemoteSockets(sockets);
+    }
     /// For the tests, whose `afterglow ssh` runs in no pane: what tells the
     /// processes of a pane, Control::runsIn by default.
-    void setPaneProcesses(ControlApi::PaneProcesses check) { m_api.setPaneProcesses(std::move(check)); }
+    void setPaneProcesses(ControlApi::PaneProcesses check)
+    {
+        m_api.setPaneProcesses(std::move(check));
+    }
 
 private:
     void applySettings();

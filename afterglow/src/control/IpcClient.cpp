@@ -26,12 +26,14 @@ QLatin1String field(const char* name)
 
 void set(IpcClient::Error* error, const QString& code, const QString& message)
 {
-    if (error) *error = {code, message, false, false};
+    if (error)
+        *error = {code, message, false, false};
 }
 
 void timedOut(IpcClient::Error* error)
 {
-    if (error) *error = {{}, QStringLiteral("no reply in time"), true, false};
+    if (error)
+        *error = {{}, QStringLiteral("no reply in time"), true, false};
 }
 
 bool isType(const QJsonObject& frame, const char* type)
@@ -41,7 +43,8 @@ bool isType(const QJsonObject& frame, const char* type)
 
 void setFromFrame(IpcClient::Error* error, const QJsonObject& frame)
 {
-    set(error, frame.value(field(PhosphorIpc::Field::Code)).toString(), frame.value(field(PhosphorIpc::Field::Message)).toString());
+    set(error, frame.value(field(PhosphorIpc::Field::Code)).toString(),
+        frame.value(field(PhosphorIpc::Field::Message)).toString());
 }
 
 // QIODevice waits forever on -1: a deadline that has passed waits not at all.
@@ -55,7 +58,8 @@ int waitTime(const QDeadlineTimer& deadline)
 bool IpcClient::connectTo(const QString& path, int timeoutMs, Error* error)
 {
     m_socket.connectToServer(path);
-    if (m_socket.waitForConnected(timeoutMs)) return true;
+    if (m_socket.waitForConnected(timeoutMs))
+        return true;
     // A wait that ran out leaves the socket connecting, with no error of its own.
     const QLocalSocket::LocalSocketError failure = m_socket.error();
     const bool late = m_socket.state() == QLocalSocket::ConnectingState || failure == QLocalSocket::SocketTimeoutError;
@@ -64,10 +68,10 @@ bool IpcClient::connectTo(const QString& path, int timeoutMs, Error* error)
         const bool refused = !late && failure == QLocalSocket::ConnectionRefusedError;
         // No one listening reads as aglow run puts it, in the words of the
         // system: Qt's own text for a missing socket is "Invalid name".
-        const QString message = late      ? QStringLiteral("the server accepts no connection")
-                                : missing ? QString::fromLocal8Bit(std::strerror(ENOENT))
-                                : refused ? QString::fromLocal8Bit(std::strerror(ECONNREFUSED))
-                                          : m_socket.errorString();
+        const QString message = late ? QStringLiteral("the server accepts no connection")
+            : missing                ? QString::fromLocal8Bit(std::strerror(ENOENT))
+            : refused                ? QString::fromLocal8Bit(std::strerror(ECONNREFUSED))
+                                     : m_socket.errorString();
         *error = {{}, message, late, false, missing || refused};
     }
     m_socket.abort();
@@ -79,12 +83,13 @@ pid_t IpcClient::peerPid() const
     ucred credentials{};
     socklen_t size = sizeof(credentials);
     const auto fd = int(m_socket.socketDescriptor());
-    if (fd < 0 || getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credentials, &size) != 0) return 0;
+    if (fd < 0 || getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credentials, &size) != 0)
+        return 0;
     return credentials.uid == getuid() ? credentials.pid : 0;
 }
 
-std::optional<QJsonValue> IpcClient::call(const QString& target, const QString& fn, const QJsonArray& args, int timeoutMs,
-                                          Error* error)
+std::optional<QJsonValue> IpcClient::call(const QString& target, const QString& fn, const QJsonArray& args,
+                                          int timeoutMs, Error* error)
 {
     const QDeadlineTimer deadline(timeoutMs);
     const qint64 id = ++m_nextId;
@@ -97,7 +102,8 @@ std::optional<QJsonValue> IpcClient::call(const QString& target, const QString& 
         return std::nullopt;
     }
     const auto frame = readReply(id, deadline, error);
-    if (!frame) return std::nullopt;
+    if (!frame)
+        return std::nullopt;
     return frame->value(field(PhosphorIpc::Field::Result));
 }
 
@@ -105,14 +111,17 @@ std::optional<QStringList> IpcClient::targets(int timeoutMs, Error* error)
 {
     const QDeadlineTimer deadline(timeoutMs);
     const qint64 id = ++m_nextId;
-    if (!write({{field(PhosphorIpc::Field::Type), field(PhosphorIpc::RequestType::List)}, {field(PhosphorIpc::Field::Id), id}},
+    if (!write({{field(PhosphorIpc::Field::Type), field(PhosphorIpc::RequestType::List)},
+                {field(PhosphorIpc::Field::Id), id}},
                deadline, error)) {
         return std::nullopt;
     }
     const auto frame = readReply(id, deadline, error);
-    if (!frame) return std::nullopt;
+    if (!frame)
+        return std::nullopt;
     QStringList names;
-    for (const QJsonValue& name : frame->value(field(PhosphorIpc::Field::Result)).toArray()) names << name.toString();
+    for (const QJsonValue& name : frame->value(field(PhosphorIpc::Field::Result)).toArray())
+        names << name.toString();
     return names;
 }
 
@@ -135,9 +144,12 @@ bool IpcClient::subscribe(const QString& target, const QString& event, int timeo
 std::optional<QJsonObject> IpcClient::readEvent(Error* error)
 {
     while (true) {
-        const auto frame = m_frames.isEmpty() ? readFrame(QDeadlineTimer::Forever, error) : std::optional(m_frames.takeFirst());
-        if (!frame) return std::nullopt;
-        if (isType(*frame, PhosphorIpc::ResponseType::Event)) return frame;
+        const auto frame =
+            m_frames.isEmpty() ? readFrame(QDeadlineTimer::Forever, error) : std::optional(m_frames.takeFirst());
+        if (!frame)
+            return std::nullopt;
+        if (isType(*frame, PhosphorIpc::ResponseType::Event))
+            return frame;
         // The server ends a subscription with an error that carries its id,
         // for example when it unregisters the target.
         const qint64 id = frame->value(field(PhosphorIpc::Field::Id)).toInteger();
@@ -152,7 +164,8 @@ bool IpcClient::write(const QJsonObject& request, const QDeadlineTimer& deadline
 {
     const QByteArray line = PhosphorIpc::writeLine(request);
     if (line.size() > MaxLineBytes) {
-        if (error) *error = {{}, QStringLiteral("the request is over %1 MiB").arg(MaxLineBytes >> 20), false, true};
+        if (error)
+            *error = {{}, QStringLiteral("the request is over %1 MiB").arg(MaxLineBytes >> 20), false, true};
         return false;
     }
     m_socket.write(line);
@@ -198,7 +211,8 @@ std::optional<QJsonObject> IpcClient::readReply(qint64 id, const QDeadlineTimer&
 {
     while (true) {
         const auto frame = readFrame(deadline, error);
-        if (!frame) return std::nullopt;
+        if (!frame)
+            return std::nullopt;
         const QJsonValue frameId = frame->value(field(PhosphorIpc::Field::Id));
         // The server cannot name the request of a line that it could not
         // read. Calls run one at a time, so it is this one.

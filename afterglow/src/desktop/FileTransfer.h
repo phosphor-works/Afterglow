@@ -9,7 +9,8 @@
 
 namespace Afterglow {
 /// OSC 5113 sessions. Filesystem and compression work runs off the GUI thread.
-class FileTransfer : public QObject {
+class FileTransfer : public QObject
+{
     Q_OBJECT
 public:
     /// The delta limit in bytes until setDeltaLimit() is called. It matches
@@ -29,12 +30,13 @@ public:
     /// that the answer does not cover are refused or get a question of their
     /// own. For a write, it also tells that the files that come while the
     /// question shows are refused, also when it lists every file.
-    struct Question {
+    struct Question
+    {
         QString text;
         QString detail;
     };
     static Question question(bool writing, const QStringList& paths, int total, bool othersRefused,
-        const QString& asker = { });
+                             const QString& asker = {});
     /// Ends the pause after a wrong password at once, in every pane. A test
     /// calls it, so that its pause does not reach the tests after it.
     static void endPasswordPause();
@@ -75,7 +77,8 @@ Q_SIGNALS:
     /// @p othersRefused: the answer refuses the files that @p paths does not
     /// hold, with no other request for them. That is always so for a read,
     /// and for a write in the request that opens in the cooldown after a No.
-    void permissionRequested(const QString& token, bool writing, const QStringList& paths, int total, bool othersRefused);
+    void permissionRequested(const QString& token, bool writing, const QStringList& paths, int total,
+                             bool othersRefused);
 
 private:
     friend struct FileTransferTestPeer; ///< PaneProtocolTest reads deliveryWindowFull()

@@ -147,7 +147,10 @@ public:
     /// False once next() read bytes that are not UTF-8, and at the end of
     /// the data so far bytes that no later byte can make UTF-8. The wire
     /// would carry U+FFFD in their place, so the client refuses the input.
-    bool text() const { return m_text; }
+    bool text() const
+    {
+        return m_text;
+    }
 
 private:
     std::size_t m_limit;

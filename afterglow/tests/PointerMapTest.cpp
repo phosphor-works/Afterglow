@@ -38,8 +38,11 @@ std::unique_ptr<AfterglowRender::GpuDevice> s_device;
 std::string s_noDevice;
 bool s_noVulkan = false;
 
-struct QuietHost : AfterglowVt::ITerminalHost {
-    void writeToPty(std::string_view) override {}
+struct QuietHost : AfterglowVt::ITerminalHost
+{
+    void writeToPty(std::string_view) override
+    {
+    }
 };
 
 constexpr int Cols = 40;
@@ -49,7 +52,8 @@ constexpr int Rows = 12;
 /// pointer would miss: a test of the map, not of the identity.
 QVariantMap packValues()
 {
-    return {{QStringLiteral("crt-curve"), QVariantMap{{QStringLiteral("curvature"), 0.3}, {QStringLiteral("vignette"), 0.0}}},
+    return {{QStringLiteral("crt-curve"),
+             QVariantMap{{QStringLiteral("curvature"), 0.3}, {QStringLiteral("vignette"), 0.0}}},
             {QStringLiteral("tilt"), QVariantMap{{QStringLiteral("glow"), 0.0}}}};
 }
 
@@ -58,7 +62,8 @@ QVariantMap packValues()
 TEST(PointerMap, TheBundledMapsFindTheCellDrawnUnderThePointer)
 {
     if (!s_device) {
-        if (s_noVulkan) GTEST_SKIP() << s_noDevice;
+        if (s_noVulkan)
+            GTEST_SKIP() << s_noDevice;
         FAIL() << s_noDevice;
     }
     ShaderLibrary library;
@@ -74,7 +79,8 @@ TEST(PointerMap, TheBundledMapsFindTheCellDrawnUnderThePointer)
     for (int row = 0; row < Rows; ++row) {
         for (int col = 0; col < Cols; ++col)
             board += (row + col) % 2 ? "\x1b[48;2;255;255;255m " : "\x1b[48;2;0;0;0m ";
-        if (row + 1 < Rows) board += "\r\n";
+        if (row + 1 < Rows)
+            board += "\r\n";
     }
     terminal.feed(board);
     AfterglowRender::PaneSnapshot snapshot;
@@ -88,14 +94,16 @@ TEST(PointerMap, TheBundledMapsFindTheCellDrawnUnderThePointer)
     // The packs by name, at values that move the content: not whatever else
     // the data directories hold. A bundled pack with a map joins the list.
     const QStringList mapped{QStringLiteral("crt-curve"), QStringLiteral("tilt")};
-    const QStringList bundled = QDir(QStringLiteral(AFTERGLOW_SOURCE_SHADERS)).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    const QStringList bundled =
+        QDir(QStringLiteral(AFTERGLOW_SOURCE_SHADERS)).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
     ASSERT_TRUE(bundled.contains(QStringLiteral("tilt"))) << AFTERGLOW_SOURCE_SHADERS;
     for (const QString& id : bundled) {
         ShaderLibrary::Refs refs;
         refs.pane = {id};
         const auto chains = library.build(refs, {});
         if (chains.pane.size() == 1 && chains.pane.front()->hasPointerMap()) {
-            EXPECT_TRUE(mapped.contains(id)) << id.toStdString() << " has a pointer map: add it here, with values that move its content";
+            EXPECT_TRUE(mapped.contains(id))
+                << id.toStdString() << " has a pointer map: add it here, with values that move its content";
         }
     }
     for (const QString& id : mapped) {
@@ -116,20 +124,25 @@ TEST(PointerMap, TheBundledMapsFindTheCellDrawnUnderThePointer)
             for (int y = 1; y < image.height(); y += 3) {
                 for (int x = 1; x < image.width(); x += 3) {
                     const QPointF pixel(x + 0.5, y + 0.5);
-                    const QPointF at = window ? renderer.windowContentPoint(pixel) : renderer.paneContentPoint(pixel, 1);
+                    const QPointF at =
+                        window ? renderer.windowContentPoint(pixel) : renderer.paneContentPoint(pixel, 1);
                     const double col = at.x() / cw, row = at.y() / ch;
                     // Near a cell's edge the picture blends two cells, and near
                     // the pane's edge the content leaves it: neither has one answer.
                     const double fx = col - std::floor(col), fy = row - std::floor(row);
-                    if (std::min(fx, 1.0 - fx) < 0.25 || std::min(fy, 1.0 - fy) < 0.25) continue;
-                    if (col < 1 || row < 1 || col > Cols - 1 || row > Rows - 1) continue;
+                    if (std::min(fx, 1.0 - fx) < 0.25 || std::min(fy, 1.0 - fy) < 0.25)
+                        continue;
+                    if (col < 1 || row < 1 || col > Cols - 1 || row > Rows - 1)
+                        continue;
                     const QRgb drawn = image.pixel(x, y);
                     const bool white = std::max({qRed(drawn), qGreen(drawn), qBlue(drawn)}) > 80;
                     const bool expected = (int(row) + int(col)) % 2;
                     ++checked;
-                    if (white != expected) ++wrong;
+                    if (white != expected)
+                        ++wrong;
                     const bool plain = (y / ch + x / cw) % 2;
-                    if (white != plain) ++missedWithoutMap;
+                    if (white != plain)
+                        ++missedWithoutMap;
                 }
             }
             EXPECT_GT(checked, 500);
@@ -148,7 +161,8 @@ int main(int argc, char** argv)
     // packs above the system's, and XDG_DATA_DIRS stays: the Vulkan loader
     // finds its drivers there.
     QTemporaryDir home;
-    if (!home.isValid()) return 1;
+    if (!home.isValid())
+        return 1;
     qputenv("XDG_CONFIG_HOME", home.filePath(QStringLiteral("config")).toUtf8());
     qputenv("XDG_DATA_HOME", home.filePath(QStringLiteral("data-home")).toUtf8());
     QGuiApplication app(argc, argv);

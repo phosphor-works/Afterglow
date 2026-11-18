@@ -37,7 +37,7 @@ namespace AfterglowProto {
 inline bool writeAll(int fd, std::string_view bytes, int wake = -1)
 {
     const auto woken = [wake] {
-        pollfd ready { wake, POLLIN, 0 };
+        pollfd ready{wake, POLLIN, 0};
         return wake >= 0 && ::poll(&ready, 1, 0) > 0;
     };
     while (!bytes.empty()) {
@@ -68,7 +68,7 @@ inline bool writeAll(int fd, std::string_view bytes, int wake = -1)
         }
         // The poll ends on room, an error or the wake: the next write or the
         // wake check tells which.
-        pollfd fds[2] = { { fd, POLLOUT, 0 }, { wake, POLLIN, 0 } };
+        pollfd fds[2] = {{fd, POLLOUT, 0}, {wake, POLLIN, 0}};
         if (::poll(fds, wake >= 0 ? 2 : 1, -1) < 0 && errno != EINTR) {
             return false;
         }
@@ -90,8 +90,8 @@ inline std::string currentDirectory()
             continue;
         }
         const char* pwd = std::getenv("PWD");
-        struct stat named { };
-        struct stat here { };
+        struct stat named{};
+        struct stat here{};
         if (pwd && *pwd == '/' && ::stat(pwd, &named) == 0 && ::stat(".", &here) == 0 && named.st_dev == here.st_dev
             && named.st_ino == here.st_ino) {
             return pwd;
@@ -124,10 +124,19 @@ public:
     }
     UniqueFd(const UniqueFd&) = delete;
     UniqueFd& operator=(const UniqueFd&) = delete;
-    ~UniqueFd() { reset(); }
+    ~UniqueFd()
+    {
+        reset();
+    }
 
-    int get() const { return m_fd; }
-    bool valid() const { return m_fd >= 0; }
+    int get() const
+    {
+        return m_fd;
+    }
+    bool valid() const
+    {
+        return m_fd >= 0;
+    }
     /// Closes the descriptor that it held and takes @p fd. errno is kept.
     void reset(int fd = -1)
     {
@@ -138,7 +147,10 @@ public:
         }
         m_fd = fd;
     }
-    int release() { return std::exchange(m_fd, -1); }
+    int release()
+    {
+        return std::exchange(m_fd, -1);
+    }
 
 private:
     int m_fd = -1;

@@ -20,7 +20,10 @@ namespace {
 
 struct AnimDecoder
 {
-    void operator()(WebPAnimDecoder* decoder) const { WebPAnimDecoderDelete(decoder); }
+    void operator()(WebPAnimDecoder* decoder) const
+    {
+        WebPAnimDecoderDelete(decoder);
+    }
 };
 
 } // namespace
@@ -32,20 +35,25 @@ Probe probeWebP(std::string_view bytes, int& width, int& height)
     // header (VP8X) with the size of the canvas. Each kind has its size in
     // its own place, and a lossless image of one colour is shorter than the
     // headers of the other two.
-    if (bytes.size() < 16) return Probe::Unknown;
+    if (bytes.size() < 16)
+        return Probe::Unknown;
     const std::string_view chunk = bytes.substr(12, 4);
     if (chunk == "VP8L") {
-        if (bytes.size() < 25 || at(bytes, 20) != 0x2F) return Probe::Unknown;
+        if (bytes.size() < 25 || at(bytes, 20) != 0x2F)
+            return Probe::Unknown;
         const std::uint32_t bits = little(bytes, 21, 4);
         return sized((bits & 0x3FFF) + 1, (bits >> 14 & 0x3FFF) + 1, width, height);
     }
-    if (bytes.size() < 30) return Probe::Unknown;
+    if (bytes.size() < 30)
+        return Probe::Unknown;
     if (chunk == "VP8 ") {
         // The frame tag, then the start code and two sides of 14 bits.
-        if (at(bytes, 23) != 0x9D || at(bytes, 24) != 0x01 || at(bytes, 25) != 0x2A) return Probe::Unknown;
+        if (at(bytes, 23) != 0x9D || at(bytes, 24) != 0x01 || at(bytes, 25) != 0x2A)
+            return Probe::Unknown;
         return sized(little(bytes, 26, 2) & 0x3FFF, little(bytes, 28, 2) & 0x3FFF, width, height);
     }
-    if (chunk == "VP8X") return sized(std::uint64_t(little(bytes, 24, 3)) + 1, std::uint64_t(little(bytes, 27, 3)) + 1, width, height);
+    if (chunk == "VP8X")
+        return sized(std::uint64_t(little(bytes, 24, 3)) + 1, std::uint64_t(little(bytes, 27, 3)) + 1, width, height);
     return Probe::Unknown;
 }
 
@@ -54,12 +62,15 @@ ColorSpace webpColorSpace(std::string_view bytes)
     // Only the extended format holds a profile, and only when its header
     // says so (the ICC flag), as libwebp and browsers read it.
     ColorSpace space;
-    if (bytes.size() < 21 || bytes.substr(12, 4) != "VP8X" || !(at(bytes, 20) & 0x20)) return space;
+    if (bytes.size() < 21 || bytes.substr(12, 4) != "VP8X" || !(at(bytes, 20) & 0x20))
+        return space;
     for (std::size_t pos = 12; pos + 8 <= bytes.size();) {
         const std::size_t length = little(bytes, pos + 4, 4);
-        if (length > bytes.size() - pos - 8) break;
+        if (length > bytes.size() - pos - 8)
+            break;
         if (bytes.substr(pos, 4) == "ICCP") {
-            if (length <= MaxIcc) space.icc.assign(bytes.substr(pos + 8, length));
+            if (length <= MaxIcc)
+                space.icc.assign(bytes.substr(pos + 8, length));
             break;
         }
         pos += 8 + length + (length & 1);
@@ -71,7 +82,8 @@ bool decodeWebP(std::string_view bytes, const FrameSink& sink, const Options&, s
 {
     int width = 0;
     int height = 0;
-    if (refused(probeWebP(bytes, width, height), "WebP", error)) return false;
+    if (refused(probeWebP(bytes, width, height), "WebP", error))
+        return false;
     const auto* data = reinterpret_cast<const std::uint8_t*>(bytes.data());
     WebPBitstreamFeatures features{};
     if (WebPGetFeatures(data, bytes.size(), &features) != VP8_STATUS_OK) {
@@ -101,7 +113,8 @@ bool decodeWebP(std::string_view bytes, const FrameSink& sink, const Options&, s
         // a lossy image with that status too, so there the status says
         // nothing and the file counts as bad (Decode.h says so).
         const bool lossyAlpha = features.format == 1 && features.has_alpha;
-        if (status == VP8_STATUS_OUT_OF_MEMORY && !lossyAlpha) throw std::bad_alloc();
+        if (status == VP8_STATUS_OUT_OF_MEMORY && !lossyAlpha)
+            throw std::bad_alloc();
         if (status != VP8_STATUS_OK) {
             error = "the WebP is corrupt";
             return false;
@@ -154,16 +167,20 @@ bool decodeWebP(std::string_view bytes, const FrameSink& sink, const Options&, s
         // frames of the longest time pass it. Such an animation stops at the
         // frame before, so that the decoder never adds past its int.
         WebPIterator next;
-        if (!WebPDemuxGetFrame(demuxer, frames + 1, &next)) return damaged("the animation of the WebP is corrupt");
+        if (!WebPDemuxGetFrame(demuxer, frames + 1, &next))
+            return damaged("the animation of the WebP is corrupt");
         const int delay = next.duration;
         WebPDemuxReleaseIterator(&next);
-        if (delay < 0 || shown + delay > INT_MAX) return damaged("the animation of the WebP is longer than 24 days");
+        if (delay < 0 || shown + delay > INT_MAX)
+            return damaged("the animation of the WebP is longer than 24 days");
         std::uint8_t* canvas = nullptr;
         int end = 0;
-        if (!WebPAnimDecoderGetNext(decoder.get(), &canvas, &end)) return damaged("the animation of the WebP is corrupt");
+        if (!WebPAnimDecoderGetNext(decoder.get(), &canvas, &end))
+            return damaged("the animation of the WebP is corrupt");
         ++frames;
         shown += delay;
-        if (!sink(canvas, width, height, delay)) return true;
+        if (!sink(canvas, width, height, delay))
+            return true;
     }
     if (frames == 0) {
         error = "the WebP has no frame";

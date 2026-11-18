@@ -16,7 +16,10 @@ public:
     /// take the event of a later tick of its task. The receiver passes each
     /// call's key to claim() once, when the call runs or is dropped.
     using Event = std::function<void(const QString& handler, QVariantMap event, quint64 task)>;
-    explicit ScriptTasks(QObject* parent = nullptr) : QObject(parent) {}
+    explicit ScriptTasks(QObject* parent = nullptr)
+        : QObject(parent)
+    {
+    }
     ~ScriptTasks() override;
     ScriptHost::EffectResult apply(const QString& owner, const QVariantMap&, Completion, Event);
     void clear(const QString& owner);
@@ -30,6 +33,7 @@ public:
     /// while its call waits stops the call, and ends here: its call can
     /// start a timer of the same name.
     bool claim(quint64 key);
+
 private:
     struct Task;
     QHash<QString, QHash<QString, Task*>> m_tasks;

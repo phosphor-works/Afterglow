@@ -32,15 +32,22 @@ struct Host : RecordingHost
     bool answerClipboard = false;
     std::string clipboardWritten;
 
-    void userVarChanged(std::string_view n, std::string_view v) override { userVars.emplace_back(n, v); }
+    void userVarChanged(std::string_view n, std::string_view v) override
+    {
+        userVars.emplace_back(n, v);
+    }
     bool clipboardRequest(const ClipboardRequest& r) override
     {
         clipboardReads.push_back(r);
         return answerClipboard;
     }
-    void clipboardWrite(std::string_view, std::string_view data) override { clipboardWritten.assign(data); }
+    void clipboardWrite(std::string_view, std::string_view data) override
+    {
+        clipboardWritten.assign(data);
+    }
     // Any "image": a 4x2 opaque red picture.
-    bool decodeImage(std::string_view data, std::uint32_t& w, std::uint32_t& h, std::vector<std::uint8_t>& rgba) override
+    bool decodeImage(std::string_view data, std::uint32_t& w, std::uint32_t& h,
+                     std::vector<std::uint8_t>& rgba) override
     {
         if (data != "picture") {
             return false;
@@ -63,7 +70,8 @@ struct Host : RecordingHost
             lastMaxBytes = maxBytes;
             const std::uint32_t side = data == "photo" ? 512 : 1;
             const std::size_t count = data == "photo" ? 1 : GraphicsStore::MaxFrames + 5;
-            if (std::size_t(side) * side * 4 * count > maxBytes) return false;
+            if (std::size_t(side) * side * 4 * count > maxBytes)
+                return false;
             for (std::size_t i = 0; i < count; ++i) {
                 ImageFrame f;
                 f.width = f.height = side;
@@ -73,7 +81,8 @@ struct Host : RecordingHost
             }
             return true;
         }
-        if (data != "animation") return RecordingHost::decodeImageFrames(data, maxBytes, frames, delays);
+        if (data != "animation")
+            return RecordingHost::decodeImageFrames(data, maxBytes, frames, delays);
         lastMaxBytes = maxBytes;
         for (const std::uint8_t channel : {0, 1, 2}) {
             ImageFrame f;
@@ -202,11 +211,15 @@ TEST(Extensions, PromptClickEvents)
     // with an absolute y; one that does not gets cursor keys.
     Host host;
     Terminal t(40, 6, host);
-    t.feed("\x1b]133;A;click_events=1\x07$ \x1b]133;B\x07" "abc");
+    t.feed(
+        "\x1b]133;A;click_events=1\x07$ \x1b]133;B\x07"
+        "abc");
     EXPECT_EQ(t.promptClickInput(2, 0), "\x1b[<0;3;1M\x1b[<0;3;1m");
     t.feed("\r\n\x1b]133;C\x07");
     EXPECT_EQ(t.promptClickInput(2, 0), ""); // running, not at the prompt
-    t.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07" "abc");
+    t.feed(
+        "\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07"
+        "abc");
     EXPECT_EQ(t.promptClickInput(2, 1), "\x1b[D\x1b[D\x1b[D");
     EXPECT_EQ(t.promptClickInput(2, 0), ""); // above this prompt
 }
@@ -217,7 +230,9 @@ TEST(Extensions, PromptClickModesSpecialKeyAndSecondaryPrompt)
     Terminal t(40, 6, host);
     // click_events=2: y relative to the top line of the current prompt, the
     // secondary prompt when it starts on or above the click.
-    t.feed("\x1b]133;A;click_events=2\x07$ \x1b]133;B\x07" "for x in 1\r\n\x1b]133;A;k=s\x07> echo");
+    t.feed(
+        "\x1b]133;A;click_events=2\x07$ \x1b]133;B\x07"
+        "for x in 1\r\n\x1b]133;A;k=s\x07> echo");
     EXPECT_EQ(t.promptClickInput(4, 0), "\x1b[<0;5;0M\x1b[<0;5;0m");
     EXPECT_EQ(t.promptClickInput(4, 1), "\x1b[<0;5;0M\x1b[<0;5;0m");
     EXPECT_EQ(t.promptClickInput(4, 2), "\x1b[<0;5;1M\x1b[<0;5;1m");
@@ -232,7 +247,9 @@ TEST(Extensions, PromptClickModesSpecialKeyAndSecondaryPrompt)
     ASSERT_EQ(host.commandsStarted.size(), 1u);
     EXPECT_EQ(host.commandsStarted[0].substr(0, 10), "for x in 1");
     // special_key=1: kitty's key 1 in place of the arrows.
-    t.feed("\x1b]133;D;0\x07\x1b]133;A;special_key=1\x07$ \x1b]133;B\x07" "ab");
+    t.feed(
+        "\x1b]133;D;0\x07\x1b]133;A;special_key=1\x07$ \x1b]133;B\x07"
+        "ab");
     const int row = t.screen().cursor.y;
     EXPECT_EQ(t.promptClickInput(2, row), "\x1b[1;1u\x1b[1;1u");
     t.feed("\x1b[D\x1b[D");
@@ -270,7 +287,9 @@ TEST(Extensions, TheSecondaryPromptFollowsItsRow)
 {
     Host host;
     Terminal t(40, 6, host);
-    t.feed("\x1b]133;A;click_events=2\x07$ \x1b]133;B\x07" "for x\r\n\x1b]133;A;k=s\x07> echo");
+    t.feed(
+        "\x1b]133;A;click_events=2\x07$ \x1b]133;B\x07"
+        "for x\r\n\x1b]133;A;k=s\x07> echo");
     EXPECT_EQ(t.promptClickInput(4, 1), "\x1b[<0;5;0M\x1b[<0;5;0m");
     // A narrower screen reflows: the prompt rows stay as the shell drew them.
     t.resize(30, 6, 0, 0);
@@ -280,19 +299,25 @@ TEST(Extensions, TheSecondaryPromptFollowsItsRow)
     Terminal scrolled(40, 6, host);
     scrolled.feed("a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\n\x1b[H\x1b[J");
     ASSERT_GT(scrolled.primaryScreen().historySize(), 0u);
-    scrolled.feed("\x1b]133;A;click_events=2\x07$ \x1b]133;B\x07" "for x\r\n\x1b]133;A;k=s\x07> echo");
+    scrolled.feed(
+        "\x1b]133;A;click_events=2\x07$ \x1b]133;B\x07"
+        "for x\r\n\x1b]133;A;k=s\x07> echo");
     EXPECT_EQ(scrolled.promptClickInput(4, 1), "\x1b[<0;5;0M\x1b[<0;5;0m");
     scrolled.feed("\x1b[1+T");
     // The cursor stays on row 1, now the primary prompt's row: the click on
     // row 2 counts from the secondary prompt there, not from row 1.
     EXPECT_EQ(scrolled.promptClickInput(4, 2), "\x1b[<0;5;0M\x1b[<0;5;0m");
     // A new prompt clears it: y counts from the new prompt.
-    t.feed("\r\n\x1b]133;A;click_events=2\x07$ \x1b]133;B\x07" "ls\r\nmore");
+    t.feed(
+        "\r\n\x1b]133;A;click_events=2\x07$ \x1b]133;B\x07"
+        "ls\r\nmore");
     const int prompt = t.screen().cursor.y - 1;
     EXPECT_EQ(t.promptClickInput(2, prompt + 1), "\x1b[<0;3;1M\x1b[<0;3;1m");
     // k=s in the output, or on the alternate screen, marks nothing.
     t.feed("\r\n\x1b]133;C\x07\x1b]133;A;k=s\x07");
-    t.feed("\x1b]133;D;0\x07\x1b]133;A;click_events=2\x07$ \x1b]133;B\x07" "ls\r\nmore");
+    t.feed(
+        "\x1b]133;D;0\x07\x1b]133;A;click_events=2\x07$ \x1b]133;B\x07"
+        "ls\r\nmore");
     const int next = t.screen().cursor.y - 1;
     EXPECT_EQ(t.promptClickInput(2, next + 1), "\x1b[<0;3;1M\x1b[<0;3;1m");
     t.feed("\x1b[?1049h\x1b]133;A;k=s\x07\x1b[?1049l");
@@ -474,7 +499,10 @@ TEST(Extensions, HostSessionsAreBoundedAndReset)
     struct Host : RecordingHost
     {
         std::vector<std::pair<int, std::string>> calls;
-        void terminalProtocol(int code, std::string_view payload) override { calls.emplace_back(code, payload); }
+        void terminalProtocol(int code, std::string_view payload) override
+        {
+            calls.emplace_back(code, payload);
+        }
     } host;
     Terminal t(20, 4, host);
     t.feed("\x1b]72;abc\x07");
@@ -497,7 +525,9 @@ TEST(Extensions, HostSessionsAreBoundedAndReset)
     EXPECT_EQ(host.calls[4], (std::pair<int, std::string>{5113, transfer}));
     EXPECT_EQ(host.calls[5], (std::pair<int, std::string>{5113, transfer + "z"}));
     // A reset and the end of the program both end the sessions.
-    t.feed("\x1b" "c");
+    t.feed(
+        "\x1b"
+        "c");
     t.programExited();
     ASSERT_EQ(host.calls.size(), 8u);
     EXPECT_EQ(host.calls[6], (std::pair<int, std::string>{0, ""}));
@@ -562,8 +592,9 @@ TEST(Extensions, ITerm2InlineImages)
     EXPECT_EQ(t.screen().cursor.y, 0);
     EXPECT_EQ(t.screen().cursor.x, 3);
     // In parts, and natural size.
-    t.feed("\r\n\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07\x1b]1337;FilePart=VyZQ==\x07"
-           "\x1b]1337;FileEnd\x07");
+    t.feed(
+        "\r\n\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07\x1b]1337;FilePart=VyZQ==\x07"
+        "\x1b]1337;FileEnd\x07");
     ASSERT_EQ(t.graphics().placements().size(), 2u);
     const Image& second = t.graphics().images().at(t.graphics().placements()[1].imageId);
     EXPECT_EQ(second.width, 4u);
@@ -582,12 +613,15 @@ TEST(Extensions, ITerm2InterruptedMultipartFileLeavesNoImage)
     t.feed("\x1b]1337;FileEnd\x07");
     ASSERT_EQ(t.graphics().placements().size(), 1u);
     // Cut off by RIS: no image, and a FileEnd after it does nothing.
-    t.feed("\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdHVyZQ==\x07\x1b" "c");
+    t.feed(
+        "\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdHVyZQ==\x07\x1b"
+        "c");
     t.feed("\x1b]1337;FileEnd\x07");
     EXPECT_TRUE(t.graphics().placements().empty());
     // The next transfer works.
-    t.feed("\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07\x1b]1337;FilePart=VyZQ==\x07"
-           "\x1b]1337;FileEnd\x07");
+    t.feed(
+        "\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07\x1b]1337;FilePart=VyZQ==\x07"
+        "\x1b]1337;FileEnd\x07");
     ASSERT_EQ(t.graphics().placements().size(), 1u);
     const Image& img = t.graphics().images().at(t.graphics().placements()[0].imageId);
     EXPECT_EQ(img.width, 4u);
@@ -737,15 +771,27 @@ TEST(Extensions, LegacyNotificationsRejectControlsAndBadUtf8)
     Host host;
     Terminal t(20, 4, host);
     // OSC 9 and OSC 777 text goes through the same check as OSC 99 text.
-    for (const std::string text : {"a\x7f" "b", "a\xc2\x85" "b", "a\xff" "b", "a\xc0\x80" "b", "a\xe2\x82"}) {
+    for (const std::string text : {"a\x7f"
+                                   "b",
+                                   "a\xc2\x85"
+                                   "b",
+                                   "a\xff"
+                                   "b",
+                                   "a\xc0\x80"
+                                   "b",
+                                   "a\xe2\x82"}) {
         t.feed("\x1b]9;" + text + "\x07");
         t.feed("\x1b]777;notify;" + text + ";body\x07");
         t.feed("\x1b]777;notify;title;" + text + "\x07");
     }
     EXPECT_TRUE(host.notified.empty());
     // A line separator is allowed, as in OSC 99, and so is valid UTF-8.
-    t.feed("\x1b]9;caf\xc3\xa9\xe2\x80\xa8" "done\x07");
-    EXPECT_EQ(host.notified, "|caf\xc3\xa9\xe2\x80\xa8" "done");
+    t.feed(
+        "\x1b]9;caf\xc3\xa9\xe2\x80\xa8"
+        "done\x07");
+    EXPECT_EQ(host.notified,
+              "|caf\xc3\xa9\xe2\x80\xa8"
+              "done");
     t.feed("\x1b]777;notify;T\xe2\x80\xa9;b\xc3\xa9\x07");
     EXPECT_EQ(host.notified, "T\xe2\x80\xa9|b\xc3\xa9");
 }
@@ -771,10 +817,14 @@ struct DownloadHost : RecordingHost
     bool downloadData(std::string_view bytes) override
     {
         dataBytes += bytes.size();
-        if (keepData) data.append(bytes);
+        if (keepData)
+            data.append(bytes);
         return !failWrites;
     }
-    void downloadEnd(bool complete) override { ended.push_back(complete); }
+    void downloadEnd(bool complete) override
+    {
+        ended.push_back(complete);
+    }
 };
 } // namespace
 
@@ -784,7 +834,9 @@ TEST(Extensions, ADownloadHoldsTheOutputUntilItsAnswer)
     // output after its head waits for the answer, then the data streams.
     DownloadHost host;
     Terminal t(20, 4, host);
-    t.feed("before\x1b]1337;File=name=dGVzdC50eHQ=;size=5:aGVsbG8=\x07" "after");
+    t.feed(
+        "before\x1b]1337;File=name=dGVzdC50eHQ=;size=5:aGVsbG8=\x07"
+        "after");
     ASSERT_EQ(host.begun.size(), 1u);
     EXPECT_EQ(host.begun[0], (std::pair<std::string, std::int64_t>{"test.txt", 5}));
     EXPECT_TRUE(t.holdsInput());
@@ -801,7 +853,9 @@ TEST(Extensions, ADownloadHoldsTheOutputUntilItsAnswer)
     EXPECT_EQ(host.ended, (std::vector<bool>{true}));
     EXPECT_EQ(rowText(t, 0), "beforeaftermore");
     // Refused: its data goes nowhere, and the output goes on.
-    t.feed("\r\n\x1b]1337;File=size=5:aGVsbG8=\x07" "next");
+    t.feed(
+        "\r\n\x1b]1337;File=size=5:aGVsbG8=\x07"
+        "next");
     ASSERT_EQ(host.begun.size(), 2u);
     EXPECT_EQ(host.begun[1], (std::pair<std::string, std::int64_t>{"", 5}));
     t.answerDownload(false);
@@ -811,7 +865,9 @@ TEST(Extensions, ADownloadHoldsTheOutputUntilItsAnswer)
     EXPECT_EQ(rowText(t, 1), "next");
     // A host that refuses at once holds nothing.
     host.answerLater = false;
-    t.feed("\r\n\x1b]1337;File=:aGVsbG8=\x07" "now");
+    t.feed(
+        "\r\n\x1b]1337;File=:aGVsbG8=\x07"
+        "now");
     EXPECT_FALSE(t.holdsInput());
     EXPECT_EQ(rowText(t, 2), "now");
     EXPECT_EQ(host.ended.size(), 1u);
@@ -841,7 +897,8 @@ TEST(Extensions, DownloadsEndCompleteOnlyWithValidDataOfTheirSize)
     std::size_t ends = host.ended.size();
     t.feed("\x1b]1337;File=size=11:aGVsbG8g");
     t.answerDownload(true);
-    for (const char c : std::string("d2\r\n9y\nbGQ=\x07")) t.feed(std::string(1, c));
+    for (const char c : std::string("d2\r\n9y\nbGQ=\x07"))
+        t.feed(std::string(1, c));
     EXPECT_EQ(host.data, "hello world");
     ASSERT_EQ(host.ended.size(), ends + 1);
     EXPECT_TRUE(host.ended.back());
@@ -858,7 +915,10 @@ TEST(Extensions, DownloadsEndCompleteOnlyWithValidDataOfTheirSize)
     EXPECT_FALSE(host.ended.back());
     // So does another sequence after its ESC: a shell's prompt mark, or RIS.
     // Only ST ends it whole.
-    for (const std::string cut : {"\x1b]133;A\x07", "\x1b" "c", "\x1b\x1b\\"}) {
+    for (const std::string cut : {"\x1b]133;A\x07",
+                                  "\x1b"
+                                  "c",
+                                  "\x1b\x1b\\"}) {
         EXPECT_EQ(run("\x1b]1337;File=:aGVsbG8=" + cut), 0) << cut;
     }
     EXPECT_EQ(run("\x1b]1337;File=:aGVsbG8=\x1b\\"), 1);
@@ -883,7 +943,9 @@ TEST(Extensions, MultipartDownloadsStreamTheirParts)
 {
     DownloadHost host;
     Terminal t(20, 4, host);
-    t.feed("\x1b]1337;MultipartFile=name=dGVzdC50eHQ=;size=5\x07" "x");
+    t.feed(
+        "\x1b]1337;MultipartFile=name=dGVzdC50eHQ=;size=5\x07"
+        "x");
     ASSERT_EQ(host.begun.size(), 1u);
     EXPECT_TRUE(t.holdsInput());
     EXPECT_EQ(rowText(t, 0), "");
@@ -912,7 +974,8 @@ TEST(Extensions, ADownloadLargerThanTheParsersStringBufferStreams)
     t.feed("\x1b]1337;File=size=" + std::to_string(bytes) + ":");
     t.answerDownload(true);
     const std::string chunk = base64Encode(std::string(3 << 16, 'x'));
-    for (std::size_t sent = 0; sent < bytes; sent += std::size_t(3) << 16) t.feed(chunk);
+    for (std::size_t sent = 0; sent < bytes; sent += std::size_t(3) << 16)
+        t.feed(chunk);
     t.feed("\x07");
     EXPECT_EQ(host.dataBytes, bytes);
     EXPECT_EQ(host.ended, (std::vector<bool>{true}));
@@ -924,7 +987,9 @@ TEST(Extensions, AnEmptyDownloadInOneReadWaitsForItsAnswer)
 {
     DownloadHost host;
     Terminal t(20, 4, host);
-    t.feed("\x1b]1337;File=name=ZQ==;size=0:\x07" "after");
+    t.feed(
+        "\x1b]1337;File=name=ZQ==;size=0:\x07"
+        "after");
     ASSERT_EQ(host.begun.size(), 1u);
     EXPECT_TRUE(t.holdsInput());
     EXPECT_TRUE(host.ended.empty());
@@ -954,7 +1019,9 @@ TEST(Extensions, AnExitEndsADownloadIncomplete)
     // the download's end shows.
     DownloadHost asked;
     Terminal held(20, 4, asked);
-    held.feed("\x1b]1337;File=:aGVsbG8=\x07" "bye");
+    held.feed(
+        "\x1b]1337;File=:aGVsbG8=\x07"
+        "bye");
     ASSERT_TRUE(held.holdsInput());
     held.programExited();
     EXPECT_FALSE(held.holdsInput());
@@ -966,7 +1033,9 @@ TEST(Extensions, AnExitEndsADownloadIncomplete)
     // after it shows.
     DownloadHost twice;
     Terminal both(20, 4, twice);
-    both.feed("\x1b]1337;File=:aGVsbG8=\x07\x1b]1337;File=:aGVsbG8=\x07" "bye");
+    both.feed(
+        "\x1b]1337;File=:aGVsbG8=\x07\x1b]1337;File=:aGVsbG8=\x07"
+        "bye");
     ASSERT_TRUE(both.holdsInput());
     both.programExited();
     EXPECT_FALSE(both.holdsInput());
@@ -1023,7 +1092,9 @@ TEST(Extensions, MultipleCursorsQueryCoordinatesAndLifecycle)
     EXPECT_TRUE(t.extraCursors().empty());
     t.feed("\x1b[>1;0 q");
     ASSERT_FALSE(t.extraCursors().empty());
-    t.feed("\x1b" "c");
+    t.feed(
+        "\x1b"
+        "c");
     EXPECT_TRUE(t.extraCursors().empty());
 }
 
@@ -1055,7 +1126,9 @@ TEST(Extensions, ExtraCursorColorsRoundTripAndReset)
     EXPECT_EQ(t.extraCursorColor().color, Color::palette(123));
     t.feed("\x1b[>1;0 q");
     ASSERT_FALSE(t.extraCursors().empty());
-    t.feed("\x1b" "c");
+    t.feed(
+        "\x1b"
+        "c");
     EXPECT_TRUE(t.extraCursors().empty());
     EXPECT_EQ(t.extraCursorColor().mode, ExtraCursorColor::Mode::Main);
     EXPECT_EQ(t.extraCursorTextColor().mode, ExtraCursorColor::Mode::Main);
@@ -1066,12 +1139,14 @@ TEST(Extensions, MultipleCursorLongListsAndOverflowAreAtomic)
     RecordingHost host;
     Terminal t(100, 10, host);
     std::string command = "\x1b[>1;2";
-    for (int i = 1; i <= 100; ++i) command += ":1:" + std::to_string(i);
+    for (int i = 1; i <= 100; ++i)
+        command += ":1:" + std::to_string(i);
     t.feed(command + " q");
     EXPECT_EQ(t.extraCursors().size(), 100u);
     t.feed("\x1b[>0;4 q");
     command = "\x1b[>1;2";
-    for (int i = 0; i < 3000; ++i) command += ":1:1";
+    for (int i = 0; i < 3000; ++i)
+        command += ":1:1";
     t.feed(command + " q");
     EXPECT_TRUE(t.extraCursors().empty());
 }
@@ -1121,12 +1196,16 @@ TEST(Extensions, PointerShapeStacksQueriesAndReset)
     EXPECT_EQ(host.pointer, "");
     // A full stack discards its oldest entry: 40 pushes keep the last 32.
     t.feed("\x1b]22;pointer\x07");
-    for (int i = 0; i < 40; ++i) t.feed("\x1b]22;>wait\x07");
-    for (int i = 0; i < 31; ++i) t.feed("\x1b]22;<\x07");
+    for (int i = 0; i < 40; ++i)
+        t.feed("\x1b]22;>wait\x07");
+    for (int i = 0; i < 31; ++i)
+        t.feed("\x1b]22;<\x07");
     EXPECT_EQ(host.pointer, "wait");
     t.feed("\x1b]22;<\x07");
     EXPECT_EQ(host.pointer, "");
-    t.feed("\x1b" "c\x1b[?1049h");
+    t.feed(
+        "\x1b"
+        "c\x1b[?1049h");
     EXPECT_EQ(host.pointer, "");
     host.written.clear();
     t.feed("\x1b]22;?__current__\x07");
@@ -1140,7 +1219,9 @@ TEST(Extensions, KittyColorControlNamesDynamicValuesAndStack)
     options.cursorTextColor = Rgb{10, 20, 30};
     options.selectionBackground = Rgb{40, 50, 60};
     Terminal t(10, 2, host, options);
-    t.feed("\x1b]21;foreground=ReD;cursor_text=AliceBlue;visual_bell=green;selection_background=blue;transparent_background_color1=#123456@.25\x07");
+    t.feed(
+        "\x1b]21;foreground=ReD;cursor_text=AliceBlue;visual_bell=green;selection_background=blue;transparent_"
+        "background_color1=#123456@.25\x07");
     EXPECT_EQ(t.defaultForeground(), (Rgb{255, 0, 0}));
     ASSERT_NE(t.cursorTextColor(), nullptr);
     EXPECT_EQ(*t.cursorTextColor(), (Rgb{240, 248, 255}));
@@ -1158,7 +1239,9 @@ TEST(Extensions, KittyColorControlNamesDynamicValuesAndStack)
     ASSERT_TRUE(t.transparentColors()[0]);
     host.written.clear();
     t.feed("\x1b]21;transparent_background_color1=?;visual_bell=?;bad=x;1bad=?\x07");
-    EXPECT_EQ(host.written, "\x1b]21;transparent_background_color1=rgb:12/34/56@0.25;visual_bell=rgb:00/ff/00;unknown=YmFk;unknown=MWJhZA\x07");
+    EXPECT_EQ(host.written,
+              "\x1b]21;transparent_background_color1=rgb:12/34/56@0.25;visual_bell=rgb:00/ff/"
+              "00;unknown=YmFk;unknown=MWJhZA\x07");
     // rgbi components outside 0-1 are clamped, as kitty does (parse_single_intensity).
     t.feed("\x1b]21;cursor_text;selection_background;foreground=rgbi:-1/2/.5;transparent_background_color8=red@-1\x07");
     EXPECT_EQ(*t.cursorTextColor(), (Rgb{10, 20, 30}));
@@ -1166,7 +1249,9 @@ TEST(Extensions, KittyColorControlNamesDynamicValuesAndStack)
     EXPECT_EQ(t.defaultForeground(), (Rgb{0, 255, 128}));
     ASSERT_TRUE(t.transparentColors()[7]);
     EXPECT_DOUBLE_EQ(t.transparentColors()[7]->opacity, -1);
-    t.feed("\x1b" "c");
+    t.feed(
+        "\x1b"
+        "c");
     EXPECT_FALSE(t.transparentColors()[0]);
     EXPECT_FALSE(t.transparentColors()[7]);
     EXPECT_EQ(*t.cursorTextColor(), (Rgb{10, 20, 30}));
@@ -1222,7 +1307,9 @@ TEST(Extensions, SixelThroughTheTerminal)
         const Image& image = t.graphics().images().at(t.graphics().placements().back().imageId);
         const ImageFrame& f = *image.frames.at(0);
         const std::size_t i = (std::size_t(y) * f.width + std::size_t(x)) * 4;
-        const auto c = [&f, i](std::size_t k) { return std::uint32_t(f.rgba.at(i + k)); };
+        const auto c = [&f, i](std::size_t k) {
+            return std::uint32_t(f.rgba.at(i + k));
+        };
         return (c(3) << 24) | (c(0) << 16) | (c(1) << 8) | c(2);
     };
     // 'A' sets only the second row of the sixel, so the image is two rows
@@ -1246,7 +1333,10 @@ namespace {
 struct RemoteSocketHost : RecordingHost
 {
     AfterglowProto::Remote::Answer answer;
-    std::optional<AfterglowProto::Remote::Answer> remoteSocket() override { return answer; }
+    std::optional<AfterglowProto::Remote::Answer> remoteSocket() override
+    {
+        return answer;
+    }
 };
 
 } // namespace

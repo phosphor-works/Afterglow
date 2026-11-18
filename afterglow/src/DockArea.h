@@ -23,23 +23,49 @@ namespace Afterglow {
 class DockArea
 {
 public:
-    enum class Edge { Top, Bottom, Left, Right };
+    enum class Edge {
+        Top,
+        Bottom,
+        Left,
+        Right
+    };
 
     /// @p pane: the ID of the pane whose edge the area docks at, or 0 for
     /// an area at the window's edge.
     DockArea(QString owner, QString id, const AfterglowVt::TerminalOptions& options, quint32 pane = 0);
 
-    const QString& owner() const noexcept { return m_owner; }
-    const QString& id() const noexcept { return m_id; }
-    quint32 pane() const noexcept { return m_pane; }
-    Edge edge() const noexcept { return m_edge; }
+    const QString& owner() const noexcept
+    {
+        return m_owner;
+    }
+    const QString& id() const noexcept
+    {
+        return m_id;
+    }
+    quint32 pane() const noexcept
+    {
+        return m_pane;
+    }
+    Edge edge() const noexcept
+    {
+        return m_edge;
+    }
     /// Rows for the top and bottom edges, columns for the left and right.
-    int size() const noexcept { return m_size; }
+    int size() const noexcept
+    {
+        return m_size;
+    }
     /// Shown in place of the tab bar (top edge only).
-    bool replacesTabBar() const noexcept { return m_tabBar; }
+    bool replacesTabBar() const noexcept
+    {
+        return m_tabBar;
+    }
     /// The order docks on one edge stack in, from the window's or the pane's
     /// edge inward: the order of the last change of place.
-    quint64 order() const noexcept { return m_order; }
+    quint64 order() const noexcept
+    {
+        return m_order;
+    }
 
     /// What a setContent() call changed.
     enum class Change {
@@ -56,7 +82,10 @@ public:
     /// Places the area at @p rect, framebuffer pixels, in whole cells. An
     /// empty @p rect hides it. Returns whether it moved or drew again.
     bool setRect(const QRect& rect, int cellWidth, int cellHeight);
-    const QRect& rect() const noexcept { return m_rect; }
+    const QRect& rect() const noexcept
+    {
+        return m_rect;
+    }
 
     /// What a script learns of where its dock shows: whether it shows, and
     /// its cells. A dock that does not show has none.
@@ -74,7 +103,10 @@ public:
     /// The item of the run under @p point (framebuffer pixels), or empty.
     QString itemAt(const QPoint& point) const;
     /// The text as drawn, one line for each row, for accessibility.
-    const QString& text() const noexcept { return m_text; }
+    const QString& text() const noexcept
+    {
+        return m_text;
+    }
 
     /// A run that a click reports, as drawn. Adjacent runs of one item on a
     /// row are one.
@@ -84,17 +116,25 @@ public:
         QString id;
         QString text; ///< the cells that show, without trailing blanks
     };
-    const std::vector<Item>& items() const noexcept { return m_items; }
+    const std::vector<Item>& items() const noexcept
+    {
+        return m_items;
+    }
     /// Counts the changes to the order of the item ids. New text, cells or
     /// widths of the same items leave it as it is.
-    quint64 itemsGeneration() const noexcept { return m_itemsGeneration; }
+    quint64 itemsGeneration() const noexcept
+    {
+        return m_itemsGeneration;
+    }
     /// Where item @p index shows, framebuffer pixels; empty when it does not.
     QRect itemRect(std::size_t index) const;
 
 private:
     struct NullHost : AfterglowVt::ITerminalHost
     {
-        void writeToPty(std::string_view) override { }
+        void writeToPty(std::string_view) override
+        {
+        }
     };
     /// Gives the terminal the panes' options with the area's own on top.
     void applyOptions();

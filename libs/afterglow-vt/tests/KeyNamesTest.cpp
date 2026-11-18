@@ -59,8 +59,8 @@ TEST(KeyNames, NamesOfTheBindingsAndOfKitty)
 
 TEST(KeyNames, RefusesWhatNamesNoKey)
 {
-    for (const std::string_view name : {"", "ctrl+", "hyper+c", "ctrl++c", "ctrl+foo", "ab", "f0", "f36", "f05", "\x01", "ctrl+\x7f",
-                                        "\xff", "+c", "shift+", "++"}) {
+    for (const std::string_view name : {"", "ctrl+", "hyper+c", "ctrl++c", "ctrl+foo", "ab", "f0", "f36", "f05", "\x01",
+                                        "ctrl+\x7f", "\xff", "+c", "shift+", "++"}) {
         EXPECT_FALSE(parseKeyName(name)) << name;
     }
 }

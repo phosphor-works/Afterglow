@@ -23,7 +23,9 @@ Item {
     readonly property int spinPeriod: 1000
     readonly property int pulsePeriod: 1400
 
-    SystemPalette { id: systemPalette }
+    SystemPalette {
+        id: systemPalette
+    }
     property var status: ({})
 
     readonly property string state_: status && status.state ? status.state : ""
@@ -35,17 +37,17 @@ Item {
 
     // For screen readers, which cannot see the mark.
     readonly property string description: {
-        let words = ""
+        let words = "";
         if (state_ === "working")
-            words = progress >= 0 ? qsTr("Working, %1 percent").arg(progress) : qsTr("Working")
+            words = progress >= 0 ? qsTr("Working, %1 percent").arg(progress) : qsTr("Working");
         else if (state_ === "blocked")
-            words = qsTr("Waiting for input")
+            words = qsTr("Waiting for input");
         else if (state_ === "done")
-            words = qsTr("Done")
+            words = qsTr("Done");
         else if (state_ === "error")
-            words = qsTr("Failed")
-        const text = status && status.text ? status.text : ""
-        return text.length > 0 && words.length > 0 ? words + ". " + text : words
+            words = qsTr("Failed");
+        const text = status && status.text ? status.text : "";
+        return text.length > 0 && words.length > 0 ? words + ". " + text : words;
     }
     Accessible.role: Accessible.Indicator
     Accessible.name: description
@@ -73,19 +75,19 @@ Item {
         // A determinate arc starts at 12 o'clock, whatever turn the spinner was at.
         rotation: root.progress < 0 ? (root.step * 360 * root.stepInterval / root.spinPeriod) % 360 : 0
         onPaint: {
-            const ctx = getContext("2d")
-            ctx.reset()
-            const r = width / 2 - 1.5
-            ctx.lineWidth = 2
-            ctx.strokeStyle = Qt.rgba(tint.r, tint.g, tint.b, 0.25)
-            ctx.beginPath()
-            ctx.arc(width / 2, height / 2, r, 0, Math.PI * 2)
-            ctx.stroke()
-            ctx.strokeStyle = tint
-            ctx.lineCap = "round"
-            ctx.beginPath()
-            ctx.arc(width / 2, height / 2, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * fraction)
-            ctx.stroke()
+            const ctx = getContext("2d");
+            ctx.reset();
+            const r = width / 2 - 1.5;
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = Qt.rgba(tint.r, tint.g, tint.b, 0.25);
+            ctx.beginPath();
+            ctx.arc(width / 2, height / 2, r, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.strokeStyle = tint;
+            ctx.lineCap = "round";
+            ctx.beginPath();
+            ctx.arc(width / 2, height / 2, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * fraction);
+            ctx.stroke();
         }
     }
 
@@ -119,7 +121,6 @@ Item {
     QQC.ToolTip {
         parent: root
         visible: root.hoverable && hover.hovered && text.length > 0
-        text: root.status && root.status.text
-            ? "<span>" + root.status.text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</span>" : ""
+        text: root.status && root.status.text ? "<span>" + root.status.text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</span>" : ""
     }
 }

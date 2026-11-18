@@ -27,9 +27,11 @@ constexpr double MaxGapMs = 50;
 
 void MomentumScroll::setFriction(double friction)
 {
-    if (!std::isfinite(friction)) return;
+    if (!std::isfinite(friction))
+        return;
     friction = std::clamp(friction, 0.0, 1.0);
-    if (friction == m_friction) return;
+    if (friction == m_friction)
+        return;
     const double speed = m_coasting ? coastSpeed() : 0;
     m_friction = friction;
     if (m_friction == 0) {
@@ -70,7 +72,8 @@ void MomentumScroll::startCoast(double speed)
 
 void MomentumScroll::trimSamples(double ms)
 {
-    while (!m_samples.empty() && ms - m_samples.front().ms > SampleWindowMs) m_samples.pop_front();
+    while (!m_samples.empty() && ms - m_samples.front().ms > SampleWindowMs)
+        m_samples.pop_front();
 }
 
 void MomentumScroll::begin(double ms)
@@ -87,7 +90,8 @@ void MomentumScroll::begin(double ms)
 
 void MomentumScroll::move(double delta, double ms)
 {
-    if (!m_gesture) begin(ms);
+    if (!m_gesture)
+        begin(ms);
     if (m_coasting) {
         m_speed = coastSpeed();
         m_coasting = false;
@@ -129,7 +133,8 @@ bool MomentumScroll::release(double ms)
     addSpeed(total / weights);
     m_coastLastMs = ms;
     startCoast(m_speed);
-    if (!m_coasting) m_speed = 0;
+    if (!m_coasting)
+        m_speed = 0;
     return m_coasting;
 }
 
@@ -143,7 +148,8 @@ void MomentumScroll::cancel()
 
 double MomentumScroll::advance(double ms)
 {
-    if (!m_coasting) return 0;
+    if (!m_coasting)
+        return 0;
     m_coastMs += std::clamp(ms - m_coastLastMs, 0.0, MaxGapMs);
     m_coastLastMs = std::max(m_coastLastMs, ms);
     double steps = m_coastMs / StepMs;
@@ -155,8 +161,9 @@ double MomentumScroll::advance(double ms)
     // Where kitty's steps put the coast after a whole number of them, and
     // between two of them in proportion: the speed after n steps is
     // v * f^n, and the distance is their sum, v * f * (1 - f^n) / (1 - f).
-    const double at = m_friction >= 1 ? m_coastStart * steps
-                                      : m_coastStart * m_friction * (1 - std::pow(m_friction, steps)) / (1 - m_friction);
+    const double at = m_friction >= 1
+        ? m_coastStart * steps
+        : m_coastStart * m_friction * (1 - std::pow(m_friction, steps)) / (1 - m_friction);
     const double distance = at - m_travelled;
     m_travelled = at;
     return distance;

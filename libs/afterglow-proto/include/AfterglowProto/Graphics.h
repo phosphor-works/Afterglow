@@ -121,7 +121,10 @@ struct GraphicsReply
     /// then keys.
     std::string write() const;
 
-    bool ok() const { return status == "OK"; }
+    bool ok() const
+    {
+        return status == "OK";
+    }
     bool operator==(const GraphicsReply&) const = default;
 };
 

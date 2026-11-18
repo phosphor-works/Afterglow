@@ -37,7 +37,12 @@ QWindow* windowOf(Pane* pane)
 class DialogKeeper final : public QObject
 {
 public:
-    DialogKeeper(QDialog* dialog, Pane* pane) : QObject(dialog), m_dialog(dialog), m_pane(pane) {}
+    DialogKeeper(QDialog* dialog, Pane* pane)
+        : QObject(dialog)
+        , m_dialog(dialog)
+        , m_pane(pane)
+    {
+    }
 
     void attach(QWindow* window)
     {
@@ -51,7 +56,8 @@ public:
             // or chose in it: only its surface goes.
             m_dialog->hide();
             own->setTransientParent(window);
-            if (m_pane) Q_EMIT shownPane(m_pane)->dialogOpened(m_dialog);
+            if (m_pane)
+                Q_EMIT shownPane(m_pane)->dialogOpened(m_dialog);
             m_dialog->show();
         } else {
             // The dialog's own window takes the new one. A native dialog
@@ -61,7 +67,8 @@ public:
             // would take back the first name, and the portal would open a
             // second chooser.
             own->setTransientParent(window);
-            if (m_pane) Q_EMIT shownPane(m_pane)->dialogOpened(m_dialog);
+            if (m_pane)
+                Q_EMIT shownPane(m_pane)->dialogOpened(m_dialog);
         }
         window->installEventFilter(this);
     }
@@ -70,11 +77,14 @@ protected:
     bool eventFilter(QObject* watched, QEvent* e) override
     {
         if (e->type() != QEvent::PlatformSurface
-            || static_cast<QPlatformSurfaceEvent*>(e)->surfaceEventType() != QPlatformSurfaceEvent::SurfaceAboutToBeDestroyed)
+            || static_cast<QPlatformSurfaceEvent*>(e)->surfaceEventType()
+                != QPlatformSurfaceEvent::SurfaceAboutToBeDestroyed)
             return false;
         watched->removeEventFilter(this);
-        if (QWindow* next = windowOf(m_pane); next && next != watched) attach(next);
-        else m_dialog->reject();
+        if (QWindow* next = windowOf(m_pane); next && next != watched)
+            attach(next);
+        else
+            m_dialog->reject();
         return false;
     }
 
@@ -85,7 +95,9 @@ private:
     {
         const auto kept = [](const QWidget* widget) {
             const QObjectList& children = widget->children();
-            return std::any_of(children.begin(), children.end(), [](QObject* child) { return dynamic_cast<DialogKeeper*>(child); });
+            return std::any_of(children.begin(), children.end(), [](QObject* child) {
+                return dynamic_cast<DialogKeeper*>(child);
+            });
         };
         for (QWidget* widget : QApplication::topLevelWidgets())
             if (widget != m_dialog && widget->isVisible() && qobject_cast<QDialog*>(widget) && widget->windowHandle()
@@ -103,7 +115,8 @@ private:
 void keepDialogOverPane(QDialog* dialog, Pane* pane)
 {
     QWindow* const window = windowOf(pane);
-    if (!window) return;
+    if (!window)
+        return;
     dialog->winId();
     (new DialogKeeper(dialog, pane))->attach(window);
 }

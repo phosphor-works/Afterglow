@@ -15,13 +15,17 @@
 // signature, so each of them gets bytes that start with its own.
 namespace AfterglowImage::detail {
 
-inline std::uint8_t at(std::string_view bytes, std::size_t index) { return std::uint8_t(bytes[index]); }
+inline std::uint8_t at(std::string_view bytes, std::size_t index)
+{
+    return std::uint8_t(bytes[index]);
+}
 
 /// The @p count bytes (4 at most) at @p index as a little-endian number.
 inline std::uint32_t little(std::string_view bytes, std::size_t index, int count)
 {
     std::uint32_t value = 0;
-    for (int i = count; i-- > 0;) value = value << 8 | at(bytes, index + std::size_t(i));
+    for (int i = count; i-- > 0;)
+        value = value << 8 | at(bytes, index + std::size_t(i));
     return value;
 }
 
@@ -29,7 +33,8 @@ inline std::uint32_t little(std::string_view bytes, std::size_t index, int count
 inline std::uint32_t big(std::string_view bytes, std::size_t index, int count)
 {
     std::uint32_t value = 0;
-    for (int i = 0; i < count; ++i) value = value << 8 | at(bytes, index + std::size_t(i));
+    for (int i = 0; i < count; ++i)
+        value = value << 8 | at(bytes, index + std::size_t(i));
     return value;
 }
 
@@ -42,9 +47,11 @@ void forEachPngChunk(std::string_view bytes, Visit&& visit)
 {
     for (std::size_t pos = 8; pos + 12 <= bytes.size();) {
         const std::size_t length = big(bytes, pos, 4);
-        if (length > bytes.size() - pos - 12) return;
+        if (length > bytes.size() - pos - 12)
+            return;
         const std::string_view type = bytes.substr(pos + 4, 4);
-        if (type == "IEND" || !visit(type, bytes.substr(pos + 8, length), bytes.substr(pos, 12 + length))) return;
+        if (type == "IEND" || !visit(type, bytes.substr(pos + 8, length), bytes.substr(pos, 12 + length)))
+            return;
         pos += 12 + length;
     }
 }
@@ -64,13 +71,15 @@ void forEachJpegSegment(std::string_view bytes, Visit&& visit)
             ++pos; // a fill byte
             continue;
         }
-        if (marker == 0xDA || marker == 0xD9) return;
+        if (marker == 0xDA || marker == 0xD9)
+            return;
         if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7)) {
             pos += 2;
             continue;
         }
         const std::size_t length = big(bytes, pos + 2, 2);
-        if (length < 2 || length > bytes.size() - pos - 2 || !visit(marker, bytes.substr(pos + 4, length - 2))) return;
+        if (length < 2 || length > bytes.size() - pos - 2 || !visit(marker, bytes.substr(pos + 4, length - 2)))
+            return;
         pos += 2 + length;
     }
 }
@@ -105,27 +114,34 @@ struct Options
 
 Probe probePng(std::string_view bytes, int& width, int& height);
 ColorSpace pngColorSpace(std::string_view bytes);
-bool decodePng(std::string_view bytes, const FrameSink& sink, const Options& options, std::string& error, std::string& warning);
+bool decodePng(std::string_view bytes, const FrameSink& sink, const Options& options, std::string& error,
+               std::string& warning);
 
 Probe probeJpeg(std::string_view bytes, int& width, int& height);
 ColorSpace jpegColorSpace(std::string_view bytes);
-bool decodeJpeg(std::string_view bytes, const FrameSink& sink, const Options& options, std::string& error, std::string& warning);
+bool decodeJpeg(std::string_view bytes, const FrameSink& sink, const Options& options, std::string& error,
+                std::string& warning);
 
 Probe probeWebP(std::string_view bytes, int& width, int& height);
 ColorSpace webpColorSpace(std::string_view bytes);
-bool decodeWebP(std::string_view bytes, const FrameSink& sink, const Options& options, std::string& error, std::string& warning);
+bool decodeWebP(std::string_view bytes, const FrameSink& sink, const Options& options, std::string& error,
+                std::string& warning);
 
 Probe probeGif(std::string_view bytes, int& width, int& height);
-bool decodeGif(std::string_view bytes, const FrameSink& sink, const Options& options, std::string& error, std::string& warning);
+bool decodeGif(std::string_view bytes, const FrameSink& sink, const Options& options, std::string& error,
+               std::string& warning);
 
 Probe probeBmp(std::string_view bytes, int& width, int& height);
-bool decodeBmp(std::string_view bytes, const FrameSink& sink, const Options& options, std::string& error, std::string& warning);
+bool decodeBmp(std::string_view bytes, const FrameSink& sink, const Options& options, std::string& error,
+               std::string& warning);
 
 Probe probeTiff(std::string_view bytes, int& width, int& height);
 ColorSpace tiffColorSpace(std::string_view bytes);
-bool decodeTiff(std::string_view bytes, const FrameSink& sink, const Options& options, std::string& error, std::string& warning);
+bool decodeTiff(std::string_view bytes, const FrameSink& sink, const Options& options, std::string& error,
+                std::string& warning);
 
 Probe probePnm(std::string_view bytes, int& width, int& height);
-bool decodePnm(std::string_view bytes, const FrameSink& sink, const Options& options, std::string& error, std::string& warning);
+bool decodePnm(std::string_view bytes, const FrameSink& sink, const Options& options, std::string& error,
+               std::string& warning);
 
 } // namespace AfterglowImage::detail

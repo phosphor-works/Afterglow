@@ -37,7 +37,8 @@ int lockFile(const std::string& path, std::string* error)
     for (int attempt = 0; attempt < 8; ++attempt) {
         const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
         if (fd < 0) {
-            if (error) *error = "cannot open " + path + ": " + std::strerror(errno);
+            if (error)
+                *error = "cannot open " + path + ": " + std::strerror(errno);
             return LockFailed;
         }
         if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
@@ -47,11 +48,14 @@ int lockFile(const std::string& path, std::string* error)
             // error (no lock left, a file system without locks) is no
             // holder: a caller that took it for one would hand its work to
             // a server that is not there.
-            if (failure == EWOULDBLOCK) return LockHeld;
-            if (error) *error = "cannot lock " + path + ": " + std::strerror(failure);
+            if (failure == EWOULDBLOCK)
+                return LockHeld;
+            if (error)
+                *error = "cannot lock " + path + ": " + std::strerror(failure);
             return LockFailed;
         }
-        if (names(path, fd)) return fd;
+        if (names(path, fd))
+            return fd;
         ::close(fd);
     }
     // Each lock went to a file that its holder removed at once: holders
@@ -61,7 +65,8 @@ int lockFile(const std::string& path, std::string* error)
 
 void unlockFile(const std::string& path, int fd)
 {
-    if (names(path, fd)) ::unlink(path.c_str());
+    if (names(path, fd))
+        ::unlink(path.c_str());
     ::close(fd);
 }
 
@@ -106,9 +111,11 @@ std::string lockDevice(const std::string& path, const struct stat& file)
 bool lockFileHeld(const std::string& path)
 {
     struct stat file{};
-    if (::lstat(path.c_str(), &file) != 0) return false;
+    if (::lstat(path.c_str(), &file) != 0)
+        return false;
     std::ifstream locks("/proc/locks");
-    if (!locks) return true;
+    if (!locks)
+        return true;
     const std::string where = lockDevice(path, file) + std::to_string(file.st_ino);
     for (std::string line; std::getline(locks, line);) {
         // "1: FLOCK  ADVISORY  WRITE 1234 00:49:9071 0 EOF". A waiter has
@@ -116,8 +123,10 @@ bool lockFileHeld(const std::string& path)
         std::istringstream fields(line);
         std::string number, type, mode, access, pid, place;
         fields >> number >> type;
-        if (type == "->") fields >> type;
-        if (type == "FLOCK" && fields >> mode >> access >> pid >> place && place == where) return true;
+        if (type == "->")
+            fields >> type;
+        if (type == "FLOCK" && fields >> mode >> access >> pid >> place && place == where)
+            return true;
     }
     return false;
 }

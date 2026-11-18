@@ -24,21 +24,29 @@ using AfterglowProto::IpcRequest;
 using AfterglowProto::IpcServerConnection;
 namespace IpcErrorCode = AfterglowProto::IpcErrorCode;
 
-std::string Daemon::startRelay(const IpcRequest& request, std::string line, pid_t caller, IpcServerConnection& connection)
+std::string Daemon::startRelay(const IpcRequest& request, std::string line, pid_t caller,
+                               IpcServerConnection& connection)
 {
     std::uint32_t pane = 0;
     Session* const session = sessionOfProcess(caller, &pane);
-    if (!session) return failed(request, "only a client in a session pane reaches the mux daemon for the commands of scripts");
+    if (!session)
+        return failed(request, "only a client in a session pane reaches the mux daemon for the commands of scripts");
     Attachment* const window = showing(session->name());
-    if (!window) return failed(request, "no window shows session '" + session->name() + "', and only a window runs the commands of scripts");
+    if (!window)
+        return failed(request,
+                      "no window shows session '" + session->name()
+                          + "', and only a window runs the commands of scripts");
     // Each takes a connection in the window, and its first line waits in the
     // window's queue whatever its room. Only this window's: those of a
     // window that it took the session from end with that window. The
     // clients of ssh sessions have their own limit.
-    const auto clients = std::count_if(m_relays.begin(), m_relays.end(),
-                                       [&](const auto& r) { return r.second.window == window->serial() && r.second.sshToken.empty(); });
+    const auto clients = std::count_if(m_relays.begin(), m_relays.end(), [&](const auto& r) {
+        return r.second.window == window->serial() && r.second.sshToken.empty();
+    });
     if (std::size_t(clients) >= MaxRelaysPerSession) {
-        return failed(request, "session '" + session->name() + "' has " + std::to_string(MaxRelaysPerSession) + " command clients already");
+        return failed(request,
+                      "session '" + session->name() + "' has " + std::to_string(MaxRelaysPerSession)
+                          + " command clients already");
     }
     const std::uint64_t id = m_nextRelay++;
     line += '\n';
@@ -69,34 +77,42 @@ std::string Daemon::startRelay(const IpcRequest& request, std::string line, pid_
 void Daemon::readRelay(IpcServerConnection& connection)
 {
     const auto of = m_relayOf.find(&connection);
-    if (of == m_relayOf.end()) return;
+    if (of == m_relayOf.end())
+        return;
     const std::uint64_t id = of->second;
     Attachment* const window = attachment(m_relays.at(id).window);
     // answerRelays() ends the relay of a window that went.
-    if (!window || !window->showing()) return;
+    if (!window || !window->showing())
+        return;
     std::string line;
     for (int lines = 0; lines < MaxLinesPerRead && window->relayRoom(); ++lines) {
-        if (!connection.nextLine(line)) break;
-        if (line.empty()) continue;
+        if (!connection.nextLine(line))
+            break;
+        if (line.empty())
+            continue;
         line += '\n';
         const bool sent = guarded(*window, [&] {
             window->sendRelay(Attach::RelayFrame{id, Attach::RelayPart::Bytes, std::move(line)});
             return true;
         });
-        if (!sent) return;
+        if (!sent)
+            return;
     }
     // The client ended its side: its runs end with the window's connection.
-    if (!connection.wantsRead() && !connection.pending()) endRelay(id, true);
+    if (!connection.wantsRead() && !connection.pending())
+        endRelay(id, true);
 }
 
 void Daemon::endRelay(std::uint64_t id, bool tellWindow)
 {
     const auto relay = m_relays.find(id);
-    if (relay == m_relays.end()) return;
+    if (relay == m_relays.end())
+        return;
     IpcServerConnection* const connection = relay->second.connection;
     Attachment* const window = attachment(relay->second.window);
     // An ssh session's socket that refused clients takes them again.
-    if (const auto ssh = m_sshSessions.find(relay->second.sshToken); ssh != m_sshSessions.end()) ssh->second->full = false;
+    if (const auto ssh = m_sshSessions.find(relay->second.sshToken); ssh != m_sshSessions.end())
+        ssh->second->full = false;
     // The relay goes first, which needs no allocation: a failure below (out
     // of memory) leaves no relay half ended.
     m_relayOf.erase(connection);
@@ -122,12 +138,14 @@ void Daemon::deliverRelayFrames(Attachment& window)
     for (Attach::RelayFrame& frame : window.takeRelayFrames()) {
         const auto relay = m_relays.find(frame.relay);
         // The client left before the window heard it: what came after is for nobody.
-        if (relay == m_relays.end() || relay->second.window != window.serial()) continue;
+        if (relay == m_relays.end() || relay->second.window != window.serial())
+            continue;
         const bool delivered = contained("a command client", [&] {
             Relay& r = relay->second;
             if (frame.part == Attach::RelayPart::End) {
                 // The Afterglow ended the connection: all that it sent goes.
-                if (!r.partial.empty()) r.connection->send(std::exchange(r.partial, {}));
+                if (!r.partial.empty())
+                    r.connection->send(std::exchange(r.partial, {}));
                 endRelay(frame.relay, false);
                 return;
             }
@@ -139,8 +157,9 @@ void Daemon::deliverRelayFrames(Attachment& window)
                 // No client reads a longer line: the relay ends, rather than
                 // hold a line that grows without a bound.
                 if (r.partial.size() > AfterglowProto::IpcConnection::MaxFrameBytes) {
-                    r.connection->send(ipcError(std::nullopt, IpcErrorCode::CallFailed,
-                                                "the window of session '" + r.session + "' sent a line longer than a client reads"));
+                    r.connection->send(
+                        ipcError(std::nullopt, IpcErrorCode::CallFailed,
+                                 "the window of session '" + r.session + "' sent a line longer than a client reads"));
                     endRelay(frame.relay, true);
                 }
                 return;
@@ -152,13 +171,15 @@ void Daemon::deliverRelayFrames(Attachment& window)
         // A frame that failed (out of memory) ends its relay, whose lines it
         // broke, and not the other relays of the window. The window ended
         // its side already when the frame was its end.
-        if (!delivered) endRelay(frame.relay, frame.part != Attach::RelayPart::End);
+        if (!delivered)
+            endRelay(frame.relay, frame.part != Attach::RelayPart::End);
     }
 }
 
 void Daemon::answerRelays()
 {
-    for (const auto& window : m_attachments) deliverRelayFrames(*window);
+    for (const auto& window : m_attachments)
+        deliverRelayFrames(*window);
     // A window that went serves its connections no more: their clients hear
     // why, as an error that answers no call. One that finishes still sends
     // what it sent them before it heard, the end of a run, until it goes
@@ -169,12 +190,14 @@ void Daemon::answerRelays()
         // endRelay() erases only this one.
         ++it;
         const Attachment* const window = attachment(relay.window);
-        if (window && !window->failed()) continue;
+        if (window && !window->failed())
+            continue;
         // The half of a line that did not go is dropped. Out of memory, the
         // client gets no error, and its relay ends all the same.
         contained("a command client", [&] {
-            relay.connection->send(ipcError(std::nullopt, IpcErrorCode::CallFailed,
-                                            "the window of session '" + relay.session + "' closed, and with it the runs of this client"));
+            relay.connection->send(
+                ipcError(std::nullopt, IpcErrorCode::CallFailed,
+                         "the window of session '" + relay.session + "' closed, and with it the runs of this client"));
         });
         endRelay(id, false);
     }
@@ -182,9 +205,11 @@ void Daemon::answerRelays()
 
 bool Daemon::reads(const IpcServerConnection& connection) const
 {
-    if (m_closing.contains(&connection)) return false;
+    if (m_closing.contains(&connection))
+        return false;
     const auto of = m_relayOf.find(&connection);
-    if (of == m_relayOf.end()) return true;
+    if (of == m_relayOf.end())
+        return true;
     const Attachment* const window = attachment(m_relays.at(of->second).window);
     return window && window->showing() && window->relayRoom();
 }
@@ -192,7 +217,8 @@ bool Daemon::reads(const IpcServerConnection& connection) const
 Attachment* Daemon::attachment(std::uint64_t serial) const
 {
     for (const auto& window : m_attachments) {
-        if (window->serial() == serial) return window.get();
+        if (window->serial() == serial)
+            return window.get();
     }
     return nullptr;
 }

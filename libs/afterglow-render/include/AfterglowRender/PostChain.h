@@ -118,7 +118,8 @@ struct ShaderChains
     {
         for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview, &tabTransition, &paneEffects,
                                   &overlayTransition}) {
-            if (anyIn(*chain, test)) return true;
+            if (anyIn(*chain, test))
+                return true;
         }
         return false;
     }
@@ -127,22 +128,40 @@ struct ShaderChains
     bool anyAlwaysOn(Test test) const
     {
         for (const auto* chain : {&background, &text, &cursor, &pane, &window}) {
-            if (anyIn(*chain, test)) return true;
+            if (anyIn(*chain, test))
+                return true;
         }
         return false;
     }
     template<typename Test>
     static bool anyIn(const std::vector<ShaderProgramPtr>& chain, Test test)
     {
-        return std::any_of(chain.begin(), chain.end(), [&](const ShaderProgramPtr& program) { return test(*program); });
+        return std::any_of(chain.begin(), chain.end(), [&](const ShaderProgramPtr& program) {
+            return test(*program);
+        });
     }
 
-    bool readsScrollback() const { return any([](const ShaderProgram& p) { return p.readsScrollback(); }); }
+    bool readsScrollback() const
+    {
+        return any([](const ShaderProgram& p) {
+            return p.readsScrollback();
+        });
+    }
     /// Some chain reads the pointer: the window renders when it moves.
-    bool readsMouse() const { return any([](const ShaderProgram& p) { return p.readsMouse(); }); }
+    bool readsMouse() const
+    {
+        return any([](const ShaderProgram& p) {
+            return p.readsMouse();
+        });
+    }
     /// Whether audio capture may be needed at all. PostChain::audioReactive()
     /// counts an event chain only while it shows.
-    bool audioReactive() const { return any([](const ShaderProgram& p) { return p.requiresAudio(); }); }
+    bool audioReactive() const
+    {
+        return any([](const ShaderProgram& p) {
+            return p.requiresAudio();
+        });
+    }
     /// No always-on chain: post-processing runs only while an event chain shows.
     bool alwaysOnEmpty() const noexcept
     {
@@ -150,7 +169,8 @@ struct ShaderChains
     }
     bool empty() const noexcept
     {
-        return alwaysOnEmpty() && overview.empty() && tabTransition.empty() && paneEffects.empty() && overlayTransition.empty();
+        return alwaysOnEmpty() && overview.empty() && tabTransition.empty() && paneEffects.empty()
+            && overlayTransition.empty();
     }
     /// The programs of every chain, event chains included.
     std::size_t size() const noexcept
@@ -175,7 +195,12 @@ struct ShaderChains
 class AFTERGLOWRENDER_EXPORT PostChain
 {
 public:
-    enum class Layer { Background, Text, Cursor, OtherCursor };
+    enum class Layer {
+        Background,
+        Text,
+        Cursor,
+        OtherCursor
+    };
     static constexpr int LayerCount = 4;
 
     explicit PostChain(GpuDevice& device);
@@ -185,34 +210,65 @@ public:
     PostChain& operator=(const PostChain&) = delete;
 
     void setChains(ShaderChains chains);
-    const ShaderChains& chains() const noexcept { return m_chains; }
+    const ShaderChains& chains() const noexcept
+    {
+        return m_chains;
+    }
     /// Audio capture feeds a chain that runs this frame.
     bool audioReactive() const;
-    bool readsScrollback() const { return m_chains.readsScrollback(); }
-    bool active() const noexcept { return !m_chains.alwaysOnEmpty() || eventChain() != nullptr || overlayTransitionShowing(); }
+    bool readsScrollback() const
+    {
+        return m_chains.readsScrollback();
+    }
+    bool active() const noexcept
+    {
+        return !m_chains.alwaysOnEmpty() || eventChain() != nullptr || overlayTransitionShowing();
+    }
     /// An overlay fades in or out this frame, and the overlay transition chain
     /// is there to draw it.
-    void setOverlayTransitionShowing(bool showing) { m_overlayTransitionShowing = showing; }
+    void setOverlayTransitionShowing(bool showing)
+    {
+        m_overlayTransitionShowing = showing;
+    }
     /// Shaders.overlayTransition compiled: overlays fade through it.
-    bool hasOverlayTransition() const noexcept { return !m_chains.overlayTransition.empty(); }
-    bool overlayTransitionShowing() const noexcept { return m_overlayTransitionShowing && !m_chains.overlayTransition.empty(); }
+    bool hasOverlayTransition() const noexcept
+    {
+        return !m_chains.overlayTransition.empty();
+    }
+    bool overlayTransitionShowing() const noexcept
+    {
+        return m_overlayTransitionShowing && !m_chains.overlayTransition.empty();
+    }
     /// After the grid target holds the panes under the fading overlays at
     /// their places (with layer chains, after composite() of them): runs the
     /// pane chain over @p hosts, and keeps the result in the tab image
     /// (uTabImage), where the overlay transition reads it. Then the grid
     /// target is free for the frame's own grid.
-    void captureOverlayHosts(RenderFrame& frame, const std::vector<ShaderRegionState>& hosts, const ShaderFrameTime& time);
+    void captureOverlayHosts(RenderFrame& frame, const std::vector<ShaderRegionState>& hosts,
+                             const ShaderFrameTime& time);
     /// The regions that the overlay transition chain runs over in the next
     /// record(): the panes with their overlays, each with its progress in
     /// ShaderRegionState::overlayTransition.
-    void setOverlayTransitions(std::vector<ShaderRegionState> regions) { m_overlayTransitions = std::move(regions); }
+    void setOverlayTransitions(std::vector<ShaderRegionState> regions)
+    {
+        m_overlayTransitions = std::move(regions);
+    }
     /// Runs the pane effects chain after the window chain while panes open,
     /// close or are away; under the overview or a tab switch it runs first.
-    void setPaneEffectsShowing(bool showing) { m_paneEffectsShowing = showing; }
+    void setPaneEffectsShowing(bool showing)
+    {
+        m_paneEffectsShowing = showing;
+    }
     /// Runs the overview chain after the window chain while the overview shows.
-    void setOverviewShowing(bool showing) { m_overviewShowing = showing; }
+    void setOverviewShowing(bool showing)
+    {
+        m_overviewShowing = showing;
+    }
     /// Runs the tab transition chain after the window chain while a switch runs.
-    void setTransitionShowing(bool showing) { m_transitionShowing = showing; }
+    void setTransitionShowing(bool showing)
+    {
+        m_transitionShowing = showing;
+    }
     /// The pane block for this frame (terminal_panes.glsl), into @p updates
     /// before the frame's first pass.
     void uploadPanes(QRhiResourceUpdateBatch* updates, const TerminalPaneUniforms& panes);
@@ -240,10 +296,16 @@ public:
     QRhiTextureRenderTarget* prepare(const QSize& size);
     /// The render pass the grid's target uses (for its pipelines). Layer
     /// targets use a compatible one.
-    QRhiRenderPassDescriptor* renderPass() const noexcept { return m_gridPass.get(); }
+    QRhiRenderPassDescriptor* renderPass() const noexcept
+    {
+        return m_gridPass.get();
+    }
     /// Changes whenever renderPass() is made again. A new descriptor can reuse
     /// the old address, so pipelines made for it compare this instead.
-    std::uint64_t renderPassGeneration() const noexcept { return m_passGeneration; }
+    std::uint64_t renderPassGeneration() const noexcept
+    {
+        return m_passGeneration;
+    }
     /// Frees the window-sized textures, buffers and copies while no chain runs.
     /// Render-pass descriptors and pipelines stay, so the next event starts
     /// without making them again.
@@ -263,8 +325,8 @@ public:
     /// leave the text history alone and take the composite buffers after
     /// @p uboBase, so that the frame's own composite keeps its values.
     void composite(RenderFrame& frame, const std::vector<ShaderRegionState>& panes,
-                   const std::vector<bool>& cursorBelowText, const ShaderFrameTime& time, const QColor& clear, bool otherCursors = false,
-                   bool hosts = false, std::size_t uboBase = 0);
+                   const std::vector<bool>& cursorBelowText, const ShaderFrameTime& time, const QColor& clear,
+                   bool otherCursors = false, bool hosts = false, std::size_t uboBase = 0);
 
     /// Records the shader passes after the grid pass: the pane chain, the
     /// overlay transition over setOverlayTransitions(), then the window and
@@ -291,9 +353,11 @@ private:
     template<typename Test>
     bool anyRunning(Test test) const
     {
-        if (m_chains.anyAlwaysOn(test)) return true;
+        if (m_chains.anyAlwaysOn(test))
+            return true;
         for (const auto* chain : {&m_chains.overview, &m_chains.tabTransition, &m_chains.paneEffects})
-            if (showing(*chain) && ShaderChains::anyIn(*chain, test)) return true;
+            if (showing(*chain) && ShaderChains::anyIn(*chain, test))
+                return true;
         return overlayTransitionShowing() && ShaderChains::anyIn(m_chains.overlayTransition, test);
     }
     bool showing(const std::vector<ShaderProgramPtr>& chain) const noexcept;
@@ -307,17 +371,19 @@ private:
     void releaseTabImages();
     /// One render-pass descriptor per attachment layout, shared by every
     /// buffer state with that layout, so their pipelines are shared too.
-    QRhiRenderPassDescriptor* bufferPass(QRhiTextureRenderTarget* target, int format, int samples, bool depthOutput, bool hardwareDepth);
+    QRhiRenderPassDescriptor* bufferPass(QRhiTextureRenderTarget* target, int format, int samples, bool depthOutput,
+                                         bool hardwareDepth);
     QRhiGraphicsPipeline* pipeline(const ShaderProgram& program, QRhiRenderPassDescriptor* pass);
-    struct BufferInputs {
+    struct BufferInputs
+    {
         QRhiTexture* depth = nullptr;
         std::array<QRhiTexture*, MaxShaderBuffers> textures{};
         std::array<QRhiSampler*, MaxShaderBuffers> samplers{};
         std::array<QSize, MaxShaderBuffers> sizes{};
     };
     QRhiShaderResourceBindings* bindings(int ubo, int texture, const ShaderRegionState* region = nullptr,
-        const ShaderProgram* program = nullptr, const BufferInputs* buffers = nullptr, QRhiResourceUpdateBatch* updates = nullptr,
-        QRhiTexture* input = nullptr);
+                                         const ShaderProgram* program = nullptr, const BufferInputs* buffers = nullptr,
+                                         QRhiResourceUpdateBatch* updates = nullptr, QRhiTexture* input = nullptr);
     QRhiTexture* localTexture(QRhiTexture* source, const QRect& rect, QRhiResourceUpdateBatch* updates);
     /// Runs @p chain over @p regions of texture @p current, as the pane chain
     /// runs, and returns the texture with the result. @p scope keys buffers.
@@ -337,22 +403,31 @@ private:
     /// The scene block (terminal_scene.glsl) that goes with uniform buffer @p index.
     QRhiBuffer* sceneBuffer(int index);
     QRhiBuffer* panesBuffer();
-    void fill(TerminalUniforms& u, const ShaderRegionState& s, const ShaderFrameTime& t,
-              const ShaderProgram& program, const BufferInputs* buffers = nullptr) const;
+    void fill(TerminalUniforms& u, const ShaderRegionState& s, const ShaderFrameTime& t, const ShaderProgram& program,
+              const BufferInputs* buffers = nullptr) const;
 
     struct BufferState;
     std::vector<BufferInputs> runBuffers(RenderFrame& frame, const ShaderProgram& program, int scope, int step,
-                           int input, const std::vector<ShaderRegionState>& regions,
-                           const ShaderFrameTime& time, int& ubo);
+                                         int input, const std::vector<ShaderRegionState>& regions,
+                                         const ShaderFrameTime& time, int& ubo);
     // Declared before m_buffers: the buffer targets use these descriptors.
     std::map<std::tuple<int, int, bool, bool>, std::unique_ptr<QRhiRenderPassDescriptor>> m_bufferPasses;
     /// Imported mesh vertices, once per buffer pass program however many panes draw it.
-    struct MeshVertices { std::unique_ptr<QRhiBuffer> buffer; bool uploaded = false; };
+    struct MeshVertices
+    {
+        std::unique_ptr<QRhiBuffer> buffer;
+        bool uploaded = false;
+    };
     std::map<const ShaderProgram*, MeshVertices> m_meshVertices;
     using BufferKey = std::tuple<const ShaderProgram*, int, int, std::uint64_t>;
     std::map<BufferKey, std::array<std::unique_ptr<BufferState>, MaxShaderBuffers>> m_buffers;
     std::set<std::tuple<const ShaderProgram*, int, int>> m_bufferInstances;
-    struct CachedTexture { std::unique_ptr<QRhiTexture> texture; std::uint64_t used = 0; std::uint64_t bytes = 0; };
+    struct CachedTexture
+    {
+        std::unique_ptr<QRhiTexture> texture;
+        std::uint64_t used = 0;
+        std::uint64_t bytes = 0;
+    };
     std::map<std::tuple<QRhiTexture*, int, int, int, int>, CachedTexture> m_localTextures;
     std::map<qint64, CachedTexture> m_parameterTextures;
     std::unique_ptr<QRhiTexture> m_emptyTexture;
@@ -391,7 +466,8 @@ private:
     static constexpr int FirstLayerTexture = 2;
     static constexpr int TextureCount = FirstLayerTexture + LayerCount + 1;
     std::unique_ptr<QRhiTexture> m_textures[TextureCount];
-    std::unique_ptr<QRhiTextureRenderTarget> m_layerTargets[LayerCount + 1]; ///< clearing, by texture - FirstLayerTexture
+    std::unique_ptr<QRhiTextureRenderTarget>
+        m_layerTargets[LayerCount + 1]; ///< clearing, by texture - FirstLayerTexture
     int m_layerTexture[LayerCount] = {}; ///< which texture holds each layer this frame
     // The grid, layer and window targets clear; pane passes preserve theirs
     // (they only redraw pane regions over a copy of their input).

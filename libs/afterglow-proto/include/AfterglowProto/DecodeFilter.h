@@ -55,7 +55,8 @@ inline constexpr bool DecodeFilterKnown = false;
 /// closes every other descriptor first.
 inline bool allowOnlyDecoding()
 {
-    if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return false;
+    if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0)
+        return false;
 #ifndef AFTERGLOW_DECODE_FILTER_ARCH
     return false;
 #else
@@ -96,8 +97,9 @@ inline bool allowOnlyDecoding()
         filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
     }
 #endif
-    for (const long call : {SYS_close, SYS_mmap, SYS_munmap, SYS_mremap, SYS_mprotect, SYS_madvise, SYS_brk, SYS_futex,
-                            SYS_getrandom, SYS_clock_gettime, SYS_rt_sigreturn, SYS_sigaltstack, SYS_exit, SYS_exit_group}) {
+    for (const long call :
+         {SYS_close, SYS_mmap, SYS_munmap, SYS_mremap, SYS_mprotect, SYS_madvise, SYS_brk, SYS_futex, SYS_getrandom,
+          SYS_clock_gettime, SYS_rt_sigreturn, SYS_sigaltstack, SYS_exit, SYS_exit_group}) {
         filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, std::uint32_t(call), 0, 1));
         filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
     }

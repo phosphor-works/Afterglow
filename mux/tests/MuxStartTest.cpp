@@ -18,7 +18,8 @@ namespace {
 Environment environmentOf(const TestDaemon& daemon)
 {
     Environment environment;
-    for (const auto& [name, value] : daemon.cleanEnvironment()) environment.push_back(name + "=" + value);
+    for (const auto& [name, value] : daemon.cleanEnvironment())
+        environment.push_back(name + "=" + value);
     return environment;
 }
 
@@ -27,7 +28,8 @@ std::string propertyOf(const std::vector<std::string>& argv)
 {
     constexpr std::string_view Option = "--property=";
     for (const std::string& word : argv) {
-        if (word.starts_with(Option)) return word.substr(Option.size());
+        if (word.starts_with(Option))
+            return word.substr(Option.size());
     }
     return {};
 }
@@ -45,8 +47,8 @@ UserManager fakeManager(std::vector<std::vector<std::string>>& calls,
 {
     UserManager manager;
     manager.runs = true;
-    manager.run = [&calls, answer = std::move(answer)](const std::vector<std::string>& argv, std::chrono::steady_clock::time_point,
-                                                       std::string* output) {
+    manager.run = [&calls, answer = std::move(answer)](const std::vector<std::string>& argv,
+                                                       std::chrono::steady_clock::time_point, std::string* output) {
         calls.push_back(argv);
         if (argv.empty() || (argv.front() != "systemd-run" && argv.front() != "systemctl")) {
             ADD_FAILURE() << "a call of another program: " << (argv.empty() ? std::string() : argv.front());
@@ -79,7 +81,9 @@ TEST(MuxStart, TheRunOfTheUserManagerTellsATimeoutFromAFailure)
 {
     TestDaemon daemon;
     const UserManager manager = userManagerOf(environmentOf(daemon));
-    const auto later = [] { return std::chrono::steady_clock::now() + 5s; };
+    const auto later = [] {
+        return std::chrono::steady_clock::now() + 5s;
+    };
     EXPECT_EQ(manager.run({"/bin/sh", "-c", "exit 3"}, later(), nullptr), 3);
     std::string output;
     EXPECT_EQ(manager.run({"/bin/sh", "-c", "echo loaded"}, later(), &output), 0);
@@ -92,7 +96,8 @@ TEST(MuxStart, TheRunOfTheUserManagerTellsATimeoutFromAFailure)
     const auto start = std::chrono::steady_clock::now();
     EXPECT_EQ(manager.run({"/bin/sh", "-c", "exec sleep 30"}, start + 200ms, nullptr), UserManager::TimedOut);
     output.clear();
-    EXPECT_EQ(manager.run({"/bin/sh", "-c", "exec sleep 30"}, std::chrono::steady_clock::now() + 200ms, &output), UserManager::TimedOut);
+    EXPECT_EQ(manager.run({"/bin/sh", "-c", "exec sleep 30"}, std::chrono::steady_clock::now() + 200ms, &output),
+              UserManager::TimedOut);
     EXPECT_LT(std::chrono::steady_clock::now() - start, 10s);
 }
 
@@ -100,12 +105,15 @@ TEST(MuxStart, AUnitOfTheUserManagerStartsTheDaemon)
 {
     TestDaemon daemon;
     std::vector<std::vector<std::string>> calls;
-    const UserManager manager = fakeManager(calls, [&daemon](const std::vector<std::string>& argv, std::string* output) {
-        // The unit's daemon: the test's, in the test's directories.
-        if (argv.front() == "systemd-run") return daemon.spawnDaemon() > 0 ? 0 : 1;
-        if (output && propertyOf(argv) == "LoadState") *output = daemon.alive() ? "loaded\n" : "not-found\n";
-        return 0;
-    });
+    const UserManager manager =
+        fakeManager(calls, [&daemon](const std::vector<std::string>& argv, std::string* output) {
+            // The unit's daemon: the test's, in the test's directories.
+            if (argv.front() == "systemd-run")
+                return daemon.spawnDaemon() > 0 ? 0 : 1;
+            if (output && propertyOf(argv) == "LoadState")
+                *output = daemon.alive() ? "loaded\n" : "not-found\n";
+            return 0;
+        });
     std::string error;
     const Reached reached = connectOrStart(daemon.sockets(), AFTERGLOW_MUX, environmentOf(daemon), manager, &error);
     ASSERT_TRUE(reached.connection) << error << daemon.errors();
@@ -118,7 +126,11 @@ TEST(MuxStart, AUnitOfTheUserManagerStartsTheDaemon)
     EXPECT_TRUE(contains(start, "--setenv=XDG_STATE_HOME=" + daemon.stateHome()));
     EXPECT_EQ(start.back(), AFTERGLOW_MUX);
     // One start: the unit's.
-    EXPECT_EQ(std::count_if(calls.begin(), calls.end(), [](const auto& argv) { return argv.front() == "systemd-run"; }), 1);
+    EXPECT_EQ(std::count_if(calls.begin(), calls.end(),
+                            [](const auto& argv) {
+                                return argv.front() == "systemd-run";
+                            }),
+              1);
 }
 
 TEST(MuxStart, TheUnitGetsTheStateDirectoryOfTheClientWithoutXdgStateHome)
@@ -126,12 +138,14 @@ TEST(MuxStart, TheUnitGetsTheStateDirectoryOfTheClientWithoutXdgStateHome)
     TestDaemon daemon;
     Environment environment;
     for (const std::string& entry : environmentOf(daemon)) {
-        if (!entry.starts_with("XDG_STATE_HOME=")) environment.push_back(entry);
+        if (!entry.starts_with("XDG_STATE_HOME="))
+            environment.push_back(entry);
     }
     std::vector<std::vector<std::string>> calls;
     // A unit that starts and is gone at once: no daemon answers.
     const UserManager manager = fakeManager(calls, [](const std::vector<std::string>& argv, std::string* output) {
-        if (output && argv.front() == "systemctl") *output = propertyOf(argv) == "LoadState" ? "not-found\n" : "inactive\n";
+        if (output && argv.front() == "systemctl")
+            *output = propertyOf(argv) == "LoadState" ? "not-found\n" : "inactive\n";
         return 0;
     });
     std::string error;
@@ -150,16 +164,21 @@ TEST(MuxStart, AUnitFileThatDoesNotRunStartsNoDaemon)
     TestDaemon daemon;
     std::vector<std::vector<std::string>> calls;
     const UserManager manager = fakeManager(calls, [](const std::vector<std::string>& argv, std::string* output) {
-        if (argv.front() == "systemd-run") return 1;
+        if (argv.front() == "systemd-run")
+            return 1;
         const std::string property = propertyOf(argv);
-        if (output) *output = property == "LoadState" ? "loaded\n" : property == "Transient" ? "no\n" : "inactive\n";
+        if (output)
+            *output = property == "LoadState" ? "loaded\n" : property == "Transient" ? "no\n" : "inactive\n";
         return 0;
     });
     std::string error;
-    const Reached reached = connectOrStart(daemon.sockets(), missingDaemon(daemon), environmentOf(daemon), manager, &error);
+    const Reached reached =
+        connectOrStart(daemon.sockets(), missingDaemon(daemon), environmentOf(daemon), manager, &error);
     EXPECT_FALSE(reached.connection);
-    EXPECT_EQ(error, "aglow-mux did not start: the user unit aglow-mux.service exists and does not run. Start it with systemctl --user "
-                     "start aglow-mux.service, or remove it");
+    EXPECT_EQ(error,
+              "aglow-mux did not start: the user unit aglow-mux.service exists and does not run. Start it with "
+              "systemctl --user "
+              "start aglow-mux.service, or remove it");
     EXPECT_FALSE(exists(daemon.socket()));
 }
 
@@ -169,12 +188,15 @@ TEST(MuxStart, AStartThatTheUserManagerDoesNotAnswerStartsNoSecondDaemon)
     std::vector<std::vector<std::string>> calls;
     // systemd-run, killed at the deadline: the unit can still come.
     const UserManager manager = fakeManager(calls, [](const std::vector<std::string>& argv, std::string* output) {
-        if (argv.front() == "systemd-run") return UserManager::TimedOut;
-        if (output) *output = "not-found\n";
+        if (argv.front() == "systemd-run")
+            return UserManager::TimedOut;
+        if (output)
+            *output = "not-found\n";
         return 0;
     });
     std::string error;
-    const Reached reached = connectOrStart(daemon.sockets(), missingDaemon(daemon), environmentOf(daemon), manager, &error);
+    const Reached reached =
+        connectOrStart(daemon.sockets(), missingDaemon(daemon), environmentOf(daemon), manager, &error);
     EXPECT_FALSE(reached.connection);
     // Not the "cannot run" of a start outside the user manager.
     EXPECT_EQ(error, NoAnswer);
@@ -192,7 +214,8 @@ TEST(MuxStart, ALookAtTheUnitThatTimesOutIsNotAMissingUnit)
         return argv.front() == "systemd-run" ? 1 : UserManager::TimedOut;
     });
     std::string error;
-    const Reached reached = connectOrStart(daemon.sockets(), missingDaemon(daemon), environmentOf(daemon), manager, &error);
+    const Reached reached =
+        connectOrStart(daemon.sockets(), missingDaemon(daemon), environmentOf(daemon), manager, &error);
     EXPECT_FALSE(reached.connection);
     EXPECT_EQ(error, NoAnswer);
     EXPECT_FALSE(exists(daemon.socket()));
@@ -206,15 +229,21 @@ TEST(MuxStart, ADaemonThatAnotherCommandStartedAnswersAfterALookThatTimesOut)
     // same time, which listens before the look at the unit, which the
     // manager does not answer.
     const UserManager manager = fakeManager(calls, [&daemon](const std::vector<std::string>& argv, std::string*) {
-        if (argv.front() != "systemd-run") return UserManager::TimedOut;
+        if (argv.front() != "systemd-run")
+            return UserManager::TimedOut;
         return daemon.start(false) ? 1 : -1;
     });
     std::string error;
-    const Reached reached = connectOrStart(daemon.sockets(), missingDaemon(daemon), environmentOf(daemon), manager, &error);
+    const Reached reached =
+        connectOrStart(daemon.sockets(), missingDaemon(daemon), environmentOf(daemon), manager, &error);
     ASSERT_TRUE(daemon.alive()) << daemon.errors();
     // Not the message that the manager does not answer: the last look at
     // the sockets finds the other command's daemon.
     EXPECT_TRUE(reached.connection) << error << daemon.errors();
     EXPECT_EQ(error, "");
-    EXPECT_EQ(std::count_if(calls.begin(), calls.end(), [](const auto& argv) { return argv.front() == "systemd-run"; }), 1);
+    EXPECT_EQ(std::count_if(calls.begin(), calls.end(),
+                            [](const auto& argv) {
+                                return argv.front() == "systemd-run";
+                            }),
+              1);
 }

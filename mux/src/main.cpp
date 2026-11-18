@@ -57,7 +57,8 @@ int g_endSignal = 0;
 /// reaper first kills the programs that outlived their hangup.
 void endWithSignal()
 {
-    if (g_endSignal == 0) return;
+    if (g_endSignal == 0)
+        return;
     std::signal(g_endSignal, SIG_DFL);
     sigset_t set;
     ::sigemptyset(&set);
@@ -75,7 +76,8 @@ void endWithSignal()
 long raiseFileLimit()
 {
     rlimit limit{};
-    if (::getrlimit(RLIMIT_NOFILE, &limit) != 0 || limit.rlim_cur >= limit.rlim_max) return -1;
+    if (::getrlimit(RLIMIT_NOFILE, &limit) != 0 || limit.rlim_cur >= limit.rlim_max)
+        return -1;
     const rlim_t soft = limit.rlim_cur;
     limit.rlim_cur = limit.rlim_max;
     if (::setrlimit(RLIMIT_NOFILE, &limit) != 0) {
@@ -93,12 +95,14 @@ long raiseFileLimit()
 int takeReportFd()
 {
     const char* text = std::getenv(AfterglowMux::ReportFdVariable);
-    if (!text) return -1;
+    if (!text)
+        return -1;
     int fd = -1;
     const std::string_view value(text);
     const auto [end, ec] = std::from_chars(value.data(), value.data() + value.size(), fd);
     ::unsetenv(AfterglowMux::ReportFdVariable);
-    if (ec != std::errc() || end != value.data() + value.size() || fd < 3 || ::fcntl(fd, F_SETFD, FD_CLOEXEC) != 0) return -1;
+    if (ec != std::errc() || end != value.data() + value.size() || fd < 3 || ::fcntl(fd, F_SETFD, FD_CLOEXEC) != 0)
+        return -1;
     return fd;
 }
 
@@ -131,8 +135,10 @@ int main(int argc, char** argv)
     // status of its children: the kernel reaps them.
     std::signal(SIGCHLD, SIG_DFL);
     if (argc >= 2 && std::strcmp(argv[1], AfterglowMux::ProxyArgument) == 0) {
-        if (argc == 2) return AfterglowMux::runProxy(false);
-        if (argc == 3 && std::strcmp(argv[2], AfterglowMux::ProxyStartOption) == 0) return AfterglowMux::runProxy(true);
+        if (argc == 2)
+            return AfterglowMux::runProxy(false);
+        if (argc == 3 && std::strcmp(argv[2], AfterglowMux::ProxyStartOption) == 0)
+            return AfterglowMux::runProxy(true);
         std::fprintf(stderr, "aglow-mux proxy: the only option is %s\n", AfterglowMux::ProxyStartOption);
         return 2;
     }
@@ -152,12 +158,14 @@ int main(int argc, char** argv)
     }
     int reportFd = takeReportFd();
     const AfterglowProto::MuxSockets sockets = AfterglowProto::muxSockets();
-    if (sockets.candidates.empty()) return startFailed(reportFd, sockets.error);
+    if (sockets.candidates.empty())
+        return startFailed(reportFd, sockets.error);
     const long fileLimit = raiseFileLimit();
     try {
         AfterglowMux::Daemon daemon(fileLimit);
         std::string error;
-        if (const auto listened = daemon.listen(sockets.candidates, &error); listened != AfterglowMux::Daemon::Listen::Listening) {
+        if (const auto listened = daemon.listen(sockets.candidates, &error);
+            listened != AfterglowMux::Daemon::Listen::Listening) {
             return startFailed(reportFd, error, listened == AfterglowMux::Daemon::Listen::Held);
         }
         // It listens. Not the end of the pipe alone: a daemon that a signal
@@ -172,7 +180,8 @@ int main(int argc, char** argv)
         return exit.status;
     } catch (const std::exception& e) {
         // The daemon's destructor ran: its programs got their hangup.
-        if (reportFd >= 0) return startFailed(reportFd, e.what());
+        if (reportFd >= 0)
+            return startFailed(reportFd, e.what());
         std::fprintf(stderr, "aglow-mux: %s\n", e.what());
         return 1;
     }

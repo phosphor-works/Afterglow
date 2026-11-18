@@ -40,7 +40,8 @@ int lockSocket(const QString& socket)
 {
     std::string error;
     const int fd = AfterglowProto::lockFile(lockPath(socket), &error);
-    if (fd == AfterglowProto::LockFailed) qCWarning(lcApp).noquote() << QString::fromStdString(error);
+    if (fd == AfterglowProto::LockFailed)
+        qCWarning(lcApp).noquote() << QString::fromStdString(error);
     return fd;
 }
 
@@ -49,12 +50,17 @@ void unlockSocket(const QString& socket, int fd)
     AfterglowProto::unlockFile(lockPath(socket), fd);
 }
 
-enum class SocketFile { None, Ours, Other };
+enum class SocketFile {
+    None,
+    Ours,
+    Other
+};
 
 SocketFile socketFile(const QString& path)
 {
     struct stat info{};
-    if (::lstat(QFile::encodeName(path).constData(), &info) != 0) return SocketFile::None;
+    if (::lstat(QFile::encodeName(path).constData(), &info) != 0)
+        return SocketFile::None;
     return S_ISSOCK(info.st_mode) && info.st_uid == ::getuid() ? SocketFile::Ours : SocketFile::Other;
 }
 
@@ -90,17 +96,22 @@ void InstanceSocket::close()
     // The socket file goes first: while the lock is held, no other process
     // can take the path and lose its file to this one.
     m_router->stop();
-    if (m_lock >= 0) unlockSocket(m_path, std::exchange(m_lock, -1));
-    if (!m_path.isEmpty() && g_processPath == m_path) g_processPath.clear();
+    if (m_lock >= 0)
+        unlockSocket(m_path, std::exchange(m_lock, -1));
+    if (!m_path.isEmpty() && g_processPath == m_path)
+        g_processPath.clear();
     m_path.clear();
 }
 
 InstanceSocket::Listen InstanceSocket::listen(const QString& path)
 {
-    if (path.isEmpty() || listening()) return Listen::Failed;
+    if (path.isEmpty() || listening())
+        return Listen::Failed;
     const int lock = lockSocket(path);
-    if (lock == AfterglowProto::LockHeld) return Listen::Held;
-    if (lock == AfterglowProto::LockFailed) return Listen::Failed;
+    if (lock == AfterglowProto::LockHeld)
+        return Listen::Held;
+    if (lock == AfterglowProto::LockFailed)
+        return Listen::Failed;
     // The last holder of the lock is gone. What it left is removed.
     switch (socketFile(path)) {
     case SocketFile::None:
@@ -131,22 +142,28 @@ InstanceSocket::Listen InstanceSocket::listen(const QString& path)
 void InstanceSocket::removeStaleSockets()
 {
     const QString runtime = runtimeDirectory();
-    if (runtime.isEmpty()) return;
+    if (runtime.isEmpty())
+        return;
     const QDir dir(runtime);
     const QString lockSuffix = QStringLiteral(".lock");
     QSet<QString> sockets;
-    const QStringList names = dir.entryList({QStringLiteral("afterglow-*.sock"), QStringLiteral("afterglow-*.sock.lock")},
-                                            QDir::Files | QDir::System | QDir::Hidden);
+    const QStringList names =
+        dir.entryList({QStringLiteral("afterglow-*.sock"), QStringLiteral("afterglow-*.sock.lock")},
+                      QDir::Files | QDir::System | QDir::Hidden);
     for (QString name : names) {
-        if (name.endsWith(lockSuffix)) name.chop(lockSuffix.size());
+        if (name.endsWith(lockSuffix))
+            name.chop(lockSuffix.size());
         sockets.insert(dir.filePath(name));
     }
     for (const QString& path : std::as_const(sockets)) {
         const SocketFile file = socketFile(path);
-        if (file == SocketFile::Other) continue;
+        if (file == SocketFile::Other)
+            continue;
         const int lock = lockSocket(path);
-        if (lock < 0) continue;
-        if (file == SocketFile::Ours && refusesConnections(path)) QFile::remove(path);
+        if (lock < 0)
+            continue;
+        if (file == SocketFile::Ours && refusesConnections(path))
+            QFile::remove(path);
         unlockSocket(path, lock);
     }
 }
@@ -182,7 +199,8 @@ QString InstanceSocket::sharedPath()
 
 QString InstanceSocket::ownPath()
 {
-    return QFile::decodeName(QByteArray::fromStdString(AfterglowProto::ownSocketPath(QCoreApplication::applicationPid())));
+    return QFile::decodeName(
+        QByteArray::fromStdString(AfterglowProto::ownSocketPath(QCoreApplication::applicationPid())));
 }
 
 } // namespace Afterglow

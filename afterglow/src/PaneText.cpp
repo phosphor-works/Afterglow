@@ -21,18 +21,22 @@ QVariantMap Pane::readSelection(std::size_t limit) const
         // ScriptHost::MaxReadTextBytes checks the effect first: this only
         // bounds a direct caller.
         if (available)
-            text = m_selection.text(m_terminal.screen(), m_terminal.options().wordBoundaries, std::min(limit, MaxText), &truncated);
+            text = m_selection.text(m_terminal.screen(), m_terminal.options().wordBoundaries, std::min(limit, MaxText),
+                                    &truncated);
     }
     // Converted after the lock: the reader thread waits on it.
-    return {{QStringLiteral("text"), QString::fromStdString(text)}, {QStringLiteral("available"), available},
-        {QStringLiteral("truncated"), truncated}};
+    return {{QStringLiteral("text"), QString::fromStdString(text)},
+            {QStringLiteral("available"), available},
+            {QStringLiteral("truncated"), truncated}};
 }
 
 bool Pane::regionArrivingLocked(std::uint64_t id) const
 {
-    if (!m_session) return false;
+    if (!m_session)
+        return false;
     for (const AfterglowVt::SemanticRegion& region : m_terminal.semanticRegions()) {
-        if (region.id == id) return regionArrivingLocked(region);
+        if (region.id == id)
+            return regionArrivingLocked(region);
     }
     return false;
 }
@@ -61,7 +65,8 @@ QVariantMap Pane::semanticRegions() const
         std::lock_guard lock(m_mutex);
         found = m_terminal.semanticRegions();
         arriving.reserve(found.size());
-        for (const auto& region : found) arriving.push_back(regionArrivingLocked(region));
+        for (const auto& region : found)
+            arriving.push_back(regionArrivingLocked(region));
     }
     // The maps are made after the lock: the reader thread waits on it.
     QVariantList regions;
@@ -72,15 +77,25 @@ QVariantMap Pane::semanticRegions() const
         };
         QString kind;
         switch (region.kind) {
-        case AfterglowVt::SemanticZoneKind::Prompt: kind = QStringLiteral("prompt"); break;
-        case AfterglowVt::SemanticZoneKind::Input: kind = QStringLiteral("input"); break;
-        case AfterglowVt::SemanticZoneKind::Output: kind = QStringLiteral("output"); break;
+        case AfterglowVt::SemanticZoneKind::Prompt:
+            kind = QStringLiteral("prompt");
+            break;
+        case AfterglowVt::SemanticZoneKind::Input:
+            kind = QStringLiteral("input");
+            break;
+        case AfterglowVt::SemanticZoneKind::Output:
+            kind = QStringLiteral("output");
+            break;
         }
-        QVariantMap value{{QStringLiteral("id"), QString::number(region.id)}, {QStringLiteral("kind"), kind},
-            {QStringLiteral("start"), position(region.start)}, {QStringLiteral("finish"), position(region.end)},
-            {QStringLiteral("open"), region.open}, {QStringLiteral("start_trimmed"), region.startTrimmed},
-            {QStringLiteral("available"), region.available && !arriving[i]}};
-        if (region.exitCode) value.insert(QStringLiteral("exit_code"), *region.exitCode);
+        QVariantMap value{{QStringLiteral("id"), QString::number(region.id)},
+                          {QStringLiteral("kind"), kind},
+                          {QStringLiteral("start"), position(region.start)},
+                          {QStringLiteral("finish"), position(region.end)},
+                          {QStringLiteral("open"), region.open},
+                          {QStringLiteral("start_trimmed"), region.startTrimmed},
+                          {QStringLiteral("available"), region.available && !arriving[i]}};
+        if (region.exitCode)
+            value.insert(QStringLiteral("exit_code"), *region.exitCode);
         regions.append(value);
     }
     return {{QStringLiteral("regions"), regions}};
@@ -98,12 +113,14 @@ QString Pane::regionText(std::uint64_t id, const AfterglowVt::TextFormat& format
     return text ? QString::fromStdString(*text) : QString();
 }
 
-Pane::RegionRead Pane::readRegionLocked(std::uint64_t id, std::size_t limit, const AfterglowVt::TextFormat& format) const
+Pane::RegionRead Pane::readRegionLocked(std::uint64_t id, std::size_t limit,
+                                        const AfterglowVt::TextFormat& format) const
 {
     RegionRead read;
     // Rows on their way are blank places in the text: it is not the
     // program's yet.
-    if (regionArrivingLocked(id)) return read;
+    if (regionArrivingLocked(id))
+        return read;
     read.text = m_terminal.semanticRegionText(id, limit, &read.truncated, format);
     return read;
 }
@@ -111,7 +128,8 @@ Pane::RegionRead Pane::readRegionLocked(std::uint64_t id, std::size_t limit, con
 QVariantMap Pane::regionResult(RegionRead read)
 {
     return {{QStringLiteral("text"), read.text ? QString::fromStdString(*read.text) : QString()},
-        {QStringLiteral("available"), read.text.has_value()}, {QStringLiteral("truncated"), read.truncated}};
+            {QStringLiteral("available"), read.text.has_value()},
+            {QStringLiteral("truncated"), read.truncated}};
 }
 
 QVariantMap Pane::readRegion(std::uint64_t id, std::size_t limit) const
@@ -145,7 +163,8 @@ QVariantMap Pane::readOutputRegion(OutputRegion which, std::size_t limit, const 
             const std::uint64_t top = scr.rowsDropped() + scr.viewportTop();
             id = m_terminal.firstCommandOutputIn(top, top + std::uint64_t(std::max(1, scr.rows())) - 1);
         }
-        if (id) read = readRegionLocked(*id, limit, format);
+        if (id)
+            read = readRegionLocked(*id, limit, format);
     }
     return regionResult(std::move(read));
 }

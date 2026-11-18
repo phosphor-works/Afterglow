@@ -46,7 +46,9 @@ namespace Themes {
 /// for colours that a theme derives from its background and text.
 constexpr AfterglowVt::Rgb between(AfterglowVt::Rgb from, AfterglowVt::Rgb to, int numerator, int denominator)
 {
-    auto part = [&](std::uint8_t a, std::uint8_t b) { return std::uint8_t(a + (b - a) * numerator / denominator); };
+    auto part = [&](std::uint8_t a, std::uint8_t b) {
+        return std::uint8_t(a + (b - a) * numerator / denominator);
+    };
     return {part(from.r, to.r), part(from.g, to.g), part(from.b, to.b)};
 }
 /// The divider of a theme without one: a fifth of the way from its

@@ -39,7 +39,8 @@ Layout twoTabs()
 std::optional<Layout> throughText(const Layout& layout, std::string* error = nullptr)
 {
     const auto json = Json::parse(Json::write(toJson(layout)), error);
-    if (!json) return std::nullopt;
+    if (!json)
+        return std::nullopt;
     return layoutFrom(*json, error);
 }
 
@@ -51,7 +52,10 @@ Json::Value withTab(Json::Value tab)
 
 Json::Value tab(Json::Array tree, Json::Value focused, Json::Value zoomed = 0, Json::Value title = "")
 {
-    return Json::Object{{"tree", std::move(tree)}, {"focused", std::move(focused)}, {"zoomed", std::move(zoomed)}, {"title", std::move(title)}};
+    return Json::Object{{"tree", std::move(tree)},
+                        {"focused", std::move(focused)},
+                        {"zoomed", std::move(zoomed)},
+                        {"title", std::move(title)}};
 }
 
 /// A layout of pane 1 alone whose moved panes are @p moved.
@@ -133,7 +137,8 @@ TEST(MuxLayout, NeighborsFollowTheSplitsOfTheTab)
     // Four in a grid, (1 / 3) | (2 / 4): each finds the one across, not the
     // one at a corner.
     Layout grid;
-    grid.tabs.push_back(LayoutTab{{split(false), split(true), pane(1), pane(3), split(true), pane(2), pane(4)}, 1, 0, ""});
+    grid.tabs.push_back(
+        LayoutTab{{split(false), split(true), pane(1), pane(3), split(true), pane(2), pane(4)}, 1, 0, ""});
     EXPECT_EQ(grid.neighbor(1, Side::Right), 2u);
     EXPECT_EQ(grid.neighbor(3, Side::Right), 4u);
     EXPECT_EQ(grid.neighbor(4, Side::Left), 3u);
@@ -141,13 +146,15 @@ TEST(MuxLayout, NeighborsFollowTheSplitsOfTheTab)
     EXPECT_EQ(grid.neighbor(1, Side::Down), 3u);
     for (const std::uint32_t id : {1u, 2u, 3u, 4u}) {
         const std::array<std::uint32_t, 4> all = grid.neighbors(id);
-        for (const Side side : {Side::Right, Side::Down, Side::Left, Side::Up}) EXPECT_EQ(all[std::size_t(side)], grid.neighbor(id, side));
+        for (const Side side : {Side::Right, Side::Down, Side::Left, Side::Up})
+            EXPECT_EQ(all[std::size_t(side)], grid.neighbor(id, side));
     }
 
     // The nearest counts four times as much as the most in line: 1 | (2 /
     // 3) | 4, where 4 is in line with 1 but past 2 and 3.
     Layout row;
-    row.tabs.push_back(LayoutTab{{split(false), pane(1), split(false), split(true), pane(2), pane(3), pane(4)}, 1, 0, ""});
+    row.tabs.push_back(
+        LayoutTab{{split(false), pane(1), split(false), split(true), pane(2), pane(3), pane(4)}, 1, 0, ""});
     EXPECT_EQ(row.neighbor(1, Side::Right), 2u);
     EXPECT_EQ(row.neighbor(4, Side::Left), 2u);
 
@@ -169,7 +176,10 @@ TEST(MuxLayout, NeighborsWeighTheSizeOfTheWindow)
     // and 4 the right 0.3, all the height.
     Layout layout;
     layout.tabs.push_back(
-        LayoutTab{{split(false, 0.4), pane(1), split(false, 0.5), split(true, 0.3), pane(2), pane(3), pane(4)}, 1, 0, ""});
+        LayoutTab{{split(false, 0.4), pane(1), split(false, 0.5), split(true, 0.3), pane(2), pane(3), pane(4)},
+                  1,
+                  0,
+                  ""});
     EXPECT_EQ(layout.neighbor(1, Side::Right), 3u);
     // Pane 1 is 40 pixels wide and 3000 high: the tab is 100 by 3000.
     EXPECT_EQ(layout.neighbor(1, Side::Right, 40, 3000), 4u);
@@ -186,7 +196,8 @@ TEST(MuxLayout, ATabWithoutPanesGoes)
     EXPECT_EQ(layout.current, 0u);
     // A tab before the current one: the current one keeps showing.
     layout = twoTabs();
-    for (const std::uint32_t id : {1u, 2u, 3u}) ASSERT_TRUE(layout.remove(id));
+    for (const std::uint32_t id : {1u, 2u, 3u})
+        ASSERT_TRUE(layout.remove(id));
     ASSERT_EQ(layout.tabs.size(), 1u);
     EXPECT_EQ(layout.tabs[0].focused, 4u);
     EXPECT_EQ(layout.current, 0u);
@@ -194,7 +205,8 @@ TEST(MuxLayout, ATabWithoutPanesGoes)
     layout = twoTabs();
     layout.current = 0;
     layout.addTab(5);
-    for (const std::uint32_t id : {1u, 2u, 3u}) ASSERT_TRUE(layout.remove(id));
+    for (const std::uint32_t id : {1u, 2u, 3u})
+        ASSERT_TRUE(layout.remove(id));
     EXPECT_EQ(layout.current, 0u);
     EXPECT_EQ(layout.tabs[0].focused, 4u);
     // The last pane.
@@ -246,8 +258,10 @@ TEST(MuxLayout, ADeepTreeNeedsNoDeepJson)
     EXPECT_TRUE(throughText(layout, &error)) << error;
     // A chain the other way: each split's first side splits again.
     LayoutTab left;
-    for (std::uint32_t id = 1; id < Last; ++id) left.tree.push_back(split(false));
-    for (std::uint32_t id = 1; id <= Last; ++id) left.tree.push_back(pane(id));
+    for (std::uint32_t id = 1; id < Last; ++id)
+        left.tree.push_back(split(false));
+    for (std::uint32_t id = 1; id <= Last; ++id)
+        left.tree.push_back(pane(id));
     left.focused = 1;
     Layout comb;
     comb.tabs.push_back(left);
@@ -308,8 +322,10 @@ TEST(MuxLayout, TheLargestLayoutFitsOneFrame)
     // same values.
     Layout splits;
     LayoutTab all;
-    for (std::size_t i = 1; i < MaxSessionPanes; ++i) all.tree.push_back(split(true, 1.0 / 3.0));
-    for (std::size_t i = 0; i < MaxSessionPanes; ++i) all.tree.push_back(pane(0xffffffffu - std::uint32_t(i)));
+    for (std::size_t i = 1; i < MaxSessionPanes; ++i)
+        all.tree.push_back(split(true, 1.0 / 3.0));
+    for (std::size_t i = 0; i < MaxSessionPanes; ++i)
+        all.tree.push_back(pane(0xffffffffu - std::uint32_t(i)));
     all.focused = all.zoomed = 0xffffffffu;
     all.title = std::string(MaxTabTitle, '\x01');
     splits.tabs.push_back(all);
@@ -470,7 +486,8 @@ TEST(MuxLayout, RefusesWhatIsNotALayout)
 TEST(MuxLayout, RefusesMorePanesThanASessionHas)
 {
     Json::Array tabs;
-    for (std::size_t id = 1; id <= MaxSessionPanes + 1; ++id) tabs.push_back(tab({std::int64_t(id)}, std::int64_t(id)));
+    for (std::size_t id = 1; id <= MaxSessionPanes + 1; ++id)
+        tabs.push_back(tab({std::int64_t(id)}, std::int64_t(id)));
     std::string error;
     EXPECT_FALSE(layoutFrom(Json::Object{{"tabs", tabs}, {"current", 0}}, &error));
     EXPECT_NE(error.find(std::to_string(MaxSessionPanes)), std::string::npos) << error;
@@ -479,7 +496,8 @@ TEST(MuxLayout, RefusesMorePanesThanASessionHas)
     // A tree with more splits than such a tree has is refused before its
     // nodes are read.
     Json::Array tree;
-    for (std::size_t i = 0; i < 2 * MaxSessionPanes; ++i) tree.push_back(Json::Array{"right", 0.5});
+    for (std::size_t i = 0; i < 2 * MaxSessionPanes; ++i)
+        tree.push_back(Json::Array{"right", 0.5});
     EXPECT_FALSE(layoutFrom(withTab(tab(std::move(tree), 1)), &error));
     EXPECT_NE(error.find(std::to_string(MaxSessionPanes)), std::string::npos) << error;
 }
@@ -491,7 +509,8 @@ TEST(MuxLayout, AnErrorNamesItsCauseAndAKeyOfTheWireSafely)
     EXPECT_NE(error.find("'current'"), std::string::npos) << error;
     EXPECT_FALSE(layoutFrom(Json::Object{{"tabs", 1}, {"current", 0}}, &error));
     EXPECT_NE(error.find("'tabs'"), std::string::npos) << error;
-    EXPECT_FALSE(layoutFrom(withTab(Json::Object{{"tree", Json::Array{1}}, {"focused", 1}, {"zoomed", 0}, {"title", 1}}), &error));
+    EXPECT_FALSE(layoutFrom(
+        withTab(Json::Object{{"tree", Json::Array{1}}, {"focused", 1}, {"zoomed", 0}, {"title", 1}}), &error));
     EXPECT_NE(error.find("not a string"), std::string::npos) << error;
     EXPECT_FALSE(layoutFrom(withTab(Json::Object{{"tree", 1}, {"focused", 1}, {"zoomed", 0}, {"title", ""}}), &error));
     EXPECT_NE(error.find("not an array"), std::string::npos) << error;
@@ -510,7 +529,8 @@ TEST(MuxLayout, ASplitPutsTheNewPaneOnItsSideWithTheFocus)
     layout.tabs[0].zoomed = 3;
     ASSERT_TRUE(layout.split(3, 7, Side::Right));
     EXPECT_EQ(layout.tabs[0].tree,
-              (std::vector<LayoutNode>{split(false, 0.3), pane(1), split(true, 0.6), pane(2), split(false), pane(3), pane(7)}));
+              (std::vector<LayoutNode>{split(false, 0.3), pane(1), split(true, 0.6), pane(2), split(false), pane(3),
+                                       pane(7)}));
     EXPECT_EQ(layout.tabs[0].focused, 7u);
     EXPECT_EQ(layout.current, 0u);
     // A zoom would hide the new pane.
@@ -619,7 +639,9 @@ TEST(MuxLayout, ThePanesKeepTheirTitlesAndCommands)
     const auto value = [](Json::Value id, Json::Value title, Json::Value command) {
         return Json::Object{{"id", std::move(id)}, {"title", std::move(title)}, {"command", std::move(command)}};
     };
-    EXPECT_TRUE(layoutFrom(withValues({value(1, std::string(MaxPaneTitle, 't'), Json::Array(MaxPaneCommandArgs, Json::Value("a")))}), &error))
+    EXPECT_TRUE(layoutFrom(
+        withValues({value(1, std::string(MaxPaneTitle, 't'), Json::Array(MaxPaneCommandArgs, Json::Value("a")))}),
+        &error))
         << error;
     // A window that does not know a pane's command sends no "command": the
     // daemon keeps its own. It goes back on the wire as it came.
@@ -649,8 +671,9 @@ TEST(MuxLayout, ThePanesKeepTheirTitlesAndCommands)
              withValues({value(1, "", Json::Array{"vi", std::string(MaxPaneCommandArg + 1, 'x')})}),
              withValues({value(1, "", Json::Array{1})}),
              // Each is at MaxLayoutValueBytes, and both are past it.
-             withValues({value(1, "", Json::Array(MaxPaneCommandArgs, Json::Value(std::string(MaxPaneCommandArg, 'x')))),
-                         value(2, "", Json::Array(MaxPaneCommandArgs, Json::Value(std::string(MaxPaneCommandArg, 'x'))))}),
+             withValues(
+                 {value(1, "", Json::Array(MaxPaneCommandArgs, Json::Value(std::string(MaxPaneCommandArg, 'x')))),
+                  value(2, "", Json::Array(MaxPaneCommandArgs, Json::Value(std::string(MaxPaneCommandArg, 'x'))))}),
              withValues({Json::Object{{"id", 1}, {"title", ""}, {"command", "vi"}}}),
              withValues({Json::Object{{"id", 1}}}),
              withValues({Json::Object{{"id", 1}, {"title", ""}, {"command", Json::Array{}}, {"other", 1}}}),

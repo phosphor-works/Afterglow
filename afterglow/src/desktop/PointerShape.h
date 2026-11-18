@@ -12,24 +12,26 @@ namespace Afterglow {
 inline QCursor protocolPointer(const QString& name, qreal scale)
 {
     static const QHash<QString, Qt::CursorShape> shapes = {
-        {QStringLiteral("default"), Qt::ArrowCursor}, {QStringLiteral("text"), Qt::IBeamCursor},
-        {QStringLiteral("pointer"), Qt::PointingHandCursor}, {QStringLiteral("wait"), Qt::WaitCursor},
-        {QStringLiteral("progress"), Qt::BusyCursor}, {QStringLiteral("crosshair"), Qt::CrossCursor},
-        {QStringLiteral("move"), Qt::SizeAllCursor}, {QStringLiteral("not-allowed"), Qt::ForbiddenCursor},
-        {QStringLiteral("no-drop"), Qt::ForbiddenCursor}, {QStringLiteral("alias"), Qt::DragLinkCursor},
-        {QStringLiteral("copy"), Qt::DragCopyCursor}, {QStringLiteral("grab"), Qt::OpenHandCursor},
-        {QStringLiteral("grabbing"), Qt::ClosedHandCursor}, {QStringLiteral("help"), Qt::WhatsThisCursor},
-        {QStringLiteral("ew-resize"), Qt::SizeHorCursor}, {QStringLiteral("e-resize"), Qt::SizeHorCursor},
-        {QStringLiteral("w-resize"), Qt::SizeHorCursor}, {QStringLiteral("ns-resize"), Qt::SizeVerCursor},
-        {QStringLiteral("n-resize"), Qt::SizeVerCursor}, {QStringLiteral("s-resize"), Qt::SizeVerCursor},
-        {QStringLiteral("col-resize"), Qt::SplitHCursor}, {QStringLiteral("row-resize"), Qt::SplitVCursor},
+        {QStringLiteral("default"), Qt::ArrowCursor},         {QStringLiteral("text"), Qt::IBeamCursor},
+        {QStringLiteral("pointer"), Qt::PointingHandCursor},  {QStringLiteral("wait"), Qt::WaitCursor},
+        {QStringLiteral("progress"), Qt::BusyCursor},         {QStringLiteral("crosshair"), Qt::CrossCursor},
+        {QStringLiteral("move"), Qt::SizeAllCursor},          {QStringLiteral("not-allowed"), Qt::ForbiddenCursor},
+        {QStringLiteral("no-drop"), Qt::ForbiddenCursor},     {QStringLiteral("alias"), Qt::DragLinkCursor},
+        {QStringLiteral("copy"), Qt::DragCopyCursor},         {QStringLiteral("grab"), Qt::OpenHandCursor},
+        {QStringLiteral("grabbing"), Qt::ClosedHandCursor},   {QStringLiteral("help"), Qt::WhatsThisCursor},
+        {QStringLiteral("ew-resize"), Qt::SizeHorCursor},     {QStringLiteral("e-resize"), Qt::SizeHorCursor},
+        {QStringLiteral("w-resize"), Qt::SizeHorCursor},      {QStringLiteral("ns-resize"), Qt::SizeVerCursor},
+        {QStringLiteral("n-resize"), Qt::SizeVerCursor},      {QStringLiteral("s-resize"), Qt::SizeVerCursor},
+        {QStringLiteral("col-resize"), Qt::SplitHCursor},     {QStringLiteral("row-resize"), Qt::SplitVCursor},
         {QStringLiteral("nesw-resize"), Qt::SizeBDiagCursor}, {QStringLiteral("ne-resize"), Qt::SizeBDiagCursor},
-        {QStringLiteral("sw-resize"), Qt::SizeBDiagCursor}, {QStringLiteral("nwse-resize"), Qt::SizeFDiagCursor},
-        {QStringLiteral("nw-resize"), Qt::SizeFDiagCursor}, {QStringLiteral("se-resize"), Qt::SizeFDiagCursor},
+        {QStringLiteral("sw-resize"), Qt::SizeBDiagCursor},   {QStringLiteral("nwse-resize"), Qt::SizeFDiagCursor},
+        {QStringLiteral("nw-resize"), Qt::SizeFDiagCursor},   {QStringLiteral("se-resize"), Qt::SizeFDiagCursor},
     };
-    if (auto it = shapes.constFind(name); it != shapes.constEnd()) return QCursor(*it);
-    if (name != QLatin1String("cell") && name != QLatin1String("vertical-text")
-        && name != QLatin1String("zoom-in") && name != QLatin1String("zoom-out")) return QCursor(Qt::IBeamCursor);
+    if (auto it = shapes.constFind(name); it != shapes.constEnd())
+        return QCursor(*it);
+    if (name != QLatin1String("cell") && name != QLatin1String("vertical-text") && name != QLatin1String("zoom-in")
+        && name != QLatin1String("zoom-out"))
+        return QCursor(Qt::IBeamCursor);
     // Qt has no built-in shapes for these CSS cursors. Draw outlined symbols
     // that remain visible over both light and dark terminal content.
     const QString key = QStringLiteral("afterglow-pointer-%1-%2").arg(name).arg(scale);
@@ -53,7 +55,8 @@ inline QCursor protocolPointer(const QString& name, qreal scale)
                 painter.drawEllipse(QRectF(3, 3, 15, 15));
                 painter.drawLine(QPointF(16, 16), QPointF(24, 24));
                 painter.drawLine(QPointF(7, 10.5), QPointF(14, 10.5));
-                if (name == QLatin1String("zoom-in")) painter.drawLine(QPointF(10.5, 7), QPointF(10.5, 14));
+                if (name == QLatin1String("zoom-in"))
+                    painter.drawLine(QPointF(10.5, 7), QPointF(10.5, 14));
             }
         }
         painter.end();

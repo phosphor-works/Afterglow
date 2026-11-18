@@ -82,7 +82,10 @@ public:
     /// False when it is not base64, or when one character is left: the item
     /// was cut short.
     bool finish(std::string& out);
-    void reset() { m_carry.clear(); }
+    void reset()
+    {
+        m_carry.clear();
+    }
 
 private:
     std::string m_carry;

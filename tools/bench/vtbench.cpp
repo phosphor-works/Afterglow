@@ -34,7 +34,9 @@ namespace {
 
 struct NullHost : AfterglowVt::ITerminalHost
 {
-    void writeToPty(std::string_view) override { }
+    void writeToPty(std::string_view) override
+    {
+    }
 };
 
 std::string asciiLines(std::size_t bytes)
@@ -70,7 +72,8 @@ std::string colouredLines(std::size_t bytes)
 
 std::string unicodeLines(std::size_t bytes)
 {
-    const std::string words[] = {"日本語", "中文字符", "한국어", "😀", "👨‍👩‍👧", "é", "ñ", "naïve", "ascii"};
+    const std::string words[] = {"日本語", "中文字符", "한국어", "😀",   "👨‍👩‍👧",
+                                 "é",      "ñ",        "naïve",  "ascii"};
     std::string out;
     std::mt19937 rng(3);
     while (out.size() < bytes) {
@@ -129,7 +132,6 @@ bool replay(const char* path)
     std::printf("%-26s %8.1f MB/s  (%.0f MB, %.3f s CPU)\n", name, data.size() / best / 1e6, data.size() / 1e6, best);
     return true;
 }
-
 
 // Text for the reflow workloads. Long lines are soft-wrapped at every tested
 // width. Styled runs, hyperlinks, wide and combining characters exercise the
@@ -293,23 +295,37 @@ std::vector<StressCase> stressCases()
     // the bottom margin for each line of output.
     const std::string margins = "\x1b[1;23r\x1b[23;1H";
     const std::string line = "Unpacking libexample (1.2.3-4) over (1.2.3-3) ...\r\n";
-    cases.push_back({"region lf, no regions", "line feed", 80, 24, margins, line, 200000, noRegions, "no OSC 133 region"});
+    cases.push_back(
+        {"region lf, no regions", "line feed", 80, 24, margins, line, 200000, noRegions, "no OSC 133 region"});
     cases.push_back({"region lf, 1024 regions", "line feed", 80, 24, shellHistory(400, 24) + margins, line, 200000,
                      allRegions, "1024 OSC 133 regions"});
     // 80x24 holds 1,920 cells, fewer than the 4,096 cursor limit, so no
     // sequence stops at the limit. The same group repeated is the cheap
     // case; distinct overlapping rectangles each visit their cells. The
     // shape takes one parameter, so the groups fill the parser's limit.
-    cases.push_back({"cursors 80x24, one group repeated", "sequence", 80, 24, {},
-                     extraCursors(std::vector<std::string>(std::size_t(AfterglowVt::Params::Max - 1), "4")), 2000,
-                     everyCell, "a cursor in every cell"});
+    cases.push_back({"cursors 80x24, one group repeated",
+                     "sequence",
+                     80,
+                     24,
+                     {},
+                     extraCursors(std::vector<std::string>(std::size_t(AfterglowVt::Params::Max - 1), "4")),
+                     2000,
+                     everyCell,
+                     "a cursor in every cell"});
     std::vector<std::string> rects;
     for (int a = 0; a < 28; ++a) {
         for (int b = 0; b < 29; ++b) {
             rects.push_back("4:1:" + std::to_string(1 + a) + ":24:" + std::to_string(80 - b));
         }
     }
-    cases.push_back({"cursors 80x24, distinct rects", "sequence", 80, 24, {}, extraCursors(rects), 200, everyCell,
+    cases.push_back({"cursors 80x24, distinct rects",
+                     "sequence",
+                     80,
+                     24,
+                     {},
+                     extraCursors(rects),
+                     200,
+                     everyCell,
                      "a cursor in every cell"});
     return cases;
 }
@@ -348,12 +364,13 @@ bool stressBench(const StressCase& c)
 
 int usage()
 {
-    std::fprintf(stderr, "usage: afterglow_vtbench\n"
-                         "       afterglow_vtbench FILE...\n"
-                         "       afterglow_vtbench --reflow [RUNS] [CASE]\n"
-                         "       afterglow_vtbench --stress [CASE]\n"
-                         "RUNS is an integer from 1 to 1000 (default 5).\n"
-                         "CASE is a case-sensitive part of a case name, such as \"long rich\" or \"cursors\".\n");
+    std::fprintf(stderr,
+                 "usage: afterglow_vtbench\n"
+                 "       afterglow_vtbench FILE...\n"
+                 "       afterglow_vtbench --reflow [RUNS] [CASE]\n"
+                 "       afterglow_vtbench --stress [CASE]\n"
+                 "RUNS is an integer from 1 to 1000 (default 5).\n"
+                 "CASE is a case-sensitive part of a case name, such as \"long rich\" or \"cursors\".\n");
     return 2;
 }
 
@@ -362,12 +379,14 @@ int usage()
 int main(int argc, char** argv)
 {
     if (argc > 1 && std::strcmp(argv[1], "--reflow") == 0) {
-        if (argc > 4) return usage();
+        if (argc > 4)
+            return usage();
         int repeats = 5;
         if (argc > 2) {
             char* end = nullptr;
             const long value = std::strtol(argv[2], &end, 10);
-            if (end == argv[2] || *end != '\0' || value < 1 || value > 1000) return usage();
+            if (end == argv[2] || *end != '\0' || value < 1 || value > 1000)
+                return usage();
             repeats = int(value);
         }
         const ReflowCase cases[] = {
@@ -391,7 +410,8 @@ int main(int argc, char** argv)
         return 0;
     }
     if (argc > 1 && std::strcmp(argv[1], "--stress") == 0) {
-        if (argc > 3) return usage();
+        if (argc > 3)
+            return usage();
         int ran = 0;
         bool ok = true;
         for (const auto& c : stressCases()) {
@@ -409,7 +429,8 @@ int main(int argc, char** argv)
     }
     if (argc > 1) {
         for (int i = 1; i < argc; ++i) {
-            if (argv[i][0] == '-') return usage();
+            if (argv[i][0] == '-')
+                return usage();
         }
         bool ok = true;
         for (int i = 1; i < argc; ++i) {

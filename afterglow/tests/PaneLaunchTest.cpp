@@ -23,19 +23,25 @@ namespace {
 /// The value that @p options give @p name, as the child gets it: the last one.
 std::optional<std::string> valueOf(const SpawnOptions& options, const std::string& name)
 {
-    const auto set = std::find_if(options.environment.rbegin(), options.environment.rend(), [&](const auto& kv) { return kv.first == name; });
-    if (set == options.environment.rend()) return std::nullopt;
+    const auto set = std::find_if(options.environment.rbegin(), options.environment.rend(), [&](const auto& kv) {
+        return kv.first == name;
+    });
+    if (set == options.environment.rend())
+        return std::nullopt;
     return set->second;
 }
 
 int timesSet(const SpawnOptions& options, const std::string& name)
 {
-    return int(std::count_if(options.environment.begin(), options.environment.end(), [&](const auto& kv) { return kv.first == name; }));
+    return int(std::count_if(options.environment.begin(), options.environment.end(), [&](const auto& kv) {
+        return kv.first == name;
+    }));
 }
 
 bool unsets(const SpawnOptions& options, const std::string& name)
 {
-    return std::find(options.unsetEnvironment.begin(), options.unsetEnvironment.end(), name) != options.unsetEnvironment.end();
+    return std::find(options.unsetEnvironment.begin(), options.unsetEnvironment.end(), name)
+        != options.unsetEnvironment.end();
 }
 
 /// Settings that leave argv alone: shell integration would add its options.
@@ -59,15 +65,34 @@ TEST(PaneLaunch, TheVariablesOfAnotherTerminalOrOfTheStartingShellGo)
 {
     SpawnOptions options;
     Afterglow::offerTerminalEnvironment(options, QStringLiteral("xterm-256color"));
-    for (const char* name : {"TMUX", "TMUX_PANE", "STY", "WINDOWID", "VTE_VERSION", "KITTY_WINDOW_ID", "KITTY_PID",
-                             "KITTY_LISTEN_ON", "KITTY_PUBLIC_KEY", "WEZTERM_PANE", "WEZTERM_UNIX_SOCKET", "KONSOLE_DBUS_SERVICE",
-                             "KONSOLE_DBUS_SESSION", "KONSOLE_DBUS_WINDOW", "KONSOLE_VERSION", "ITERM_SESSION_ID", "WT_SESSION",
-                             "XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID", "AFTERGLOW_RESULT", "OLDPWD", "SHLVL"}) {
+    for (const char* name : {"TMUX",
+                             "TMUX_PANE",
+                             "STY",
+                             "WINDOWID",
+                             "VTE_VERSION",
+                             "KITTY_WINDOW_ID",
+                             "KITTY_PID",
+                             "KITTY_LISTEN_ON",
+                             "KITTY_PUBLIC_KEY",
+                             "WEZTERM_PANE",
+                             "WEZTERM_UNIX_SOCKET",
+                             "KONSOLE_DBUS_SERVICE",
+                             "KONSOLE_DBUS_SESSION",
+                             "KONSOLE_DBUS_WINDOW",
+                             "KONSOLE_VERSION",
+                             "ITERM_SESSION_ID",
+                             "WT_SESSION",
+                             "XDG_ACTIVATION_TOKEN",
+                             "DESKTOP_STARTUP_ID",
+                             "AFTERGLOW_RESULT",
+                             "OLDPWD",
+                             "SHLVL"}) {
         EXPECT_TRUE(unsets(options, name)) << name;
         EXPECT_EQ(timesSet(options, name), 0) << name;
     }
     // These describe the login or the directory, which a pane shares.
-    for (const char* name : {"PWD", "SSH_TTY", "SSH_CONNECTION", "SSH_CLIENT", "GPG_TTY"}) EXPECT_FALSE(unsets(options, name)) << name;
+    for (const char* name : {"PWD", "SSH_TTY", "SSH_CONNECTION", "SSH_CLIENT", "GPG_TTY"})
+        EXPECT_FALSE(unsets(options, name)) << name;
     EXPECT_EQ(valueOf(options, "TERM"), "xterm-256color");
     EXPECT_EQ(valueOf(options, "COLORTERM"), "truecolor");
     EXPECT_EQ(valueOf(options, "TERM_PROGRAM"), "afterglow");
@@ -95,7 +120,8 @@ TEST(PaneLaunch, ANameThatTheLaunchSetsOrUnsetsKeepsItsValue)
 
 TEST(PaneLaunch, TheTermThatTheChildGetsDecidesTerminfoDirs)
 {
-    if (!buildEntry()) GTEST_SKIP() << "no terminfo entry in the build tree";
+    if (!buildEntry())
+        GTEST_SKIP() << "no terminfo entry in the build tree";
     const Afterglow::Test::Saved saved("TERMINFO_DIRS");
     qunsetenv("TERMINFO_DIRS");
     // A launch that sets TERM=afterglow under another Terminal.term.
@@ -104,7 +130,8 @@ TEST(PaneLaunch, TheTermThatTheChildGetsDecidesTerminfoDirs)
     Afterglow::offerTerminalEnvironment(own, QStringLiteral("xterm-256color"));
     EXPECT_EQ(valueOf(own, "TERM"), "afterglow");
     ASSERT_TRUE(valueOf(own, "TERMINFO_DIRS"));
-    EXPECT_TRUE(valueOf(own, "TERMINFO_DIRS")->starts_with(AFTERGLOW_BUILD_TERMINFO_DIR)) << *valueOf(own, "TERMINFO_DIRS");
+    EXPECT_TRUE(valueOf(own, "TERMINFO_DIRS")->starts_with(AFTERGLOW_BUILD_TERMINFO_DIR))
+        << *valueOf(own, "TERMINFO_DIRS");
     // And one that sets another TERM, or removes it, under Terminal.term=afterglow.
     SpawnOptions other;
     other.environment = {{"TERM", "xterm-256color"}};
@@ -119,7 +146,8 @@ TEST(PaneLaunch, TheTermThatTheChildGetsDecidesTerminfoDirs)
 
 TEST(PaneLaunch, TerminfoDirsHoldEachDirectoryOnce)
 {
-    if (!buildEntry()) GTEST_SKIP() << "no terminfo entry in the build tree";
+    if (!buildEntry())
+        GTEST_SKIP() << "no terminfo entry in the build tree";
     const Afterglow::Test::Saved saved("TERMINFO_DIRS");
     const auto offered = [] {
         SpawnOptions options;
@@ -144,7 +172,8 @@ TEST(PaneLaunch, TerminfoDirsHoldEachDirectoryOnce)
 
 TEST(PaneLaunch, ASessionsPaneReadsTheSessionsEnvironment)
 {
-    if (!buildEntry()) GTEST_SKIP() << "no terminfo entry in the build tree";
+    if (!buildEntry())
+        GTEST_SKIP() << "no terminfo entry in the build tree";
     // A window shows a session that another environment started: what the
     // launch reads of the inherited variables is the session's.
     const Afterglow::Test::Saved saved("TERMINFO_DIRS", "/window/terminfo");
@@ -163,7 +192,8 @@ TEST(PaneLaunch, ASessionsPaneReadsTheSessionsEnvironment)
 
 TEST(PaneLaunch, APaneWhoseDirectoryIsGoneStartsInTheHomeThatItGets)
 {
-    const QString gone = QDir::tempPath() + QStringLiteral("/afterglow-gone-%1").arg(QCoreApplication::applicationPid());
+    const QString gone =
+        QDir::tempPath() + QStringLiteral("/afterglow-gone-%1").arg(QCoreApplication::applicationPid());
     ASSERT_FALSE(QFileInfo::exists(gone));
     const std::string launchHome = QDir::tempPath().toStdString();
     const std::string sessionHome = QDir::rootPath().toStdString();
@@ -186,9 +216,9 @@ TEST(PaneLaunch, TheLaunchsVariablesWinOverTheConfiguredOnes)
 {
     Settings settings = plainSettings();
     settings.environment = {{"EDITOR", "vi"}, {"PAGER", "less"}, {"KEPT", "1"}};
-    const SpawnOptions options = Afterglow::prepareLaunch(settings, QDir::tempPath(), {QStringLiteral("/bin/true")},
-                                                          {{QStringLiteral("EDITOR"), QStringLiteral("nvim")},
-                                                           {QStringLiteral("PAGER"), false}});
+    const SpawnOptions options = Afterglow::prepareLaunch(
+        settings, QDir::tempPath(), {QStringLiteral("/bin/true")},
+        {{QStringLiteral("EDITOR"), QStringLiteral("nvim")}, {QStringLiteral("PAGER"), false}});
     EXPECT_EQ(timesSet(options, "EDITOR"), 1);
     EXPECT_EQ(valueOf(options, "EDITOR"), "nvim");
     EXPECT_EQ(timesSet(options, "PAGER"), 0);
@@ -207,8 +237,9 @@ TEST(PaneLaunch, TheProgramIsTheCommandThenTheConfiguredShellThenTheUsersShell)
     EXPECT_EQ(Afterglow::prepareLaunch(settings, {}, {QStringLiteral("htop"), QStringLiteral("-d")}, {}).argv,
               (std::vector<std::string>{"htop", "-d"}));
     // A directory that is gone: the home directory.
-    EXPECT_EQ(Afterglow::prepareLaunch(settings, QStringLiteral("/nonexistent/afterglow-test"), {}, {}).workingDirectory,
-              QFile::encodeName(QDir::homePath()).toStdString());
+    EXPECT_EQ(
+        Afterglow::prepareLaunch(settings, QStringLiteral("/nonexistent/afterglow-test"), {}, {}).workingDirectory,
+        QFile::encodeName(QDir::homePath()).toStdString());
 }
 
 TEST(PaneLaunch, TheSshHelperIsOfferedOrRemovedUnlessTheLaunchNamesIt)
@@ -217,7 +248,8 @@ TEST(PaneLaunch, TheSshHelperIsOfferedOrRemovedUnlessTheLaunchNamesIt)
     settings.sshIntegration = true;
     const std::string self = QFile::encodeName(QCoreApplication::applicationFilePath()).toStdString();
     EXPECT_EQ(valueOf(Afterglow::prepareLaunch(settings, {}, {}, {}), "AFTERGLOW_SSH_HELPER"), self);
-    const SpawnOptions removed = Afterglow::prepareLaunch(settings, {}, {}, {{QStringLiteral("AFTERGLOW_SSH_HELPER"), false}});
+    const SpawnOptions removed =
+        Afterglow::prepareLaunch(settings, {}, {}, {{QStringLiteral("AFTERGLOW_SSH_HELPER"), false}});
     EXPECT_FALSE(valueOf(removed, "AFTERGLOW_SSH_HELPER"));
     EXPECT_TRUE(unsets(removed, "AFTERGLOW_SSH_HELPER"));
     // Off: one inherited from the Afterglow that started this one goes too,
@@ -226,7 +258,8 @@ TEST(PaneLaunch, TheSshHelperIsOfferedOrRemovedUnlessTheLaunchNamesIt)
     const SpawnOptions off = Afterglow::prepareLaunch(settings, {}, {}, {});
     EXPECT_FALSE(valueOf(off, "AFTERGLOW_SSH_HELPER"));
     EXPECT_TRUE(unsets(off, "AFTERGLOW_SSH_HELPER"));
-    const SpawnOptions given = Afterglow::prepareLaunch(settings, {}, {}, {{QStringLiteral("AFTERGLOW_SSH_HELPER"), QStringLiteral("/x")}});
+    const SpawnOptions given =
+        Afterglow::prepareLaunch(settings, {}, {}, {{QStringLiteral("AFTERGLOW_SSH_HELPER"), QStringLiteral("/x")}});
     EXPECT_EQ(valueOf(given, "AFTERGLOW_SSH_HELPER"), "/x");
     EXPECT_FALSE(unsets(given, "AFTERGLOW_SSH_HELPER"));
     EXPECT_EQ(valueOf(off, "AFTERGLOW_SSH_TERMINFO"), settings.sshTerminfo.toStdString());
@@ -235,7 +268,8 @@ TEST(PaneLaunch, TheSshHelperIsOfferedOrRemovedUnlessTheLaunchNamesIt)
 TEST(PaneLaunch, TheLaunchedProgramIsTheCommandsFileName)
 {
     EXPECT_EQ(Afterglow::launchedProgramName({}), QString());
-    EXPECT_EQ(Afterglow::launchedProgramName({QStringLiteral("/usr/bin/htop"), QStringLiteral("-d")}), QStringLiteral("htop"));
+    EXPECT_EQ(Afterglow::launchedProgramName({QStringLiteral("/usr/bin/htop"), QStringLiteral("-d")}),
+              QStringLiteral("htop"));
     EXPECT_EQ(Afterglow::launchedProgramName({QStringLiteral("less")}), QStringLiteral("less"));
 }
 

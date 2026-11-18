@@ -23,7 +23,8 @@ Pane* TerminalWindow::inputPane(Pane* pane)
 Pane* TerminalWindow::pointerTarget(Pane* pane, const QPointF& pos) const
 {
     Pane* target = inputPane(pane);
-    if (!target || target == pane || !m_splits || !pane->overlay()->popup()) return target;
+    if (!target || target == pane || !m_splits || !pane->overlay()->popup())
+        return target;
     // The program's own cells: a popup's grid, which its border is not. By
     // the layout, where the pane's maps send the point, as paneUnder and
     // cellAt find a pane and a cell, also while a split eases towards it.
@@ -36,12 +37,16 @@ QString TerminalWindow::openOverlay(const QString& owner, const QString& request
                                     OverlayReply reply, QString& code)
 {
     code = QStringLiteral("no_pane");
-    if (!pane || tabOf(pane) < 0) return QStringLiteral("Pane closed");
+    if (!pane || tabOf(pane) < 0)
+        return QStringLiteral("Pane closed");
     code = QStringLiteral("busy");
-    if (pane->overlay()) return QStringLiteral("The pane has an overlay already");
-    if (m_scriptDialog) return QStringLiteral("A script dialog is open");
+    if (pane->overlay())
+        return QStringLiteral("The pane has an overlay already");
+    if (m_scriptDialog)
+        return QStringLiteral("A script dialog is open");
     // Another script's key mode would take the overlay's keys from the user.
-    if (m_scriptKeyMode && m_scriptKeyMode->owner != owner) return QStringLiteral("Another script holds the keyboard");
+    if (m_scriptKeyMode && m_scriptKeyMode->owner != owner)
+        return QStringLiteral("Another script holds the keyboard");
     // A prompt, a menu or the palette has the keyboard, and the user's
     // answer to it must not go to the overlay. A search closes below.
     if (m_controller->paletteOpen() || m_controller->pasteConfirmOpen() || m_controller->clipboardPromptOpen()
@@ -88,23 +93,28 @@ QString TerminalWindow::openOverlay(const QString& owner, const QString& request
         m_controller->setSearchOpen(false);
         pane->clearSearch();
         pane->setPreedit({}, 0);
-        if (isActive()) QGuiApplication::inputMethod()->reset();
+        if (isActive())
+            QGuiApplication::inputMethod()->reset();
     }
     if (m_selectionPane == pane) {
         m_selectionPane = nullptr;
         m_autoScroll.stop();
     }
-    if (m_textDragPane == pane) m_textDragPane = nullptr;
+    if (m_textDragPane == pane)
+        m_textDragPane = nullptr;
     // A button held on the pane keeps its report there: the program that
     // got the press hears its release (mouseReleaseEvent).
-    if (m_hover.pane == pane) m_hover = {};
+    if (m_hover.pane == pane)
+        m_hover = {};
     // Onto the overlay's pane, as for a dialog: the overview's original card
     // could be in another tab.
     closeOverview(pane);
-    if (tabOf(pane) != m_currentTab) switchTab(tabOf(pane));
+    if (tabOf(pane) != m_currentTab)
+        switchTab(tabOf(pane));
     if (focused) {
         // The focus stays on the pane: its program hears that it lost it.
-        if (m_windowFocused) reportFocus(pane, false);
+        if (m_windowFocused)
+            reportFocus(pane, false);
         m_inputMethodDirty = true;
         updateTitle();
         updateChrome();
@@ -128,7 +138,8 @@ QString TerminalWindow::openOverlay(const QString& owner, const QString& request
     updatePaneVisibility();
     startOverlayFade(pane, 1.0);
     // The overlay shows here; the window does not jump forward for it.
-    if (!isActive()) alert(0);
+    if (!isActive())
+        alert(0);
     refreshInputMethod();
     // The pointer may be over the overlay's cells now: its shape follows them.
     applyPointerShape();
@@ -144,8 +155,8 @@ void TerminalWindow::startOverlayFade(Pane* host, qreal target)
     // host is not on screen, the window is not), the overlay switches at
     // once: a fade that never advances would hold the frame loop and
     // audio capture.
-    if (!m_overlayTransitionAvailable || overviewShowing() || tabSwitching() || m_closingPane || !isExposed() || !m_splits
-        || m_splits->rectOf(host).isEmpty()) {
+    if (!m_overlayTransitionAvailable || overviewShowing() || tabSwitching() || m_closingPane || !isExposed()
+        || !m_splits || m_splits->rectOf(host).isEmpty()) {
         m_overlayFades.erase(host);
         updateAudioCapture();
         return;
@@ -156,35 +167,44 @@ void TerminalWindow::startOverlayFade(Pane* host, qreal target)
     fade.lastPopup.reset();
     fade.lastTitle.clear();
     const qreal from = fade.progress.isAnimating() ? std::clamp(fade.progress.value(), 0.0, 1.0) : 1.0 - target;
-    fade.progress.start(from, target, motionSpec(anim.overlayCurve, anim.overlayDuration, m_overlayCurve, "Animation.overlayCurve",
-                                                 AnimationSettings{}.overlayCurve));
+    fade.progress.start(from, target,
+                        motionSpec(anim.overlayCurve, anim.overlayDuration, m_overlayCurve, "Animation.overlayCurve",
+                                   AnimationSettings{}.overlayCurve));
     updateAudioCapture();
 }
 
 void TerminalWindow::bindOverlay(Pane* host)
 {
     PaneOverlay* overlay = host->overlay();
-    if (!overlay) return;
+    if (!overlay)
+        return;
     // Its terminal is a pane's: output, the bell, the clipboard, a title.
     bindPane(overlay->pane());
-    connect(overlay, &PaneOverlay::ended, this, [this, host = QPointer<Pane>(host), guard = QPointer<PaneOverlay>(overlay)] {
-        if (host && guard) overlayEnded(host, guard);
-    });
+    connect(overlay, &PaneOverlay::ended, this,
+            [this, host = QPointer<Pane>(host), guard = QPointer<PaneOverlay>(overlay)] {
+                if (host && guard)
+                    overlayEnded(host, guard);
+            });
 }
 
 void TerminalWindow::dropOverlayUi(Pane* program)
 {
     dropPanePrompts(program);
-    if (m_copyPane == program) stopCopyMode();
-    if (m_hover.pane == program) m_hover = {};
-    if (m_lastClickPane == program) m_lastClickPane = nullptr;
+    if (m_copyPane == program)
+        stopCopyMode();
+    if (m_hover.pane == program)
+        m_hover = {};
+    if (m_lastClickPane == program)
+        m_lastClickPane = nullptr;
     // The search bar, Unicode input and the composition act on the focused
     // pane's input pane, which this was.
     if (hostOf(program) == m_focused) {
-        if (m_controller->searchOpen()) m_controller->setSearchOpen(false);
+        if (m_controller->searchOpen())
+            m_controller->setSearchOpen(false);
         stopUnicodeInput();
         program->setPreedit({}, 0);
-        if (isActive()) QGuiApplication::inputMethod()->reset();
+        if (isActive())
+            QGuiApplication::inputMethod()->reset();
     }
     program->clearSearch();
 }
@@ -199,8 +219,10 @@ void TerminalWindow::overlayEnded(Pane* host, PaneOverlay* overlay, bool hostClo
     // It fades out from where its fade is, on its last frame, which keeps
     // the overlay's identity for the renderer. A host that closes shows
     // that frame in its closing effect instead (closePane).
-    if (!hostCloses && tabOf(host) >= 0) startOverlayFade(host, 0.0);
-    else m_overlayFades.erase(host);
+    if (!hostCloses && tabOf(host) >= 0)
+        startOverlayFade(host, 0.0);
+    else
+        m_overlayFades.erase(host);
     if (const auto fade = m_overlayFades.find(host); fade != m_overlayFades.end()) {
         // Still and with no cursor: the host has the keyboard. The new
         // version keeps the renderer from drawing it from its cache.
@@ -214,7 +236,8 @@ void TerminalWindow::overlayEnded(Pane* host, PaneOverlay* overlay, bool hostClo
     }
     // The host has the input again, its view and cursor where they were.
     if (focused && !hostCloses) {
-        if (m_windowFocused) reportFocus(host, true);
+        if (m_windowFocused)
+            reportFocus(host, true);
         m_inputMethodDirty = true;
         if (m_windowFocused && QAccessible::isActive()) {
             QAccessibleEvent event(host, QAccessible::Focus);
@@ -244,26 +267,30 @@ void TerminalWindow::closeOverlays(const QString& owner, const QString& prefix, 
     QList<QPointer<PaneOverlay>> ending;
     for (Pane* pane : panes()) {
         PaneOverlay* overlay = pane->overlay();
-        if (overlay && overlay->owner() == owner && overlay->request().startsWith(prefix)) ending.append(overlay);
+        if (overlay && overlay->owner() == owner && overlay->request().startsWith(prefix))
+            ending.append(overlay);
     }
     for (const auto& overlay : std::as_const(ending)) {
-        if (overlay) overlay->cancel(message);
+        if (overlay)
+            overlay->cancel(message);
     }
 }
 
 std::pair<qreal, bool> TerminalWindow::overlayFade(const Pane* pane) const
 {
     const auto fade = m_overlayFades.find(pane);
-    if (fade == m_overlayFades.end()) return {pane && pane->overlay() ? 1.0 : 0.0, false};
+    if (fade == m_overlayFades.end())
+        return {pane && pane->overlay() ? 1.0 : 0.0, false};
     return {std::clamp(fade->second.progress.value(), 0.0, 1.0), fade->second.progress.isAnimating()};
 }
 
-void TerminalWindow::prepareOverlay(Pane* pane, const QRect& layoutRect, AfterglowRender::WindowRenderer::Pane& wp, bool& holding,
-                                    bool& animating)
+void TerminalWindow::prepareOverlay(Pane* pane, const QRect& layoutRect, AfterglowRender::WindowRenderer::Pane& wp,
+                                    bool& holding, bool& animating)
 {
     PaneOverlay* overlay = pane->overlay();
     const auto fade = m_overlayFades.find(pane);
-    if (!overlay && fade == m_overlayFades.end()) return;
+    if (!overlay && fade == m_overlayFades.end())
+        return;
     float progress = 1.0f;
     std::shared_ptr<AfterglowRender::PaneSnapshot> last;
     std::optional<OverlaySpec::Placement> lastPopup;
@@ -284,14 +311,17 @@ void TerminalWindow::prepareOverlay(Pane* pane, const QRect& layoutRect, Aftergl
         } else {
             // Settled: an overlay that runs shows whole, one that ended is gone.
             m_overlayFades.erase(fade);
-            if (!overlay) return;
+            if (!overlay)
+                return;
         }
     }
     AfterglowRender::WindowRenderer::Pane::Overlay shown;
     shown.progress = progress;
     // A popup's grid is its own part of the host's, wherever the host is drawn.
-    if (overlay && overlay->popup()) preparePopup(overlay->placement(), overlay->borderTitle(), wp.params.contentOrigin, shown);
-    else if (!overlay && lastPopup) preparePopup(*lastPopup, lastTitle, wp.params.contentOrigin, shown);
+    if (overlay && overlay->popup())
+        preparePopup(overlay->placement(), overlay->borderTitle(), wp.params.contentOrigin, shown);
+    else if (!overlay && lastPopup)
+        preparePopup(*lastPopup, lastTitle, wp.params.contentOrigin, shown);
     if (overlay) {
         Pane* program = overlay->pane();
         AfterglowRender::FrameBuilder::PaneParams own;
@@ -310,7 +340,8 @@ void TerminalWindow::prepareOverlay(Pane* pane, const QRect& layoutRect, Aftergl
     } else {
         // An overlay that ended: its last frame, still and with no cursor,
         // while it fades out.
-        if (!last) return;
+        if (!last)
+            return;
         shown.snapshot = last.get();
         shown.running = false;
     }
@@ -327,7 +358,8 @@ void TerminalWindow::preparePopup(const OverlaySpec::Placement& placement, const
                               QSize(grid.width() * m.cellWidth, grid.height() * m.cellHeight));
 }
 
-AfterglowRender::WindowRenderer::Pane::Overlay::Popup popupLook(const Settings& settings, bool border, const std::string& title)
+AfterglowRender::WindowRenderer::Pane::Overlay::Popup popupLook(const Settings& settings, bool border,
+                                                                const std::string& title)
 {
     AfterglowRender::WindowRenderer::Pane::Overlay::Popup popup;
     popup.border = border;

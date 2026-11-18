@@ -17,18 +17,23 @@ namespace {
 std::optional<Qt::KeyboardModifier> modifierNamed(const QString& name, const QString& token, QString* error)
 {
     const QString n = name.toLower();
-    if (n == QLatin1String("shift") || n == QStringLiteral("⇧")) return Qt::ShiftModifier;
-    if (n == QLatin1String("ctrl") || n == QLatin1String("control") || n == QStringLiteral("⌃")) return Qt::ControlModifier;
-    if (n == QLatin1String("alt") || n == QLatin1String("opt") || n == QLatin1String("option") || n == QStringLiteral("⌥"))
+    if (n == QLatin1String("shift") || n == QStringLiteral("⇧"))
+        return Qt::ShiftModifier;
+    if (n == QLatin1String("ctrl") || n == QLatin1String("control") || n == QStringLiteral("⌃"))
+        return Qt::ControlModifier;
+    if (n == QLatin1String("alt") || n == QLatin1String("opt") || n == QLatin1String("option")
+        || n == QStringLiteral("⌥"))
         return Qt::AltModifier;
-    if (n == QLatin1String("super") || n == QLatin1String("cmd") || n == QLatin1String("command") || n == QStringLiteral("⌘"))
+    if (n == QLatin1String("super") || n == QLatin1String("cmd") || n == QLatin1String("command")
+        || n == QStringLiteral("⌘"))
         return Qt::MetaModifier;
     if (error) {
         if (n.isEmpty())
             *error = QStringLiteral("\"%1\" has a modifier with no name").arg(token);
         else if (n == QLatin1String("meta"))
-            *error = QStringLiteral("Kitty's meta is not a modifier of Afterglow. Write super for the key that key "
-                                    "bindings call Meta");
+            *error = QStringLiteral(
+                "Kitty's meta is not a modifier of Afterglow. Write super for the key that key "
+                "bindings call Meta");
         else if (n == QLatin1String("hyper"))
             *error = QStringLiteral("Kitty's hyper is not a modifier of Afterglow");
         else
@@ -43,7 +48,8 @@ std::optional<Qt::KeyboardModifiers> modifiersNamed(const QString& names, const 
     Qt::KeyboardModifiers modifiers;
     for (const QString& name : names.split(QLatin1Char('+'))) {
         const auto modifier = modifierNamed(name, token, error);
-        if (!modifier) return std::nullopt;
+        if (!modifier)
+            return std::nullopt;
         modifiers |= *modifier;
     }
     return modifiers;
@@ -59,25 +65,31 @@ std::optional<ModifierRemap> ModifierRemap::parse(const QString& text, QString* 
     for (const QString& token : text.split(Spaces, Qt::SkipEmptyParts)) {
         const qsizetype colon = token.indexOf(QLatin1Char(':'));
         if (colon < 0) {
-            if (error) *error = QStringLiteral("\"%1\" has no colon between a modifier and what it becomes").arg(token);
+            if (error)
+                *error = QStringLiteral("\"%1\" has no colon between a modifier and what it becomes").arg(token);
             return std::nullopt;
         }
         const auto source = modifiersNamed(token.left(colon), token, error);
-        if (!source) return std::nullopt;
+        if (!source)
+            return std::nullopt;
         // "ctrl+ctrl" is one modifier, as in kitty.
         const auto sourceBits = source->toInt();
         if (sourceBits & (sourceBits - 1)) {
-            if (error) *error = QStringLiteral("\"%1\" has more than one modifier before the colon").arg(token);
+            if (error)
+                *error = QStringLiteral("\"%1\" has more than one modifier before the colon").arg(token);
             return std::nullopt;
         }
         const auto target = modifiersNamed(token.mid(colon + 1), token, error);
-        if (!target) return std::nullopt;
+        if (!target)
+            return std::nullopt;
         if (*target == *source) {
-            if (error) *error = QStringLiteral("\"%1\" makes a modifier into itself").arg(token);
+            if (error)
+                *error = QStringLiteral("\"%1\" makes a modifier into itself").arg(token);
             return std::nullopt;
         }
         for (std::size_t i = 0; i < Sources.size(); ++i) {
-            if (Sources[i] == *source) remap.m_targets[i] = *target;
+            if (Sources[i] == *source)
+                remap.m_targets[i] = *target;
         }
     }
     return remap;
@@ -85,10 +97,13 @@ std::optional<ModifierRemap> ModifierRemap::parse(const QString& text, QString* 
 
 Qt::KeyboardModifiers ModifierRemap::apply(Qt::KeyboardModifiers modifiers) const noexcept
 {
-    if (isEmpty()) return modifiers;
-    Qt::KeyboardModifiers out = modifiers & ~(Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+    if (isEmpty())
+        return modifiers;
+    Qt::KeyboardModifiers out =
+        modifiers & ~(Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
     for (std::size_t i = 0; i < Sources.size(); ++i) {
-        if (modifiers & Sources[i]) out |= m_targets[i];
+        if (modifiers & Sources[i])
+            out |= m_targets[i];
     }
     return out;
 }
@@ -96,7 +111,8 @@ Qt::KeyboardModifiers ModifierRemap::apply(Qt::KeyboardModifiers modifiers) cons
 Qt::KeyboardModifier ModifierRemap::singleTarget(Qt::KeyboardModifier source) const noexcept
 {
     for (std::size_t i = 0; i < Sources.size(); ++i) {
-        if (Sources[i] != source || m_targets[i] == Identity[i]) continue;
+        if (Sources[i] != source || m_targets[i] == Identity[i])
+            continue;
         const auto target = m_targets[i].toInt();
         // One bit: a single modifier.
         return (target & (target - 1)) == 0 ? Qt::KeyboardModifier(target) : Qt::NoModifier;

@@ -15,7 +15,8 @@ namespace AfterglowProto {
 
 namespace {
 
-constexpr std::string_view Keys[] = {"ac", "id", "fid", "n", "st", "d", "pw", "sz", "q", "ft", "zip", "tt", "prm", "mod", "pr"};
+constexpr std::string_view Keys[] = {"ac", "id", "fid", "n",  "st",  "d",   "pw", "sz",
+                                     "q",  "ft", "zip", "tt", "prm", "mod", "pr"};
 
 } // namespace
 

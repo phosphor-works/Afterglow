@@ -58,7 +58,8 @@ std::vector<std::pair<std::string, std::string>> sessionEnvironment()
     for (char** e = environ; *e; ++e) {
         const std::string_view entry(*e);
         const auto eq = entry.find('=');
-        if (eq == std::string_view::npos || eq == 0) continue;
+        if (eq == std::string_view::npos || eq == 0)
+            continue;
         env.emplace_back(std::string(entry.substr(0, eq)), std::string(entry.substr(eq + 1)));
     }
     return env;
@@ -71,8 +72,9 @@ std::vector<std::string> launchCommand(const QStringList& command)
 {
     if (!ProjectStore::keepsCommand(command)) {
         qCWarning(lcMux).noquote()
-            << QStringLiteral("the session keeps no command for the pane of \"%1\": more than %2 arguments, one of more than %L3 "
-                              "bytes, a NUL, or no program name")
+            << QStringLiteral(
+                   "the session keeps no command for the pane of \"%1\": more than %2 arguments, one of more than %L3 "
+                   "bytes, a NUL, or no program name")
                    .arg(command.first().left(256))
                    .arg(ProjectStore::MaxCommandArgs)
                    .arg(ProjectStore::MaxCommandArgBytes);
@@ -107,9 +109,11 @@ AfterglowMux::Reached connectOrStartDaemon(const AfterglowProto::MuxSockets& soc
         *error = sockets.error;
         return {};
     }
-    if (AfterglowMux::Reached reached = connectAny(sockets, error); reached.connection || !error->empty()) return reached;
+    if (AfterglowMux::Reached reached = connectAny(sockets, error); reached.connection || !error->empty())
+        return reached;
     const std::string daemon = muxDaemonPath(error);
-    if (daemon.empty()) return {};
+    if (daemon.empty())
+        return {};
     if (::access(daemon.c_str(), X_OK) != 0) {
         *error = "cannot find aglow-mux next to afterglow: " + daemon;
         return {};
@@ -119,8 +123,10 @@ AfterglowMux::Reached connectOrStartDaemon(const AfterglowProto::MuxSockets& soc
 
 std::string callFailure(const IpcConnection::Error& error, std::string_view fn)
 {
-    if (!error.message.empty()) return printable(error.message);
-    if (error.code.empty()) return "the mux daemon gave no answer to " + std::string(fn);
+    if (!error.message.empty())
+        return printable(error.message);
+    if (error.code.empty())
+        return "the mux daemon gave no answer to " + std::string(fn);
     return "the mux daemon refused " + std::string(fn) + " (" + printable(error.code) + ")";
 }
 
@@ -131,7 +137,8 @@ AfterglowMux::PaneSize initialPaneSize(const Settings& settings)
     // Kitty image moves no cursor: the font's, as a window measures it.
     double ratio = 1.0;
     if (hasGuiApplication()) {
-        if (const QScreen* screen = QGuiApplication::primaryScreen()) ratio = screen->devicePixelRatio();
+        if (const QScreen* screen = QGuiApplication::primaryScreen())
+            ratio = screen->devicePixelRatio();
     }
     try {
         const AfterglowRender::FontSet fonts(settings.font, ratio);
@@ -156,18 +163,21 @@ void sessionValues(AfterglowMux::SessionOptions& session, const Settings& settin
 AfterglowMux::SessionSettings sessionSettings(const Settings& settings, bool environment)
 {
     AfterglowMux::SessionSettings out{settings.terminal,
-                                      {settings.control.enabled, settings.control.allowReadText, remoteCommandsOff(settings).toStdString(),
-                                       settings.control.eventInterval}};
+                                      {settings.control.enabled, settings.control.allowReadText,
+                                       remoteCommandsOff(settings).toStdString(), settings.control.eventInterval}};
     out.keptNotifications = settings.mux.keptNotifications;
     out.notificationCapabilities = settings.notifications ? NotificationCenter::capabilities() : std::string();
-    if (!environment) return out;
+    if (!environment)
+        return out;
     for (const QString& name : settings.mux.updateEnvironment) {
         // The bytes that are looked up are the name that goes: JSON carries
         // UTF-8. A value that is not UTF-8 becomes U+FFFD in JSON, as the
         // session's environment does (sessionEnvironment).
         const QByteArray encoded = name.toUtf8();
-        if (qEnvironmentVariableIsSet(encoded.constData())) out.environment.emplace_back(encoded.toStdString(), qgetenv(encoded.constData()).toStdString());
-        else out.environment.emplace_back(encoded.toStdString(), std::nullopt);
+        if (qEnvironmentVariableIsSet(encoded.constData()))
+            out.environment.emplace_back(encoded.toStdString(), qgetenv(encoded.constData()).toStdString());
+        else
+            out.environment.emplace_back(encoded.toStdString(), std::nullopt);
     }
     return out;
 }
@@ -176,7 +186,8 @@ AfterglowMux::SessionSettings sessionSettings(const Settings& settings, bool env
 std::optional<std::vector<AfterglowMux::SessionInfo>> daemonSessions(IpcConnection& connection, std::string* error)
 {
     IpcConnection::Error callError;
-    const auto result = connection.call(AfterglowMux::Target, AfterglowMux::Fn::ListSessions, {}, CallTimeoutMs, &callError);
+    const auto result =
+        connection.call(AfterglowMux::Target, AfterglowMux::Fn::ListSessions, {}, CallTimeoutMs, &callError);
     if (!result) {
         *error = callFailure(callError, AfterglowMux::Fn::ListSessions);
         return std::nullopt;
@@ -212,8 +223,8 @@ AfterglowMux::Launch localLaunch(const Settings& settings, const QString& cwd, c
     return launch;
 }
 
-AfterglowMux::SessionOptions localSessionOptions(const Settings& settings, const QString& cwd, const QStringList& command,
-                                                 const QString& name)
+AfterglowMux::SessionOptions localSessionOptions(const Settings& settings, const QString& cwd,
+                                                 const QStringList& command, const QString& name)
 {
     AfterglowMux::SessionOptions session;
     session.name = name.toStdString();
@@ -230,15 +241,17 @@ AfterglowMux::SessionOptions localSessionOptions(const Settings& settings, const
 
 std::optional<std::vector<std::uint32_t>> startLocalPanes(const LocalDaemon& daemon, const QString& session,
                                                           const std::vector<AfterglowMux::Launch>& launches,
-                                                          const AfterglowMux::PaneSize& size, const std::atomic<bool>& stop,
-                                                          QString* error)
+                                                          const AfterglowMux::PaneSize& size,
+                                                          const std::atomic<bool>& stop, QString* error)
 {
     std::vector<std::uint32_t> ids;
-    if (launches.empty()) return ids;
+    if (launches.empty())
+        return ids;
     std::string reason;
     AfterglowMux::Reached reached = connectAny(daemon.sockets, &reason);
     if (!reached.connection) {
-        if (reason.empty()) reason = daemon.sockets.candidates.empty() ? daemon.sockets.error : std::string("no mux daemon runs");
+        if (reason.empty())
+            reason = daemon.sockets.candidates.empty() ? daemon.sockets.error : std::string("no mux daemon runs");
         *error = QString::fromStdString(printable(reason));
         return std::nullopt;
     }
@@ -248,13 +261,15 @@ std::optional<std::vector<std::uint32_t>> startLocalPanes(const LocalDaemon& dae
             return std::nullopt;
         }
         IpcConnection::Error callError;
-        const auto result = reached.connection->call(
-            AfterglowMux::Target, AfterglowMux::Fn::NewPane,
-            Json::Array{AfterglowMux::ProtocolVersion, session.toStdString(), AfterglowMux::toJson(launch), AfterglowMux::toJson(size)},
-            AfterglowMux::SpawnCallTimeoutMs, &callError);
+        const auto result =
+            reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::NewPane,
+                                     Json::Array{AfterglowMux::ProtocolVersion, session.toStdString(),
+                                                 AfterglowMux::toJson(launch), AfterglowMux::toJson(size)},
+                                     AfterglowMux::SpawnCallTimeoutMs, &callError);
         const auto id = result ? (*result)["pane"].toInteger() : std::nullopt;
         if (!id || *id <= 0 || *id > 0xffffffffLL) {
-            *error = result ? QStringLiteral("the mux daemon gave no pane") : QString::fromStdString(callFailure(callError, AfterglowMux::Fn::NewPane));
+            *error = result ? QStringLiteral("the mux daemon gave no pane")
+                            : QString::fromStdString(callFailure(callError, AfterglowMux::Fn::NewPane));
             return std::nullopt;
         }
         ids.push_back(std::uint32_t(*id));
@@ -267,7 +282,8 @@ LocalDaemon localDaemon()
     return {AfterglowProto::muxSockets(), AfterglowMux::currentEnvironment()};
 }
 
-QString newLocalSession(const LocalDaemon& daemon, const AfterglowMux::SessionOptions& options, QString* error, std::uint32_t* firstPane)
+QString newLocalSession(const LocalDaemon& daemon, const AfterglowMux::SessionOptions& options, QString* error,
+                        std::uint32_t* firstPane)
 {
     std::string reason;
     AfterglowMux::Reached reached = connectOrStartDaemon(daemon.sockets, &reason, daemon.environment);
@@ -276,9 +292,10 @@ QString newLocalSession(const LocalDaemon& daemon, const AfterglowMux::SessionOp
         return {};
     }
     IpcConnection::Error callError;
-    const auto result = reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::NewSession,
-                                                 Json::Array{AfterglowMux::ProtocolVersion, AfterglowMux::toJson(options)},
-                                                 AfterglowMux::SpawnCallTimeoutMs, &callError);
+    const auto result =
+        reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::NewSession,
+                                 Json::Array{AfterglowMux::ProtocolVersion, AfterglowMux::toJson(options)},
+                                 AfterglowMux::SpawnCallTimeoutMs, &callError);
     if (!result) {
         *error = QString::fromStdString(callFailure(callError, AfterglowMux::Fn::NewSession));
         return {};
@@ -289,7 +306,8 @@ QString newLocalSession(const LocalDaemon& daemon, const AfterglowMux::SessionOp
         return {};
     }
     const auto pane = (*result)["pane"].toInteger();
-    if (firstPane) *firstPane = pane && *pane > 0 && *pane <= 0xffffffffLL ? std::uint32_t(*pane) : 0;
+    if (firstPane)
+        *firstPane = pane && *pane > 0 && *pane <= 0xffffffffLL ? std::uint32_t(*pane) : 0;
     return QString::fromStdString(name);
 }
 
@@ -299,9 +317,11 @@ bool killLocalSession(const LocalDaemon& daemon, const QString& name)
     AfterglowMux::Reached reached = connectAny(daemon.sockets, &error);
     // No daemon listens: no session runs. A socket that cannot be used, or
     // a daemon that cannot be used, may hold it.
-    if (!reached.connection) return error.empty() && !daemon.sockets.candidates.empty();
+    if (!reached.connection)
+        return error.empty() && !daemon.sockets.candidates.empty();
     IpcConnection::Error callError;
-    if (reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::KillSession, Json::Array{name.toStdString()}, CallTimeoutMs, &callError))
+    if (reached.connection->call(AfterglowMux::Target, AfterglowMux::Fn::KillSession, Json::Array{name.toStdString()},
+                                 CallTimeoutMs, &callError))
         return true;
     // It ended before, as a project of one pane whose program exits at once does.
     return callError.code == AfterglowMux::Error::NoSuchSession;
@@ -311,9 +331,12 @@ bool localSessionRuns(const LocalDaemon& daemon, const QString& name)
 {
     std::string error;
     AfterglowMux::Reached reached = connectAny(daemon.sockets, &error);
-    if (!reached.connection) return false;
+    if (!reached.connection)
+        return false;
     const auto list = daemonSessions(*reached.connection, &error);
-    return list && std::any_of(list->begin(), list->end(), [&](const auto& info) { return info.name == name.toStdString(); });
+    return list && std::any_of(list->begin(), list->end(), [&](const auto& info) {
+               return info.name == name.toStdString();
+           });
 }
 
 } // namespace Afterglow

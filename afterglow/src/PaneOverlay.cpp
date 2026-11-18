@@ -32,26 +32,32 @@ PaneOverlay* PaneOverlay::start(Pane& host, const OverlaySpec& spec, const Launc
     overlay->m_shape.border = spec.border;
     overlay->m_placement = overlay->m_shape.place(launch.cols, launch.rows);
     AfterglowPty::SpawnOptions options = launch.spawn;
-    for (const QString& arg : spec.argv) options.argv.push_back(arg.toStdString());
+    for (const QString& arg : spec.argv)
+        options.argv.push_back(arg.toStdString());
     QString cwd = spec.cwd;
-    if (cwd == QLatin1String("~") || cwd.startsWith(QLatin1String("~/"))) cwd = QDir::homePath() + cwd.mid(1);
+    if (cwd == QLatin1String("~") || cwd.startsWith(QLatin1String("~/")))
+        cwd = QDir::homePath() + cwd.mid(1);
     // A path that a remote shell reported is no directory here.
     const bool local = !cwd.isEmpty() && QDir::isAbsolutePath(cwd) && QFileInfo(cwd).isDir();
     options.workingDirectory = (local ? cwd : QDir::homePath()).toStdString();
     applyLaunchEnvironment(options, spec.env);
     if (spec.capture == OverlaySpec::Capture::File) {
         // Created 0600, and removed with the overlay.
-        overlay->m_resultFile = std::make_unique<QTemporaryFile>(QDir::tempPath() + QStringLiteral("/afterglow-overlay-XXXXXX"));
+        overlay->m_resultFile =
+            std::make_unique<QTemporaryFile>(QDir::tempPath() + QStringLiteral("/afterglow-overlay-XXXXXX"));
         if (!overlay->m_resultFile->open()) {
-            if (error) *error = QStringLiteral("cannot create the result file: %1").arg(overlay->m_resultFile->errorString());
+            if (error)
+                *error = QStringLiteral("cannot create the result file: %1").arg(overlay->m_resultFile->errorString());
             return nullptr;
         }
         overlay->m_resultFile->close();
-        AfterglowPty::setVariable(options, "AFTERGLOW_RESULT", QFile::encodeName(overlay->m_resultFile->fileName()).toStdString());
+        AfterglowPty::setVariable(options, "AFTERGLOW_RESULT",
+                                  QFile::encodeName(overlay->m_resultFile->fileName()).toStdString());
     } else {
         AfterglowPty::unsetVariable(options, "AFTERGLOW_RESULT");
     }
-    if (spec.input) options.input = spec.input->toStdString();
+    if (spec.input)
+        options.input = spec.input->toStdString();
     options.captureOutput = spec.capture == OverlaySpec::Capture::Stdout;
 
     auto* pane = new Pane(launch.terminal, overlay.get());
@@ -63,11 +69,13 @@ PaneOverlay* PaneOverlay::start(Pane& host, const OverlaySpec& spec, const Launc
     pane->setOutputLimit(std::size_t(OverlaySpec::MaxOutput) + 1);
     pane->setLaunch(QString::fromStdString(options.workingDirectory), spec.argv);
     pane->setLaunchedProgram(launchedProgramName(spec.argv));
-    if (!spec.title.isEmpty()) pane->setUserTitle(spec.title);
+    if (!spec.title.isEmpty())
+        pane->setUserTitle(spec.title);
     // Queued from the pty thread: the reply is set before it arrives.
     connect(pane, &Pane::closed, overlay.get(), &PaneOverlay::programExited);
     const QRect grid = overlay->m_placement.grid;
-    if (!pane->start(std::move(options), launch.term, grid.width(), grid.height(), launch.cellWidth, launch.cellHeight, error))
+    if (!pane->start(std::move(options), launch.term, grid.width(), grid.height(), launch.cellWidth, launch.cellHeight,
+                     error))
         return nullptr;
     host.setOverlay(overlay.get());
     return overlay.release();
@@ -76,7 +84,8 @@ PaneOverlay* PaneOverlay::start(Pane& host, const OverlaySpec& spec, const Launc
 PaneOverlay::~PaneOverlay()
 {
     // Still on its host, which deletes it first thing when it closes.
-    if (!m_answered) finish(QStringLiteral("The pane under the overlay closed"), QStringLiteral("cancelled"), {});
+    if (!m_answered)
+        finish(QStringLiteral("The pane under the overlay closed"), QStringLiteral("cancelled"), {});
 }
 
 void PaneOverlay::place(int cols, int rows, int cellWidth, int cellHeight)
@@ -94,14 +103,16 @@ void PaneOverlay::setReply(const QString& owner, const QString& request, Reply r
 
 void PaneOverlay::cancel(const QString& message)
 {
-    if (m_answered) return;
+    if (m_answered)
+        return;
     finish(message, QStringLiteral("cancelled"), {});
     Q_EMIT ended();
 }
 
 void PaneOverlay::programExited()
 {
-    if (m_answered) return;
+    if (m_answered)
+        return;
     bool truncated = false;
     QByteArray output;
     if (m_capture == OverlaySpec::Capture::Stdout) {
@@ -114,7 +125,8 @@ void PaneOverlay::programExited()
         output = utf8Prefix(std::move(output), OverlaySpec::MaxOutput);
     }
     finish({}, {},
-           {{QStringLiteral("exit_code"), m_pane->exitCode()}, {QStringLiteral("stdout"), QString::fromUtf8(output)},
+           {{QStringLiteral("exit_code"), m_pane->exitCode()},
+            {QStringLiteral("stdout"), QString::fromUtf8(output)},
             {QStringLiteral("truncated"), truncated}});
     Q_EMIT ended();
 }
@@ -125,21 +137,34 @@ QByteArray PaneOverlay::readResult(const QString& path)
     // thread, and a link could name another file of the user. As
     // readScriptFile, but the text is cut at the limit, not refused.
     const int fd = ::open(QFile::encodeName(path).constData(), O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW);
-    if (fd < 0) return {};
-    struct Close { int fd; ~Close() { ::close(fd); } } close{fd};
-    struct stat info {};
-    if (::fstat(fd, &info) || !S_ISREG(info.st_mode)) return {};
+    if (fd < 0)
+        return {};
+    struct Close
+    {
+        int fd;
+        ~Close()
+        {
+            ::close(fd);
+        }
+    } close{fd};
+    struct stat info{};
+    if (::fstat(fd, &info) || !S_ISREG(info.st_mode))
+        return {};
     QFile file;
-    if (!file.open(fd, QIODevice::ReadOnly, QFileDevice::DontCloseHandle)) return {};
+    if (!file.open(fd, QIODevice::ReadOnly, QFileDevice::DontCloseHandle))
+        return {};
     return file.read(OverlaySpec::MaxOutput + 1);
 }
 
 void PaneOverlay::finish(const QString& error, const QString& code, const QVariantMap& result)
 {
-    if (m_host && m_host->overlay() == this) m_host->setOverlay(nullptr);
-    if (m_answered) return;
+    if (m_host && m_host->overlay() == this)
+        m_host->setOverlay(nullptr);
+    if (m_answered)
+        return;
     m_answered = true;
-    if (auto reply = std::exchange(m_reply, {})) reply(error, code, result);
+    if (auto reply = std::exchange(m_reply, {}))
+        reply(error, code, result);
 }
 
 } // namespace Afterglow

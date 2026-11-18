@@ -26,7 +26,8 @@ std::size_t StyleTable::Index::home(std::uint32_t hash) const noexcept
     return std::size_t(std::uint32_t(hash * 0x9E3779B9u) >> m_shift);
 }
 
-std::uint32_t StyleTable::Index::find(const Style& style, std::uint32_t hash, const std::vector<Style>& styles) const noexcept
+std::uint32_t StyleTable::Index::find(const Style& style, std::uint32_t hash,
+                                      const std::vector<Style>& styles) const noexcept
 {
     if (m_slots.empty()) {
         return DefaultId;

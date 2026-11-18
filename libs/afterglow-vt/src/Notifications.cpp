@@ -146,8 +146,16 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
             case 'e':
                 encoded = value == "1";
                 break;
-            case 'a': case 'c': case 'f': case 'g': case 'n': case 'o':
-            case 's': case 't': case 'u': case 'w':
+            case 'a':
+            case 'c':
+            case 'f':
+            case 'g':
+            case 'n':
+            case 'o':
+            case 's':
+            case 't':
+            case 'u':
+            case 'w':
                 keys.emplace_back(key, value);
                 break;
             default:
@@ -244,7 +252,9 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
         text = std::string(data);
     }
     const Payload flushedKind = existing ? existing->carryPayload : kind;
-    auto added = [&](Payload p) { return (flushedKind == p ? flushed.size() : 0) + (kind == p ? text.size() : 0); };
+    auto added = [&](Payload p) {
+        return (flushedKind == p ? flushed.size() : 0) + (kind == p ? text.size() : 0);
+    };
     const std::size_t iconBytes = (existing ? existing->request.iconData.size() : 0) + added(Payload::Icon);
     const std::size_t textBytes =
         (existing ? existing->request.title.size() + existing->request.body.size() + existing->buttons.size() : 0)
@@ -264,8 +274,9 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
         } else {
             if (m_pending.size() >= MaxPending) {
                 // Too many half-sent notifications: drop the oldest.
-                erase(std::min_element(m_pending.begin(), m_pending.end(),
-                                       [](const auto& a, const auto& b) { return a.second.serial < b.second.serial; }));
+                erase(std::min_element(m_pending.begin(), m_pending.end(), [](const auto& a, const auto& b) {
+                    return a.second.serial < b.second.serial;
+                }));
             }
             it = m_pending.emplace(id, Pending{}).first;
             p = &it->second;
@@ -277,13 +288,16 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
 
     // Metadata of every chunk applies; later values win.
     for (const auto& [key, value] : keys) {
-        auto decoded = [&value]() { return base64Decode(value, Base64Check::PaddingOptional).value_or(std::string{}); };
+        auto decoded = [&value]() {
+            return base64Decode(value, Base64Check::PaddingOptional).value_or(std::string{});
+        };
         switch (key) {
         case 'a': {
             std::size_t vpos = 0;
             while (vpos <= value.size()) {
                 const auto comma = value.find(',', vpos);
-                const std::string_view action = value.substr(vpos, comma == std::string_view::npos ? comma : comma - vpos);
+                const std::string_view action =
+                    value.substr(vpos, comma == std::string_view::npos ? comma : comma - vpos);
                 if (action == "focus") {
                     r.focusOnActivate = true;
                 } else if (action == "-focus") {
@@ -312,7 +326,8 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
             r.iconCacheId = detail::sanitizeId(value);
             break;
         case 'n':
-            if (std::string s = decoded(); !s.empty() && detail::isCleanText(s) && r.iconNames.size() < NotificationRequest::MaxNames) {
+            if (std::string s = decoded();
+                !s.empty() && detail::isCleanText(s) && r.iconNames.size() < NotificationRequest::MaxNames) {
                 r.iconNames.emplace_back(detail::truncateUtf8(s, MaxField));
             }
             break;
@@ -327,7 +342,8 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
             }
             break;
         case 't':
-            if (std::string s = decoded(); !s.empty() && detail::isCleanText(s) && r.types.size() < NotificationRequest::MaxNames) {
+            if (std::string s = decoded();
+                !s.empty() && detail::isCleanText(s) && r.types.size() < NotificationRequest::MaxNames) {
                 r.types.emplace_back(detail::truncateUtf8(s, MaxField));
             }
             break;

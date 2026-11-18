@@ -6,11 +6,21 @@
 #include <AfterglowVt/Terminal.h>
 #include <gtest/gtest.h>
 using namespace Afterglow;
-namespace { struct Host : AfterglowVt::ITerminalHost { void writeToPty(std::string_view) override {} }; }
+namespace {
+struct Host : AfterglowVt::ITerminalHost
+{
+    void writeToPty(std::string_view) override
+    {
+    }
+};
+}
 TEST(DesktopText, UnicodeCursorAndSelectionUseUtf16Offsets)
 {
-    Host h; AfterglowVt::Terminal t(20, 3, h);
-    t.feed("A\xf0\x9f\x98\x80" "e\xcc\x81\xe7\x95\x8c");
+    Host h;
+    AfterglowVt::Terminal t(20, 3, h);
+    t.feed(
+        "A\xf0\x9f\x98\x80"
+        "e\xcc\x81\xe7\x95\x8c");
     const auto s = TerminalText::capture(t.screen(), nullptr, true);
     EXPECT_EQ(s.text, QString::fromUtf8("A😀é界"));
     EXPECT_EQ(s.cursor, 6);
@@ -19,14 +29,18 @@ TEST(DesktopText, UnicodeCursorAndSelectionUseUtf16Offsets)
     EXPECT_EQ(s.cells[3], s.cells[4]);
     EXPECT_EQ(s.cells[5].col, 4);
     AfterglowVt::Selection sel;
-    sel.active = true; sel.layoutEpoch = t.screen().layoutEpoch();
-    sel.anchor = {t.screen().rowsDropped(), 1}; sel.head = {t.screen().rowsDropped(), 3};
+    sel.active = true;
+    sel.layoutEpoch = t.screen().layoutEpoch();
+    sel.anchor = {t.screen().rowsDropped(), 1};
+    sel.head = {t.screen().rowsDropped(), 3};
     const auto selected = TerminalText::capture(t.screen(), &sel);
-    EXPECT_EQ(selected.selectionStart, 1); EXPECT_EQ(selected.selectionEnd, 5);
+    EXPECT_EQ(selected.selectionStart, 1);
+    EXPECT_EQ(selected.selectionEnd, 5);
 }
 TEST(DesktopText, CursorRowIsLiveWhileViewportIsScrolled)
 {
-    Host h; AfterglowVt::Terminal t(8, 2, h);
+    Host h;
+    AfterglowVt::Terminal t(8, 2, h);
     t.feed("old\r\nprevious\r\nnew");
     t.screen().scrollViewport(1);
     EXPECT_TRUE(TerminalText::capture(t.screen()).text.startsWith(QStringLiteral("old")));
@@ -36,7 +50,8 @@ TEST(DesktopText, CursorRowIsLiveWhileViewportIsScrolled)
 }
 TEST(DesktopText, SoftWrapDoesNotInventNewlineAndCursorCanBeInsideText)
 {
-    Host h; AfterglowVt::Terminal t(4, 3, h);
+    Host h;
+    AfterglowVt::Terminal t(4, 3, h);
     t.feed("abcdef\x1b[1D");
     const auto s = TerminalText::capture(t.screen());
     EXPECT_TRUE(s.text.startsWith(QStringLiteral("abcdef")));
@@ -45,7 +60,8 @@ TEST(DesktopText, SoftWrapDoesNotInventNewlineAndCursorCanBeInsideText)
 TEST(FileDrop, QuotesPathsWithoutExecutingCommands)
 {
     QMimeData mime;
-    mime.setUrls({QUrl::fromLocalFile(QStringLiteral("/tmp/a b'$(touch nope)")), QUrl::fromLocalFile(QStringLiteral("/tmp/界"))});
+    mime.setUrls({QUrl::fromLocalFile(QStringLiteral("/tmp/a b'$(touch nope)")),
+                  QUrl::fromLocalFile(QStringLiteral("/tmp/界"))});
     EXPECT_EQ(droppedFiles(mime.urls()), QStringLiteral("'/tmp/a b'\\''$(touch nope)' '/tmp/界'"));
     // A local file beside a URL of another scheme: the whole drop is refused.
     mime.setUrls({QUrl::fromLocalFile(QStringLiteral("/tmp/a")), QUrl(QStringLiteral("https://example.com/a"))});
@@ -59,7 +75,8 @@ TEST(FileDrop, QuotesPathsWithoutExecutingCommands)
 TEST(FileDrop, BackslashCannotUnbalanceFishQuotes)
 {
     QMimeData mime;
-    mime.setUrls({QUrl::fromLocalFile(QStringLiteral("/tmp/x\\")), QUrl::fromLocalFile(QStringLiteral("/tmp/(echo INJECTED)"))});
+    mime.setUrls(
+        {QUrl::fromLocalFile(QStringLiteral("/tmp/x\\")), QUrl::fromLocalFile(QStringLiteral("/tmp/(echo INJECTED)"))});
     // Every backslash and quote is escaped outside the quotes, so bash, zsh and fish agree.
     EXPECT_EQ(droppedFiles(mime.urls()), QStringLiteral("'/tmp/x'\\\\'' '/tmp/(echo INJECTED)'"));
 }

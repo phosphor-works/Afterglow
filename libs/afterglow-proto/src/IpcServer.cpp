@@ -27,7 +27,8 @@ constexpr std::size_t MaxArgs = 4096;
 
 void set(std::string* error, std::string text)
 {
-    if (error) *error = std::move(text);
+    if (error)
+        *error = std::move(text);
 }
 
 std::string line(const Json::Value& value)
@@ -51,7 +52,8 @@ std::optional<std::int64_t> requestId(double d)
 {
     constexpr double Int64Min = double(std::numeric_limits<std::int64_t>::min());
     constexpr double Int64MaxExclusive = 9223372036854775808.0;
-    if (!std::isfinite(d) || d < Int64Min || d >= Int64MaxExclusive || std::trunc(d) != d) return std::nullopt;
+    if (!std::isfinite(d) || d < Int64Min || d >= Int64MaxExclusive || std::trunc(d) != d)
+        return std::nullopt;
     return std::int64_t(d);
 }
 
@@ -97,7 +99,8 @@ std::optional<IpcRequest> parseIpcRequest(std::string_view text, std::string* er
             set(error, "'id' must be a finite integer within JSON-double-precision int64 range");
             return std::nullopt;
         }
-        if (id) *id = request.id;
+        if (id)
+            *id = request.id;
     }
     request.target = (*parsed)["target"].toString();
     request.fn = (*parsed)["fn"].toString();
@@ -137,7 +140,9 @@ std::optional<IpcRequest> parseIpcRequest(std::string_view text, std::string* er
             return std::nullopt;
         }
         if (args->toArray().size() > MaxArgs) {
-            set(error, "'args' length " + std::to_string(args->toArray().size()) + " exceeds limit of " + std::to_string(MaxArgs));
+            set(error,
+                "'args' length " + std::to_string(args->toArray().size()) + " exceeds limit of "
+                    + std::to_string(MaxArgs));
             return std::nullopt;
         }
         request.args = args->toArray();
@@ -159,7 +164,8 @@ std::string ipcError(std::optional<std::int64_t> id, std::string_view code, std:
 {
     // As PhosphorIpc::buildError: id 0 is the protocol's "absent".
     Json::Object error{{"type", "error"}};
-    if (id && *id != 0) error.emplace_back("id", *id);
+    if (id && *id != 0)
+        error.emplace_back("id", *id);
     error.emplace_back("code", code);
     error.emplace_back("message", message);
     return line(std::move(error));
@@ -183,22 +189,27 @@ IpcListener::Listen IpcListener::listen(const std::string& path, std::string* er
         set(error, "another server listens on " + path);
         return Listen::Held;
     }
-    if (lockFd == LockFailed) return Listen::Failed;
+    if (lockFd == LockFailed)
+        return Listen::Failed;
     // The lock is ours, so a socket file there is one that its server left.
     const auto fail = [&](std::string reason, int fd = -1) {
-        if (fd >= 0) ::close(fd);
+        if (fd >= 0)
+            ::close(fd);
         unlockFile(lock, lockFd);
         set(error, std::move(reason));
         return Listen::Failed;
     };
     struct stat existing{};
     if (::lstat(path.c_str(), &existing) == 0) {
-        if (!S_ISSOCK(existing.st_mode)) return fail(path + " exists and is not a socket");
-        if (existing.st_uid != ::geteuid()) return fail(path + " is a socket of another user");
+        if (!S_ISSOCK(existing.st_mode))
+            return fail(path + " exists and is not a socket");
+        if (existing.st_uid != ::geteuid())
+            return fail(path + " is a socket of another user");
         ::unlink(path.c_str());
     }
     const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-    if (fd < 0) return fail(std::string("cannot create a socket: ") + std::strerror(errno));
+    if (fd < 0)
+        return fail(std::string("cannot create a socket: ") + std::strerror(errno));
     const sockaddr_un a = address(path);
     if (::bind(fd, reinterpret_cast<const sockaddr*>(&a), sizeof a) != 0) {
         return fail("cannot listen on " + path + ": " + std::strerror(errno), fd);
@@ -222,17 +233,20 @@ IpcListener::Listen IpcListener::listen(const std::string& path, std::string* er
 
 void IpcListener::close()
 {
-    if (m_fd < 0) return;
+    if (m_fd < 0)
+        return;
     // Someone may have removed the file, and another server bound the path
     // after it took a new lock file. The check comes while the socket is
     // open: a closed one whose file is gone frees its inode, and the new
     // server's socket can get the same device and inode.
-    if (names(m_path, m_device, m_inode)) ::unlink(m_path.c_str());
+    if (names(m_path, m_device, m_inode))
+        ::unlink(m_path.c_str());
     ::close(m_fd);
     m_fd = -1;
     unlockFile(lockPath(m_path), m_lock);
     m_lock = -1;
-    if (m_reserve >= 0) ::close(m_reserve);
+    if (m_reserve >= 0)
+        ::close(m_reserve);
     m_reserve = -1;
     m_starved = false;
     m_path.clear();
@@ -250,13 +264,16 @@ int IpcListener::accept()
     m_starved = false;
     // Lost when a descriptor that the last close freed was taken before it
     // opened again: while descriptors are left, it comes back.
-    if (m_fd >= 0 && m_reserve < 0) m_reserve = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
+    if (m_fd >= 0 && m_reserve < 0)
+        m_reserve = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
     while (m_fd >= 0) {
         const int fd = ::accept4(m_fd, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
         if (fd < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR)
+                continue;
             // ECONNABORTED: the client left before the accept; others wait.
-            if (errno == ECONNABORTED) continue;
+            if (errno == ECONNABORTED)
+                continue;
             if (errno == EMFILE || errno == ENFILE) {
                 if (m_reserve < 0) {
                     m_starved = true;
@@ -267,9 +284,11 @@ int IpcListener::accept()
                 ::close(m_reserve);
                 const int waiting = ::accept4(m_fd, nullptr, nullptr, SOCK_CLOEXEC);
                 const int failure = errno;
-                if (waiting >= 0) ::close(waiting);
+                if (waiting >= 0)
+                    ::close(waiting);
                 m_reserve = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
-                if (waiting >= 0) continue;
+                if (waiting >= 0)
+                    continue;
                 // The descriptor that the close freed is gone again:
                 // EMFILE, another thread of this process took it; ENFILE,
                 // another process took the place in the system's table.
@@ -301,7 +320,8 @@ IpcServerConnection::~IpcServerConnection()
 
 void IpcServerConnection::close()
 {
-    if (m_fd >= 0) ::close(m_fd);
+    if (m_fd >= 0)
+        ::close(m_fd);
     m_fd = -1;
     m_out.clear();
     m_outOffset = 0;
@@ -309,8 +329,10 @@ void IpcServerConnection::close()
 
 int IpcServerConnection::release(std::string* unsent)
 {
-    if (m_fd < 0 || m_in.size() > m_inHead) return -1;
-    if (unsent) *unsent = m_out.substr(m_outOffset);
+    if (m_fd < 0 || m_in.size() > m_inHead)
+        return -1;
+    if (unsent)
+        *unsent = m_out.substr(m_outOffset);
     m_out.clear();
     m_outOffset = 0;
     m_in.clear();
@@ -326,15 +348,18 @@ bool IpcServerConnection::fill()
         if (n > 0) {
             m_in.append(buffer, std::size_t(n));
             // Enough for a line over the limit: the rest waits.
-            if (m_in.size() - m_inHead > IpcConnection::MaxRequestBytes) return true;
+            if (m_in.size() - m_inHead > IpcConnection::MaxRequestBytes)
+                return true;
             continue;
         }
         if (n == 0) {
             m_eof = true;
             return true;
         }
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) return true;
+        if (errno == EINTR)
+            continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            return true;
         // As the end of the client's side (ECONNRESET of a client that
         // closed with answers unread): the complete lines that came before
         // still count, and no answer can go any more.
@@ -350,7 +375,8 @@ bool IpcServerConnection::fill()
 void IpcServerConnection::refuseLongLine()
 {
     send(ipcError(std::nullopt, IpcErrorCode::MalformedRequest,
-                  "request line exceeds " + std::to_string(IpcConnection::MaxRequestBytes) + " bytes; closing connection"));
+                  "request line exceeds " + std::to_string(IpcConnection::MaxRequestBytes)
+                      + " bytes; closing connection"));
     flush();
     close();
 }
@@ -367,7 +393,8 @@ bool IpcServerConnection::nextLine(std::string& out)
             std::string_view text = std::string_view(m_in).substr(m_inHead, end - m_inHead);
             m_inHead = end + 1;
             m_scanned = 0;
-            while (text.ends_with('\r')) text.remove_suffix(1);
+            while (text.ends_with('\r'))
+                text.remove_suffix(1);
             out.assign(text);
             if (m_inHead == m_in.size()) {
                 m_in.clear();
@@ -386,13 +413,16 @@ bool IpcServerConnection::nextLine(std::string& out)
             // request. The answers that wait still go out: flush() closes.
             m_in.clear();
             m_inHead = m_scanned = 0;
-            if (!wantsWrite() && !m_keep) close();
+            if (!wantsWrite() && !m_keep)
+                close();
             return false;
         }
-        if (filled) return false;
+        if (filled)
+            return false;
         m_in.erase(0, m_inHead);
         m_inHead = 0;
-        if (!fill()) return false;
+        if (!fill())
+            return false;
     }
     return false;
 }
@@ -400,8 +430,10 @@ bool IpcServerConnection::nextLine(std::string& out)
 IpcServerConnection::Read IpcServerConnection::nextRequest(IpcRequest& request, std::string* line)
 {
     std::string text;
-    if (!nextLine(text)) return Read::None;
-    if (text.empty()) return Read::Skipped;
+    if (!nextLine(text))
+        return Read::None;
+    if (text.empty())
+        return Read::Skipped;
     std::string error;
     std::optional<std::int64_t> id;
     auto parsed = parseIpcRequest(text, &error, &id);
@@ -415,19 +447,22 @@ IpcServerConnection::Read IpcServerConnection::nextRequest(IpcRequest& request, 
     }
     m_malformed = 0;
     request = std::move(*parsed);
-    if (line) *line = std::move(text);
+    if (line)
+        *line = std::move(text);
     return Read::Request;
 }
 
 bool IpcServerConnection::pending() const
 {
-    if (m_fd < 0) return false;
+    if (m_fd < 0)
+        return false;
     return m_in.find('\n', m_inHead + m_scanned) != std::string::npos;
 }
 
 void IpcServerConnection::send(std::string text)
 {
-    if (m_fd < 0 || m_peerGone) return;
+    if (m_fd < 0 || m_peerGone)
+        return;
     if (m_out.size() - m_outOffset + text.size() > MaxWaitingBytes) {
         close();
         return;
@@ -455,8 +490,10 @@ bool IpcServerConnection::flush()
             m_outOffset += std::size_t(n);
             continue;
         }
-        if (n < 0 && errno == EINTR) continue;
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return true;
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+            return true;
         close();
         return false;
     }
@@ -464,7 +501,8 @@ bool IpcServerConnection::flush()
         m_out.clear();
         m_outOffset = 0;
         // The client ended its side and has every answer.
-        if (m_eof && !pending() && !m_keep) close();
+        if (m_eof && !pending() && !m_keep)
+            close();
     }
     return m_fd >= 0;
 }
@@ -472,7 +510,8 @@ bool IpcServerConnection::flush()
 void IpcServerConnection::keepAtEnd(bool keep)
 {
     m_keep = keep;
-    if (!keep) flush();
+    if (!keep)
+        flush();
 }
 
 } // namespace AfterglowProto

@@ -14,7 +14,10 @@ using Afterglow::NestedLoop;
 
 namespace {
 
-void deferredDeletes() { QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete); }
+void deferredDeletes()
+{
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+}
 
 TEST(NestedLoop, AWindowWithNoLoopGoesAtOnce)
 {

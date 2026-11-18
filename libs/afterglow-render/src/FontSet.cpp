@@ -80,7 +80,8 @@ FcMatch matchFamily(const std::string& family, bool mono, const FontStyleSpec& s
 bool isGenericFamily(const std::string& family)
 {
     for (const char* g : {"monospace", "mono", "sans-serif", "sans", "serif", "emoji", "system-ui"}) {
-        if (FcStrCmpIgnoreCase(reinterpret_cast<const FcChar8*>(family.c_str()), reinterpret_cast<const FcChar8*>(g)) == 0) {
+        if (FcStrCmpIgnoreCase(reinterpret_cast<const FcChar8*>(family.c_str()), reinterpret_cast<const FcChar8*>(g))
+            == 0) {
             return true;
         }
     }
@@ -126,7 +127,10 @@ void applyAxes(FT_Library lib, FT_Face face, const FontStyleSpec& spec)
 } // namespace
 
 FontSet::FontSet(const FontSpec& spec, double devicePixelRatio)
-    : m_identity([] { static std::atomic<std::uint64_t> serial{0}; return ++serial; }())
+    : m_identity([] {
+        static std::atomic<std::uint64_t> serial{0};
+        return ++serial;
+    }())
     , m_spec(spec)
     , m_dpr(devicePixelRatio)
     , m_pixelSize(float(spec.sizePoints * 96.0 / 72.0 * devicePixelRatio))
@@ -150,7 +154,8 @@ FontSet::FontSet(const FontSpec& spec, double devicePixelRatio)
                 throw std::runtime_error("no font found for family " + s->family);
             }
             if (!m.exact && !isGenericFamily(s->family)) {
-                qCWarning(lcFont) << "font family" << s->family.c_str() << "is not installed; using" << m.family.c_str();
+                qCWarning(lcFont) << "font family" << s->family.c_str() << "is not installed; using"
+                                  << m.family.c_str();
             }
             // Each slot gets its own FT_Face so variable axes stay independent.
             const int idx = loadFace(m.path, m.index, s);
@@ -173,10 +178,12 @@ FontSet::FontSet(const FontSpec& spec, double devicePixelRatio)
                 }
                 return loadSharedFace(match.path, match.index, StyleSlot(slot));
             };
-            for (const auto& entry : m_spec.symbolMap) m_symbolFaces[slot].push_back(loadStyled(entry.family));
+            for (const auto& entry : m_spec.symbolMap)
+                m_symbolFaces[slot].push_back(loadStyled(entry.family));
             for (const auto& family : m_spec.fallbackFamilies) {
                 const int face = loadStyled(family);
-                if (face >= 0) m_fallbackFaces[slot].push_back(face);
+                if (face >= 0)
+                    m_fallbackFaces[slot].push_back(face);
             }
         }
 
@@ -201,7 +208,8 @@ FontSet::FontSet(const FontSpec& spec, double devicePixelRatio)
 FontSet::~FontSet()
 {
     for (FcFontSet* set : m_fallbackOrder) {
-        if (set) FcFontSetDestroy(set);
+        if (set)
+            FcFontSetDestroy(set);
     }
     releaseFaces();
     FT_Done_FreeType(m_ft);
@@ -215,27 +223,36 @@ bool FontSet::hasGlyph(int index, char32_t cp) const noexcept
 const FontStyleSpec& FontSet::styleFor(StyleSlot slot) const noexcept
 {
     switch (slot) {
-    case StyleSlot::Regular: break;
-    case StyleSlot::Bold: return m_spec.bold;
-    case StyleSlot::Italic: return m_spec.italic;
-    case StyleSlot::BoldItalic: return m_spec.boldItalic;
+    case StyleSlot::Regular:
+        break;
+    case StyleSlot::Bold:
+        return m_spec.bold;
+    case StyleSlot::Italic:
+        return m_spec.italic;
+    case StyleSlot::BoldItalic:
+        return m_spec.boldItalic;
     }
     return m_spec.regular;
 }
 
 int FontSet::loadSharedFace(const std::string& path, int index, StyleSlot slot)
 {
-    auto keyFor = [&](int keySlot) { return path + '#' + std::to_string(index) + '#' + std::to_string(keySlot); };
+    auto keyFor = [&](int keySlot) {
+        return path + '#' + std::to_string(index) + '#' + std::to_string(keySlot);
+    };
     const auto shared = keyFor(-1);
-    if (auto it = m_faceByPath.find(shared); it != m_faceByPath.end()) return it->second;
+    if (auto it = m_faceByPath.find(shared); it != m_faceByPath.end())
+        return it->second;
     const auto key = keyFor(int(slot));
-    if (auto it = m_faceByPath.find(key); it != m_faceByPath.end()) return it->second;
+    if (auto it = m_faceByPath.find(key); it != m_faceByPath.end())
+        return it->second;
     const int face = loadFace(path, index, &styleFor(slot));
     if (face >= 0) {
         m_faceByPath.emplace(key, face);
         // Axes apply only to a variable face; any other is the same in every
         // slot, so its glyphs are rasterised and cached once.
-        if (!FT_HAS_MULTIPLE_MASTERS(m_faces[std::size_t(face)]->ft)) m_faceByPath.emplace(shared, face);
+        if (!FT_HAS_MULTIPLE_MASTERS(m_faces[std::size_t(face)]->ft))
+            m_faceByPath.emplace(shared, face);
     }
     return face;
 }
@@ -259,7 +276,9 @@ int FontSet::loadFace(const std::string& path, int index, const FontStyleSpec* a
     if (FT_New_Face(m_ft, path.c_str(), index, &ft) != 0) {
         return -1;
     }
-    const auto freeFace = [](FT_Face value) { FT_Done_Face(value); };
+    const auto freeFace = [](FT_Face value) {
+        FT_Done_Face(value);
+    };
     std::unique_ptr<FT_FaceRec_, decltype(freeFace)> faceGuard(ft, freeFace);
     auto face = std::make_unique<Face>();
     face->ft = ft;
@@ -324,11 +343,12 @@ void FontSet::computeMetrics()
     const double ulPos = -double(ft->underline_position) * yScale;
     const double ulThick = double(ft->underline_thickness) * yScale;
     m_metrics.underlineThickness = std::max(1, int(std::lround(ulThick)));
-    m_metrics.underlinePosition = std::min(m_metrics.cellHeight - m_metrics.underlineThickness,
-                                           m_metrics.baseline + int(std::lround(ulPos)));
+    m_metrics.underlinePosition =
+        std::min(m_metrics.cellHeight - m_metrics.underlineThickness, m_metrics.baseline + int(std::lround(ulPos)));
 
     int strikePos = m_metrics.baseline - int(std::lround(ascender * 0.3));
-    if (const auto* os2 = static_cast<const TT_OS2*>(FT_Get_Sfnt_Table(ft, FT_SFNT_OS2)); os2 && os2->yStrikeoutPosition > 0) {
+    if (const auto* os2 = static_cast<const TT_OS2*>(FT_Get_Sfnt_Table(ft, FT_SFNT_OS2));
+        os2 && os2->yStrikeoutPosition > 0) {
         strikePos = m_metrics.baseline - int(std::lround(double(os2->yStrikeoutPosition) * yScale));
     }
     m_metrics.strikethroughPosition = strikePos;
@@ -340,7 +360,8 @@ std::int32_t FontSet::loadFlags() const noexcept
     case Hinting::None:
         return FT_LOAD_NO_HINTING;
     case Hinting::Full:
-        return FT_LOAD_DEFAULT | (m_spec.antialiasing == Antialiasing::None ? FT_LOAD_TARGET_MONO : FT_LOAD_TARGET_NORMAL);
+        return FT_LOAD_DEFAULT
+            | (m_spec.antialiasing == Antialiasing::None ? FT_LOAD_TARGET_MONO : FT_LOAD_TARGET_NORMAL);
     case Hinting::Light:
         break;
     }
@@ -427,7 +448,8 @@ int FontSet::findFallback(char32_t cp, bool color, StyleSlot slot)
     if (set) {
         for (int i = 0; i < set->nfont && found < 0; ++i) {
             FcCharSet* fcs = nullptr;
-            if (FcPatternGetCharSet(set->fonts[i], FC_CHARSET, 0, &fcs) != FcResultMatch || !FcCharSetHasChar(fcs, cp)) {
+            if (FcPatternGetCharSet(set->fonts[i], FC_CHARSET, 0, &fcs) != FcResultMatch
+                || !FcCharSetHasChar(fcs, cp)) {
                 continue;
             }
             FcBool isColor = FcFalse;

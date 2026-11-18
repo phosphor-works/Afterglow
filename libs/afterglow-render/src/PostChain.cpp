@@ -70,16 +70,18 @@ const ShaderProgram& shrinkProgram()
     static const std::shared_ptr<ShaderProgram> program = [] {
         ShaderProgramSource source;
         source.id = QStringLiteral("overview-shrink");
-        source.code = "vec4 pTerminal(vec2 uv) {\n"
-                      "    vec2 tilePixel = 1.0 / iResolution;\n"
-                      "    vec4 sum = vec4(0.0);\n"
-                      "    for (int y = -1; y <= 1; ++y)\n"
-                      "        for (int x = -1; x <= 1; ++x) sum += terminalTexel(uv + vec2(x, y) * tilePixel / 3.0);\n"
-                      "    return sum / 9.0;\n"
-                      "}\n";
+        source.code =
+            "vec4 pTerminal(vec2 uv) {\n"
+            "    vec2 tilePixel = 1.0 / iResolution;\n"
+            "    vec4 sum = vec4(0.0);\n"
+            "    for (int y = -1; y <= 1; ++y)\n"
+            "        for (int x = -1; x <= 1; ++x) sum += terminalTexel(uv + vec2(x, y) * tilePixel / 3.0);\n"
+            "    return sum / 9.0;\n"
+            "}\n";
         QString error;
         auto compiled = ShaderProgram::compile(source, &error);
-        if (!compiled) throw std::runtime_error("overview shrink shader failed: " + error.toStdString());
+        if (!compiled)
+            throw std::runtime_error("overview shrink shader failed: " + error.toStdString());
         return compiled;
     }();
     return *program;
@@ -89,7 +91,8 @@ static_assert(PhosphorShaders::Bindings::kUserTextureCount == MaxShaderImages);
 /// Image @p i of @p program, or the region's override for it.
 const QImage& imageFor(const ShaderProgram& program, const ShaderParameterValues* overrides, int i)
 {
-    if (overrides && (overrides->imageMask & (1u << i))) return overrides->images[std::size_t(i)];
+    if (overrides && (overrides->imageMask & (1u << i)))
+        return overrides->images[std::size_t(i)];
     return program.images()[std::size_t(i)];
 }
 
@@ -103,7 +106,8 @@ struct CompositeUniforms
 } // namespace
 
 // Textures precede their dependants so targets/pass descriptors die first.
-struct PostChain::BufferState {
+struct PostChain::BufferState
+{
     std::unique_ptr<QRhiTexture> textures[2];
     std::unique_ptr<QRhiTexture> depths[2];
     std::unique_ptr<QRhiRenderBuffer> hardwareDepth;
@@ -122,7 +126,11 @@ struct PostChain::BufferState {
     bool blocked = false;
     /// What the budget log last said about this pass, carried to the state
     /// that replaces it so a moving rectangle logs only a change of outcome.
-    enum class Logged { None, Shrunk, Blocked } logged = Logged::None;
+    enum class Logged {
+        None,
+        Shrunk,
+        Blocked
+    } logged = Logged::None;
     std::uint64_t bytes = 0, used = 0;
     std::uint64_t stepped = 0; ///< the frame (m_frame) that last drew it
 };
@@ -157,7 +165,8 @@ bool PostChain::animated() const noexcept
                 return true;
         return false;
     };
-    for (const auto* chain : {&m_chains.background, &m_chains.text, &m_chains.cursor, &m_chains.pane, &m_chains.window}) {
+    for (const auto* chain :
+         {&m_chains.background, &m_chains.text, &m_chains.cursor, &m_chains.pane, &m_chains.window}) {
         for (const ShaderProgramPtr& p : *chain) {
             if (p->animated() || settling(*p)) {
                 return true;
@@ -174,34 +183,52 @@ bool PostChain::showing(const std::vector<ShaderProgramPtr>& chain) const noexce
 
 const std::vector<ShaderProgramPtr>* PostChain::eventChain() const noexcept
 {
-    if (m_overviewShowing && !m_chains.overview.empty()) return &m_chains.overview;
-    if (m_transitionShowing && !m_chains.tabTransition.empty()) return &m_chains.tabTransition;
-    if (m_paneEffectsShowing && !m_chains.paneEffects.empty()) return &m_chains.paneEffects;
+    if (m_overviewShowing && !m_chains.overview.empty())
+        return &m_chains.overview;
+    if (m_transitionShowing && !m_chains.tabTransition.empty())
+        return &m_chains.tabTransition;
+    if (m_paneEffectsShowing && !m_chains.paneEffects.empty())
+        return &m_chains.paneEffects;
     return nullptr;
 }
 
 bool PostChain::audioReactive() const
 {
-    if (m_chains.anyAlwaysOn([](const ShaderProgram& p) { return p.requiresAudio(); })) return true;
+    if (m_chains.anyAlwaysOn([](const ShaderProgram& p) {
+            return p.requiresAudio();
+        }))
+        return true;
     // Pane effects run under the overview and a tab switch too (record()).
     for (const auto* chain : {&m_chains.overview, &m_chains.tabTransition, &m_chains.paneEffects}) {
         const bool runs = chain == &m_chains.paneEffects ? m_paneEffectsShowing : showing(*chain);
-        if (runs && ShaderChains::anyIn(*chain, [](const ShaderProgram& p) { return p.requiresAudio(); })) return true;
+        if (runs && ShaderChains::anyIn(*chain, [](const ShaderProgram& p) {
+                return p.requiresAudio();
+            }))
+            return true;
     }
-    return overlayTransitionShowing()
-        && ShaderChains::anyIn(m_chains.overlayTransition, [](const ShaderProgram& p) { return p.requiresAudio(); });
+    return overlayTransitionShowing() && ShaderChains::anyIn(m_chains.overlayTransition, [](const ShaderProgram& p) {
+               return p.requiresAudio();
+           });
 }
 
 bool PostChain::highDynamicRange() const
 {
-    return anyRunning([](const ShaderProgram& p) { return p.requiresHdr(); })
-        || (m_paneEffectsShowing && ShaderChains::anyIn(m_chains.paneEffects, [](const ShaderProgram& p) { return p.requiresHdr(); }));
+    return anyRunning([](const ShaderProgram& p) {
+               return p.requiresHdr();
+           })
+        || (m_paneEffectsShowing && ShaderChains::anyIn(m_chains.paneEffects, [](const ShaderProgram& p) {
+                return p.requiresHdr();
+            }));
 }
 
 bool PostChain::textHistory() const
 {
-    return anyRunning([](const ShaderProgram& p) { return p.readsPreviousText(); })
-        || (m_paneEffectsShowing && ShaderChains::anyIn(m_chains.paneEffects, [](const ShaderProgram& p) { return p.readsPreviousText(); }));
+    return anyRunning([](const ShaderProgram& p) {
+               return p.readsPreviousText();
+           })
+        || (m_paneEffectsShowing && ShaderChains::anyIn(m_chains.paneEffects, [](const ShaderProgram& p) {
+                return p.readsPreviousText();
+            }));
 }
 
 bool PostChain::layered() const
@@ -261,11 +288,15 @@ void PostChain::releaseTargets()
     m_hostHistoryTarget.reset();
     m_hostHistory.reset();
     m_hostHistoryRegions.clear();
-    for (auto& t : m_layerTargets) t.reset();
-    for (auto& target : m_windowTargets) target.reset();
+    for (auto& t : m_layerTargets)
+        t.reset();
+    for (auto& target : m_windowTargets)
+        target.reset();
     m_gridTarget.reset();
-    for (auto& t : m_targets) t.reset();
-    for (auto& t : m_textures) t.reset();
+    for (auto& t : m_targets)
+        t.reset();
+    for (auto& t : m_textures)
+        t.reset();
     m_size = QSize();
 }
 
@@ -276,7 +307,9 @@ void PostChain::releaseIdle()
 
 void PostChain::forgetPass(const QRhiRenderPassDescriptor* pass)
 {
-    std::erase_if(m_pipelines, [pass](const auto& item) { return item.first.second == pass; });
+    std::erase_if(m_pipelines, [pass](const auto& item) {
+        return item.first.second == pass;
+    });
 }
 
 void PostChain::release()
@@ -303,20 +336,30 @@ QRhiTextureRenderTarget* PostChain::prepare(const QSize& size)
     ++m_frame;
     m_bindings.clear();
     m_tabAtlasCleared = false;
-    std::erase_if(m_localTextures, [this](const auto& item) { return item.second.used + 1 < m_frame; });
-    std::erase_if(m_parameterTextures, [this](const auto& item) { return item.second.used + 1 < m_frame; });
+    std::erase_if(m_localTextures, [this](const auto& item) {
+        return item.second.used + 1 < m_frame;
+    });
+    std::erase_if(m_parameterTextures, [this](const auto& item) {
+        return item.second.used + 1 < m_frame;
+    });
     bool expired = false;
     for (auto it = m_buffers.begin(); it != m_buffers.end();) {
         if (it->second[0] && it->second[0]->used + 1 < m_frame) {
-            for (const auto& pass : it->second) if (pass) m_bufferBytes -= pass->bytes;
-            it = m_buffers.erase(it); expired = true;
-        } else ++it;
+            for (const auto& pass : it->second)
+                if (pass)
+                    m_bufferBytes -= pass->bytes;
+            it = m_buffers.erase(it);
+            expired = true;
+        } else
+            ++it;
     }
     if (expired) {
         // Pipelines stay: the descriptors they were made for are shared and live on.
         m_bufferInstances.clear();
         for (const auto& [key, passes] : m_buffers) {
-            if (std::any_of(passes.begin(), passes.end(), [](const auto& pass) { return pass && !pass->blocked; }))
+            if (std::any_of(passes.begin(), passes.end(), [](const auto& pass) {
+                    return pass && !pass->blocked;
+                }))
                 m_bufferInstances.emplace(std::get<0>(key), std::get<1>(key), std::get<2>(key));
         }
     }
@@ -338,7 +381,8 @@ QRhiTextureRenderTarget* PostChain::prepare(const QSize& size)
     // The tab image (overview cards, the tab a switch leaves, a closing pane,
     // the panes under fading overlays) lives while frames use it, and goes
     // after one that did not.
-    if (!std::exchange(m_tabImageUsed, false) || resized) releaseTabImages();
+    if (!std::exchange(m_tabImageUsed, false) || resized)
+        releaseTabImages();
     // The host history lives until the frame after the last fade, as the tab image does.
     if (m_hostHistory && m_hostHistoryFrame + 1 < m_frame) {
         m_hostHistoryTarget.reset();
@@ -354,25 +398,30 @@ QRhiTextureRenderTarget* PostChain::prepare(const QSize& size)
     // New textures and targets. The render-pass descriptors hold no size, so
     // they and the pipelines made for them stay. Shader buffers are sized to
     // the window: a new size makes them again, new layers or a new format do not.
-    if (resized) releaseTextures();
-    else releaseTargets();
+    if (resized)
+        releaseTextures();
+    else
+        releaseTargets();
     if (!m_sampler) {
         m_sampler.reset(rhi->newSampler(QRhiSampler::Linear, QRhiSampler::Linear, QRhiSampler::None,
                                         QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge));
-        if (!m_sampler->create()) throw std::runtime_error("shader sampler allocation failed");
+        if (!m_sampler->create())
+            throw std::runtime_error("shader sampler allocation failed");
     }
     for (int i = 0; i < 2; ++i) {
-        m_textures[i].reset(rhi->newTexture(format, size, 1,
-                                            QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
-        if (!m_textures[i]->create()) throw std::runtime_error("shader texture allocation failed");
+        m_textures[i].reset(
+            rhi->newTexture(format, size, 1, QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
+        if (!m_textures[i]->create())
+            throw std::runtime_error("shader texture allocation failed");
         // Pane passes only redraw pane regions; the rest is the copied input.
-        m_targets[i].reset(rhi->newTextureRenderTarget({m_textures[i].get()},
-                                                       QRhiTextureRenderTarget::PreserveColorContents));
+        m_targets[i].reset(
+            rhi->newTextureRenderTarget({m_textures[i].get()}, QRhiTextureRenderTarget::PreserveColorContents));
         if (!m_renderPass) {
             m_renderPass.reset(m_targets[i]->newCompatibleRenderPassDescriptor());
         }
         m_targets[i]->setRenderPassDescriptor(m_renderPass.get());
-        if (!m_targets[i]->create()) throw std::runtime_error("shader target allocation failed");
+        if (!m_targets[i]->create())
+            throw std::runtime_error("shader target allocation failed");
     }
     m_gridTarget.reset(rhi->newTextureRenderTarget({m_textures[0].get()}));
     if (!m_gridPass) {
@@ -380,32 +429,38 @@ QRhiTextureRenderTarget* PostChain::prepare(const QSize& size)
         ++m_passGeneration;
     }
     m_gridTarget->setRenderPassDescriptor(m_gridPass.get());
-    if (!m_gridTarget->create()) throw std::runtime_error("grid target allocation failed");
+    if (!m_gridTarget->create())
+        throw std::runtime_error("grid target allocation failed");
     // Vulkan load operations belong to the render-pass descriptor. Reuse the
     // clearing grid descriptor, not the preserving pane-pass descriptor.
     for (int i = 0; i < 2; ++i) {
         m_windowTargets[i].reset(rhi->newTextureRenderTarget({m_textures[i].get()}));
         m_windowTargets[i]->setRenderPassDescriptor(m_gridPass.get());
-        if (!m_windowTargets[i]->create()) throw std::runtime_error("window shader target allocation failed");
+        if (!m_windowTargets[i]->create())
+            throw std::runtime_error("window shader target allocation failed");
     }
     if (layered()) {
         // Cleared like the grid target, so the grid's pipelines draw into them.
         for (int i = 0; i <= LayerCount; ++i) {
             auto& tex = m_textures[FirstLayerTexture + i];
-            tex.reset(rhi->newTexture(format, size, 1,
-                                     QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
-            if (!tex->create()) throw std::runtime_error("layer texture allocation failed");
+            tex.reset(rhi->newTexture(format, size, 1, QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
+            if (!tex->create())
+                throw std::runtime_error("layer texture allocation failed");
             m_layerTargets[i].reset(rhi->newTextureRenderTarget({tex.get()}));
             m_layerTargets[i]->setRenderPassDescriptor(m_gridPass.get());
-            if (!m_layerTargets[i]->create()) throw std::runtime_error("layer target allocation failed");
+            if (!m_layerTargets[i]->create())
+                throw std::runtime_error("layer target allocation failed");
         }
     }
     if (textHistory()) {
-        m_previousText.reset(rhi->newTexture(format, size, 1, QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
-        if (!m_previousText->create()) throw std::runtime_error("text history allocation failed");
+        m_previousText.reset(
+            rhi->newTexture(format, size, 1, QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
+        if (!m_previousText->create())
+            throw std::runtime_error("text history allocation failed");
         m_historyTarget.reset(rhi->newTextureRenderTarget({m_previousText.get()}));
         m_historyTarget->setRenderPassDescriptor(m_gridPass.get());
-        if (!m_historyTarget->create()) throw std::runtime_error("text history target allocation failed");
+        if (!m_historyTarget->create())
+            throw std::runtime_error("text history target allocation failed");
     }
     m_size = size;
     return m_gridTarget.get();
@@ -414,9 +469,10 @@ QRhiTextureRenderTarget* PostChain::prepare(const QSize& size)
 QRhiBuffer* PostChain::uniformBuffer(int index)
 {
     while (int(m_ubos.size()) <= index) {
-        std::unique_ptr<QRhiBuffer> b(m_device.rhi()->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer,
-                                                                sizeof(TerminalUniforms)));
-        if (!b->create()) throw std::runtime_error("shader uniform buffer allocation failed");
+        std::unique_ptr<QRhiBuffer> b(
+            m_device.rhi()->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, sizeof(TerminalUniforms)));
+        if (!b->create())
+            throw std::runtime_error("shader uniform buffer allocation failed");
         m_ubos.push_back(std::move(b));
     }
     return m_ubos[std::size_t(index)].get();
@@ -425,8 +481,10 @@ QRhiBuffer* PostChain::uniformBuffer(int index)
 QRhiBuffer* PostChain::panesBuffer()
 {
     if (!m_panesUbo) {
-        m_panesUbo.reset(m_device.rhi()->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, sizeof(TerminalPaneUniforms)));
-        if (!m_panesUbo->create()) throw std::runtime_error("pane uniform buffer allocation failed");
+        m_panesUbo.reset(
+            m_device.rhi()->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, sizeof(TerminalPaneUniforms)));
+        if (!m_panesUbo->create())
+            throw std::runtime_error("pane uniform buffer allocation failed");
     }
     return m_panesUbo.get();
 }
@@ -442,24 +500,28 @@ QRhiTextureRenderTarget* PostChain::tabImageTarget()
     if (!m_tabImageTarget) {
         QRhi* rhi = m_device.rhi();
         m_tabImage.reset(rhi->newTexture(QRhiTexture::Format(m_format), m_size, 1, QRhiTexture::RenderTarget));
-        if (!m_tabImage->create()) throw std::runtime_error("overview tab allocation failed");
+        if (!m_tabImage->create())
+            throw std::runtime_error("overview tab allocation failed");
         m_tabImageTarget.reset(rhi->newTextureRenderTarget({m_tabImage.get()}));
         m_tabImageTarget->setRenderPassDescriptor(m_gridPass.get());
-        if (!m_tabImageTarget->create()) throw std::runtime_error("overview tab target failed");
+        if (!m_tabImageTarget->create())
+            throw std::runtime_error("overview tab target failed");
     }
     return m_tabImageTarget.get();
 }
 
 void PostChain::shrinkTabToAtlas(RenderFrame& frame, const QRect& tile)
 {
-    if (!m_tabImage || tile.isEmpty()) return;
+    if (!m_tabImage || tile.isEmpty())
+        return;
     QRhi* rhi = m_device.rhi();
     if (!m_tabAtlas) {
         // Only overview cards use the atlas, so only they allocate it.
         m_tabAtlas.reset(rhi->newTexture(QRhiTexture::Format(m_format), m_size, 1, QRhiTexture::RenderTarget));
-        if (!m_tabAtlas->create()) throw std::runtime_error("overview atlas allocation failed");
-        m_tabAtlasTarget.reset(rhi->newTextureRenderTarget({m_tabAtlas.get()},
-                                                           QRhiTextureRenderTarget::PreserveColorContents));
+        if (!m_tabAtlas->create())
+            throw std::runtime_error("overview atlas allocation failed");
+        m_tabAtlasTarget.reset(
+            rhi->newTextureRenderTarget({m_tabAtlas.get()}, QRhiTextureRenderTarget::PreserveColorContents));
         m_tabAtlasTarget->setRenderPassDescriptor(m_renderPass.get());
         m_tabAtlasClearTarget.reset(rhi->newTextureRenderTarget({m_tabAtlas.get()}));
         m_tabAtlasClearTarget->setRenderPassDescriptor(m_gridPass.get());
@@ -497,9 +559,10 @@ void PostChain::shrinkTabToAtlas(RenderFrame& frame, const QRect& tile)
 QRhiBuffer* PostChain::sceneBuffer(int index)
 {
     while (int(m_sceneUbos.size()) <= index) {
-        std::unique_ptr<QRhiBuffer> b(m_device.rhi()->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer,
-                                                                sizeof(TerminalSceneUniforms)));
-        if (!b->create()) throw std::runtime_error("shader scene buffer allocation failed");
+        std::unique_ptr<QRhiBuffer> b(
+            m_device.rhi()->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, sizeof(TerminalSceneUniforms)));
+        if (!b->create())
+            throw std::runtime_error("shader scene buffer allocation failed");
         m_sceneUbos.push_back(std::move(b));
     }
     return m_sceneUbos[std::size_t(index)].get();
@@ -507,31 +570,41 @@ QRhiBuffer* PostChain::sceneBuffer(int index)
 
 bool PostChain::fitsInputBudget(std::uint64_t bytes)
 {
-    if (bytes > BufferBudget) return false;
+    if (bytes > BufferBudget)
+        return false;
     auto resident = [this] {
         std::uint64_t total = 0;
-        for (const auto& [key, entry] : m_localTextures) total += entry.bytes;
-        for (const auto& [key, entry] : m_parameterTextures) total += entry.bytes;
+        for (const auto& [key, entry] : m_localTextures)
+            total += entry.bytes;
+        for (const auto& [key, entry] : m_parameterTextures)
+            total += entry.bytes;
         return total;
     };
-    if (resident() <= BufferBudget - bytes) return true;
+    if (resident() <= BufferBudget - bytes)
+        return true;
     // Copies of rectangles that moved since the last frame are never read
     // again. Everything bound this frame is stamped with m_frame and stays.
-    std::erase_if(m_localTextures, [this](const auto& item) { return item.second.texture && item.second.used < m_frame; });
-    std::erase_if(m_parameterTextures, [this](const auto& item) { return item.second.texture && item.second.used < m_frame; });
+    std::erase_if(m_localTextures, [this](const auto& item) {
+        return item.second.texture && item.second.used < m_frame;
+    });
+    std::erase_if(m_parameterTextures, [this](const auto& item) {
+        return item.second.texture && item.second.used < m_frame;
+    });
     return resident() <= BufferBudget - bytes;
 }
 
 QRhiTexture* PostChain::localTexture(QRhiTexture* source, const QRect& rect, QRhiResourceUpdateBatch* updates)
 {
-    if (rect == QRect(QPoint(), source->pixelSize())) return source;
+    if (rect == QRect(QPoint(), source->pixelSize()))
+        return source;
     if (rect.isEmpty() || !QRect(QPoint(), source->pixelSize()).contains(rect))
         throw std::runtime_error("shader region outside source texture");
     const auto key = std::make_tuple(source, rect.x(), rect.y(), rect.width(), rect.height());
     auto& cache = m_localTextures[key];
     cache.used = m_frame;
     if (!cache.texture) {
-        const auto bytes = std::uint64_t(rect.width()) * rect.height() * (source->format() == QRhiTexture::RGBA16F ? 8 : 4);
+        const auto bytes =
+            std::uint64_t(rect.width()) * rect.height() * (source->format() == QRhiTexture::RGBA16F ? 8 : 4);
         if (!fitsInputBudget(bytes)) {
             m_localTextures.erase(key);
             if (!std::exchange(m_regionBudgetWarned, true))
@@ -540,10 +613,12 @@ QRhiTexture* PostChain::localTexture(QRhiTexture* source, const QRect& rect, QRh
         }
         cache.bytes = bytes;
         cache.texture.reset(m_device.rhi()->newTexture(source->format(), rect.size()));
-        if (!cache.texture->create()) throw std::runtime_error("shader region allocation failed");
+        if (!cache.texture->create())
+            throw std::runtime_error("shader region allocation failed");
     }
     QRhiTextureCopyDescription copy;
-    copy.setSourceTopLeft(rect.topLeft()); copy.setPixelSize(rect.size());
+    copy.setSourceTopLeft(rect.topLeft());
+    copy.setPixelSize(rect.size());
     updates->copyTexture(cache.texture.get(), source, copy);
     return cache.texture.get();
 }
@@ -553,8 +628,10 @@ QRhiTexture* PostChain::parameterTexture(const QImage& image, QRhiResourceUpdate
     if (image.isNull()) {
         if (!m_emptyTexture) {
             m_emptyTexture.reset(m_device.rhi()->newTexture(QRhiTexture::RGBA8, QSize(1, 1)));
-            if (!m_emptyTexture->create()) throw std::runtime_error("shader empty texture allocation failed");
-            QImage empty(1, 1, QImage::Format_RGBA8888); empty.fill(Qt::transparent);
+            if (!m_emptyTexture->create())
+                throw std::runtime_error("shader empty texture allocation failed");
+            QImage empty(1, 1, QImage::Format_RGBA8888);
+            empty.fill(Qt::transparent);
             updates->uploadTexture(m_emptyTexture.get(), empty);
         }
         return m_emptyTexture.get();
@@ -569,26 +646,31 @@ QRhiTexture* PostChain::parameterTexture(const QImage& image, QRhiResourceUpdate
         if (pixels.width() > limit || pixels.height() > limit || !fitsInputBudget(bytes)) {
             m_parameterTextures.erase(key);
             if (!std::exchange(m_imageBudgetWarned, true))
-                qCWarning(lcRender, "Shader image exceeds GPU size or shared 256 MiB input budget; using transparent image");
+                qCWarning(lcRender,
+                          "Shader image exceeds GPU size or shared 256 MiB input budget; using transparent image");
             return parameterTexture({}, updates);
         }
         cache.bytes = bytes;
         pixels = pixels.convertToFormat(QImage::Format_RGBA8888);
-        if (pixels.isNull()) throw std::runtime_error("shader image conversion failed");
+        if (pixels.isNull())
+            throw std::runtime_error("shader image conversion failed");
         cache.texture.reset(m_device.rhi()->newTexture(QRhiTexture::RGBA8, pixels.size()));
-        if (!cache.texture->create()) throw std::runtime_error("shader image allocation failed");
+        if (!cache.texture->create())
+            throw std::runtime_error("shader image allocation failed");
         updates->uploadTexture(cache.texture.get(), pixels);
     }
     return cache.texture.get();
 }
 
 QRhiShaderResourceBindings* PostChain::bindings(int ubo, int texture, const ShaderRegionState* region,
-    const ShaderProgram* program, const BufferInputs* buffers, QRhiResourceUpdateBatch* updates, QRhiTexture* source)
+                                                const ShaderProgram* program, const BufferInputs* buffers,
+                                                QRhiResourceUpdateBatch* updates, QRhiTexture* source)
 {
     auto slot = std::unique_ptr<QRhiShaderResourceBindings>(m_device.rhi()->newShaderResourceBindings());
     const auto stage = QRhiShaderResourceBinding::FragmentStage | QRhiShaderResourceBinding::VertexStage;
     auto* input = source ? source : m_textures[texture].get();
-    if (region) input = localTexture(input, region->rect, updates);
+    if (region)
+        input = localTexture(input, region->rect, updates);
     // Only a program that includes terminal_history.glsl samples the previous
     // text; the others get the input there and no second copy.
     auto* history = input;
@@ -599,34 +681,36 @@ QRhiShaderResourceBindings* PostChain::bindings(int ubo, int texture, const Shad
     // The history holds the frame's own panes' text: under a fading overlay
     // that is the overlay's, so the pane under it reads its own.
     if (m_previousText && program && program->readsPreviousText()) {
-        history = !region                ? m_previousText.get()
-            : !region->overlayHost       ? localTexture(m_previousText.get(), region->rect, updates)
-            : m_hostHistory              ? localTexture(m_hostHistory.get(), region->rect, updates)
-            : updates                    ? parameterTexture({}, updates)
-                                         : input;
+        history = !region          ? m_previousText.get()
+            : !region->overlayHost ? localTexture(m_previousText.get(), region->rect, updates)
+            : m_hostHistory        ? localTexture(m_hostHistory.get(), region->rect, updates)
+            : updates              ? parameterTexture({}, updates)
+                                   : input;
     }
     // Phosphor's binding table (PhosphorShaders::Bindings), with the canvas in
     // the consumer slot and the previous text in the first free one.
     namespace B = PhosphorShaders::Bindings;
     std::vector<QRhiShaderResourceBinding>& entries = m_bindingEntries;
     entries.clear();
-    entries.insert(entries.end(), {
-        QRhiShaderResourceBinding::uniformBuffer(B::kUniformBlock, stage, uniformBuffer(ubo)),
-        QRhiShaderResourceBinding::sampledTexture(B::kConsumer, stage, input, m_sampler.get()),
-        QRhiShaderResourceBinding::sampledTexture(B::kAudioSpectrum, stage,
-            audio ? audio : input, m_device.atlasSampler()),
-        QRhiShaderResourceBinding::sampledTexture(Bindings::PreviousText, stage, history, m_sampler.get()),
-        QRhiShaderResourceBinding::uniformBuffer(Bindings::Scene, stage, sceneBuffer(ubo)),
-        QRhiShaderResourceBinding::uniformBuffer(Bindings::Panes, stage, panesBuffer()),
-        // The shrink pass (an explicit source) renders into the atlas, so it binds neither.
-        QRhiShaderResourceBinding::sampledTexture(Bindings::TabImage, stage,
-            m_tabImage && !source ? m_tabImage.get() : input, m_sampler.get()),
-        QRhiShaderResourceBinding::sampledTexture(Bindings::TabAtlas, stage,
-            m_tabAtlas && !source ? m_tabAtlas.get() : input, m_sampler.get()),
-    });
+    entries.insert(
+        entries.end(),
+        {
+            QRhiShaderResourceBinding::uniformBuffer(B::kUniformBlock, stage, uniformBuffer(ubo)),
+            QRhiShaderResourceBinding::sampledTexture(B::kConsumer, stage, input, m_sampler.get()),
+            QRhiShaderResourceBinding::sampledTexture(B::kAudioSpectrum, stage, audio ? audio : input,
+                                                      m_device.atlasSampler()),
+            QRhiShaderResourceBinding::sampledTexture(Bindings::PreviousText, stage, history, m_sampler.get()),
+            QRhiShaderResourceBinding::uniformBuffer(Bindings::Scene, stage, sceneBuffer(ubo)),
+            QRhiShaderResourceBinding::uniformBuffer(Bindings::Panes, stage, panesBuffer()),
+            // The shrink pass (an explicit source) renders into the atlas, so it binds neither.
+            QRhiShaderResourceBinding::sampledTexture(
+                Bindings::TabImage, stage, m_tabImage && !source ? m_tabImage.get() : input, m_sampler.get()),
+            QRhiShaderResourceBinding::sampledTexture(
+                Bindings::TabAtlas, stage, m_tabAtlas && !source ? m_tabAtlas.get() : input, m_sampler.get()),
+        });
     for (int i = 0; i < MaxShaderBuffers; ++i)
-        entries.push_back(QRhiShaderResourceBinding::sampledTexture(B::kChannelBase + i, stage,
-            buffers && buffers->textures[i] ? buffers->textures[i] : input,
+        entries.push_back(QRhiShaderResourceBinding::sampledTexture(
+            B::kChannelBase + i, stage, buffers && buffers->textures[i] ? buffers->textures[i] : input,
             buffers && buffers->samplers[i] ? buffers->samplers[i] : m_sampler.get()));
     const ShaderParameterValues* overrides = nullptr;
     if (program && region) {
@@ -635,14 +719,20 @@ QRhiShaderResourceBindings* PostChain::bindings(int ubo, int texture, const Shad
     }
     for (int i = 0; i < MaxShaderImages; ++i) {
         QRhiTexture* image = input;
-        if (updates) image = parameterTexture(program ? imageFor(*program, overrides, i) : QImage(), updates);
-        entries.push_back(QRhiShaderResourceBinding::sampledTexture(B::kUserTextureBase + i, stage, image, m_sampler.get()));
+        if (updates)
+            image = parameterTexture(program ? imageFor(*program, overrides, i) : QImage(), updates);
+        entries.push_back(
+            QRhiShaderResourceBinding::sampledTexture(B::kUserTextureBase + i, stage, image, m_sampler.get()));
     }
-    entries.push_back(QRhiShaderResourceBinding::sampledTexture(B::kDepth, stage,
-        buffers && buffers->depth ? buffers->depth : (updates ? parameterTexture({}, updates) : input), m_sampler.get()));
+    entries.push_back(QRhiShaderResourceBinding::sampledTexture(
+        B::kDepth, stage,
+        buffers && buffers->depth ? buffers->depth : (updates ? parameterTexture({}, updates) : input),
+        m_sampler.get()));
     slot->setBindings(entries.begin(), entries.end());
-    if (!slot->create()) throw std::runtime_error("shader sampler bindings failed");
-    auto* result = slot.get(); m_bindings.push_back(std::move(slot));
+    if (!slot->create())
+        throw std::runtime_error("shader sampler bindings failed");
+    auto* result = slot.get();
+    m_bindings.push_back(std::move(slot));
     return result;
 }
 
@@ -650,7 +740,8 @@ QRhiRenderPassDescriptor* PostChain::bufferPass(QRhiTextureRenderTarget* target,
                                                 bool depthOutput, bool hardwareDepth)
 {
     auto& pass = m_bufferPasses[{format, samples, depthOutput, hardwareDepth}];
-    if (!pass) pass.reset(target->newCompatibleRenderPassDescriptor());
+    if (!pass)
+        pass.reset(target->newCompatibleRenderPassDescriptor());
     return pass.get();
 }
 
@@ -663,7 +754,9 @@ QRhiGraphicsPipeline* PostChain::pipeline(const ShaderProgram& program, QRhiRend
     slot.reset(m_device.rhi()->newGraphicsPipeline());
     slot->setTopology(QRhiGraphicsPipeline::Triangles);
     slot->setFlags(QRhiGraphicsPipeline::UsesScissor);
-    slot->setShaderStages({{QRhiShaderStage::Vertex, program.vertexShader().isValid() ? program.vertexShader() : m_vertex}, {QRhiShaderStage::Fragment, program.shader()}});
+    slot->setShaderStages(
+        {{QRhiShaderStage::Vertex, program.vertexShader().isValid() ? program.vertexShader() : m_vertex},
+         {QRhiShaderStage::Fragment, program.shader()}});
     QRhiVertexInputLayout layout;
     if (program.meshPass()) {
         slot->setSampleCount(meshSamples(program, m_device.rhi()));
@@ -673,8 +766,8 @@ QRhiGraphicsPipeline* PostChain::pipeline(const ShaderProgram& program, QRhiRend
         if (!program.geometry().vertices.empty()) {
             layout.setBindings({{sizeof(ShaderMeshVertex)}});
             layout.setAttributes({{0, 0, QRhiVertexInputAttribute::Float3, offsetof(ShaderMeshVertex, position)},
-                {0, 1, QRhiVertexInputAttribute::Float3, offsetof(ShaderMeshVertex, normal)},
-                {0, 2, QRhiVertexInputAttribute::Float2, offsetof(ShaderMeshVertex, uv)}});
+                                  {0, 1, QRhiVertexInputAttribute::Float3, offsetof(ShaderMeshVertex, normal)},
+                                  {0, 2, QRhiVertexInputAttribute::Float2, offsetof(ShaderMeshVertex, uv)}});
         }
     }
     slot->setVertexInputLayout(layout);
@@ -693,8 +786,10 @@ QRhiGraphicsPipeline* PostChain::pipeline(const ShaderProgram& program, QRhiRend
 QRhiShaderResourceBindings* PostChain::compositeBindings(int ubo, int background, int text, int cursor, int other)
 {
     while (int(m_compositeUbos.size()) <= ubo) {
-        std::unique_ptr<QRhiBuffer> b(m_device.rhi()->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, sizeof(CompositeUniforms)));
-        if (!b->create()) throw std::runtime_error("layer composite buffer allocation failed");
+        std::unique_ptr<QRhiBuffer> b(
+            m_device.rhi()->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, sizeof(CompositeUniforms)));
+        if (!b->create())
+            throw std::runtime_error("layer composite buffer allocation failed");
         m_compositeUbos.push_back(std::move(b));
     }
     auto& slot = m_compositeBindings[{ubo, background, text, cursor, other}];
@@ -708,7 +803,8 @@ QRhiShaderResourceBindings* PostChain::compositeBindings(int ubo, int background
             QRhiShaderResourceBinding::sampledTexture(3, stage, m_textures[cursor].get(), m_sampler.get()),
             QRhiShaderResourceBinding::sampledTexture(4, stage, m_textures[other].get(), m_sampler.get()),
         });
-        if (!slot->create()) throw std::runtime_error("layer composite bindings failed");
+        if (!slot->create())
+            throw std::runtime_error("layer composite bindings failed");
     }
     return slot.get();
 }
@@ -739,28 +835,33 @@ QRhiTextureRenderTarget* PostChain::layerTarget(Layer layer)
     return m_layerTargets[i].get();
 }
 
-std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, const ShaderProgram& program,
-    int scope, int step, int input, const std::vector<ShaderRegionState>& regions,
-    const ShaderFrameTime& time, int& ubo)
+std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, const ShaderProgram& program, int scope,
+                                                           int step, int input,
+                                                           const std::vector<ShaderRegionState>& regions,
+                                                           const ShaderFrameTime& time, int& ubo)
 {
     auto* cb = frame.commands();
     std::vector<BufferInputs> result(regions.size());
-    if (program.buffers().empty()) return result;
+    if (program.buffers().empty())
+        return result;
     auto* rhi = m_device.rhi();
     const auto instance = std::make_tuple(&program, scope, step);
     const bool overflow = !m_bufferInstances.contains(instance) && m_bufferInstances.size() >= 32;
-    if (!overflow) m_bufferInstances.insert(instance);
+    if (!overflow)
+        m_bufferInstances.insert(instance);
     for (std::size_t regionIndex = 0; regionIndex < regions.size(); ++regionIndex) {
         const auto& region = regions[regionIndex];
-        if (region.rect.isEmpty()) continue;
+        if (region.rect.isEmpty())
+            continue;
         const bool sharedBackground = scope == 0 && program.windowBackground();
-        const std::uint64_t identitySnapshot = sharedBackground || !region.snapshot ? 0 : region.snapshot->identity.value();
+        const std::uint64_t identitySnapshot =
+            sharedBackground || !region.snapshot ? 0 : region.snapshot->identity.value();
         auto& passes = m_buffers[{&program, scope, step, identitySnapshot}];
         auto& samples = result[regionIndex];
         // A pane's buffers are its own, with a popup over it or not.
-        const std::vector<HistoryRegion> identity{{identitySnapshot, region.rect,
-            region.snapshot ? region.snapshot->defaultBg : 0, region.snapshot ? region.snapshot->defaultFg : 0,
-            region.cellSize, region.backgroundOpacity, QRect()}};
+        const std::vector<HistoryRegion> identity{
+            {identitySnapshot, region.rect, region.snapshot ? region.snapshot->defaultBg : 0,
+             region.snapshot ? region.snapshot->defaultFg : 0, region.cellSize, region.backgroundOpacity, QRect()}};
         // The window's one background buffer set steps once a frame, for the
         // frame's own panes and with their colours. The panes under fading
         // overlays composite first: they read it as the last frame left it.
@@ -770,7 +871,9 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
         // pane shows twice with one snapshot, and the second takes what the
         // first stepped.
         const std::size_t passCount = program.buffers().size();
-        const bool made = std::all_of(passes.begin(), passes.begin() + passCount, [](const auto& p) { return bool(p); });
+        const bool made = std::all_of(passes.begin(), passes.begin() + passCount, [](const auto& p) {
+            return bool(p);
+        });
         if (made
             && (sharedBackground ? region.overlayHost || passes[0]->stepped == m_frame
                                  : passes[0]->stepped == m_frame && passes[0]->regions == identity)) {
@@ -780,7 +883,8 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
                 samples.textures[index] = buffer.textures[buffer.read].get();
                 samples.samplers[index] = buffer.sampler.get();
                 samples.sizes[index] = buffer.size;
-                if (buffer.depths[buffer.read]) samples.depth = buffer.depths[buffer.read].get();
+                if (buffer.depths[buffer.read])
+                    samples.depth = buffer.depths[buffer.read].get();
             }
             continue;
         }
@@ -800,14 +904,19 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
             // so they count once: only the first state to need them pays.
             const bool meshVertices = passProgram.meshPass() && !passProgram.geometry().vertices.empty();
             const std::uint64_t fixedBytes = meshVertices && !m_meshVertices.contains(&passProgram)
-                ? passProgram.geometry().vertices.size() * sizeof(ShaderMeshVertex) : 0;
-            const auto bytesFor = [&](QSize size) { return std::uint64_t(size.width()) * size.height() * pixelBytes + fixedBytes; };
+                ? passProgram.geometry().vertices.size() * sizeof(ShaderMeshVertex)
+                : 0;
+            const auto bytesFor = [&](QSize size) {
+                return std::uint64_t(size.width()) * size.height() * pixelBytes + fixedBytes;
+            };
             // The size that fits in @p room bytes: both sides shrink by the same
             // factor, and a side below MinimumBufferSide blocks the pass.
             const auto fitted = [&](std::uint64_t room) {
-                if (bytesFor(wanted) <= room) return wanted;
+                if (bytesFor(wanted) <= room)
+                    return wanted;
                 const double fit = room > fixedBytes
-                    ? std::sqrt(double(room - fixedBytes) / double(bytesFor(wanted) - fixedBytes)) : 0.0;
+                    ? std::sqrt(double(room - fixedBytes) / double(bytesFor(wanted) - fixedBytes))
+                    : 0.0;
                 const QSize size(int(wanted.width() * fit), int(wanted.height() * fit));
                 return std::min(size.width(), size.height()) < MinimumBufferSide ? QSize() : size;
             };
@@ -817,9 +926,11 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
             bool canGrow = false;
             if (state && state->wanted == wanted && state->size != wanted && !overflow) {
                 const QSize room = fitted(BufferBudget - m_bufferBytes + state->bytes);
-                canGrow = room == wanted || (!room.isEmpty() && (state->blocked
-                    || (room.width() >= state->size.width() + state->size.width() / 8
-                        && room.height() >= state->size.height() + state->size.height() / 8)));
+                canGrow = room == wanted
+                    || (!room.isEmpty()
+                        && (state->blocked
+                            || (room.width() >= state->size.width() + state->size.width() / 8
+                                && room.height() >= state->size.height() + state->size.height() / 8)));
             }
             const auto logged = state ? state->logged : BufferState::Logged::None;
             if (state && (state->wanted != wanted || canGrow)) {
@@ -834,16 +945,19 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
                 state->size = state->blocked ? QSize(1, 1) : size;
                 // Log a change of outcome, not every new rectangle of an animation.
                 state->logged = state->blocked ? BufferState::Logged::Blocked
-                    : state->size != wanted ? BufferState::Logged::Shrunk : BufferState::Logged::None;
+                    : state->size != wanted    ? BufferState::Logged::Shrunk
+                                               : BufferState::Logged::None;
                 if (state->logged != logged && overflow) {
-                    qCWarning(lcRender, "More than 32 buffer effect occurrences in this window; %s uses a transparent buffer",
+                    qCWarning(lcRender,
+                              "More than 32 buffer effect occurrences in this window; %s uses a transparent buffer",
                               qPrintable(program.id()));
                 } else if (state->logged != logged && state->logged == BufferState::Logged::Blocked) {
-                    qCWarning(lcRender, "Shader buffer budget exceeded for %s; using a transparent buffer", qPrintable(program.id()));
+                    qCWarning(lcRender, "Shader buffer budget exceeded for %s; using a transparent buffer",
+                              qPrintable(program.id()));
                 } else if (state->logged != logged && state->logged == BufferState::Logged::Shrunk) {
                     qCWarning(lcRender, "Shader buffer budget exceeded for %s; rendering it at %dx%d instead of %dx%d",
-                              qPrintable(program.id()), state->size.width(), state->size.height(),
-                              wanted.width(), wanted.height());
+                              qPrintable(program.id()), state->size.width(), state->size.height(), wanted.width(),
+                              wanted.height());
                 }
                 if (!state->blocked) {
                     state->bytes = bytesFor(state->size) - fixedBytes;
@@ -851,41 +965,56 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
                 }
                 const auto filter = settings.nearest ? QRhiSampler::Nearest : QRhiSampler::Linear;
                 const auto wrap = settings.wrap == ShaderWrap::Repeat ? QRhiSampler::Repeat
-                    : settings.wrap == ShaderWrap::Mirror ? QRhiSampler::Mirror : QRhiSampler::ClampToEdge;
+                    : settings.wrap == ShaderWrap::Mirror             ? QRhiSampler::Mirror
+                                                                      : QRhiSampler::ClampToEdge;
                 state->sampler.reset(rhi->newSampler(filter, filter, QRhiSampler::None, wrap, wrap));
-                if (!state->sampler->create()) throw std::runtime_error("shader buffer sampler failed");
+                if (!state->sampler->create())
+                    throw std::runtime_error("shader buffer sampler failed");
                 if (passProgram.meshPass()) {
-                    state->hardwareDepth.reset(rhi->newRenderBuffer(QRhiRenderBuffer::DepthStencil, state->size, sampleCount));
-                    if (!state->hardwareDepth->create()) throw std::runtime_error("mesh depth allocation failed");
+                    state->hardwareDepth.reset(
+                        rhi->newRenderBuffer(QRhiRenderBuffer::DepthStencil, state->size, sampleCount));
+                    if (!state->hardwareDepth->create())
+                        throw std::runtime_error("mesh depth allocation failed");
                     if (!state->blocked && meshVertices) {
                         auto& shared = m_meshVertices[&passProgram];
                         if (!shared.buffer) {
-                            shared.buffer.reset(rhi->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer,
+                            shared.buffer.reset(rhi->newBuffer(
+                                QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer,
                                 quint32(passProgram.geometry().vertices.size() * sizeof(ShaderMeshVertex))));
-                            if (!shared.buffer->create()) throw std::runtime_error("mesh vertex allocation failed");
+                            if (!shared.buffer->create())
+                                throw std::runtime_error("mesh vertex allocation failed");
                         }
                         state->vertices = shared.buffer.get();
                     }
                 }
                 if (sampleCount > 1) {
                     const auto format = settings.halfFloat ? QRhiTexture::RGBA16F : QRhiTexture::RGBA8;
-                    state->multisampleColor.reset(rhi->newTexture(format, state->size, sampleCount, QRhiTexture::RenderTarget));
-                    if (!state->multisampleColor->create()) throw std::runtime_error("mesh multisample allocation failed");
+                    state->multisampleColor.reset(
+                        rhi->newTexture(format, state->size, sampleCount, QRhiTexture::RenderTarget));
+                    if (!state->multisampleColor->create())
+                        throw std::runtime_error("mesh multisample allocation failed");
                     if (passProgram.depthOutput()) {
-                        state->multisampleAuxiliary.reset(rhi->newTexture(format, state->size, sampleCount, QRhiTexture::RenderTarget));
-                        if (!state->multisampleAuxiliary->create()) throw std::runtime_error("mesh auxiliary multisample allocation failed");
+                        state->multisampleAuxiliary.reset(
+                            rhi->newTexture(format, state->size, sampleCount, QRhiTexture::RenderTarget));
+                        if (!state->multisampleAuxiliary->create())
+                            throw std::runtime_error("mesh auxiliary multisample allocation failed");
                     }
                 }
                 for (int side = 0; side < 2; ++side) {
-                    state->textures[side].reset(rhi->newTexture(settings.halfFloat ? QRhiTexture::RGBA16F : QRhiTexture::RGBA8,
-                                                              state->size, 1, QRhiTexture::RenderTarget));
-                    if (!state->textures[side]->create()) throw std::runtime_error("shader buffer allocation failed");
+                    state->textures[side].reset(
+                        rhi->newTexture(settings.halfFloat ? QRhiTexture::RGBA16F : QRhiTexture::RGBA8, state->size, 1,
+                                        QRhiTexture::RenderTarget));
+                    if (!state->textures[side]->create())
+                        throw std::runtime_error("shader buffer allocation failed");
                     QRhiTextureRenderTargetDescription description(state->textures[side].get());
-                    if (state->hardwareDepth) description.setDepthStencilBuffer(state->hardwareDepth.get());
+                    if (state->hardwareDepth)
+                        description.setDepthStencilBuffer(state->hardwareDepth.get());
                     if (program.buffers()[index]->depthOutput()) {
-                        state->depths[side].reset(rhi->newTexture(settings.halfFloat ? QRhiTexture::RGBA16F : QRhiTexture::RGBA8,
-                            state->size, 1, QRhiTexture::RenderTarget));
-                        if (!state->depths[side]->create()) throw std::runtime_error("shader depth allocation failed");
+                        state->depths[side].reset(
+                            rhi->newTexture(settings.halfFloat ? QRhiTexture::RGBA16F : QRhiTexture::RGBA8, state->size,
+                                            1, QRhiTexture::RenderTarget));
+                        if (!state->depths[side]->create())
+                            throw std::runtime_error("shader depth allocation failed");
                         description.setColorAttachments({state->textures[side].get(), state->depths[side].get()});
                     }
                     if (state->multisampleColor) {
@@ -895,7 +1024,8 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
                             QRhiColorAttachment auxiliary(state->multisampleAuxiliary.get());
                             auxiliary.setResolveTexture(state->depths[side].get());
                             description.setColorAttachments({color, auxiliary});
-                        } else description.setColorAttachments({color});
+                        } else
+                            description.setColorAttachments({color});
                     }
                     state->targets[side].reset(rhi->newTextureRenderTarget(description));
                     if (!state->pass) {
@@ -903,7 +1033,8 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
                                                  passProgram.depthOutput(), state->hardwareDepth != nullptr);
                     }
                     state->targets[side]->setRenderPassDescriptor(state->pass);
-                    if (!state->targets[side]->create()) throw std::runtime_error("shader buffer target failed");
+                    if (!state->targets[side]->create())
+                        throw std::runtime_error("shader buffer target failed");
                 }
             }
             auto& buffer = *state;
@@ -914,24 +1045,33 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
             if (reset || !settings.feedback) {
                 frame.beginPass(buffer.targets[buffer.read].get(), Qt::transparent, {1.f, 0});
                 frame.endPass();
-                if (reset) buffer.frame = 0;
+                if (reset)
+                    buffer.frame = 0;
             }
-            buffer.regions = identity; buffer.time = time.time;
-            samples.textures[index] = buffer.textures[buffer.read].get(); samples.samplers[index] = buffer.sampler.get();
+            buffer.regions = identity;
+            buffer.time = time.time;
+            samples.textures[index] = buffer.textures[buffer.read].get();
+            samples.samplers[index] = buffer.sampler.get();
             samples.sizes[index] = buffer.size;
         }
         for (std::size_t index = 0; index < program.buffers().size(); ++index) {
             auto& buffer = *passes[index];
-            if (buffer.blocked) continue;
+            if (buffer.blocked)
+                continue;
             const auto size = buffer.size;
-            const double sx = double(size.width()) / region.rect.width(), sy = double(size.height()) / region.rect.height();
+            const double sx = double(size.width()) / region.rect.width(),
+                         sy = double(size.height()) / region.rect.height();
             auto scaled = region;
             scaled.rect = QRect(QPoint(), size);
             scaled.cellSize = QSizeF(region.cellSize.width() * sx, region.cellSize.height() * sy);
-            auto localCursor = [&](const QRectF& cursor) { return QRectF((cursor.x() - region.rect.x()) * sx,
-                (cursor.y() - region.rect.y()) * sy, cursor.width() * sx, cursor.height() * sy); };
-            scaled.cursor = localCursor(region.cursor); scaled.previousCursor = localCursor(region.previousCursor);
-            scaled.mouse = QPointF((region.mouse.x() - region.rect.x()) * sx, (region.mouse.y() - region.rect.y()) * sy);
+            auto localCursor = [&](const QRectF& cursor) {
+                return QRectF((cursor.x() - region.rect.x()) * sx, (cursor.y() - region.rect.y()) * sy,
+                              cursor.width() * sx, cursor.height() * sy);
+            };
+            scaled.cursor = localCursor(region.cursor);
+            scaled.previousCursor = localCursor(region.previousCursor);
+            scaled.mouse =
+                QPointF((region.mouse.x() - region.rect.x()) * sx, (region.mouse.y() - region.rect.y()) * sy);
             TerminalUniforms uniforms;
             fill(uniforms, scaled, time, program, &samples);
             // The canvas is the buffer. Keep the original window rectangle
@@ -940,7 +1080,8 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
             uniforms.terminal.uTerminalRect[1] = region.rect.y();
             uniforms.terminal.uTerminalRect[2] = region.rect.width();
             uniforms.terminal.uTerminalRect[3] = region.rect.height();
-            uniforms.terminal.uTargetSize[0] = size.width(); uniforms.terminal.uTargetSize[1] = size.height();
+            uniforms.terminal.uTargetSize[0] = size.width();
+            uniforms.terminal.uTargetSize[1] = size.height();
             const bool inWindow = QRectF(QPointF(), QSizeF(m_size)).contains(region.mouse);
             uniforms.terminal.uWindowMouse[0] = inWindow ? float(region.mouse.x()) : -1.0f;
             uniforms.terminal.uWindowMouse[1] = inWindow ? float(region.mouse.y()) : -1.0f;
@@ -951,13 +1092,15 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
             if (!objects.empty()) {
                 ShaderParameterValues values;
                 values.params = program.params();
-                if (auto it = region.shaderParameters.constFind(program.instanceId()); it != region.shaderParameters.cend())
+                if (auto it = region.shaderParameters.constFind(program.instanceId());
+                    it != region.shaderParameters.cend())
                     values.merge(*it);
                 TerminalSceneUniforms scene{};
                 ShaderProgram::sceneMatrices(objects, values.params, time.time, scene);
                 updates->updateDynamicBuffer(sceneBuffer(ubo), 0, sizeof scene, &scene);
             }
-            if (index == 0) samples.depth = buffer.depths[buffer.read].get();
+            if (index == 0)
+                samples.depth = buffer.depths[buffer.read].get();
             auto* resources = bindings(ubo++, input, &region, &program, &samples, updates);
             const int out = 1 - buffer.read;
             if (buffer.vertices) {
@@ -989,16 +1132,19 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
             }
             frame.endPass();
             buffer.read = out;
-            if (buffer.frame < std::numeric_limits<int>::max()) ++buffer.frame;
+            if (buffer.frame < std::numeric_limits<int>::max())
+                ++buffer.frame;
             samples.textures[index] = buffer.textures[out].get();
-            if (buffer.depths[out]) samples.depth = buffer.depths[out].get();
+            if (buffer.depths[out])
+                samples.depth = buffer.depths[out].get();
         }
     }
     return result;
 }
 
 int PostChain::runLayerChain(RenderFrame& frame, const std::vector<ShaderProgramPtr>& chain, int input,
-                             const std::vector<ShaderRegionState>& panes, const ShaderFrameTime& time, int& ubo, int scope)
+                             const std::vector<ShaderRegionState>& panes, const ShaderFrameTime& time, int& ubo,
+                             int scope)
 {
     auto* cb = frame.commands();
     QRhi* rhi = m_device.rhi();
@@ -1010,7 +1156,9 @@ int PostChain::runLayerChain(RenderFrame& frame, const std::vector<ShaderProgram
         std::vector<ShaderRegionState> sharedRegions;
         const bool shared = scope == 0 && program->windowBackground() && !panes.empty();
         if (shared) {
-            auto focused = std::find_if(panes.begin(), panes.end(), [](const auto& pane) { return pane.focused; });
+            auto focused = std::find_if(panes.begin(), panes.end(), [](const auto& pane) {
+                return pane.focused;
+            });
             auto window = focused == panes.end() ? panes.front() : *focused;
             window.rect = QRect(QPoint(), m_size);
             sharedRegions.push_back(std::move(window));
@@ -1053,8 +1201,8 @@ int PostChain::runLayerChain(RenderFrame& frame, const std::vector<ShaderProgram
 }
 
 void PostChain::composite(RenderFrame& frame, const std::vector<ShaderRegionState>& panes,
-                          const std::vector<bool>& cursorBelowText, const ShaderFrameTime& time, const QColor& clear, bool otherCursors,
-                          bool hosts, std::size_t uboBase)
+                          const std::vector<bool>& cursorBelowText, const ShaderFrameTime& time, const QColor& clear,
+                          bool otherCursors, bool hosts, std::size_t uboBase)
 {
     auto* cb = frame.commands();
     // The text history is the frame's own panes': the panes under fading
@@ -1082,10 +1230,12 @@ void PostChain::composite(RenderFrame& frame, const std::vector<ShaderRegionStat
             if (!m_hostHistory) {
                 m_hostHistory.reset(rhi->newTexture(QRhiTexture::Format(m_format), m_size, 1,
                                                     QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
-                if (!m_hostHistory->create()) throw std::runtime_error("overlay host history allocation failed");
+                if (!m_hostHistory->create())
+                    throw std::runtime_error("overlay host history allocation failed");
                 m_hostHistoryTarget.reset(rhi->newTextureRenderTarget({m_hostHistory.get()}));
                 m_hostHistoryTarget->setRenderPassDescriptor(m_gridPass.get());
-                if (!m_hostHistoryTarget->create()) throw std::runtime_error("overlay host history target failed");
+                if (!m_hostHistoryTarget->create())
+                    throw std::runtime_error("overlay host history target failed");
             }
             frame.beginPass(m_hostHistoryTarget.get(), Qt::transparent, {1.0f, 0});
             frame.endPass();
@@ -1102,14 +1252,16 @@ void PostChain::composite(RenderFrame& frame, const std::vector<ShaderRegionStat
     const int background = runLayerChain(frame, m_chains.background, m_layerTexture[0], panes, time, ubo, 0);
     const int text = runLayerChain(frame, m_chains.text, m_layerTexture[1], panes, time, ubo, 1);
     const int cursor = runLayerChain(frame, m_chains.cursor, m_layerTexture[2], panes, time, ubo, 2);
-    const int other = otherCursors ? runLayerChain(frame, m_chains.cursor, m_layerTexture[3], panes, time, ubo, 5) : m_layerTexture[3];
+    const int other = otherCursors ? runLayerChain(frame, m_chains.cursor, m_layerTexture[3], panes, time, ubo, 5)
+                                   : m_layerTexture[3];
     m_nextUbo = ubo;
 
     QRhiResourceUpdateBatch* updates = frame.stage(m_device.rhi()->nextResourceUpdateBatch());
     for (std::size_t i = 0; i < panes.size(); ++i) {
         compositeBindings(int(uboBase + i), background, text, cursor, other); // makes the buffer
         const CompositeUniforms u{{float(m_size.width()), float(m_size.height())},
-                                  i < cursorBelowText.size() && cursorBelowText[i] ? 1 : 0, 0};
+                                  i < cursorBelowText.size() && cursorBelowText[i] ? 1 : 0,
+                                  0};
         updates->updateDynamicBuffer(m_compositeUbos[uboBase + i].get(), 0, sizeof u, &u);
     }
     frame.beginPass(m_gridTarget.get(), clear, {1.0f, 0}, updates);
@@ -1127,9 +1279,11 @@ void PostChain::copyHistoryRegions(RenderFrame& frame, QRhiTexture* to, QRhiText
 {
     QRhiResourceUpdateBatch* updates = m_device.rhi()->nextResourceUpdateBatch();
     for (const HistoryRegion& region : regions) {
-        if (std::find(held.begin(), held.end(), region) == held.end()) continue;
+        if (std::find(held.begin(), held.end(), region) == held.end())
+            continue;
         const QRect rect = std::get<1>(region).intersected(QRect(QPoint(), m_size));
-        if (rect.isEmpty()) continue;
+        if (rect.isEmpty())
+            continue;
         QRhiTextureCopyDescription copy;
         copy.setSourceTopLeft(rect.topLeft());
         copy.setDestinationTopLeft(rect.topLeft());
@@ -1143,9 +1297,12 @@ void PostChain::copyHistoryRegions(RenderFrame& frame, QRhiTexture* to, QRhiText
 bool PostChain::hostsReadHistory() const
 {
     // The chains that run over the panes under fading overlays.
-    const auto reads = [](const ShaderProgram& p) { return p.readsPreviousText(); };
+    const auto reads = [](const ShaderProgram& p) {
+        return p.readsPreviousText();
+    };
     for (const auto* chain : {&m_chains.background, &m_chains.text, &m_chains.cursor, &m_chains.pane})
-        if (ShaderChains::anyIn(*chain, reads)) return true;
+        if (ShaderChains::anyIn(*chain, reads))
+            return true;
     return false;
 }
 
@@ -1154,8 +1311,8 @@ std::vector<PostChain::HistoryRegion> PostChain::historyRegions(const std::vecto
     std::vector<HistoryRegion> regions;
     for (const auto& pane : panes) {
         regions.emplace_back(pane.snapshot ? pane.snapshot->identity.value() : 0, pane.rect,
-                             pane.snapshot ? pane.snapshot->defaultBg : 0,
-                             pane.snapshot ? pane.snapshot->defaultFg : 0, pane.cellSize, pane.backgroundOpacity, pane.popup);
+                             pane.snapshot ? pane.snapshot->defaultBg : 0, pane.snapshot ? pane.snapshot->defaultFg : 0,
+                             pane.cellSize, pane.backgroundOpacity, pane.popup);
     }
     return regions;
 }
@@ -1177,7 +1334,8 @@ void PostChain::fill(TerminalUniforms& u, const ShaderRegionState& s, const Shad
     auto& base = u.base;
     auto& terminal = u.terminal;
     const QRect& r = s.rect;
-    for (int i = 0; i < 4; ++i) base.qt_Matrix[i * 5] = 1.0f;
+    for (int i = 0; i < 4; ++i)
+        base.qt_Matrix[i * 5] = 1.0f;
     base.qt_Opacity = 1.0f;
     const double wraps = std::floor(t.time / PhosphorShaders::kShaderTimeWrap);
     const double timeHi = wraps * PhosphorShaders::kShaderTimeWrap;
@@ -1200,8 +1358,10 @@ void PostChain::fill(TerminalUniforms& u, const ShaderRegionState& s, const Shad
     std::memcpy(base.customParams, program.params().data(), sizeof base.customParams);
     std::memcpy(base.customColors, program.colors().data(), sizeof base.customColors);
     const ShaderParameterValues* overrides = nullptr;
-    if (auto it = s.shaderParameters.constFind(program.instanceId()); it != s.shaderParameters.cend()) overrides = &*it;
-    if (overrides) overrides->apply(base);
+    if (auto it = s.shaderParameters.constFind(program.instanceId()); it != s.shaderParameters.cend())
+        overrides = &*it;
+    if (overrides)
+        overrides->apply(base);
     if (buffers) {
         for (int i = 0; i < PhosphorShaders::Bindings::kChannelResolutionSlots; ++i) {
             base.iChannelResolution[i][0] = float(buffers->sizes[std::size_t(i)].width());
@@ -1266,7 +1426,8 @@ void PostChain::fill(TerminalUniforms& u, const ShaderRegionState& s, const Shad
 }
 
 int PostChain::runRegionChain(RenderFrame& frame, const std::vector<ShaderProgramPtr>& chain, int current,
-                              const std::vector<ShaderRegionState>& regions, const ShaderFrameTime& time, int& ubo, int scope)
+                              const std::vector<ShaderRegionState>& regions, const ShaderFrameTime& time, int& ubo,
+                              int scope)
 {
     // Each step copies the input, then reshades every region.
     auto* cb = frame.commands();
@@ -1301,9 +1462,11 @@ int PostChain::runRegionChain(RenderFrame& frame, const std::vector<ShaderProgra
     return current;
 }
 
-void PostChain::captureOverlayHosts(RenderFrame& frame, const std::vector<ShaderRegionState>& hosts, const ShaderFrameTime& time)
+void PostChain::captureOverlayHosts(RenderFrame& frame, const std::vector<ShaderRegionState>& hosts,
+                                    const ShaderFrameTime& time)
 {
-    if (hosts.empty()) return;
+    if (hosts.empty())
+        return;
     // The panes under the overlays get the pane shaders that they get with no
     // overlay, so the transition starts on exactly what showed. Their buffers
     // are their own, by snapshot, and go on from frame to frame.
@@ -1326,19 +1489,23 @@ void PostChain::captureOverlayHosts(RenderFrame& frame, const std::vector<Shader
     frame.commands()->resourceUpdate(updates);
 }
 
-void PostChain::record(RenderFrame& frame, const std::vector<ShaderRegionState>& panes,
-                       const ShaderRegionState& window, const ShaderFrameTime& time, QRhiRenderTarget* swapTarget,
-                       QRhiRenderPassDescriptor* swapPass, const QColor& clear)
+void PostChain::record(RenderFrame& frame, const std::vector<ShaderRegionState>& panes, const ShaderRegionState& window,
+                       const ShaderFrameTime& time, QRhiRenderTarget* swapTarget, QRhiRenderPassDescriptor* swapPass,
+                       const QColor& clear)
 {
     m_eventClock = time.time;
     m_eventTimes.fill(-1e6);
     auto noteEvents = [this](const ShaderRegionState& state) {
-        auto newest = [](double& kind, double at) { kind = std::max(kind, at); };
+        auto newest = [](double& kind, double at) {
+            kind = std::max(kind, at);
+        };
         newest(m_eventTimes[eventAgeIndex(CursorAge)], state.cursorChangeTime);
         newest(m_eventTimes[eventAgeIndex(FocusAge)], state.focusChangeTime);
-        for (const auto& signal : state.signals) newest(m_eventTimes[eventAgeIndex(SignalAge)], signal.at);
+        for (const auto& signal : state.signals)
+            newest(m_eventTimes[eventAgeIndex(SignalAge)], signal.at);
     };
-    for (const ShaderRegionState& state : panes) noteEvents(state);
+    for (const ShaderRegionState& state : panes)
+        noteEvents(state);
     noteEvents(window);
 
     auto* cb = frame.commands();
@@ -1359,7 +1526,8 @@ void PostChain::record(RenderFrame& frame, const std::vector<ShaderRegionState>&
     // active, before the overview or a tab switch takes the window apart,
     // so those start and end on what the window showed.
     std::vector<ShaderProgramPtr> steps = m_chains.window;
-    if (m_paneEffectsShowing) steps.insert(steps.end(), m_chains.paneEffects.begin(), m_chains.paneEffects.end());
+    if (m_paneEffectsShowing)
+        steps.insert(steps.end(), m_chains.paneEffects.begin(), m_chains.paneEffects.end());
     if (const auto* event = eventChain(); event && event != &m_chains.paneEffects)
         steps.insert(steps.end(), event->begin(), event->end());
     if (steps.empty()) {

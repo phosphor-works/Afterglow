@@ -74,8 +74,8 @@
 
 namespace {
 
-using AfterglowConformance::PtyHost;
 using AfterglowConformance::checkTerminal;
+using AfterglowConformance::PtyHost;
 using Clock = std::chrono::steady_clock;
 
 struct Options
@@ -108,28 +108,61 @@ public:
         : m_rng(seed)
     {
     }
-    std::uint64_t below(std::uint64_t n) { return n ? m_rng() % n : 0; }
-    bool chance(int percent) { return int(below(100)) < percent; }
+    std::uint64_t below(std::uint64_t n)
+    {
+        return n ? m_rng() % n : 0;
+    }
+    bool chance(int percent)
+    {
+        return int(below(100)) < percent;
+    }
 
     std::string text()
     {
         // Clusters whose width the terminal changes after their first
         // character: a spacing mark, a conjunct, Thai SARA AM, VS15, VS16.
-        static constexpr std::array<std::string_view, 30> Words = {
-            "a",  "hello", "q",  " ",   "x",   "jk", ":",      "/",  "0",   "$", "w",  "G",
-            "gg", "dd",    "u",  "é",   "中文", "😀", "é", "→", "👨‍👩‍👧", "\t", "ab", "?",
-            "\u0915\u093E", "\u0915\u094D\u0930", "\u0E15\u0E48\u0E33", "\u231A\uFE0E", "\u2764\uFE0F", "\u0601\u06F1"};
+        static constexpr std::array<std::string_view, 30> Words = {"a",
+                                                                   "hello",
+                                                                   "q",
+                                                                   " ",
+                                                                   "x",
+                                                                   "jk",
+                                                                   ":",
+                                                                   "/",
+                                                                   "0",
+                                                                   "$",
+                                                                   "w",
+                                                                   "G",
+                                                                   "gg",
+                                                                   "dd",
+                                                                   "u",
+                                                                   "é",
+                                                                   "中文",
+                                                                   "😀",
+                                                                   "é",
+                                                                   "→",
+                                                                   "👨‍👩‍👧",
+                                                                   "\t",
+                                                                   "ab",
+                                                                   "?",
+                                                                   "\u0915\u093E",
+                                                                   "\u0915\u094D\u0930",
+                                                                   "\u0E15\u0E48\u0E33",
+                                                                   "\u231A\uFE0E",
+                                                                   "\u2764\uFE0F",
+                                                                   "\u0601\u06F1"};
         std::string out;
-        for (std::uint64_t n = 1 + below(4); n > 0; --n) out += Words[below(Words.size())];
+        for (std::uint64_t n = 1 + below(4); n > 0; --n)
+            out += Words[below(Words.size())];
         return out;
     }
     AfterglowVt::Key key()
     {
         using AfterglowVt::Key;
         static constexpr std::array<Key, 20> Keys = {
-            Key::Enter, Key::Tab,      Key::Backspace, Key::Escape, Key::Up,       Key::Down,     Key::Left,
-            Key::Right, Key::Home,     Key::End,       Key::Insert, Key::Delete,   Key::PageUp,   Key::PageDown,
-            Key::F1,    Key::F2,       Key::F5,        Key::F10,    Key::KeypadEnter, Key::KeypadAdd};
+            Key::Enter, Key::Tab,  Key::Backspace, Key::Escape, Key::Up,          Key::Down,     Key::Left,
+            Key::Right, Key::Home, Key::End,       Key::Insert, Key::Delete,      Key::PageUp,   Key::PageDown,
+            Key::F1,    Key::F2,   Key::F5,        Key::F10,    Key::KeypadEnter, Key::KeypadAdd};
         return Keys[below(Keys.size())];
     }
     std::uint8_t mods()
@@ -155,40 +188,60 @@ std::vector<std::string> sandbox(const Options& o, const std::string& home)
 {
     const char* path = std::getenv("PATH");
     std::vector<std::string> args = {
-        "bwrap",
-        "--ro-bind", "/", "/",
-        "--dev", "/dev",
-        "--proc", "/proc",
-        "--tmpfs", "/tmp",
-        "--tmpfs", "/run",
-        "--tmpfs", "/home",
+        "bwrap", "--ro-bind", "/",    "/",       "--dev", "/dev",    "--proc",
+        "/proc", "--tmpfs",   "/tmp", "--tmpfs", "/run",  "--tmpfs", "/home",
     };
     // The user's own directories, where a system keeps them elsewhere: they
     // hold the sockets of the user's sessions, and a read-only mount does
     // not stop a connect.
     for (const char* name : {"HOME", "XDG_RUNTIME_DIR", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"}) {
         const char* dir = std::getenv(name);
-        if (!dir || dir[0] != '/') continue;
+        if (!dir || dir[0] != '/')
+            continue;
         const std::string_view d = dir;
-        if (d.starts_with("/home/") || d.starts_with("/run/") || d.starts_with("/tmp/") || d == "/") continue;
+        if (d.starts_with("/home/") || d.starts_with("/run/") || d.starts_with("/tmp/") || d == "/")
+            continue;
         args.insert(args.end(), {"--tmpfs", dir});
     }
-    args.insert(args.end(), {
-        "--bind", home, "/tmp/home",
-        "--perms", "0700", "--dir", "/tmp/run",
-        "--chdir", "/tmp/home",
-        "--unshare-all",
-        "--die-with-parent",
-        "--clearenv",
-        "--setenv", "HOME", "/tmp/home",
-        "--setenv", "XDG_RUNTIME_DIR", "/tmp/run",
-        "--setenv", "TMUX_TMPDIR", "/tmp/run",
-        "--setenv", "PATH", path && *path ? path : "/usr/local/bin:/usr/bin:/bin",
-        "--setenv", "TERM", "xterm-256color",
-        "--setenv", "COLORTERM", "truecolor",
-        "--setenv", "LANG", "C.UTF-8",
-        "--setenv", "SHELL", "/bin/sh",
-    });
+    args.insert(args.end(),
+                {
+                    "--bind",
+                    home,
+                    "/tmp/home",
+                    "--perms",
+                    "0700",
+                    "--dir",
+                    "/tmp/run",
+                    "--chdir",
+                    "/tmp/home",
+                    "--unshare-all",
+                    "--die-with-parent",
+                    "--clearenv",
+                    "--setenv",
+                    "HOME",
+                    "/tmp/home",
+                    "--setenv",
+                    "XDG_RUNTIME_DIR",
+                    "/tmp/run",
+                    "--setenv",
+                    "TMUX_TMPDIR",
+                    "/tmp/run",
+                    "--setenv",
+                    "PATH",
+                    path && *path ? path : "/usr/local/bin:/usr/bin:/bin",
+                    "--setenv",
+                    "TERM",
+                    "xterm-256color",
+                    "--setenv",
+                    "COLORTERM",
+                    "truecolor",
+                    "--setenv",
+                    "LANG",
+                    "C.UTF-8",
+                    "--setenv",
+                    "SHELL",
+                    "/bin/sh",
+                });
     for (const std::string& assignment : o.env) {
         const auto eq = assignment.find('=');
         args.insert(args.end(), {"--setenv", assignment.substr(0, eq), assignment.substr(eq + 1)});
@@ -206,7 +259,8 @@ std::optional<Program> start(const std::vector<std::string>& args, int cols, int
     ws.ws_xpixel = std::uint16_t(cols * PtyHost::CellWidth);
     ws.ws_ypixel = std::uint16_t(rows * PtyHost::CellHeight);
     std::vector<char*> argv;
-    for (const std::string& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+    for (const std::string& a : args)
+        argv.push_back(const_cast<char*>(a.c_str()));
     argv.push_back(nullptr);
     Program p;
     p.pid = forkpty(&p.master, nullptr, nullptr, &ws);
@@ -223,7 +277,7 @@ std::optional<Program> start(const std::vector<std::string>& args, int cols, int
         std::perror("fcntl");
         ::kill(p.pid, SIGKILL);
         ::close(p.master);
-        while (::waitpid(p.pid, nullptr, 0) < 0 && errno == EINTR) {}
+        while (::waitpid(p.pid, nullptr, 0) < 0 && errno == EINTR) { }
         return std::nullopt;
     }
     return p;
@@ -234,12 +288,13 @@ std::optional<Program> start(const std::vector<std::string>& args, int cols, int
 int stop(Program& p)
 {
     int status = 0;
-    if (p.master >= 0) ::close(p.master);
+    if (p.master >= 0)
+        ::close(p.master);
     p.master = -1;
     if (p.pid > 0) {
         if (::waitpid(p.pid, &status, WNOHANG) == 0) {
             ::kill(p.pid, SIGKILL);
-            while (::waitpid(p.pid, &status, 0) < 0 && errno == EINTR) {}
+            while (::waitpid(p.pid, &status, 0) < 0 && errno == EINTR) { }
         }
     }
     p.pid = -1;
@@ -255,26 +310,33 @@ public:
         , m_seed(seed)
     {
     }
-    ~Recorder() { close(); }
+    ~Recorder()
+    {
+        close();
+    }
     void size(int cols, int rows)
     {
-        if (m_dir.empty()) return;
+        if (m_dir.empty())
+            return;
         close();
         char name[96];
         std::snprintf(name, sizeof name, "/%llu-%04d-%dx%d.vt", static_cast<unsigned long long>(m_seed), ++m_count,
                       cols, rows);
         m_file = std::fopen((m_dir + name).c_str(), "wb");
-        if (!m_file) std::perror((m_dir + name).c_str());
+        if (!m_file)
+            std::perror((m_dir + name).c_str());
     }
     void write(std::string_view bytes)
     {
-        if (m_file) std::fwrite(bytes.data(), 1, bytes.size(), m_file);
+        if (m_file)
+            std::fwrite(bytes.data(), 1, bytes.size(), m_file);
     }
 
 private:
     void close()
     {
-        if (m_file) std::fclose(m_file);
+        if (m_file)
+            std::fclose(m_file);
         m_file = nullptr;
     }
     std::string m_dir;
@@ -292,8 +354,9 @@ bool number(const char* value, long long minimum, long long maximum, long long& 
 
 void usage()
 {
-    std::fprintf(stderr, "usage: afterglow_tuifuzz [--cols N] [--rows N] [--seed N] [--steps N] [--seconds N]\n"
-                         "       [--record DIR] [--home DIR] [--env NAME=VALUE]... -- command [args...]\n");
+    std::fprintf(stderr,
+                 "usage: afterglow_tuifuzz [--cols N] [--rows N] [--seed N] [--steps N] [--seconds N]\n"
+                 "       [--record DIR] [--home DIR] [--env NAME=VALUE]... -- command [args...]\n");
 }
 
 bool haveBwrap()
@@ -303,8 +366,10 @@ bool haveBwrap()
     while (!dirs.empty()) {
         const auto colon = dirs.find(':');
         const std::string dir(dirs.substr(0, colon));
-        if (!dir.empty() && ::access((dir + "/bwrap").c_str(), X_OK) == 0) return true;
-        if (colon == std::string_view::npos) break;
+        if (!dir.empty() && ::access((dir + "/bwrap").c_str(), X_OK) == 0)
+            return true;
+        if (colon == std::string_view::npos)
+            break;
         dirs.remove_prefix(colon + 1);
     }
     return false;
@@ -328,7 +393,8 @@ int main(int argc, char** argv)
             o.cols = int(value);
         } else if (arg == "--rows" && hasValue && number(argv[i + 1], 1, 500, value)) {
             o.rows = int(value);
-        } else if (arg == "--seed" && hasValue && number(argv[i + 1], 0, std::numeric_limits<long long>::max(), value)) {
+        } else if (arg == "--seed" && hasValue
+                   && number(argv[i + 1], 0, std::numeric_limits<long long>::max(), value)) {
             o.seed = std::uint64_t(value);
         } else if (arg == "--steps" && hasValue && number(argv[i + 1], 1, 100000000, value)) {
             o.steps = long(value);
@@ -347,14 +413,16 @@ int main(int argc, char** argv)
         }
         i += 2; // every option takes a value
     }
-    for (; i < argc; ++i) o.command.emplace_back(argv[i]);
+    for (; i < argc; ++i)
+        o.command.emplace_back(argv[i]);
     if (o.command.empty()) {
         usage();
         return 2;
     }
     if (!haveBwrap()) {
-        std::fprintf(stderr, "afterglow_tuifuzz: bwrap (bubblewrap) is not in PATH. The programs run only in its "
-                             "sandbox.\n");
+        std::fprintf(stderr,
+                     "afterglow_tuifuzz: bwrap (bubblewrap) is not in PATH. The programs run only in its "
+                     "sandbox.\n");
         return 2;
     }
 
@@ -377,11 +445,13 @@ int main(int argc, char** argv)
         ~RemoveHome()
         {
             std::error_code ignored;
-            if (!path.empty()) std::filesystem::remove_all(path, ignored);
+            if (!path.empty())
+                std::filesystem::remove_all(path, ignored);
         }
     } removeHome{ownHome ? home : std::string()};
     home = std::filesystem::absolute(home).string();
-    if (!o.record.empty()) std::filesystem::create_directories(o.record);
+    if (!o.record.empty())
+        std::filesystem::create_directories(o.record);
 
     const std::vector<std::string> args = sandbox(o, home);
     std::signal(SIGPIPE, SIG_IGN);
@@ -389,7 +459,8 @@ int main(int argc, char** argv)
     int cols = o.cols;
     int rows = o.rows;
     auto program = start(args, cols, rows);
-    if (!program) return 2;
+    if (!program)
+        return 2;
     PtyHost host(program->master);
     AfterglowVt::TerminalOptions options;
     options.maxScrollback = 2000;
@@ -413,13 +484,18 @@ int main(int argc, char** argv)
         for (;;) {
             host.flush();
             const auto now = Clock::now();
-            if (now - lastOutput >= Quiet || now - begin >= LongestStep) return true;
+            if (now - lastOutput >= Quiet || now - begin >= LongestStep)
+                return true;
             pollfd pfd{program->master, short(POLLIN | (host.pending() ? POLLOUT : 0)), 0};
             const int ready = ::poll(&pfd, 1, 10);
-            if (ready < 0 && errno != EINTR) return false;
-            if (ready <= 0) continue;
-            if (pfd.revents & POLLOUT) host.flush();
-            if (!(pfd.revents & (POLLIN | POLLHUP | POLLERR))) continue;
+            if (ready < 0 && errno != EINTR)
+                return false;
+            if (ready <= 0)
+                continue;
+            if (pfd.revents & POLLOUT)
+                host.flush();
+            if (!(pfd.revents & (POLLIN | POLLHUP | POLLERR)))
+                continue;
             const ssize_t n = ::read(program->master, buffer, sizeof buffer);
             if (n > 0) {
                 terminal.feed(std::string_view(buffer, std::size_t(n)));
@@ -439,7 +515,8 @@ int main(int argc, char** argv)
                      "afterglow_tuifuzz: %s: seed %llu, step %ld, after %s: %s\n"
                      "The screen (%dx%d):\n%s",
                      o.command.front().c_str(), static_cast<unsigned long long>(o.seed), step, action.c_str(),
-                     what.c_str(), terminal.cols(), terminal.rows(), AfterglowConformance::screenText(terminal).c_str());
+                     what.c_str(), terminal.cols(), terminal.rows(),
+                     AfterglowConformance::screenText(terminal).c_str());
         stop(*program);
         return 1;
     };
@@ -474,20 +551,23 @@ int main(int argc, char** argv)
                              o.command.front().c_str(), WTERMSIG(status), step, action.c_str());
             }
             program = start(args, cols, rows);
-            if (!program) return 2;
+            if (!program)
+                return 2;
             host.setFd(program->master);
             ++restarts;
             action = "a start again";
             continue;
         }
-        if (host.overflowed || host.failed || host.stalled()) return failed(step, "the replies to the program stalled");
+        if (host.overflowed || host.failed || host.stalled())
+            return failed(step, "the replies to the program stalled");
         if (terminal.cols() != cols || terminal.rows() != rows) {
             // The program changed the size (DECCOLM, XTWINOPS).
             cols = terminal.cols();
             rows = terminal.rows();
             recorder.size(cols, rows);
         }
-        if (auto wrong = checkTerminal(terminal)) return failed(step, *wrong);
+        if (auto wrong = checkTerminal(terminal))
+            return failed(step, *wrong);
 
         const AfterglowVt::Modes& modes = terminal.modes();
         const std::uint64_t kind = input.below(100);
@@ -522,7 +602,7 @@ int main(int argc, char** argv)
         } else if (kind < 82) {
             AfterglowVt::MouseEvent mouse;
             static constexpr std::array<AfterglowVt::MouseButton, 6> Buttons = {
-                AfterglowVt::MouseButton::Left,    AfterglowVt::MouseButton::Middle,  AfterglowVt::MouseButton::Right,
+                AfterglowVt::MouseButton::Left,    AfterglowVt::MouseButton::Middle,    AfterglowVt::MouseButton::Right,
                 AfterglowVt::MouseButton::WheelUp, AfterglowVt::MouseButton::WheelDown, AfterglowVt::MouseButton::Left};
             mouse.button = Buttons[input.below(Buttons.size())];
             mouse.col = int(input.below(std::uint64_t(terminal.cols())));
@@ -543,7 +623,8 @@ int main(int argc, char** argv)
             action = "the mouse";
         } else if (kind < 85) {
             std::string text;
-            for (std::uint64_t n = 1 + input.below(5); n > 0; --n) text += input.text() + "\n";
+            for (std::uint64_t n = 1 + input.below(5); n > 0; --n)
+                text += input.text() + "\n";
             bytes = AfterglowVt::encodePaste(text, modes);
             action = "a paste";
         } else if (kind < 87) {
@@ -561,9 +642,12 @@ int main(int argc, char** argv)
             action = "a resize to " + std::to_string(cols) + "x" + std::to_string(rows);
         } else if (kind < 95) {
             const std::uint64_t how = input.below(3);
-            if (how == 0) terminal.scrollViewport(long(input.below(200)) - 100);
-            else if (how == 1) terminal.setViewportOffset(std::size_t(input.below(3000)));
-            else terminal.resetViewport();
+            if (how == 0)
+                terminal.scrollViewport(long(input.below(200)) - 100);
+            else if (how == 1)
+                terminal.setViewportOffset(std::size_t(input.below(3000)));
+            else
+                terminal.resetViewport();
             action = "a scroll of the scrollback";
         } else {
             // As the window does: a selection over the scrollback and its
@@ -582,12 +666,14 @@ int main(int argc, char** argv)
             (void)terminal.text(AfterglowVt::Terminal::TextScope::All);
             action = "a selection and a search";
         }
-        if (!bytes.empty()) program->fed = true;
+        if (!bytes.empty())
+            program->fed = true;
         host.writeToPty(bytes);
     }
     // The last step's output gets its check too.
     if (settle()) {
-        if (auto wrong = checkTerminal(terminal)) return failed(step, *wrong);
+        if (auto wrong = checkTerminal(terminal))
+            return failed(step, *wrong);
     }
     stop(*program);
     std::printf("afterglow_tuifuzz: %s: seed %llu, %ld steps, %ld restarts, %zu bytes read, all checks passed\n",

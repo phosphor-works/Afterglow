@@ -17,7 +17,14 @@ namespace Aglow::Cli {
 
 struct Option
 {
-    enum class Kind { String, Flag, List, Choice, Int, Float };
+    enum class Kind {
+        String,
+        Flag,
+        List,
+        Choice,
+        Int,
+        Float
+    };
     /// The long name and an optional short one, as "--direction -d".
     std::string names;
     Kind kind = Kind::String;

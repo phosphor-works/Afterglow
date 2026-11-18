@@ -37,11 +37,23 @@ protected:
         ASSERT_EQ(chains.window.size(), 1);
         controls.rebuild(chains);
     }
-    QString id(int index = 0) { return controls.describe(7).at(index).toMap().value(QStringLiteral("instance")).toString(); }
-    double strength(quint32 pane = 7, int index = 0) {
-        return controls.describe(pane).at(index).toMap().value(QStringLiteral("values")).toMap().value(QStringLiteral("strength")).toDouble();
+    QString id(int index = 0)
+    {
+        return controls.describe(7).at(index).toMap().value(QStringLiteral("instance")).toString();
     }
-    QString update(QString owner, QList<quint32> panes, QVariantMap values, int index = 0, QString scope = QStringLiteral("pane")) {
+    double strength(quint32 pane = 7, int index = 0)
+    {
+        return controls.describe(pane)
+            .at(index)
+            .toMap()
+            .value(QStringLiteral("values"))
+            .toMap()
+            .value(QStringLiteral("strength"))
+            .toDouble();
+    }
+    QString update(QString owner, QList<quint32> panes, QVariantMap values, int index = 0,
+                   QString scope = QStringLiteral("pane"))
+    {
         return controls.update(owner, panes, id(index), scope, values);
     }
 };
@@ -56,7 +68,8 @@ TEST_F(ShaderControlsTest, EveryBundledAndExamplePackCompiles)
     const auto ids = library.packIds();
     // A pack whose metadata stops parsing drops out of packIds(); a count would miss it.
     ASSERT_FALSE(copiedPacks.isEmpty());
-    for (const auto& pack : std::as_const(copiedPacks)) EXPECT_TRUE(ids.contains(pack)) << pack.toStdString();
+    for (const auto& pack : std::as_const(copiedPacks))
+        EXPECT_TRUE(ids.contains(pack)) << pack.toStdString();
     for (const auto& pack : ids) {
         SCOPED_TRACE(pack.toStdString());
         ShaderLibrary::Refs refs;
@@ -84,8 +97,10 @@ TEST_F(ShaderControlsTest, ConfiguredValuesApplyWithoutCompilingAgain)
 {
     ShaderLibrary::Refs refs;
     refs.window = {QStringLiteral("feedback-glow")};
-    const auto low = library.build(refs, {{QStringLiteral("feedback-glow"), QVariantMap{{QStringLiteral("strength"), 0.1}}}});
-    const auto high = library.build(refs, {{QStringLiteral("feedback-glow"), QVariantMap{{QStringLiteral("strength"), 0.4}}}});
+    const auto low =
+        library.build(refs, {{QStringLiteral("feedback-glow"), QVariantMap{{QStringLiteral("strength"), 0.1}}}});
+    const auto high =
+        library.build(refs, {{QStringLiteral("feedback-glow"), QVariantMap{{QStringLiteral("strength"), 0.4}}}});
     const auto defaults = library.build(refs, {});
     ASSERT_EQ(low.window.size(), 1u);
     ASSERT_EQ(high.window.size(), 1u);
@@ -106,8 +121,9 @@ TEST_F(ShaderControlsTest, ConfiguredValuesApplyWithoutCompilingAgain)
 
 TEST_F(ShaderControlsTest, RejectsInvalidBatchWithoutPartialChanges)
 {
-    for (const QVariant& value : {QVariant(-1.), QVariant(3.), QVariant("1.2"), QVariant(true),
-         QVariant(std::numeric_limits<double>::infinity()), QVariant(std::numeric_limits<double>::quiet_NaN())}) {
+    for (const QVariant& value :
+         {QVariant(-1.), QVariant(3.), QVariant("1.2"), QVariant(true),
+          QVariant(std::numeric_limits<double>::infinity()), QVariant(std::numeric_limits<double>::quiet_NaN())}) {
         EXPECT_FALSE(update("one", {7, 8}, {{"radius", 12.}, {"strength", value}}, 0, "tab").isEmpty());
         EXPECT_NEAR(strength(), 0.4, 0.0001);
         EXPECT_TRUE(controls.values(8).isEmpty());
@@ -165,14 +181,15 @@ TEST_F(ShaderControlsTest, SparseUniformPackingPreservesOtherSlots)
 TEST_F(ShaderControlsTest, ColorsBooleansAndIntegersUseTypedValidation)
 {
     ShaderParameterValues packed;
-    EXPECT_TRUE(library.validateParameters("types", {{"count", 4.}, {"enabled", true}, {"tint", "#80402010"}}, packed).isEmpty());
+    EXPECT_TRUE(library.validateParameters("types", {{"count", 4.}, {"enabled", true}, {"tint", "#80402010"}}, packed)
+                    .isEmpty());
     EXPECT_EQ(packed.paramMask, 3u);
     EXPECT_EQ(packed.colorMask, 1u);
     EXPECT_FLOAT_EQ(packed.params[0], 4.);
     EXPECT_FLOAT_EQ(packed.params[1], 1.);
     EXPECT_NEAR(packed.colors[3], 128. / 255., 0.0001);
-    for (const auto& bad : {QVariantMap{{"count", 4.5}}, QVariantMap{{"count", 1e20}},
-         QVariantMap{{"enabled", 1.}}, QVariantMap{{"tint", "invalid"}}})
+    for (const auto& bad : {QVariantMap{{"count", 4.5}}, QVariantMap{{"count", 1e20}}, QVariantMap{{"enabled", 1.}},
+                            QVariantMap{{"tint", "invalid"}}})
         EXPECT_FALSE(library.validateParameters("types", bad, packed).isEmpty());
     EXPECT_FLOAT_EQ(packed.params[0], 4.); // invalid requests leave packed output intact
 }
@@ -181,7 +198,9 @@ TEST_F(ShaderControlsTest, PresetsReusePhosphorStoreAndSurviveRestart)
     QVariantMap values, result;
     EXPECT_TRUE(library.presetParameters("types", "One", values).isEmpty());
     EXPECT_EQ(values.value("count").toInt(), 1);
-    ASSERT_TRUE(library.savePreset("types", "Test saved scene", {{"count", 5}, {"enabled", true}, {"tint", "#ff7700"}}, result).isEmpty());
+    ASSERT_TRUE(
+        library.savePreset("types", "Test saved scene", {{"count", 5}, {"enabled", true}, {"tint", "#ff7700"}}, result)
+            .isEmpty());
     const auto savedId = result.value("id").toString();
     ShaderLibrary restarted;
     EXPECT_TRUE(restarted.presetParameters("types", savedId, values).isEmpty());
@@ -197,37 +216,65 @@ class ShaderClock : public PhosphorAnimation::IMotionClock
 {
 public:
     std::chrono::nanoseconds time{};
-    std::chrono::nanoseconds now() const override { return time; }
-    qreal refreshRate() const override { return 60; }
-    void requestFrame() override {}
-    const void* epochIdentity() const override { return steadyClockEpoch(); }
-    void step(int ms) { time += std::chrono::milliseconds(ms); }
+    std::chrono::nanoseconds now() const override
+    {
+        return time;
+    }
+    qreal refreshRate() const override
+    {
+        return 60;
+    }
+    void requestFrame() override
+    {
+    }
+    const void* epochIdentity() const override
+    {
+        return steadyClockEpoch();
+    }
+    void step(int ms)
+    {
+        time += std::chrono::milliseconds(ms);
+    }
 };
 TEST_F(ShaderControlsTest, TransitionsRetargetFromVisibleValueAndStopOnCleanup)
 {
     ShaderClock clock;
     controls.setClock(&clock);
     const QVariantMap transition{{"duration_ms", 1000.}, {"curve", "linear"}};
-    ASSERT_TRUE(controls.update("one", {7,8}, id(), "tab", {{"strength", 1.4}}, transition).isEmpty());
+    ASSERT_TRUE(controls.update("one", {7, 8}, id(), "tab", {{"strength", 1.4}}, transition).isEmpty());
     EXPECT_NEAR(strength(), 0.4, 0.001);
-    clock.step(500); EXPECT_TRUE(controls.advance());
-    EXPECT_NEAR(strength(), 0.9, 0.001); EXPECT_NEAR(strength(8), 0.9, 0.001);
+    clock.step(500);
+    EXPECT_TRUE(controls.advance());
+    EXPECT_NEAR(strength(), 0.9, 0.001);
+    EXPECT_NEAR(strength(8), 0.9, 0.001);
     ASSERT_TRUE(controls.update("one", {7}, id(), "pane", {{"strength", 0.4}}, transition).isEmpty());
     EXPECT_NEAR(strength(), 0.9, 0.001);
-    clock.step(500); controls.advance();
-    EXPECT_NEAR(strength(), 0.65, 0.001); EXPECT_NEAR(strength(8), 1.4, 0.001);
-    controls.clearOwner("one"); EXPECT_FALSE(controls.advance()); EXPECT_NEAR(strength(), 0.4, 0.001);
+    clock.step(500);
+    controls.advance();
+    EXPECT_NEAR(strength(), 0.65, 0.001);
+    EXPECT_NEAR(strength(8), 1.4, 0.001);
+    controls.clearOwner("one");
+    EXPECT_FALSE(controls.advance());
+    EXPECT_NEAR(strength(), 0.4, 0.001);
 }
 TEST_F(ShaderControlsTest, InvalidTransitionsAreAtomicAndSpringHasBoundedLifetime)
 {
-    ShaderClock clock; controls.setClock(&clock);
-    for (const QVariantMap& bad : {QVariantMap{{"duration_ms", -1.}}, QVariantMap{{"duration_ms", "100"}},
-        QVariantMap{{"duration_ms", 60001.}}, QVariantMap{{"curve", "missing"}}, QVariantMap{{"typo", 1}}})
+    ShaderClock clock;
+    controls.setClock(&clock);
+    for (const QVariantMap& bad :
+         {QVariantMap{{"duration_ms", -1.}}, QVariantMap{{"duration_ms", "100"}}, QVariantMap{{"duration_ms", 60001.}},
+          QVariantMap{{"curve", "missing"}}, QVariantMap{{"typo", 1}}})
         EXPECT_FALSE(controls.update("one", {7}, id(), "pane", {{"strength", 1.4}}, bad).isEmpty());
     EXPECT_NEAR(strength(), 0.4, 0.001);
-    ASSERT_TRUE(controls.update("one", {7}, id(), "pane", {{"strength", 1.4}}, {{"duration_ms", 300.}, {"curve", "spring"}}).isEmpty());
-    for (int i=0;i<40;++i) { clock.step(10); controls.advance(); }
-    EXPECT_FALSE(controls.advance()); EXPECT_NEAR(strength(), 1.4, 0.001);
+    ASSERT_TRUE(
+        controls.update("one", {7}, id(), "pane", {{"strength", 1.4}}, {{"duration_ms", 300.}, {"curve", "spring"}})
+            .isEmpty());
+    for (int i = 0; i < 40; ++i) {
+        clock.step(10);
+        controls.advance();
+    }
+    EXPECT_FALSE(controls.advance());
+    EXPECT_NEAR(strength(), 1.4, 0.001);
 }
 int main(int argc, char** argv)
 {
@@ -238,54 +285,72 @@ int main(int argc, char** argv)
     qputenv("XDG_DATA_HOME", config.filePath(QStringLiteral("data-home")).toUtf8());
     qputenv("XDG_DATA_DIRS", config.filePath(QStringLiteral("data-dirs")).toUtf8());
     const QString packages = QStringLiteral(AFTERGLOW_SHADER_DATA_DIR "/examples/packages/");
-    QDirIterator packs(QStringLiteral(AFTERGLOW_SHADER_DATA_DIR), {QStringLiteral("metadata.json")}, QDir::Files, QDirIterator::Subdirectories);
+    QDirIterator packs(QStringLiteral(AFTERGLOW_SHADER_DATA_DIR), {QStringLiteral("metadata.json")}, QDir::Files,
+                       QDirIterator::Subdirectories);
     while (packs.hasNext()) {
         const QFileInfo metadata(packs.next());
         // Package packs load only through their package, as "<package>.<pack>".
-        if (metadata.absoluteFilePath().startsWith(packages)) continue;
+        if (metadata.absoluteFilePath().startsWith(packages))
+            continue;
         const QDir source = metadata.dir();
         copiedPacks.insert(source.dirName());
         const QString target = config.filePath(QStringLiteral("afterglow/shaders/") + source.dirName());
-        if (!QDir().mkpath(target)) return 1;
+        if (!QDir().mkpath(target))
+            return 1;
         QDirIterator files(source.absolutePath(), QDir::Files, QDirIterator::Subdirectories);
         while (files.hasNext()) {
             const QString from = files.next();
             const QString to = target + QLatin1Char('/') + source.relativeFilePath(from);
-            if (!QDir().mkpath(QFileInfo(to).absolutePath()) || !QFile::copy(from, to)) return 1;
+            if (!QDir().mkpath(QFileInfo(to).absolutePath()) || !QFile::copy(from, to))
+                return 1;
         }
     }
     const QString shared = config.filePath(QStringLiteral("afterglow/shaders/shared"));
-    if (!QDir().mkpath(shared)) return 1;
-    QDirIterator includes(QStringLiteral(AFTERGLOW_SHADER_DATA_DIR), {QStringLiteral("*.glsl")}, QDir::Files, QDirIterator::Subdirectories);
+    if (!QDir().mkpath(shared))
+        return 1;
+    QDirIterator includes(QStringLiteral(AFTERGLOW_SHADER_DATA_DIR), {QStringLiteral("*.glsl")}, QDir::Files,
+                          QDirIterator::Subdirectories);
     while (includes.hasNext()) {
         const QString from = includes.next();
         if (QFileInfo(from).dir().dirName() == QLatin1String("shared")
-            && !QFile::copy(from, shared + QLatin1Char('/') + QFileInfo(from).fileName())) return 1;
+            && !QFile::copy(from, shared + QLatin1Char('/') + QFileInfo(from).fileName()))
+            return 1;
     }
     const auto path = config.filePath(QStringLiteral("afterglow/shaders/types"));
     QDir().mkpath(path);
     QFile metadata(path + QStringLiteral("/metadata.json"));
-    if (!metadata.open(QIODevice::WriteOnly)) return 1;
-    metadata.write(R"({"id":"types","name":"Types","fragmentShader":"effect.frag","presets":{"One":{"count":1}},"parameters":[
+    if (!metadata.open(QIODevice::WriteOnly))
+        return 1;
+    metadata.write(
+        R"({"id":"types","name":"Types","fragmentShader":"effect.frag","presets":{"One":{"count":1}},"parameters":[
         {"id":"count","name":"Count","type":"int","default":2,"min":1,"max":8},
         {"id":"enabled","name":"Enabled","type":"bool","default":false},
         {"id":"tint","name":"Tint","type":"color","default":"#ffffff"},
         {"id":"photo","name":"Photo","type":"image","default":"red.png"}]})");
     metadata.close();
     QFile shader(path + QStringLiteral("/effect.frag"));
-    if (!shader.open(QIODevice::WriteOnly)) return 1;
+    if (!shader.open(QIODevice::WriteOnly))
+        return 1;
     shader.write("vec4 pTerminal(vec2 uv) { return vec4(1.0); }");
     shader.close();
-    QImage red(2,2,QImage::Format_RGBA8888); red.fill(Qt::red);
-    QImage blue(2,2,QImage::Format_RGBA8888); blue.fill(Qt::blue);
-    if (!red.save(path+QStringLiteral("/red.png")) || !blue.save(path+QStringLiteral("/blue.png"))) return 1;
-    const auto passes=config.filePath(QStringLiteral("afterglow/shaders/passes"));
+    QImage red(2, 2, QImage::Format_RGBA8888);
+    red.fill(Qt::red);
+    QImage blue(2, 2, QImage::Format_RGBA8888);
+    blue.fill(Qt::blue);
+    if (!red.save(path + QStringLiteral("/red.png")) || !blue.save(path + QStringLiteral("/blue.png")))
+        return 1;
+    const auto passes = config.filePath(QStringLiteral("afterglow/shaders/passes"));
     QDir().mkpath(passes);
-    QFile multi(passes+QStringLiteral("/metadata.json"));
-    if(!multi.open(QIODevice::WriteOnly)) return 1;
-    multi.write(R"({"id":"passes","name":"Passes","multipass":true,"fragmentShader":"effect.frag","bufferShaders":["a.frag","b.frag"],"bufferWraps":["repeat","mirror"],"bufferFilters":["nearest","linear"],"bufferFeedback":true})"); multi.close();
-    for(const auto& name:{QStringLiteral("effect.frag"),QStringLiteral("a.frag"),QStringLiteral("b.frag")}) {
-        QFile f(passes+QLatin1Char('/')+name); if(!f.open(QIODevice::WriteOnly)) return 1;
+    QFile multi(passes + QStringLiteral("/metadata.json"));
+    if (!multi.open(QIODevice::WriteOnly))
+        return 1;
+    multi.write(
+        R"({"id":"passes","name":"Passes","multipass":true,"fragmentShader":"effect.frag","bufferShaders":["a.frag","b.frag"],"bufferWraps":["repeat","mirror"],"bufferFilters":["nearest","linear"],"bufferFeedback":true})");
+    multi.close();
+    for (const auto& name : {QStringLiteral("effect.frag"), QStringLiteral("a.frag"), QStringLiteral("b.frag")}) {
+        QFile f(passes + QLatin1Char('/') + name);
+        if (!f.open(QIODevice::WriteOnly))
+            return 1;
         f.write("#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}");
     }
     ::testing::InitGoogleTest(&argc, argv);
@@ -294,33 +359,45 @@ int main(int argc, char** argv)
 
 TEST_F(ShaderControlsTest, ImagesLoadTransactionallyAndTransitionAtCompletion)
 {
-    ShaderLibrary::Refs refs; refs.background={QStringLiteral("types")};
-    auto images=library.build(refs,{}); ASSERT_EQ(images.background.size(),1u);
-    controls.rebuild(images); ShaderClock clock; controls.setClock(&clock);
-    const auto instance=controls.describe(7).front().toMap()["instance"].toString();
+    ShaderLibrary::Refs refs;
+    refs.background = {QStringLiteral("types")};
+    auto images = library.build(refs, {});
+    ASSERT_EQ(images.background.size(), 1u);
+    controls.rebuild(images);
+    ShaderClock clock;
+    controls.setClock(&clock);
+    const auto instance = controls.describe(7).front().toMap()["instance"].toString();
     ShaderParameterValues packed;
-    ASSERT_TRUE(library.validateParameters("types",{{"photo","blue.png"}},packed).isEmpty());
-    ASSERT_EQ(packed.imageMask,1); EXPECT_EQ(packed.images[0].pixelColor(0,0),QColor(Qt::blue));
-    EXPECT_FALSE(library.validateParameters("types",{{"photo","missing.png"}},packed).isEmpty());
-    EXPECT_EQ(packed.images[0].pixelColor(0,0),QColor(Qt::blue));
-    ASSERT_TRUE(controls.update("test",{7},instance,"pane",{{"photo","blue.png"}},{{"duration_ms",1000.}}).isEmpty());
-    clock.step(500); controls.advance();
-    EXPECT_EQ(controls.values(7)[instance].images[0].pixelColor(0,0),QColor(Qt::red));
-    clock.step(600); controls.advance();
-    EXPECT_EQ(controls.values(7)[instance].images[0].pixelColor(0,0),QColor(Qt::blue));
+    ASSERT_TRUE(library.validateParameters("types", {{"photo", "blue.png"}}, packed).isEmpty());
+    ASSERT_EQ(packed.imageMask, 1);
+    EXPECT_EQ(packed.images[0].pixelColor(0, 0), QColor(Qt::blue));
+    EXPECT_FALSE(library.validateParameters("types", {{"photo", "missing.png"}}, packed).isEmpty());
+    EXPECT_EQ(packed.images[0].pixelColor(0, 0), QColor(Qt::blue));
+    ASSERT_TRUE(
+        controls.update("test", {7}, instance, "pane", {{"photo", "blue.png"}}, {{"duration_ms", 1000.}}).isEmpty());
+    clock.step(500);
+    controls.advance();
+    EXPECT_EQ(controls.values(7)[instance].images[0].pixelColor(0, 0), QColor(Qt::red));
+    clock.step(600);
+    controls.advance();
+    EXPECT_EQ(controls.values(7)[instance].images[0].pixelColor(0, 0), QColor(Qt::blue));
     QVariantMap saved, values;
-    ASSERT_TRUE(library.savePreset("types","Image scene",{{"photo","blue.png"}},saved).isEmpty());
-    EXPECT_TRUE(library.presetParameters("types",saved["id"].toString(),values).isEmpty());
-    EXPECT_EQ(values["photo"].toString(),"blue.png");
+    ASSERT_TRUE(library.savePreset("types", "Image scene", {{"photo", "blue.png"}}, saved).isEmpty());
+    EXPECT_TRUE(library.presetParameters("types", saved["id"].toString(), values).isEmpty());
+    EXPECT_EQ(values["photo"].toString(), "blue.png");
 }
 TEST_F(ShaderControlsTest, MultipleBufferMetadataPreservesSamplerModes)
 {
-    ShaderLibrary::Refs refs; refs.background={QStringLiteral("passes")};
-    const auto result=library.build(refs,{}); ASSERT_EQ(result.background.size(),1u);
-    const auto& program=*result.background.front(); ASSERT_EQ(program.buffers().size(),2u);
-    EXPECT_EQ(program.bufferSettings(0).wrap,ShaderWrap::Repeat);
-    EXPECT_EQ(program.bufferSettings(1).wrap,ShaderWrap::Mirror);
-    EXPECT_TRUE(program.bufferSettings(0).nearest); EXPECT_FALSE(program.bufferSettings(1).nearest);
+    ShaderLibrary::Refs refs;
+    refs.background = {QStringLiteral("passes")};
+    const auto result = library.build(refs, {});
+    ASSERT_EQ(result.background.size(), 1u);
+    const auto& program = *result.background.front();
+    ASSERT_EQ(program.buffers().size(), 2u);
+    EXPECT_EQ(program.bufferSettings(0).wrap, ShaderWrap::Repeat);
+    EXPECT_EQ(program.bufferSettings(1).wrap, ShaderWrap::Mirror);
+    EXPECT_TRUE(program.bufferSettings(0).nearest);
+    EXPECT_FALSE(program.bufferSettings(1).nearest);
 }
 
 TEST_F(ShaderControlsTest, DecodedImageBudgetRejectsWholeUpdate)
@@ -330,8 +407,10 @@ TEST_F(ShaderControlsTest, DecodedImageBudgetRejectsWholeUpdate)
     image.fill(Qt::green);
     const QString path = qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders/types/large.png");
     ASSERT_TRUE(image.save(path));
-    ShaderLibrary::Refs refs; refs.background = {QStringLiteral("types")};
-    auto chain = library.build(refs, {}); ASSERT_EQ(chain.background.size(), 1u);
+    ShaderLibrary::Refs refs;
+    refs.background = {QStringLiteral("types")};
+    auto chain = library.build(refs, {});
+    ASSERT_EQ(chain.background.size(), 1u);
     controls.rebuild(chain);
     const auto instance = controls.describe(7).front().toMap()["instance"].toString();
     // Distinct decodes stay retained under different owners. Including the
@@ -343,7 +422,8 @@ TEST_F(ShaderControlsTest, DecodedImageBudgetRejectsWholeUpdate)
     EXPECT_EQ(controls.values(7)[instance].images[0].cacheKey(), previous);
     EXPECT_TRUE(controls.update("0", {7}, instance, "pane", {}).isEmpty());
     EXPECT_TRUE(controls.update("overflow", {7}, instance, "pane", {{"photo", path}}).isEmpty());
-    for (int i = 0; i < 15; ++i) controls.clearOwner(QString::number(i));
+    for (int i = 0; i < 15; ++i)
+        controls.clearOwner(QString::number(i));
     controls.clearOwner("overflow");
     ASSERT_TRUE(QFile::remove(path));
 }
@@ -360,11 +440,14 @@ TEST_F(ShaderControlsTest, ScriptImagesStayInsideThePack)
     EXPECT_FALSE(library.validateParameters("types", {{"photo", "../bloom/../types/../../x.png"}}, packed).isEmpty());
     EXPECT_FALSE(library.validateParameters("types", {{"photo", "~/private.png"}}, packed).isEmpty());
     // An absolute path inside the pack is still the pack's file.
-    const QString inside = qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders/types/blue.png");
+    const QString inside =
+        qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders/types/blue.png");
     EXPECT_TRUE(library.validateParameters("types", {{"photo", inside}}, packed).isEmpty());
     // The user's own config may still name any image.
-    ShaderLibrary::Refs refs; refs.background = {QStringLiteral("types")};
-    const auto configured = library.build(refs, {{QStringLiteral("types"), QVariantMap{{QStringLiteral("photo"), path}}}});
+    ShaderLibrary::Refs refs;
+    refs.background = {QStringLiteral("types")};
+    const auto configured =
+        library.build(refs, {{QStringLiteral("types"), QVariantMap{{QStringLiteral("photo"), path}}}});
     ASSERT_EQ(configured.background.size(), 1u);
     EXPECT_EQ(configured.background.front()->images()[0].pixelColor(0, 0), QColor(Qt::green));
 }
@@ -393,9 +476,11 @@ TEST_F(ShaderControlsTest, ConfiguredImageRescuesAPackWhoseDefaultImageFails)
     // The pack's own image is missing: without a configured one it fails, and says so.
     EXPECT_TRUE(fresh.build(refs, {}).background.empty());
     ASSERT_EQ(fresh.problems().size(), 1);
-    EXPECT_TRUE(fresh.problems().front().startsWith(QStringLiteral("shader missing-default: "))) << fresh.problems().front().toStdString();
+    EXPECT_TRUE(fresh.problems().front().startsWith(QStringLiteral("shader missing-default: ")))
+        << fresh.problems().front().toStdString();
     // The config names an image for that slot, and the pack draws with it.
-    const auto configured = fresh.build(refs, {{QStringLiteral("missing-default"), QVariantMap{{QStringLiteral("photo"), blue}}}});
+    const auto configured =
+        fresh.build(refs, {{QStringLiteral("missing-default"), QVariantMap{{QStringLiteral("photo"), blue}}}});
     ASSERT_EQ(configured.background.size(), 1u);
     EXPECT_EQ(configured.background.front()->images()[0].pixelColor(0, 0), QColor(Qt::blue));
     EXPECT_TRUE(fresh.problems().isEmpty());
@@ -405,8 +490,10 @@ TEST_F(ShaderControlsTest, ConfiguredImageRescuesAPackWhoseDefaultImageFails)
                     .background.empty());
     EXPECT_EQ(fresh.problems().filter(QStringLiteral("not an image path")).size(), 1);
     // A configured image that fails too still fails the pack.
-    EXPECT_TRUE(fresh.build(refs, {{QStringLiteral("missing-default"),
-                                      QVariantMap{{QStringLiteral("photo"), dir + QStringLiteral("/absent.png")}}}})
+    EXPECT_TRUE(fresh
+                    .build(refs,
+                           {{QStringLiteral("missing-default"),
+                             QVariantMap{{QStringLiteral("photo"), dir + QStringLiteral("/absent.png")}}}})
                     .background.empty());
     EXPECT_TRUE(QDir(dir).removeRecursively());
 }
@@ -415,8 +502,10 @@ TEST_F(ShaderControlsTest, ConfiguredValuesThatApplyNowhereAreProblems)
 {
     ShaderLibrary::Refs refs;
     refs.background = {QStringLiteral("types")};
-    const QVariantMap wrong{{QStringLiteral("cuont"), 3}, {QStringLiteral("count"), 99},
-                            {QStringLiteral("tint"), QStringLiteral("not a colour")}, {QStringLiteral("enabled"), true}};
+    const QVariantMap wrong{{QStringLiteral("cuont"), 3},
+                            {QStringLiteral("count"), 99},
+                            {QStringLiteral("tint"), QStringLiteral("not a colour")},
+                            {QStringLiteral("enabled"), true}};
     // The pack still draws, with its defaults where the values were wrong.
     ASSERT_EQ(library.build(refs, {{QStringLiteral("types"), wrong}}).background.size(), 1u);
     const QStringList problems = library.problems();
@@ -457,12 +546,14 @@ TEST_F(ShaderControlsTest, AMissingPackIsOneShortProblem)
     refs.background = {QStringLiteral("no-such-pack")};
     EXPECT_TRUE(library.build(refs, {}).background.empty());
     // The list of every pack stays in the log, out of the notice.
-    EXPECT_EQ(library.problems(), QStringList{QStringLiteral("shader no-such-pack: no shader pack named \"no-such-pack\"")});
+    EXPECT_EQ(library.problems(),
+              QStringList{QStringLiteral("shader no-such-pack: no shader pack named \"no-such-pack\"")});
 }
 
 TEST_F(ShaderControlsTest, PresetsStoreImagesRelativeToThePack)
 {
-    const QString inside = qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders/types/blue.png");
+    const QString inside =
+        qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders/types/blue.png");
     QVariantMap saved, values;
     ASSERT_TRUE(library.savePreset("types", "Absolute image", {{"photo", inside}}, saved).isEmpty());
     ASSERT_TRUE(library.presetParameters("types", saved["id"].toString(), values).isEmpty());
@@ -481,7 +572,11 @@ TEST_F(ShaderControlsTest, ConfiguredImageBudgetRecoversAfterRemovingOtherPacks)
         ASSERT_TRUE(QDir().mkpath(dir));
         QFile metadata(dir + QStringLiteral("/metadata.json"));
         ASSERT_TRUE(metadata.open(QIODevice::WriteOnly));
-        metadata.write((QStringLiteral(R"({"id":"%1","name":"Budget","fragmentShader":"effect.frag","parameters":[{"id":"photo","name":"Photo","type":"image","default":"image.png"}]})").arg(name)).toUtf8());
+        metadata.write(
+            (QStringLiteral(
+                 R"({"id":"%1","name":"Budget","fragmentShader":"effect.frag","parameters":[{"id":"photo","name":"Photo","type":"image","default":"image.png"}]})")
+                 .arg(name))
+                .toUtf8());
         metadata.close();
         QFile shader(dir + QStringLiteral("/effect.frag"));
         ASSERT_TRUE(shader.open(QIODevice::WriteOnly));
@@ -499,7 +594,8 @@ TEST_F(ShaderControlsTest, ConfiguredImageBudgetRecoversAfterRemovingOtherPacks)
         static int budgetWarnings = 0;
         budgetWarnings = 0;
         const auto previous = qInstallMessageHandler([](QtMsgType, const QMessageLogContext&, const QString& message) {
-            if (message.contains(QStringLiteral("decoded-image budget"))) ++budgetWarnings;
+            if (message.contains(QStringLiteral("decoded-image budget")))
+                ++budgetWarnings;
         });
         EXPECT_EQ(bounded.build(refs, {}).background.size(), 16u);
         qInstallMessageHandler(previous);
@@ -521,54 +617,65 @@ TEST(ShaderGeometryPacks, LoadsImportedMeshesAndRejectsInvalidMetadata)
         QFile file(path);
         return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
     };
-    const std::vector<std::pair<QByteArray,bool>> cases{
-        {R"([{"vertexShader":"mesh.vert","mesh":"mesh.obj","instances":2}])",true},
-        {R"([{"vertexShader":"mesh.vert","vertexCount":3}])",true},
-        {R"([{"vertexShader":"mesh.vert","vertexCount":3.5}])",false},
-        {R"([{"vertexShader":"mesh.vert","vertexCount":3,"instances":0}])",false},
-        {R"([{"vertexShader":"mesh.vert","mesh":"mesh.obj","vertexCount":3}])",false},
-        {R"([{"vertexShader":"mesh.vert","mesh":"../mesh-outside.obj"}])",false},
-        {R"([{"vertexShader":"mesh.vert","mesh":"escape.obj"}])",false},
-        {R"([{"vertexShader":"mesh.vert","vertexCount":3,"typo":true}])",false},
-        {R"([])",false},
-        {R"([true])",false},
+    const std::vector<std::pair<QByteArray, bool>> cases{
+        {R"([{"vertexShader":"mesh.vert","mesh":"mesh.obj","instances":2}])", true},
+        {R"([{"vertexShader":"mesh.vert","vertexCount":3}])", true},
+        {R"([{"vertexShader":"mesh.vert","vertexCount":3.5}])", false},
+        {R"([{"vertexShader":"mesh.vert","vertexCount":3,"instances":0}])", false},
+        {R"([{"vertexShader":"mesh.vert","mesh":"mesh.obj","vertexCount":3}])", false},
+        {R"([{"vertexShader":"mesh.vert","mesh":"../mesh-outside.obj"}])", false},
+        {R"([{"vertexShader":"mesh.vert","mesh":"escape.obj"}])", false},
+        {R"([{"vertexShader":"mesh.vert","vertexCount":3,"typo":true}])", false},
+        {R"([])", false},
+        {R"([true])", false},
         {R"([{"vertexShader":"mesh.vert","objects":[{"id":"pivot","spin":[0,"$angle",0]},
-            {"id":"body","parent":"pivot","mesh":"mesh.obj","translate":[1,0,0],"scale":2}]}])",true},
-        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"body","parent":"missing","mesh":"mesh.obj"}]}])",false},
-        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"a","mesh":"mesh.obj"},{"id":"a","mesh":"mesh.obj"}]}])",false},
-        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"a","mesh":"mesh.obj","rotate":[0,"$unknown",0]}]}])",false},
-        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"a","mesh":"mesh.obj","scale":[1,2]}]}])",false},
-        {R"([{"vertexShader":"mesh.vert","instances":2,"objects":[{"id":"a","mesh":"mesh.obj"}]}])",false},
-        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"pivot"}]}])",false},
-        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"a","mesh":"escape.obj"}]}])",false},
+            {"id":"body","parent":"pivot","mesh":"mesh.obj","translate":[1,0,0],"scale":2}]}])",
+         true},
+        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"body","parent":"missing","mesh":"mesh.obj"}]}])", false},
+        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"a","mesh":"mesh.obj"},{"id":"a","mesh":"mesh.obj"}]}])",
+         false},
+        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"a","mesh":"mesh.obj","rotate":[0,"$unknown",0]}]}])", false},
+        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"a","mesh":"mesh.obj","scale":[1,2]}]}])", false},
+        {R"([{"vertexShader":"mesh.vert","instances":2,"objects":[{"id":"a","mesh":"mesh.obj"}]}])", false},
+        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"pivot"}]}])", false},
+        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"a","mesh":"escape.obj"}]}])", false},
     };
-    ASSERT_TRUE(write(base+"mesh-outside.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"));
-    for (std::size_t i=0;i<cases.size();++i) {
-        const auto name=QStringLiteral("geometry-test-%1").arg(i);
-        const auto dir=base+name;
+    ASSERT_TRUE(write(base + "mesh-outside.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"));
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        const auto name = QStringLiteral("geometry-test-%1").arg(i);
+        const auto dir = base + name;
         ASSERT_TRUE(QDir().mkpath(dir));
-        ASSERT_TRUE(write(dir+"/metadata.json", "{\"id\":\""+name.toUtf8()+"\",\"name\":\""+name.toUtf8()
-            +"\",\"fragmentShader\":\"effect.frag\",\"multipass\":true,\"bufferShaders\":[\"effect.frag\"],"
-            "\"parameters\":[{\"id\":\"angle\",\"name\":\"Angle\",\"type\":\"float\",\"default\":0,\"min\":0,\"max\":360}],"
-            "\"geometryPasses\":"+cases[i].first+"}"));
-        ASSERT_TRUE(write(dir+"/effect.frag", "vec4 pTerminal(vec2 uv){return vec4(1);}"));
-        ASSERT_TRUE(write(dir+"/mesh.vert", "vec4 pMesh(){return vec4(0,0,0,1);}"));
-        ASSERT_TRUE(write(dir+"/mesh.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"));
-        ASSERT_TRUE(QFile::link(base+"mesh-outside.obj",dir+"/escape.obj"));
+        ASSERT_TRUE(
+            write(dir + "/metadata.json",
+                  "{\"id\":\"" + name.toUtf8() + "\",\"name\":\"" + name.toUtf8()
+                      + "\",\"fragmentShader\":\"effect.frag\",\"multipass\":true,\"bufferShaders\":[\"effect.frag\"],"
+                        "\"parameters\":[{\"id\":\"angle\",\"name\":\"Angle\",\"type\":\"float\",\"default\":0,\"min\":"
+                        "0,\"max\":360}],"
+                        "\"geometryPasses\":"
+                      + cases[i].first + "}"));
+        ASSERT_TRUE(write(dir + "/effect.frag", "vec4 pTerminal(vec2 uv){return vec4(1);}"));
+        ASSERT_TRUE(write(dir + "/mesh.vert", "vec4 pMesh(){return vec4(0,0,0,1);}"));
+        ASSERT_TRUE(write(dir + "/mesh.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"));
+        ASSERT_TRUE(QFile::link(base + "mesh-outside.obj", dir + "/escape.obj"));
         ShaderLibrary library;
-        ShaderLibrary::Refs refs; refs.background={name};
-        const auto chains=library.build(refs,{});
-        EXPECT_EQ(chains.background.size(),cases[i].second ? 1u : 0u) << i;
-        if (i==0 && !chains.background.empty()) {
-            const auto& mesh=chains.background[0]->buffers()[0]->geometry();
-            EXPECT_EQ(mesh.vertices.size(),3u); EXPECT_EQ(mesh.instances,2);
+        ShaderLibrary::Refs refs;
+        refs.background = {name};
+        const auto chains = library.build(refs, {});
+        EXPECT_EQ(chains.background.size(), cases[i].second ? 1u : 0u) << i;
+        if (i == 0 && !chains.background.empty()) {
+            const auto& mesh = chains.background[0]->buffers()[0]->geometry();
+            EXPECT_EQ(mesh.vertices.size(), 3u);
+            EXPECT_EQ(mesh.instances, 2);
         }
-        if (i==10 && !chains.background.empty()) {
-            const auto& scene=chains.background[0]->buffers()[0]->geometry();
-            ASSERT_EQ(scene.objects.size(),2u);
-            EXPECT_EQ(scene.objects[0].vertexCount,0); EXPECT_EQ(scene.objects[0].spin[1].slot,0);
-            EXPECT_EQ(scene.objects[1].parent,0); EXPECT_EQ(scene.objects[1].vertexCount,3);
-            EXPECT_FLOAT_EQ(scene.objects[1].scale[2].value,2); EXPECT_TRUE(chains.background[0]->animated());
+        if (i == 10 && !chains.background.empty()) {
+            const auto& scene = chains.background[0]->buffers()[0]->geometry();
+            ASSERT_EQ(scene.objects.size(), 2u);
+            EXPECT_EQ(scene.objects[0].vertexCount, 0);
+            EXPECT_EQ(scene.objects[0].spin[1].slot, 0);
+            EXPECT_EQ(scene.objects[1].parent, 0);
+            EXPECT_EQ(scene.objects[1].vertexCount, 3);
+            EXPECT_FLOAT_EQ(scene.objects[1].scale[2].value, 2);
+            EXPECT_TRUE(chains.background[0]->animated());
         }
         // Do not expose intentionally invalid fixtures to the bundled-pack test.
         ASSERT_TRUE(QDir(dir).removeRecursively());
@@ -591,7 +698,8 @@ bool waitForShaderChange(const int& count, int previous, int timeout = 3000)
     timer.start();
     while (timer.elapsed() < timeout) {
         QCoreApplication::processEvents();
-        if (count > previous) return true;
+        if (count > previous)
+            return true;
         QThread::msleep(5);
     }
     return false;
@@ -604,8 +712,10 @@ QString writePack(const QString& name, const QByteArray& fragment)
     const auto dir = qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders/") + name;
     if (!QDir().mkpath(dir)
         || !writeShaderFixture(dir + QStringLiteral("/metadata.json"),
-                               "{\"id\":\"" + name.toUtf8() + "\",\"name\":\"" + name.toUtf8() + "\",\"fragmentShader\":\"effect.frag\"}")
-        || !writeShaderFixture(dir + QStringLiteral("/effect.frag"), fragment)) return {};
+                               "{\"id\":\"" + name.toUtf8() + "\",\"name\":\"" + name.toUtf8()
+                                   + "\",\"fragmentShader\":\"effect.frag\"}")
+        || !writeShaderFixture(dir + QStringLiteral("/effect.frag"), fragment))
+        return {};
     return dir;
 }
 }
@@ -617,11 +727,13 @@ TEST(ShaderPackMetadata, SettleSecondsIsCheckedAndAgeOnlyPacksSettle)
     };
     for (std::size_t i = 0; i < cases.size(); ++i) {
         const auto name = QStringLiteral("settle-test-%1").arg(i);
-        const auto dir = writePack(name, "vec4 pTerminal(vec2 uv){return terminalTexel(uv) * min(cursorAge(), 1.0);}\n");
+        const auto dir =
+            writePack(name, "vec4 pTerminal(vec2 uv){return terminalTexel(uv) * min(cursorAge(), 1.0);}\n");
         ASSERT_FALSE(dir.isEmpty());
         ASSERT_TRUE(writeShaderFixture(dir + QStringLiteral("/metadata.json"),
                                        "{\"id\":\"" + name.toUtf8() + "\",\"name\":\"" + name.toUtf8()
-                                           + "\",\"fragmentShader\":\"effect.frag\",\"settleSeconds\":" + cases[i].first + "}"));
+                                           + "\",\"fragmentShader\":\"effect.frag\",\"settleSeconds\":" + cases[i].first
+                                           + "}"));
         ShaderLibrary library;
         ShaderLibrary::Refs refs;
         refs.background = {name};
@@ -658,9 +770,12 @@ TEST(ShaderReload, MissingIncludeRecoversThroughNewParentDirectories)
     ASSERT_FALSE(dir.isEmpty());
     const auto path = dir + QStringLiteral("/new/deeper/shade.glsl");
     ShaderLibrary library;
-    ShaderLibrary::Refs refs; refs.window = {QStringLiteral("reload-missing")};
+    ShaderLibrary::Refs refs;
+    refs.window = {QStringLiteral("reload-missing")};
     int changes = 0;
-    QObject::connect(&library, &ShaderLibrary::changed, &library, [&] { ++changes; });
+    QObject::connect(&library, &ShaderLibrary::changed, &library, [&] {
+        ++changes;
+    });
     EXPECT_TRUE(library.build(refs, {}).window.empty());
     ASSERT_TRUE(QDir().mkpath(QFileInfo(path).absolutePath()));
     const int before = changes;
@@ -677,9 +792,12 @@ TEST(ShaderReload, MissingNestedIncludesRecoverAndStayWatchedAfterAtomicReplacem
     const auto include = dir + QStringLiteral("/color.glsl");
     const auto nested = dir + QStringLiteral("/nested/tint.glsl");
     ShaderLibrary library;
-    ShaderLibrary::Refs refs; refs.window = {QStringLiteral("reload-nested")};
+    ShaderLibrary::Refs refs;
+    refs.window = {QStringLiteral("reload-nested")};
     int changes = 0;
-    QObject::connect(&library, &ShaderLibrary::changed, &library, [&] { ++changes; });
+    QObject::connect(&library, &ShaderLibrary::changed, &library, [&] {
+        ++changes;
+    });
     EXPECT_TRUE(library.build(refs, {}).window.empty());
     ASSERT_TRUE(writeShaderFixture(include, "#include \"nested/tint.glsl\"\n"));
     ASSERT_TRUE(waitForShaderChange(changes, 0));
@@ -692,7 +810,8 @@ TEST(ShaderReload, MissingNestedIncludesRecoverAndStayWatchedAfterAtomicReplacem
     ASSERT_EQ(first.window.size(), 1u);
     for (bool atomic : {false, true, false}) {
         before = changes;
-        ASSERT_TRUE(writeShaderFixture(nested, atomic ? "float shade(){return 0.75;}\n" : "float shade(){return 0.5;}\n", atomic));
+        ASSERT_TRUE(writeShaderFixture(
+            nested, atomic ? "float shade(){return 0.75;}\n" : "float shade(){return 0.5;}\n", atomic));
         ASSERT_TRUE(waitForShaderChange(changes, before));
         auto rebuilt = library.build(refs, {});
         ASSERT_EQ(rebuilt.window.size(), 1u);
@@ -718,7 +837,8 @@ TEST(ShaderReload, AnIncludeThroughALinkThatIsRetargetedRebuilds)
     ASSERT_FALSE(dir.isEmpty());
     QTemporaryDir outside;
     ASSERT_TRUE(outside.isValid());
-    for (const char* name : {"a", "b"}) ASSERT_TRUE(QDir().mkpath(outside.filePath(QString::fromLatin1(name))));
+    for (const char* name : {"a", "b"})
+        ASSERT_TRUE(QDir().mkpath(outside.filePath(QString::fromLatin1(name))));
     // The two targets have the same size, modification time and change
     // time, in the milliseconds that the signature reads: only the target
     // that the signature resolves tells them apart. No call sets a change
@@ -727,7 +847,9 @@ TEST(ShaderReload, AnIncludeThroughALinkThatIsRetargetedRebuilds)
     const QString targetB = outside.filePath(QStringLiteral("b/color.glsl"));
     ASSERT_TRUE(writeShaderFixture(targetA, "float shade(){return 0.25;}\n"));
     ASSERT_TRUE(writeShaderFixture(targetB, "float shade(){return 0.50;}\n"));
-    const auto changeTime = [](const QString& path) { return QFileInfo(path).metadataChangeTime().toMSecsSinceEpoch(); };
+    const auto changeTime = [](const QString& path) {
+        return QFileInfo(path).metadataChangeTime().toMSecsSinceEpoch();
+    };
     const timespec times[2] = {{1'600'000'000, 0}, {1'600'000'000, 0}};
     bool same = false;
     for (int attempt = 0; attempt < 1000 && !same; ++attempt) {
@@ -743,9 +865,12 @@ TEST(ShaderReload, AnIncludeThroughALinkThatIsRetargetedRebuilds)
     ASSERT_TRUE(QFile::link(outside.filePath(QStringLiteral("a")), current));
     ASSERT_TRUE(QFile::link(current, dir + QStringLiteral("/lib")));
     ShaderLibrary library;
-    ShaderLibrary::Refs refs; refs.window = {QStringLiteral("reload-linked")};
+    ShaderLibrary::Refs refs;
+    refs.window = {QStringLiteral("reload-linked")};
     int changes = 0;
-    QObject::connect(&library, &ShaderLibrary::changed, &library, [&] { ++changes; });
+    QObject::connect(&library, &ShaderLibrary::changed, &library, [&] {
+        ++changes;
+    });
     auto first = library.build(refs, {});
     ASSERT_EQ(first.window.size(), 1u);
     const auto rebuilds = [&](const std::function<void()>& change) {
@@ -764,7 +889,9 @@ TEST(ShaderReload, AnIncludeThroughALinkThatIsRetargetedRebuilds)
         ASSERT_EQ(::rename(QFile::encodeName(next).constData(), QFile::encodeName(current).constData()), 0);
     });
     // An edit of the new target, through the link.
-    rebuilds([&] { ASSERT_TRUE(writeShaderFixture(targetB, "float shade(){return 1.0;}\n")); });
+    rebuilds([&] {
+        ASSERT_TRUE(writeShaderFixture(targetB, "float shade(){return 1.0;}\n"));
+    });
     ASSERT_TRUE(QDir(dir).removeRecursively());
 }
 
@@ -774,11 +901,14 @@ TEST(ShaderReload, UnrelatedDirectoryWritesDoNotInvalidateCachedPrograms)
                                "#include \"p_generated.glsl\"\nfloat shade(){return 1.;}\n" + ShaderBody);
     ASSERT_FALSE(dir.isEmpty());
     ShaderLibrary library;
-    ShaderLibrary::Refs refs; refs.window = {QStringLiteral("reload-unrelated")};
+    ShaderLibrary::Refs refs;
+    refs.window = {QStringLiteral("reload-unrelated")};
     auto first = library.build(refs, {});
     ASSERT_EQ(first.window.size(), 1u);
     int changes = 0;
-    QObject::connect(&library, &ShaderLibrary::changed, &library, [&] { ++changes; });
+    QObject::connect(&library, &ShaderLibrary::changed, &library, [&] {
+        ++changes;
+    });
     ASSERT_TRUE(writeShaderFixture(dir + QStringLiteral("/p_generated.glsl"), "editor helper"));
     ASSERT_TRUE(writeShaderFixture(dir + QStringLiteral("/unrelated.txt"), "unrelated"));
     EXPECT_FALSE(waitForShaderChange(changes, 0, 500));
@@ -793,14 +923,19 @@ TEST(ShaderReload, OneEditRebuildsOnceAndOnlyItsPack)
     ASSERT_FALSE(edited.isEmpty());
     ASSERT_FALSE(other.isEmpty());
     ShaderLibrary library;
-    ShaderLibrary::Refs refs; refs.window = {QStringLiteral("reload-edited"), QStringLiteral("reload-other")};
+    ShaderLibrary::Refs refs;
+    refs.window = {QStringLiteral("reload-edited"), QStringLiteral("reload-other")};
     const auto first = library.build(refs, {});
     ASSERT_EQ(first.window.size(), 2u);
     int changes = 0;
     // A window rebuilds on each signal, as TerminalWindow::applyShaders does.
     AfterglowRender::ShaderChains rebuilt;
-    QObject::connect(&library, &ShaderLibrary::changed, &library, [&] { ++changes; rebuilt = library.build(refs, {}); });
-    ASSERT_TRUE(writeShaderFixture(edited + QStringLiteral("/effect.frag"), "float shade(){return 0.5;}\n" + ShaderBody));
+    QObject::connect(&library, &ShaderLibrary::changed, &library, [&] {
+        ++changes;
+        rebuilt = library.build(refs, {});
+    });
+    ASSERT_TRUE(
+        writeShaderFixture(edited + QStringLiteral("/effect.frag"), "float shade(){return 0.5;}\n" + ShaderBody));
     ASSERT_TRUE(waitForShaderChange(changes, 0));
     // The registry and the include watch both see the edit; only one rebuilds.
     EXPECT_FALSE(waitForShaderChange(changes, 1, 500));
@@ -816,7 +951,8 @@ TEST(ShaderReload, OversizedStagesAreRefused)
     const auto dir = writePack(QStringLiteral("oversized"), ShaderBody + QByteArray(1100 * 1024, '\n'));
     ASSERT_FALSE(dir.isEmpty());
     ShaderLibrary library;
-    ShaderLibrary::Refs refs; refs.window = {QStringLiteral("oversized")};
+    ShaderLibrary::Refs refs;
+    refs.window = {QStringLiteral("oversized")};
     EXPECT_TRUE(library.build(refs, {}).window.empty());
     ASSERT_TRUE(QDir(dir).removeRecursively());
 }
@@ -839,15 +975,18 @@ TEST(ShaderLibraryPriority, UserPacksAndIncludesWinOverSystemOnes)
     ASSERT_TRUE(QDir().mkpath(system + QStringLiteral("/shared")));
     // The system include does not compile, so only the user's lets the pack load.
     ASSERT_TRUE(writeShaderFixture(system + QStringLiteral("/shared/priority-include.glsl"), "this is not GLSL\n"));
-    ASSERT_TRUE(writeShaderFixture(user + QStringLiteral("/shared/priority-include.glsl"), "float shade(){return 1.;}\n"));
+    ASSERT_TRUE(
+        writeShaderFixture(user + QStringLiteral("/shared/priority-include.glsl"), "float shade(){return 1.;}\n"));
     {
         ShaderLibrary library;
         for (const QString& ref : {QStringLiteral("priority"), QStringLiteral("PRIORITY")}) {
             const auto parameters = library.parameters(ref);
             ASSERT_EQ(parameters.size(), 1) << ref.toStdString();
-            EXPECT_EQ(parameters[0].toMap().value(QStringLiteral("id")).toString(), QStringLiteral("user")) << ref.toStdString();
+            EXPECT_EQ(parameters[0].toMap().value(QStringLiteral("id")).toString(), QStringLiteral("user"))
+                << ref.toStdString();
         }
-        ShaderLibrary::Refs refs; refs.window = {QStringLiteral("priority")};
+        ShaderLibrary::Refs refs;
+        refs.window = {QStringLiteral("priority")};
         EXPECT_EQ(library.build(refs, {}).window.size(), 1u);
     }
     ASSERT_TRUE(QDir(system).removeRecursively());
@@ -858,7 +997,8 @@ TEST(ShaderLibraryPriority, UserPacksAndIncludesWinOverSystemOnes)
 TEST(ShaderLibraryPackages, PackagePacksAnswerOnlyToTheirNamespacedId)
 {
     ShaderLibrary library;
-    const QString package = QStringLiteral(AFTERGLOW_SHADER_DATA_DIR) + QStringLiteral("/examples/packages/scripted-overview");
+    const QString package =
+        QStringLiteral(AFTERGLOW_SHADER_DATA_DIR) + QStringLiteral("/examples/packages/scripted-overview");
     auto build = [&](const QString& ref) {
         ShaderLibrary::Refs refs;
         refs.overview = ref;
@@ -892,7 +1032,8 @@ TEST(ShaderLibraryPackages, PackagePacksAnswerOnlyToTheirNamespacedId)
 TEST(ShaderLibraryPackages, OverlayTransitionBuildsItsChainFromABundledOrPackagePack)
 {
     ShaderLibrary library;
-    const QString package = QStringLiteral(AFTERGLOW_SHADER_DATA_DIR) + QStringLiteral("/examples/packages/scripted-overview");
+    const QString package =
+        QStringLiteral(AFTERGLOW_SHADER_DATA_DIR) + QStringLiteral("/examples/packages/scripted-overview");
     auto build = [&](const QString& ref) {
         ShaderLibrary::Refs refs;
         refs.overlayTransition = ref;
@@ -919,7 +1060,8 @@ TEST(ShaderLibraryPackages, OverlayTransitionBuildsItsChainFromABundledOrPackage
 // and never shadows a bundled pack.
 TEST(ShaderLibraryPackages, APackagePackWithAnotherIdIsLeftOut)
 {
-    const QString source = QStringLiteral(AFTERGLOW_SHADER_DATA_DIR) + QStringLiteral("/examples/packages/scripted-overview/shaders/wall");
+    const QString source =
+        QStringLiteral(AFTERGLOW_SHADER_DATA_DIR) + QStringLiteral("/examples/packages/scripted-overview/shaders/wall");
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString wall = tmp.filePath(QStringLiteral("shaders/wall"));
@@ -939,7 +1081,8 @@ TEST(ShaderLibraryPackages, APackagePackWithAnotherIdIsLeftOut)
         refs.overview = ref;
         return library.build(refs, {}).overview.size();
     };
-    const QMap<QString, QString> packages{{QStringLiteral("scripted-overview"), tmp.filePath(QStringLiteral("shaders"))}};
+    const QMap<QString, QString> packages{
+        {QStringLiteral("scripted-overview"), tmp.filePath(QStringLiteral("shaders"))}};
 
     // It claims the id of the bundled pane-deck pack.
     QByteArray claimed = original;
@@ -994,7 +1137,8 @@ TEST(ShaderLibraryDirectories, PacksAndPresetsComeFromTheGivenDirectory)
     ASSERT_TRUE(QDir().mkpath(pack));
     const QByteArray metadata = R"({"id":"elsewhere-only","name":"Elsewhere","fragmentShader":"effect.frag"})";
     const QByteArray source = "vec4 pTerminal(vec2 uv) { return vec4(1.0); }";
-    for (const auto& [name, bytes] : {std::pair{QStringLiteral("/metadata.json"), metadata}, std::pair{QStringLiteral("/effect.frag"), source}}) {
+    for (const auto& [name, bytes] :
+         {std::pair{QStringLiteral("/metadata.json"), metadata}, std::pair{QStringLiteral("/effect.frag"), source}}) {
         QFile file(pack + name);
         ASSERT_TRUE(file.open(QIODevice::WriteOnly));
         ASSERT_EQ(file.write(bytes), bytes.size());
@@ -1011,6 +1155,7 @@ TEST(ShaderLibraryDirectories, PacksAndPresetsComeFromTheGivenDirectory)
     ASSERT_TRUE(beside.savePreset(QStringLiteral("elsewhere-only"), QStringLiteral("Mine"), {}, saved).isEmpty());
     const QDir presets(elsewhere.filePath(QStringLiteral("shader-presets/surface")));
     EXPECT_EQ(presets.entryList({QStringLiteral("*.json")}, QDir::Files).size(), 1);
-    const QDir userPresets(qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shader-presets/surface"));
+    const QDir userPresets(qEnvironmentVariable("XDG_CONFIG_HOME")
+                           + QStringLiteral("/afterglow/shader-presets/surface"));
     EXPECT_FALSE(userPresets.exists(saved.value(QStringLiteral("id")).toString() + QStringLiteral(".json")));
 }

@@ -17,9 +17,18 @@ struct RecordingHost : ITerminalHost
     std::string title;
     int bells = 0;
 
-    void writeToPty(std::string_view bytes) override { written.append(bytes); }
-    void titleChanged(std::string_view t) override { title.assign(t); }
-    void bell() override { ++bells; }
+    void writeToPty(std::string_view bytes) override
+    {
+        written.append(bytes);
+    }
+    void titleChanged(std::string_view t) override
+    {
+        title.assign(t);
+    }
+    void bell() override
+    {
+        ++bells;
+    }
     std::string notified;
     std::string pointer;
     int pointerChanges = 0;
@@ -37,9 +46,18 @@ struct RecordingHost : ITerminalHost
         pointer = shape;
         ++pointerChanges;
     }
-    void contextChanged() override { ++contextChanges; }
-    void commandStarted(std::string_view command) override { commandsStarted.emplace_back(command); }
-    void commandFinished(int exitCode) override { commandsFinished.push_back(exitCode); }
+    void contextChanged() override
+    {
+        ++contextChanges;
+    }
+    void commandStarted(std::string_view command) override
+    {
+        commandsStarted.emplace_back(command);
+    }
+    void commandFinished(int exitCode) override
+    {
+        commandsFinished.push_back(exitCode);
+    }
     void workingDirectoryChanged(std::string_view directory) override
     {
         cwd = directory;

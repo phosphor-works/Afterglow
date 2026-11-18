@@ -21,7 +21,9 @@ using AfterglowVt::Screen;
 
 struct NullHost : AfterglowVt::ITerminalHost
 {
-    void writeToPty(std::string_view) override { }
+    void writeToPty(std::string_view) override
+    {
+    }
 };
 
 /// The message of a failed check, or "" when the screen passed.

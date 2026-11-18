@@ -50,20 +50,27 @@ struct Host : AfterglowVt::ITerminalHost
             return;
         }
         const std::size_t end = bytes.ends_with('\x07') ? bytes.size() - 1 : bytes.size() - 2;
-        const auto answer = AfterglowProto::Remote::parseReply(bytes.substr(Introducer.size(), end - Introducer.size()));
+        const auto answer =
+            AfterglowProto::Remote::parseReply(bytes.substr(Introducer.size(), end - Introducer.size()));
         const auto expected = std::exchange(expectedReply, std::nullopt);
         if (!answer || !expected || *answer != *expected) {
             __builtin_trap();
         }
     }
-    bool requestResize(int, int) override { return permissive; }
+    bool requestResize(int, int) override
+    {
+        return permissive;
+    }
     bool screenSize(int& width, int& height) override
     {
         width = 1920;
         height = 1080;
         return permissive;
     }
-    bool clipboardRequest(const AfterglowVt::ClipboardRequest&) override { return permissive; }
+    bool clipboardRequest(const AfterglowVt::ClipboardRequest&) override
+    {
+        return permissive;
+    }
     /// The answers of a pane with remote commands, in turn: a socket path, a
     /// reason for none, and a path the reply must refuse (a control byte).
     std::optional<AfterglowProto::Remote::Answer> remoteSocket() override
@@ -74,7 +81,8 @@ struct Host : AfterglowVt::ITerminalHost
         }
         switch (remoteAnswers++ % 3) {
         case 0:
-            expectedReply = AfterglowProto::Remote::Answer{"/run/user/1000/afterglow/0123456789abcdef.sock", Error::Off};
+            expectedReply =
+                AfterglowProto::Remote::Answer{"/run/user/1000/afterglow/0123456789abcdef.sock", Error::Off};
             return expectedReply;
         case 1:
             expectedReply = AfterglowProto::Remote::Answer{{}, Error::Forward};
@@ -87,7 +95,10 @@ struct Host : AfterglowVt::ITerminalHost
     unsigned remoteAnswers = 0;
     /// What the reply to the last answer must parse back to.
     std::optional<AfterglowProto::Remote::Answer> expectedReply;
-    std::string notificationCapabilities() override { return permissive ? "a=focus,report:o=always:p=title,body" : ""; }
+    std::string notificationCapabilities() override
+    {
+        return permissive ? "a=focus,report:o=always:p=title,body" : "";
+    }
     bool decodeImage(std::string_view, std::uint32_t& width, std::uint32_t& height,
                      std::vector<std::uint8_t>& rgba) override
     {
@@ -113,7 +124,8 @@ struct Host : AfterglowVt::ITerminalHost
             return ITerminalHost::decodeImageFrames(data, maxBytes, frames, delays);
         }
         for (const std::uint32_t delay : {0u, 50u, 0xffffffffu}) {
-            if ((frames.size() + 1) * 16 > maxBytes) break;
+            if ((frames.size() + 1) * 16 > maxBytes)
+                break;
             AfterglowVt::ImageFrame frame;
             frame.width = 2;
             frame.height = 2;
@@ -125,8 +137,14 @@ struct Host : AfterglowVt::ITerminalHost
     }
     /// A permissive host asks before a download, as a window does: the
     /// terminal holds the output until a control record answers.
-    bool downloadBegin(std::string_view, std::int64_t) override { return permissive; }
-    bool downloadData(std::string_view) override { return true; }
+    bool downloadBegin(std::string_view, std::int64_t) override
+    {
+        return permissive;
+    }
+    bool downloadData(std::string_view) override
+    {
+        return true;
+    }
 };
 
 /// With bracketed paste on, the paste is wrapped once and cannot end early.
@@ -161,7 +179,9 @@ void checkPaste(std::string_view text, bool bracketed)
 /// neither has a program to answer.
 struct QuietHost : AfterglowVt::ITerminalHost
 {
-    void writeToPty(std::string_view) override {}
+    void writeToPty(std::string_view) override
+    {
+    }
 };
 
 /// As a window's session pane does after each frame: the replica animates
@@ -175,7 +195,8 @@ void showReplica(AfterglowVt::Terminal& replica)
     }
     const auto placements = replica.graphics().visible(replica.screen(), 8, 16, 1);
     for (const auto& placement : replica.graphics().placements()) {
-        if (placement.isVirtual) (void)replica.graphics().placeholderSlice(placement.imageId, 0, 0, 0, 0, 0, 8, 16);
+        if (placement.isVirtual)
+            (void)replica.graphics().placeholderSlice(placement.imageId, 0, 0, 0, 0, 0, 8, 16);
     }
     (void)placements;
     const int cols = replica.cols();
@@ -330,7 +351,8 @@ struct Mirror
         for (; guard < 4096; ++guard) {
             takeMark(source);
             const std::string frame = writer.update(source, budget(source, small));
-            if (frame.empty() && !writer.pending()) break;
+            if (frame.empty() && !writer.pending())
+                break;
             std::string error;
             if (!reader.apply(replica, frame, &error)) {
                 __builtin_trap();
@@ -354,10 +376,12 @@ struct Mirror
             for (const bool alternate : {false, true}) {
                 const auto& a = source.graphics(alternate).images();
                 const auto& b = replica.graphics(alternate).images();
-                if (a.size() != b.size()) __builtin_trap();
+                if (a.size() != b.size())
+                    __builtin_trap();
                 for (const auto& [id, image] : a) {
                     const auto it = b.find(id);
-                    if (it == b.end() || it->second.frames.size() != image.frames.size()) __builtin_trap();
+                    if (it == b.end() || it->second.frames.size() != image.frames.size())
+                        __builtin_trap();
                 }
             }
         }

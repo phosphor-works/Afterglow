@@ -23,7 +23,8 @@ namespace {
 Environment environmentOf(const TestDaemon& daemon)
 {
     Environment environment;
-    for (const auto& [name, value] : daemon.cleanEnvironment()) environment.push_back(name + "=" + value);
+    for (const auto& [name, value] : daemon.cleanEnvironment())
+        environment.push_back(name + "=" + value);
     return environment;
 }
 
@@ -42,7 +43,8 @@ int listenAt(const std::string& path)
     std::snprintf(address.sun_path, sizeof address.sun_path, "%s", path.c_str());
     if (fd < 0 || ::bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof address) != 0 || ::listen(fd, 8) != 0) {
         ADD_FAILURE() << "cannot listen on " << path << ": " << std::strerror(errno);
-        if (fd >= 0) ::close(fd);
+        if (fd >= 0)
+            ::close(fd);
         return -1;
     }
     return fd;
@@ -52,7 +54,8 @@ int listenAt(const std::string& path)
 int acceptOne(int listener)
 {
     pollfd ready{listener, POLLIN, 0};
-    if (::poll(&ready, 1, 5000) <= 0) return -1;
+    if (::poll(&ready, 1, 5000) <= 0)
+        return -1;
     return ::accept4(listener, nullptr, nullptr, SOCK_CLOEXEC);
 }
 
@@ -63,10 +66,13 @@ std::string lineOf(int fd)
     std::string text;
     while (true) {
         pollfd ready{fd, POLLIN, 0};
-        if (::poll(&ready, 1, 5000) <= 0) return {};
+        if (::poll(&ready, 1, 5000) <= 0)
+            return {};
         char c = 0;
-        if (::read(fd, &c, 1) != 1) return {};
-        if (c == '\n') return text;
+        if (::read(fd, &c, 1) != 1)
+            return {};
+        if (c == '\n')
+            return text;
         text += c;
     }
 }
@@ -76,8 +82,10 @@ bool sendAll(int fd, std::string_view text)
 {
     while (!text.empty()) {
         const ssize_t n = ::send(fd, text.data(), text.size(), MSG_NOSIGNAL);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) return false;
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n <= 0)
+            return false;
         text.remove_prefix(std::size_t(n));
     }
     return true;
@@ -95,8 +103,7 @@ ssize_t writeSome(int fd, std::string_view text)
     const ssize_t n = ::write(fd, text.data(), text.size());
     const int saved = errno;
     const timespec now{0, 0};
-    while (::sigtimedwait(&pipe, nullptr, &now) == SIGPIPE) {
-    }
+    while (::sigtimedwait(&pipe, nullptr, &now) == SIGPIPE) { }
     ::pthread_sigmask(SIG_SETMASK, &old, nullptr);
     errno = saved;
     return n;
@@ -107,7 +114,8 @@ ssize_t writeSome(int fd, std::string_view text)
 std::string pattern(std::uint64_t from, std::size_t size)
 {
     std::string bytes(size, '\0');
-    for (std::size_t i = 0; i < size; ++i) bytes[i] = char('a' + (from + i) % 23);
+    for (std::size_t i = 0; i < size; ++i)
+        bytes[i] = char('a' + (from + i) % 23);
     return bytes;
 }
 
@@ -119,12 +127,16 @@ std::string readBytes(int fd, std::size_t size, std::chrono::milliseconds wait)
     const auto deadline = std::chrono::steady_clock::now() + wait;
     char buffer[65536];
     while (bytes.size() < size) {
-        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+        const auto left =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
         pollfd ready{fd, POLLIN, 0};
-        if (left <= 0 || ::poll(&ready, 1, int(left)) <= 0) break;
+        if (left <= 0 || ::poll(&ready, 1, int(left)) <= 0)
+            break;
         const ssize_t n = ::read(fd, buffer, std::min(sizeof buffer, size - bytes.size()));
-        if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
-        if (n <= 0) break;
+        if (n < 0 && (errno == EINTR || errno == EAGAIN))
+            continue;
+        if (n <= 0)
+            break;
         bytes.append(buffer, std::size_t(n));
     }
     return bytes;
@@ -138,13 +150,18 @@ std::optional<std::string> readToEnd(int fd, std::chrono::milliseconds wait)
     const auto deadline = std::chrono::steady_clock::now() + wait;
     char buffer[65536];
     while (true) {
-        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+        const auto left =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
         pollfd ready{fd, POLLIN, 0};
-        if (left <= 0 || ::poll(&ready, 1, int(left)) <= 0) return std::nullopt;
+        if (left <= 0 || ::poll(&ready, 1, int(left)) <= 0)
+            return std::nullopt;
         const ssize_t n = ::read(fd, buffer, sizeof buffer);
-        if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
-        if (n < 0) return std::nullopt;
-        if (n == 0) return bytes;
+        if (n < 0 && (errno == EINTR || errno == EAGAIN))
+            continue;
+        if (n < 0)
+            return std::nullopt;
+        if (n == 0)
+            return bytes;
         bytes.append(buffer, std::size_t(n));
     }
 }
@@ -160,8 +177,10 @@ struct FakeDaemon
     }
     ~FakeDaemon()
     {
-        if (client >= 0) ::close(client);
-        if (listener >= 0) ::close(listener);
+        if (client >= 0)
+            ::close(client);
+        if (listener >= 0)
+            ::close(listener);
     }
     FakeDaemon(const FakeDaemon&) = delete;
     FakeDaemon& operator=(const FakeDaemon&) = delete;
@@ -169,14 +188,19 @@ struct FakeDaemon
     bool answer()
     {
         client = acceptOne(listener);
-        if (client < 0) return false;
+        if (client < 0)
+            return false;
         const auto request = Json::parse(lineOf(client));
-        if (!request || (*request)["fn"].toString() != Fn::Version) return false;
-        return sendAll(client, AfterglowProto::ipcReply((*request)["id"].toInteger().value_or(0), Json::Object{{"protocol", ProtocolVersion}}));
+        if (!request || (*request)["fn"].toString() != Fn::Version)
+            return false;
+        return sendAll(client,
+                       AfterglowProto::ipcReply((*request)["id"].toInteger().value_or(0),
+                                                Json::Object{{"protocol", ProtocolVersion}}));
     }
     void closeClient()
     {
-        if (client >= 0) ::close(client);
+        if (client >= 0)
+            ::close(client);
         client = -1;
     }
     int listener = -1;
@@ -197,23 +221,29 @@ struct ProxyRun
         if (::pipe2(in, O_CLOEXEC) != 0 || ::pipe2(out, O_CLOEXEC) != 0) {
             ADD_FAILURE() << "no pipes for the proxy: " << std::strerror(errno);
             for (const int fd : {in[0], in[1], out[0], out[1]}) {
-                if (fd >= 0) ::close(fd);
+                if (fd >= 0)
+                    ::close(fd);
             }
             return;
         }
         Environment store = environmentOf(daemon);
         std::vector<char*> envp;
-        for (std::string& entry : store) envp.push_back(entry.data());
+        for (std::string& entry : store)
+            envp.push_back(entry.data());
         envp.push_back(nullptr);
         std::array<char*, 3> argv{const_cast<char*>(AFTERGLOW_MUX), const_cast<char*>(ProxyArgument), nullptr};
         posix_spawn_file_actions_t actions;
         int spawned = ::posix_spawn_file_actions_init(&actions);
         if (spawned == 0) {
-            if (::posix_spawn_file_actions_adddup2(&actions, in[0], 0) != 0 || ::posix_spawn_file_actions_adddup2(&actions, out[1], 1) != 0
-                || ::posix_spawn_file_actions_addopen(&actions, 2, errorFile.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600) != 0) {
+            if (::posix_spawn_file_actions_adddup2(&actions, in[0], 0) != 0
+                || ::posix_spawn_file_actions_adddup2(&actions, out[1], 1) != 0
+                || ::posix_spawn_file_actions_addopen(&actions, 2, errorFile.c_str(), O_WRONLY | O_CREAT | O_TRUNC,
+                                                      0600)
+                    != 0) {
                 spawned = EINVAL;
             }
-            if (spawned == 0) spawned = ::posix_spawn(&pid, AFTERGLOW_MUX, &actions, nullptr, argv.data(), envp.data());
+            if (spawned == 0)
+                spawned = ::posix_spawn(&pid, AFTERGLOW_MUX, &actions, nullptr, argv.data(), envp.data());
             ::posix_spawn_file_actions_destroy(&actions);
         }
         ::close(in[0]);
@@ -225,7 +255,8 @@ struct ProxyRun
             ADD_FAILURE() << "cannot run aglow-mux proxy: " << std::strerror(spawned);
             return;
         }
-        for (const int fd : {input, output}) ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL) | O_NONBLOCK);
+        for (const int fd : {input, output})
+            ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL) | O_NONBLOCK);
     }
     ~ProxyRun()
     {
@@ -240,19 +271,22 @@ struct ProxyRun
     ProxyRun& operator=(const ProxyRun&) = delete;
     void closeInput()
     {
-        if (input >= 0) ::close(input);
+        if (input >= 0)
+            ::close(input);
         input = -1;
     }
     void closeOutput()
     {
-        if (output >= 0) ::close(output);
+        if (output >= 0)
+            ::close(output);
         output = -1;
     }
     /// The exit status, 128 + the signal for one that a signal ended, once
     /// the proxy ended within @p wait; else nothing, and it still runs.
     std::optional<int> exitStatus(std::chrono::milliseconds wait = 5s)
     {
-        if (status || pid <= 0) return status;
+        if (status || pid <= 0)
+            return status;
         const auto deadline = std::chrono::steady_clock::now() + wait;
         while (true) {
             int raw = 0;
@@ -261,11 +295,15 @@ struct ProxyRun
                 status = WIFEXITED(raw) ? WEXITSTATUS(raw) : 128 + WTERMSIG(raw);
                 return status;
             }
-            if (reaped < 0 || std::chrono::steady_clock::now() >= deadline) return std::nullopt;
+            if (reaped < 0 || std::chrono::steady_clock::now() >= deadline)
+                return std::nullopt;
             std::this_thread::sleep_for(20ms);
         }
     }
-    std::string errors() const { return readFile(errorFile); }
+    std::string errors() const
+    {
+        return readFile(errorFile);
+    }
 
     std::string errorFile;
     pid_t pid = -1;
@@ -315,7 +353,8 @@ TEST(MuxProxy, AProxyHoldsLittleForADaemonThatDoesNotRead)
         }
         // A second without room: the proxy reads no more.
         pollfd room{proxy.input, POLLOUT, 0};
-        if (::poll(&room, 1, 1000) == 0) break;
+        if (::poll(&room, 1, 1000) == 0)
+            break;
     }
     // Its own megabyte, and the buffers of the pipe and the socket.
     EXPECT_GT(written, std::uint64_t(1) << 20);
@@ -345,7 +384,8 @@ TEST(MuxProxy, WhatWaitsGoesWhenStandardInputEnds)
             at += std::size_t(n);
             continue;
         }
-        if (n < 0 && errno != EAGAIN) break;
+        if (n < 0 && errno != EAGAIN)
+            break;
         pollfd room{proxy.input, POLLOUT, 0};
         ::poll(&room, 1, 100);
     }
@@ -408,8 +448,10 @@ TEST(MuxConnect, TheErrorOutputOfAProxyIsTheMessage)
 {
     TestDaemon daemon;
     const TempDir temp;
-    const std::string proxy = temp.script("ssh", "echo 'ssh: connect to host h port 22: Connection refused' >&2; exit 255");
-    if (proxy.empty()) GTEST_SKIP() << "the temporary directory runs no program";
+    const std::string proxy =
+        temp.script("ssh", "echo 'ssh: connect to host h port 22: Connection refused' >&2; exit 255");
+    if (proxy.empty())
+        GTEST_SKIP() << "the temporary directory runs no program";
     std::string error;
     const Reached reached = reach(routeThrough(proxy), false, CallTimeoutMs, environmentOf(daemon), &error);
     EXPECT_FALSE(reached.connection);
@@ -427,8 +469,10 @@ TEST(MuxConnect, AProxyThatDoesNotAnswerEndsAfterItsWait)
         SCOPED_TRACE(ignoresTerm ? "it ignores SIGTERM" : "SIGTERM ends it");
         const std::string pidFile = (temp.path / (ignoresTerm ? "ignores" : "ends")).string();
         const std::string proxy = temp.script(ignoresTerm ? "ssh-ignores" : "ssh-ends",
-                                              std::string(ignoresTerm ? "trap '' TERM; " : "") + "echo $$ > '" + pidFile + "'; exec sleep 30");
-        if (proxy.empty()) GTEST_SKIP() << "the temporary directory runs no program";
+                                              std::string(ignoresTerm ? "trap '' TERM; " : "") + "echo $$ > '" + pidFile
+                                                  + "'; exec sleep 30");
+        if (proxy.empty())
+            GTEST_SKIP() << "the temporary directory runs no program";
         std::string error;
         const auto start = std::chrono::steady_clock::now();
         const Reached reached = reach(routeThrough(proxy), false, 300, environmentOf(daemon), &error);
@@ -455,7 +499,8 @@ TEST(MuxConnect, AProxyMayTakeItsSignInWaitForTheFirstAnswer)
     const TempDir temp;
     // The proxy of this host, after a sign-in longer than a call.
     const std::string proxy = temp.script("ssh", std::string("sleep 6; exec '") + AFTERGLOW_MUX + "' \"$@\"");
-    if (proxy.empty()) GTEST_SKIP() << "the temporary directory runs no program";
+    if (proxy.empty())
+        GTEST_SKIP() << "the temporary directory runs no program";
     std::string error;
     const auto start = std::chrono::steady_clock::now();
     const Reached reached = reach(routeThrough(proxy), false, 15000, environmentOf(daemon), &error);
@@ -479,7 +524,8 @@ TEST(MuxConnect, TheNextSocketAnswersWhenTheFirstFails)
     const auto closeNext = [listener] {
         return std::thread([listener] {
             const int fd = acceptOne(listener);
-            if (fd < 0) return;
+            if (fd < 0)
+                return;
             (void)lineOf(fd);
             ::close(fd);
         });
@@ -507,7 +553,8 @@ TEST(MuxConnect, TheNextSocketAnswersWhenTheFirstFails)
     ::close(listener);
     // A socket that this user may not connect to: an error alone, and none
     // once the next one answers. Root connects to any.
-    if (::geteuid() == 0) return;
+    if (::geteuid() == 0)
+        return;
     const std::string denied = daemon.dir() + "/denied/socket";
     const int locked = listenAt(denied);
     ASSERT_GE(locked, 0);

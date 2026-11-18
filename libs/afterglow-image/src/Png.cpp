@@ -57,10 +57,12 @@ bool readPng(std::string_view bytes, int width, int height, std::vector<unsigned
 std::string inflateIcc(std::string_view chunk)
 {
     const std::size_t nul = chunk.find('\0');
-    if (nul == std::string_view::npos || nul == 0 || nul > 79 || nul + 2 > chunk.size() || chunk[nul + 1] != 0) return {};
+    if (nul == std::string_view::npos || nul == 0 || nul > 79 || nul + 2 > chunk.size() || chunk[nul + 1] != 0)
+        return {};
     const std::string_view deflated = chunk.substr(nul + 2);
     z_stream stream{};
-    if (inflateInit(&stream) != Z_OK) return {};
+    if (inflateInit(&stream) != Z_OK)
+        return {};
     std::string out;
     stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(deflated.data()));
     stream.avail_in = uInt(deflated.size());
@@ -71,7 +73,8 @@ std::string inflateIcc(std::string_view chunk)
         stream.avail_out = uInt(buffer.size());
         result = inflate(&stream, Z_NO_FLUSH);
         out.append(buffer.data(), buffer.size() - stream.avail_out);
-        if (out.size() > MaxIcc) result = Z_MEM_ERROR;
+        if (out.size() > MaxIcc)
+            result = Z_MEM_ERROR;
     }
     inflateEnd(&stream);
     return result == Z_STREAM_END ? out : std::string();
@@ -80,7 +83,8 @@ std::string inflateIcc(std::string_view chunk)
 void appendChunk(std::string& out, std::string_view type, std::string_view data)
 {
     const auto put32 = [&](std::uint32_t value) {
-        for (int shift = 24; shift >= 0; shift -= 8) out.push_back(char(value >> shift));
+        for (int shift = 24; shift >= 0; shift -= 8)
+            out.push_back(char(value >> shift));
     };
     put32(std::uint32_t(data.size()));
     out.append(type);
@@ -110,7 +114,8 @@ constexpr std::string_view Signature("\x89PNG\r\n\x1a\n", 8);
 /// Decodes the default image (IDAT) of the PNG @p bytes, also of an APNG,
 /// whose IHDR says @p width by @p height. With @p colorKnown, it goes to
 /// libpng without its colour chunks.
-bool decodeStill(std::string_view bytes, int width, int height, bool colorKnown, const FrameSink& sink, std::string& error)
+bool decodeStill(std::string_view bytes, int width, int height, bool colorKnown, const FrameSink& sink,
+                 std::string& error)
 {
     std::string rebuilt;
     if (colorKnown) {
@@ -119,14 +124,16 @@ bool decodeStill(std::string_view bytes, int width, int height, bool colorKnown,
         // memory limit of a decoding process allows several times over.
         rebuilt.assign(Signature);
         forEachPngChunk(bytes, [&](std::string_view type, std::string_view, std::string_view whole) {
-            if (type == "IHDR" || type == "IDAT" || readsChunk(type, true)) rebuilt.append(whole);
+            if (type == "IHDR" || type == "IDAT" || readsChunk(type, true))
+                rebuilt.append(whole);
             return true;
         });
         appendChunk(rebuilt, "IEND", {});
         bytes = rebuilt;
     }
     std::vector<unsigned char> pixels;
-    if (!readPng(bytes, width, height, pixels, error)) return false;
+    if (!readPng(bytes, width, height, pixels, error))
+        return false;
     sink(pixels.data(), width, height, 0);
     return true;
 }
@@ -164,7 +171,8 @@ Animation animationOf(std::string_view bytes, bool colorKnown)
         } else if (type == "fcTL" && animated && data.size() == 26) {
             ++animation.frames;
         } else if (type == "IDAT") {
-            if (!seenIdat) animation.defaultIsFrame = animation.frames == 1;
+            if (!seenIdat)
+                animation.defaultIsFrame = animation.frames == 1;
             seenIdat = seenData = true;
         } else if (type == "fdAT") {
             seenData = true;
@@ -175,7 +183,8 @@ Animation animationOf(std::string_view bytes, bool colorKnown)
         }
         return true;
     });
-    if (!animated || (animation.frames == 1 && animation.defaultIsFrame)) animation.frames = 0;
+    if (!animated || (animation.frames == 1 && animation.defaultIsFrame))
+        animation.frames = 0;
     return animation;
 }
 
@@ -206,27 +215,38 @@ public:
             if (type == "acTL" && !seenIdat && data.size() == 8) {
                 animated = true;
             } else if (type == "fcTL" && animated && data.size() == 26) {
-                if (m_index >= 0 && !finish(why)) done = true;
-                if (!done) start(data);
+                if (m_index >= 0 && !finish(why))
+                    done = true;
+                if (!done)
+                    start(data);
             } else if (type == "IDAT") {
                 // The default image is the data of the first frame.
-                if (m_animation.defaultIsFrame && m_index == 0) add(data);
+                if (m_animation.defaultIsFrame && m_index == 0)
+                    add(data);
                 seenIdat = true;
             } else if (type == "fdAT" && animated && m_index >= 0) {
                 // A sequence number with no data still counts.
-                if (data.size() < 4 || big(data, 0, 4) != m_sequence++) m_inOrder = false;
-                if (data.size() > 4) add(data.substr(4));
+                if (data.size() < 4 || big(data, 0, 4) != m_sequence++)
+                    m_inOrder = false;
+                if (data.size() > 4)
+                    add(data.substr(4));
             }
             return !done;
         });
-        if (!done && m_index >= 0) finish(why);
-        if (m_shown > 0) return true;
-        if (why.empty()) why = "it is not valid";
+        if (!done && m_index >= 0)
+            finish(why);
+        if (m_shown > 0)
+            return true;
+        if (why.empty())
+            why = "it is not valid";
         return false;
     }
 
     /// The number of the frame that run() stopped at, from 1.
-    int stoppedAt() const { return m_index + 1; }
+    int stoppedAt() const
+    {
+        return m_index + 1;
+    }
 
 private:
     void start(std::string_view fcTL)
@@ -243,11 +263,13 @@ private:
         m_delayMs = int((numerator * 1000 + denominator / 2) / denominator);
         m_dispose = at(fcTL, 24);
         m_blend = at(fcTL, 25);
-        m_inside = m_frameWidth != 0 && m_frameHeight != 0 && m_x <= std::uint32_t(m_width) && m_frameWidth <= std::uint32_t(m_width) - m_x
-            && m_y <= std::uint32_t(m_height) && m_frameHeight <= std::uint32_t(m_height) - m_y;
+        m_inside = m_frameWidth != 0 && m_frameHeight != 0 && m_x <= std::uint32_t(m_width)
+            && m_frameWidth <= std::uint32_t(m_width) - m_x && m_y <= std::uint32_t(m_height)
+            && m_frameHeight <= std::uint32_t(m_height) - m_y;
         m_hasData = false;
         m_png.clear();
-        if (!m_inside) return;
+        if (!m_inside)
+            return;
         // The file's IHDR with the frame's size, which the probe checked
         // is 13 bytes long.
         std::string ihdr(m_bytes.substr(16, 13));
@@ -263,7 +285,8 @@ private:
     void add(std::string_view data)
     {
         m_hasData = true;
-        if (m_inside) appendChunk(m_png, "IDAT", data);
+        if (m_inside)
+            appendChunk(m_png, "IDAT", data);
     }
 
     /// Draws the frame, and gives it to the sink. False when the
@@ -284,7 +307,8 @@ private:
             return false;
         }
         appendChunk(m_png, "IEND", {});
-        if (!readPng(m_png, int(m_frameWidth), int(m_frameHeight), m_pixels, why)) return false;
+        if (!readPng(m_png, int(m_frameWidth), int(m_frameHeight), m_pixels, why))
+            return false;
 
         // A first frame that restores the canvas after it keeps what it covers.
         const std::uint8_t dispose = m_index == 0 && m_dispose == 2 ? 1 : m_dispose;
@@ -294,7 +318,8 @@ private:
         const std::size_t rowBytes = std::size_t(m_frameWidth) * 4;
         if (dispose == 2) {
             m_saved.resize(rowBytes * m_frameHeight);
-            for (std::uint32_t y = 0; y < m_frameHeight; ++y) std::copy_n(rowAt(m_canvas, y), rowBytes, m_saved.data() + y * rowBytes);
+            for (std::uint32_t y = 0; y < m_frameHeight; ++y)
+                std::copy_n(rowAt(m_canvas, y), rowBytes, m_saved.data() + y * rowBytes);
         }
         for (std::uint32_t y = 0; y < m_frameHeight; ++y) {
             unsigned char* to = rowAt(m_canvas, y);
@@ -311,18 +336,22 @@ private:
                 } else if (a != 0) {
                     const std::uint32_t under = to[3] * (255 - a);
                     const std::uint32_t out = a * 255 + under;
-                    for (int c = 0; c < 3; ++c) to[c] = std::uint8_t((from[c] * a * 255 + to[c] * under + out / 2) / out);
+                    for (int c = 0; c < 3; ++c)
+                        to[c] = std::uint8_t((from[c] * a * 255 + to[c] * under + out / 2) / out);
                     to[3] = std::uint8_t((out + 127) / 255);
                 }
             }
         }
         ++m_shown;
         // An animation of one frame is a still image.
-        if (!m_sink(m_canvas.data(), m_width, m_height, m_animation.frames == 1 ? 0 : m_delayMs)) return false;
+        if (!m_sink(m_canvas.data(), m_width, m_height, m_animation.frames == 1 ? 0 : m_delayMs))
+            return false;
         if (dispose == 1) {
-            for (std::uint32_t y = 0; y < m_frameHeight; ++y) std::fill_n(rowAt(m_canvas, y), rowBytes, 0);
+            for (std::uint32_t y = 0; y < m_frameHeight; ++y)
+                std::fill_n(rowAt(m_canvas, y), rowBytes, 0);
         } else if (dispose == 2) {
-            for (std::uint32_t y = 0; y < m_frameHeight; ++y) std::copy_n(m_saved.data() + y * rowBytes, rowBytes, rowAt(m_canvas, y));
+            for (std::uint32_t y = 0; y < m_frameHeight; ++y)
+                std::copy_n(m_saved.data() + y * rowBytes, rowBytes, rowAt(m_canvas, y));
         }
         return true;
     }
@@ -359,7 +388,8 @@ Probe probePng(std::string_view bytes, int& width, int& height)
     width = height = 0;
     // IHDR is the first chunk, of 13 bytes. Apple's CgBI PNG has a chunk
     // before it, and holds premultiplied BGR that libpng does not read.
-    if (bytes.size() < 29 || big(bytes, 8, 4) != 13 || bytes.substr(12, 4) != "IHDR") return Probe::Unknown;
+    if (bytes.size() < 29 || big(bytes, 8, 4) != 13 || bytes.substr(12, 4) != "IHDR")
+        return Probe::Unknown;
     return sized(big(bytes, 16, 4), big(bytes, 20, 4), width, height);
 }
 
@@ -370,7 +400,8 @@ ColorSpace pngColorSpace(std::string_view bytes)
     space.grey = (at(bytes, 25) & 2) == 0;
     // The colour chunks come before the image data.
     forEachPngChunk(bytes, [&](std::string_view type, std::string_view data, std::string_view) {
-        if (type == "IDAT") return false;
+        if (type == "IDAT")
+            return false;
         if (type == "cICP" && data.size() == 4) {
             space.cicp = true;
             space.primaries = at(data, 0);
@@ -385,23 +416,29 @@ ColorSpace pngColorSpace(std::string_view bytes)
     return space;
 }
 
-bool decodePng(std::string_view bytes, const FrameSink& sink, const Options& options, std::string& error, std::string& warning)
+bool decodePng(std::string_view bytes, const FrameSink& sink, const Options& options, std::string& error,
+               std::string& warning)
 {
     int width = 0;
     int height = 0;
-    if (refused(probePng(bytes, width, height), "PNG", error)) return false;
-    if (options.pngFrames == PngFrames::DefaultImage) return decodeStill(bytes, width, height, options.colorKnown, sink, error);
+    if (refused(probePng(bytes, width, height), "PNG", error))
+        return false;
+    if (options.pngFrames == PngFrames::DefaultImage)
+        return decodeStill(bytes, width, height, options.colorKnown, sink, error);
     const Animation animation = animationOf(bytes, options.colorKnown);
-    if (animation.frames == 0) return decodeStill(bytes, width, height, options.colorKnown, sink, error);
+    if (animation.frames == 0)
+        return decodeStill(bytes, width, height, options.colorKnown, sink, error);
     ApngReader reader(bytes, width, height, animation, sink);
     std::string why;
     if (reader.run(why)) {
-        if (!why.empty()) warning = "the APNG stops at frame " + std::to_string(reader.stoppedAt()) + ": " + why;
+        if (!why.empty())
+            warning = "the APNG stops at frame " + std::to_string(reader.stoppedAt()) + ": " + why;
         return true;
     }
     // An error before the animation starts shows the default image, as the
     // APNG specification asks.
-    if (!decodeStill(bytes, width, height, options.colorKnown, sink, error)) return false;
+    if (!decodeStill(bytes, width, height, options.colorKnown, sink, error))
+        return false;
     warning = "the APNG shows its default image, as its first frame is not valid: " + why;
     return true;
 }

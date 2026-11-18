@@ -35,7 +35,11 @@ struct OverlaySpec
 {
     /// Where the program's answer comes from: its standard output, the file
     /// that AFTERGLOW_RESULT names, or nowhere.
-    enum class Capture { Stdout, File, None };
+    enum class Capture {
+        Stdout,
+        File,
+        None
+    };
 
     QStringList argv;
     /// Empty, absolute, ~ or ~/...: where it starts. Not a local directory
@@ -59,7 +63,17 @@ struct OverlaySpec
         bool operator==(const Extent&) const = default;
     };
     /// Where a popup sits in the host pane's grid.
-    enum class Position { Center, Top, Bottom, Left, Right, TopLeft, TopRight, BottomLeft, BottomRight };
+    enum class Position {
+        Center,
+        Top,
+        Bottom,
+        Left,
+        Right,
+        TopLeft,
+        TopRight,
+        BottomLeft,
+        BottomRight
+    };
     /// Unset: the whole grid of the host pane.
     std::optional<Extent> width;
     std::optional<Extent> height;
@@ -68,10 +82,19 @@ struct OverlaySpec
     std::optional<bool> border;
 
     /// A width or a height makes the overlay a popup over its host pane.
-    bool sized() const { return width || height; }
-    bool framed() const { return border.value_or(sized()); }
+    bool sized() const
+    {
+        return width || height;
+    }
+    bool framed() const
+    {
+        return border.value_or(sized());
+    }
     /// The host pane shows around it, and its border if it has one.
-    bool popup() const { return sized() || framed(); }
+    bool popup() const
+    {
+        return sized() || framed();
+    }
 
     /// Where the overlay goes in a host grid of @p cols by @p rows: its
     /// program's grid, in the host's cells, and whether a border (one cell

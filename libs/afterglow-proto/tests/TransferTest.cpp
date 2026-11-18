@@ -25,9 +25,11 @@ std::string payload(const std::string& message)
 
 TEST(Transfer, MessagesRoundTrip)
 {
-    const TransferFields fields{{"ac", "file"}, {"id", "session-1"}, {"fid", "f:1"}, {"n", "/tmp/a file;with=odd\nname"},
-                                {"sz", "11"}, {"prm", "420"}, {"mod", "-1500000000"}, {"ft", "regular"}, {"zip", "zlib"},
-                                {"tt", "rsync"}, {"pw", "secret"}, {"st", "OK"}, {"pr", "3"}, {"q", "1"}};
+    const TransferFields fields{
+        {"ac", "file"},  {"id", "session-1"}, {"fid", "f:1"},         {"n", "/tmp/a file;with=odd\nname"},
+        {"sz", "11"},    {"prm", "420"},      {"mod", "-1500000000"}, {"ft", "regular"},
+        {"zip", "zlib"}, {"tt", "rsync"},     {"pw", "secret"},       {"st", "OK"},
+        {"pr", "3"},     {"q", "1"}};
     const std::string message = encodeTransfer(fields);
     // Names, statuses, data and passwords go in base64 without padding, so they cannot break the fields.
     EXPECT_NE(message.find(";n=L3RtcC9hIGZpbGU7d2l0aD1vZGQKbmFtZQ;"), std::string::npos);
