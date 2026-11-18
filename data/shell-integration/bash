@@ -1,19 +1,74 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: GPL-3.0-or-later
-# ENV is used only for this startup; restore it before reading user files.
-[[ $- == *i* && ${AFTERGLOW_BASH_INJECT-} == 1 ]] || return
-unset AFTERGLOW_BASH_INJECT
-if [[ ${AFTERGLOW_ORIGINAL_ENV_SET-} == 1 ]]; then
-    export ENV=$AFTERGLOW_ORIGINAL_ENV
-else
-    unset ENV
+# Once: a ~/.bashrc that sources this file while Afterglow's startup reads
+# it (__afterglow_injected is set) leaves the integration to that startup,
+# which has the switches.
+[[ $- == *i* && ${__afterglow_loaded-} != 1 && -z ${__afterglow_injected-} ]] || return
+# Afterglow started Bash in POSIX mode with this file as ENV, and the user's
+# files come from here. Sourced by hand from ~/.bashrc instead (the no-rc
+# switch, or a shell that Afterglow did not start), Bash started as usual
+# and reads its own files.
+__afterglow_injected=0
+if [[ ${AFTERGLOW_BASH_INJECT-} == 1 ]]; then
+    __afterglow_injected=1
+    unset AFTERGLOW_BASH_INJECT
+    # ENV is used only for this startup; restore it before reading user files.
+    if [[ ${AFTERGLOW_ORIGINAL_ENV_SET-} == 1 ]]; then
+        export ENV=$AFTERGLOW_ORIGINAL_ENV
+    else
+        unset ENV
+    fi
+    unset AFTERGLOW_ORIGINAL_ENV AFTERGLOW_ORIGINAL_ENV_SET
+    set +o posix
+    shopt -u inherit_errexit
+    # POSIX startup otherwise chooses .sh_history instead of Bash's usual file.
+    [[ ${HISTFILE-} == "$HOME/.sh_history" ]] && HISTFILE=$HOME/.bash_history
 fi
-unset AFTERGLOW_ORIGINAL_ENV AFTERGLOW_ORIGINAL_ENV_SET
-set +o posix
-shopt -u inherit_errexit
-# POSIX startup otherwise chooses .sh_history instead of Bash's usual file.
-[[ ${HISTFILE-} == "$HOME/.sh_history" ]] && HISTFILE=$HOME/.bash_history
-if shopt -q login_shell; then
+# The parts that Terminal.shellIntegration turns off, as Kitty's switches,
+# and the prompt cursor. Not exported: the user's programs do not get them.
+__afterglow_features=" ${AFTERGLOW_SHELL_FEATURES-} "
+__afterglow_cursor=${AFTERGLOW_PROMPT_CURSOR:-5}
+unset AFTERGLOW_SHELL_FEATURES AFTERGLOW_PROMPT_CURSOR
+# Whether the system has afterglow's terminfo entry, without the directories
+# of Afterglow, and without this ~/.terminfo: the command of sudo runs as
+# another user.
+__afterglow_system_knows_term() {
+    if type -P tput >/dev/null 2>&1; then
+        HOME=/nonexistent TERMINFO_DIRS='' TERMINFO='' command tput -T afterglow longname >/dev/null 2>&1
+        return
+    fi
+    local dir
+    for dir in /etc/terminfo /lib/terminfo /usr/share/terminfo /usr/lib/terminfo; do
+        [[ -e $dir/a/afterglow || -e $dir/61/afterglow ]] && return 0
+    done
+    return 1
+}
+# sudo and run0 drop TERMINFO_DIRS, where afterglow's own terminfo entry is:
+# the command gets a TERM that every system knows, as Kitty's no-sudo
+# switch covers. sudo keeps TERM from its own environment (sudoers
+# env_reset), so its options stay as typed. Defined before the user's files,
+# so that an alias of sudo there still works; the function keyword keeps an
+# alias from the parse. A function of the user's stays.
+__afterglow_wrappers=
+if [[ $__afterglow_features != *" no-sudo "* && ${TERM-} == afterglow ]] && ! __afterglow_system_knows_term; then
+    if ! declare -F sudo >/dev/null; then
+        function sudo { TERM=xterm-256color command sudo "$@"; }
+        __afterglow_wrappers=sudo
+    fi
+    if type -P run0 >/dev/null 2>&1 && ! declare -F run0 >/dev/null; then
+        function run0 { TERM=xterm-256color command run0 --setenv=TERM "$@"; }
+        __afterglow_wrappers+=" run0"
+    fi
+fi
+unset -f __afterglow_system_knows_term
+# The wrappers as defined, to find them again after the user's files.
+declare -A __afterglow_wrapper_text=()
+for __afterglow_name in $__afterglow_wrappers; do
+    __afterglow_wrapper_text[$__afterglow_name]=$(declare -f "$__afterglow_name")
+done
+if (( ! __afterglow_injected )); then
+    :
+elif shopt -q login_shell; then
     [[ -r /etc/profile ]] && source /etc/profile
     for __afterglow_profile in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
         if [[ -r $__afterglow_profile ]]; then source "$__afterglow_profile"; break; fi
@@ -24,28 +79,104 @@ else
     elif [[ -r /etc/bash/bashrc ]]; then source /etc/bash/bashrc; fi
     [[ -r $HOME/.bashrc ]] && source "$HOME/.bashrc"
 fi
+# The user's files can turn the integration off: the wrappers go with it,
+# unless the user defined their own in their place.
+if [[ ${AFTERGLOW_SHELL_INTEGRATION-} == 0 ]]; then
+    for __afterglow_name in "${!__afterglow_wrapper_text[@]}"; do
+        [[ $(declare -f "$__afterglow_name") == "${__afterglow_wrapper_text[$__afterglow_name]}" ]] && unset -f "$__afterglow_name"
+    done
+fi
+unset __afterglow_name __afterglow_wrappers __afterglow_wrapper_text __afterglow_injected
 [[ ${__afterglow_loaded-} == 1 || ${AFTERGLOW_SHELL_INTEGRATION-} == 0 ]] && return
+[[ $(declare -p PROMPT_COMMAND 2>/dev/null) =~ ^declare\ -[^[:space:]]*r ]] && return
+__afterglow_loaded=1
 # ssh through `afterglow ssh`, unless the user already wraps it.
 if [[ -n ${AFTERGLOW_SSH_HELPER-} ]] && ! declare -F ssh >/dev/null && ! alias ssh >/dev/null 2>&1; then
-    ssh() {
+    function ssh {
         if [[ -x $AFTERGLOW_SSH_HELPER ]]; then "$AFTERGLOW_SSH_HELPER" ssh "$@"; else command ssh "$@"; fi
     }
 fi
-# Respect prompts already configured with OSC 133/633 integration.
-[[ $PS1 == *']133;'* || $PS1 == *']633;'* ]] && return
-[[ $(declare -p PROMPT_COMMAND 2>/dev/null) =~ ^declare\ -[^[:space:]]*r ]] && return
-__afterglow_loaded=1
+# The host before the title of an ssh login, as Kitty shows it.
+__afterglow_host=
+[[ -n ${SSH_TTY-} ]] && __afterglow_host="${HOSTNAME%%.*}: "
+# Bash 5.3 runs ${ ...; } in the shell itself: the title costs no fork.
+__afterglow_funsub=0
+(( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 3) )) && __afterglow_funsub=1
+# Set while the prompt carries afterglow's marks, not those of a prompt that
+# has its own OSC 133 or 633 integration.
+__afterglow_marks=0
+__afterglow_begin='' __afterglow_end='' __afterglow_start='' __afterglow_entry=''
 __afterglow_before_prompt() {
     __afterglow_status=$?
-    printf '\033]133;D;%d\007' "$__afterglow_status"
+    (( __afterglow_marks )) && printf '\033]133;D;%d\007' "$__afterglow_status"
     return "$__afterglow_status"
 }
+# The title while a command runs: its line, which PS0 does not know.
+__afterglow_command_title() {
+    local entry line number seen=$__afterglow_entry
+    if (( __afterglow_funsub )); then
+        eval 'entry=${ HISTTIMEFORMAT="" builtin history 1; }'
+    else
+        entry=$(HISTTIMEFORMAT='' builtin history 1)
+    fi
+    # Kept only where PS0 runs in the shell itself (bash 5.3): $(...) is a
+    # subshell.
+    __afterglow_entry=$entry
+    line=${entry#"${entry%%[![:space:]]*}"}
+    number=${line%%[![:digit:]]*}
+    line=${line#"$number"}
+    line=${line#\*}
+    line=${line#"${line%%[![:space:]]*}"}
+    # An empty history (HISTSIZE=0) has no line to show.
+    [[ -z $line ]] && return
+    # A line that history did not keep leaves the last entry as it was: an
+    # older command. With erasedups, a kept line can take a lower number, but
+    # the entry changes. An entry that did not change is this line only when
+    # history drops nothing but repeats: no ignorespace, no HISTIGNORE.
+    if [[ -n $__afterglow_next && $number != "$__afterglow_next" && ( -z $seen || $entry == "$seen" ) ]]; then
+        if [[ ${HISTCONTROL-} != *ignoredups* && ${HISTCONTROL-} != *erasedups* ]] \
+            || [[ ${HISTCONTROL-} == *ignorespace* || ${HISTCONTROL-} == *ignoreboth* || -n ${HISTIGNORE-} ]] \
+            || [[ ! -o history ]]; then
+            return
+        fi
+    fi
+    printf '\e]2;%s%s\a' "$__afterglow_host" "${line//[[:cntrl:]]}"
+}
 __afterglow_prompt() {
-    local begin='\[\e]133;A;redraw=1\a\]' end='\[\e]133;B\a\]'
-    PS1=${PS1#"$begin"}; PS1=${PS1%"$end"}
+    # The number that history gives the next line, if it keeps it.
+    __afterglow_next=$HISTCMD
+    # Afterglow's parts from the last prompt go first, to find the user's.
+    # Every copy: a venv or conda activate puts its text before them.
+    [[ -n $__afterglow_begin ]] && PS1=${PS1//"$__afterglow_begin"/}
+    [[ -n $__afterglow_end ]] && PS1=${PS1//"$__afterglow_end"/}
+    local current=${PS0-}
+    current=${current#"$__afterglow_start"}
+    local begin='' end='' start=''
+    # Checked at each prompt: a prompt that has its own marks keeps them.
+    if [[ $__afterglow_features == *" no-prompt-mark "* || $PS1 == *']133;'* || $PS1 == *']633;'* ]]; then
+        __afterglow_marks=0
+    else
+        __afterglow_marks=1
+        begin='\[\e]133;A;redraw=1\a\]' start=$'\e]133;C\a'
+    fi
+    # A bar while the user edits the command, the configured cursor for it.
+    # The vi mode sets its own cursors, with show-mode-in-prompt.
+    if [[ $__afterglow_features != *" no-cursor "* && :$SHELLOPTS: != *:vi:* ]]; then
+        end+="\\[\\e[${__afterglow_cursor} q\\]" start+=$'\e[0 q'
+    fi
+    if [[ $__afterglow_features != *" no-title "* ]]; then
+        end+="\\[\\e]2;${__afterglow_host}\\w\\a\\]"
+        # Without promptvars, PS0 would show the substitution as text.
+        if shopt -q promptvars; then
+            if (( __afterglow_funsub )); then start+='${ __afterglow_command_title; }'; else start+='$(__afterglow_command_title)'; fi
+        fi
+    fi
+    # The end of the prompt last: the command line starts after it.
+    (( __afterglow_marks )) && end+='\[\e]133;B\a\]'
+    __afterglow_begin=$begin __afterglow_end=$end __afterglow_start=$start
     PS1=$begin$PS1$end
-    local start=$'\e]133;C\a' current=${PS0-}
-    PS0=$start${current#"$start"}
+    PS0=$start$current
+    [[ $__afterglow_features == *" no-cwd "* ]] && return "$__afterglow_status"
     local LC_ALL=C path=$PWD encoded='' char hex i
     for ((i=0; i<${#path}; i++)); do
         char=${path:i:1}

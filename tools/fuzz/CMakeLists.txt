@@ -5,17 +5,18 @@
 # terminal core and the reader of its state frames, afterglow_protofuzz for
 # the protocol readers that take what a remote program sends,
 # afterglow_imagefuzz for the image decoders of aglow and aglow-mux
-# (libs/afterglow-image: its GIF and BMP readers, and libpng, libjpeg-turbo
-# and libwebp behind it), and
+# (libs/afterglow-image: its GIF, BMP, TIFF and netPBM readers, its APNG
+# frames, and libpng, libjpeg-turbo, libwebp and Little CMS behind them), and
 # afterglow_muxfuzz for the readers of the attach stream of aglow-mux and
 # of the values of its calls.
 # afterglow_muxfuzz compiles code of mux/, which is GPL-3.0-or-later, so its
 # source is too, and no other target links it. The
 # sources of the libraries, xxHash and the decoders are compiled into them
-# again, so that the sanitizers and the coverage instrument them. zlib-ng and
-# the image codecs are instrumented in place, as the targets that their
-# builds define: zlib-ng and libwebp set CPU flags for single files, and each
-# codec is one target that the program links. libjpeg-turbo builds apart, and
+# again, so that the sanitizers and the coverage instrument them. zlib-ng,
+# the image codecs and Little CMS are instrumented in place, as the targets
+# that their builds define: zlib-ng and libwebp set CPU flags for single
+# files, and each of them is one target that the program links. Little CMS
+# parses the ICC profiles of the files. libjpeg-turbo builds apart, and
 # gets the flags when libs/afterglow-image sets that build up: CMakeLists.txt
 # holds AFTERGLOW_FUZZ_FLAGS for both.
 # Every binary in a fuzz build directory that links one of them then needs
@@ -48,7 +49,7 @@ function(afterglow_fuzz_sources target out)
     set(${out} ${sources} PARENT_SCOPE)
 endfunction()
 
-foreach(target zlib-ng afterglow_png afterglow_webp)
+foreach(target zlib-ng afterglow_png afterglow_webp afterglow_lcms2)
     target_compile_options(${target} PRIVATE ${AFTERGLOW_FUZZ_FLAGS})
     target_link_options(${target} INTERFACE -fsanitize=address,undefined)
 endforeach()
@@ -91,7 +92,7 @@ target_link_libraries(afterglow_muxfuzz PRIVATE afterglow_fuzz_proto)
 afterglow_fuzz_sources(AfterglowImage IMAGE_SOURCES)
 add_executable(afterglow_imagefuzz imagefuzz.cpp ${IMAGE_SOURCES})
 target_include_directories(afterglow_imagefuzz PRIVATE $<TARGET_PROPERTY:AfterglowImage,INTERFACE_INCLUDE_DIRECTORIES>)
-target_link_libraries(afterglow_imagefuzz PRIVATE afterglow_png afterglow_turbojpeg afterglow_webp)
+target_link_libraries(afterglow_imagefuzz PRIVATE afterglow_png afterglow_turbojpeg afterglow_webp afterglow_lcms2 afterglow_zlib)
 # The files of the tests of the decoders, as a first corpus of
 # afterglow_imagefuzz. It reads no input, so it is not instrumented.
 add_executable(afterglow_imagefuzz_seeds imagefuzz_seeds.cpp)

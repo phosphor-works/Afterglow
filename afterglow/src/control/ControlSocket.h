@@ -43,18 +43,59 @@ public:
     // A pane argument is a double, the type of a JSON number: paneId() checks
     // that it is a whole number in the range of a pane ID.
     Q_INVOKABLE void sendText(double pane, const QString& text);
-    /// @p scope: screen, scrollback, selection or last-output.
+    /// @p scope: screen, scrollback, selection, last-output,
+    /// first-output-on-screen or last-visited-output.
     Q_INVOKABLE QString getText(double pane, const QString& scope);
+    /// getText() with @p options: ansi, cursor and wrap_markers, booleans
+    /// (Control::textFormat).
+    Q_INVOKABLE QString getText(double pane, const QString& scope, const QVariantMap& options);
     /// @p direction: left, right, up or down. Returns the new pane.
     Q_INVOKABLE uint split(double pane, const QString& direction, const QStringList& command);
     Q_INVOKABLE uint newTab(double pane, const QString& workingDirectory, const QStringList& command);
     Q_INVOKABLE uint newWindow(const QString& workingDirectory, const QStringList& command);
+    /// split, newTab and newWindow with @p options, as Control::clientSplit
+    /// takes them: cwd (over @p workingDirectory), env, vars, focus, hold,
+    /// stdin_text and stdin_ansi, and size for a split only.
+    Q_INVOKABLE uint split(double pane, const QString& direction, const QStringList& command, const QVariantMap& options);
+    Q_INVOKABLE uint newTab(double pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options);
+    Q_INVOKABLE uint newWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options);
     Q_INVOKABLE void focus(double pane);
     Q_INVOKABLE void close(double pane);
     Q_INVOKABLE void setTitle(double pane, const QString& title);
+    /// Focuses the pane beside @p pane on @p direction (left, right, up or
+    /// down) and returns it. Fails at the edge, for a client to pass the
+    /// move on.
+    Q_INVOKABLE uint focusNeighbor(double pane, const QString& direction);
+    /// Moves a split edge of @p pane by @p cells toward @p direction, as the
+    /// resize actions do. Fails when no edge of the pane can move that way.
+    Q_INVOKABLE void resizePane(double pane, const QString& direction, double cells);
+    /// Sends the keys that @p keys name (AfterglowVt::parseKeyName) as typed keys.
+    Q_INVOKABLE void sendKeys(double pane, const QStringList& keys);
+    /// @p unit: lines or pages, with a count that is positive down; top,
+    /// bottom; or prompt, with a count of prompts.
+    Q_INVOKABLE void scroll(double pane, const QString& unit, double amount);
+    /// Sets the title of the tab of @p pane, or gives the title back to the
+    /// focused pane with an empty one.
+    Q_INVOKABLE void setTabTitle(double pane, const QString& title);
+    /// The colours of the pane by name: foreground, background, cursor,
+    /// selection_foreground, selection_background, color0 to color255.
+    Q_INVOKABLE QVariantMap getColors(double pane);
+    /// Sets colours by those names, as the program would, after the
+    /// configured ones come back with @p reset.
+    Q_INVOKABLE void setColors(double pane, const QVariantMap& colors, bool reset);
+    /// @p size: points, or "+N" and "-N".
+    Q_INVOKABLE void setFontSize(double pane, const QString& size);
+    Q_INVOKABLE void setOpacity(double pane, double opacity);
+    Q_INVOKABLE void setUserVar(double pane, const QString& name, const QString& value);
+    /// @p signal: a name such as INT or SIGTERM, or a number.
+    Q_INVOKABLE void signalProgram(double pane, const QString& signal);
+    /// As Control::setWindowState.
+    Q_INVOKABLE void setWindowState(double pane, const QString& state, double cols, double rows);
     Q_INVOKABLE void signal(double pane, double channel, double value);
     Q_INVOKABLE void notify(double pane, const QString& title, const QString& body);
-    /// copy, paste, select_all and show_last_output need Control.allowReadText.
+    /// copy, paste, select_all, show_last_output, show_first_output_on_screen
+    /// and show_last_visited_output need Control.allowReadText
+    /// (Control::readsPaneText).
     Q_INVOKABLE void runAction(double pane, const QString& action);
     /// Answered once the pane moved: a pane of a mux session's window that
     /// goes to a new window waits for the daemon off the GUI thread.

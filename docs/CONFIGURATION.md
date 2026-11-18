@@ -106,7 +106,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `quota` | `320` | 16–4096 | Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps, at 4 bytes for each pixel. A pane has a main and an alternate screen. When a screen is full, images without a placement go first: those sent with the transient hint (N=1), then the oldest. |
+| `quota` | `320` | 16–4096 | Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps, at 4 bytes for each pixel. A pane has a main and an alternate screen. When a screen is full, images without a placement go first: those sent with the transient hint (N=1), then the oldest. An iTerm2 image decodes at its own size within the larger of this quota and 320 MiB. Once it is scaled to its cells, it keeps at most this quota. |
 
 ## Hints
 
@@ -140,6 +140,9 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `autoScrollInterval` | `50` | 10–1000 | Milliseconds between the rows that a selection scrolls while you extend it past the top or bottom of a pane. |
+| `clickMovesCursor` | `true` |  | Move the cursor of a shell to a click on its command line. It works in a shell with shell integration, which marks where its prompt starts. |
+| `commandOutputClick` | `"pager"` | `"pager"`, `"select"`, `"none"` | What a right-click with Mouse.commandOutputModifier on a command does, in a shell with shell integration. The pager value opens the output of the command in Terminal.pager, in a new tab. The select value selects its output. The none value makes it a plain right-click. |
+| `commandOutputModifier` | `"ctrl+shift"` |  | The modifiers to hold, and no others, for Mouse.commandOutputClick. Write one or more of ctrl, shift, alt and super, joined with +. super is the key that key bindings call Meta. |
 | `dragSelection` | `false` |  | Allow a single press without Alt inside the selection to drag its text to another pane or another desktop application. A click there without a move clears the selection, and other presses there select as they do elsewhere. |
 | `middleClick` | `"primary"` | `"primary"`, `"clipboard"`, `"none"` | What a middle click pastes. The none value turns middle-click paste off. |
 | `momentumScroll` | `0.96` | 0–1 | Part of the speed of a finger scroll that the scroll keeps every 8 milliseconds after the last finger lifts. It applies to touchpads and touchscreens. A higher value scrolls further. A value of 0 stops the scroll when the finger lifts. A value of 1 does not slow the scroll, which goes on until a click, a key or a touch stops it. |
@@ -152,7 +155,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `eventQueue` | `4` | 1–64 | Most mebibytes of requests, such as bells, notifications and clipboard requests, that wait while the window of a session is slow. The session keeps one queue of this size, and each pane keeps another. A request that does not fit gets the answer of a session that no window shows. A request that finds the queue of its pane empty always fits. A change applies when Afterglow next attaches to a session. |
-| `keptNotifications` | `8` | 0–100 | The largest number of notifications that each pane of a mux session keeps while no window shows the session. The next window that shows the session shows them, oldest first. Notifications.enabled and Notifications.rateLimit apply to them, so a value above the rate limit only drops the newest. When a pane has more, the oldest goes. The notifications of a pane take at most 256 KiB, and a larger one keeps no icon. A pane also keeps a bell and a flash, whatever this value. The session does not keep clipboard writes. The value 0 keeps no notifications. A change applies at once to a session that a window shows. |
+| `keptNotifications` | `8` | 0–100 | The largest number of notifications that each pane of a mux session keeps while no window shows the session. The next window that shows the session shows them, oldest first. Notifications.enabled and Notifications.rateLimit apply to them, so a value above the rate limit only drops the newest. Notifications.filters applies when a window shows them, so a filtered notification also takes a place. When a pane has more, the oldest goes. The notifications of a pane take at most 256 KiB, and a larger one keeps no icon. A pane also keeps a bell and a flash, whatever this value. The session does not keep clipboard writes. The value 0 keeps no notifications. A change applies at once to a session that a window shows. |
 | `onClose` | `"kill"` | `"kill"`, `"detach"` | What closing the window of a mux session, or its last tab or pane, does. With kill, the session and its programs end, as in a window outside a session. With detach, the session keeps running with its tabs and splits, and afterglow mux attach shows it again. Closing another tab or pane of the window ends only the programs of that tab or pane. With either value, the session keeps running after afterglow mux detach or a takeover by another window. It also keeps running after a quit of Afterglow, a crash or a lost connection. The window of a project that opens into a session always keeps its session. |
 | `remoteCommand` | `"aglow-mux"` |  | Command that ssh runs on another host for the mux sessions of that host, such as those of afterglow mux new --ssh. Your login shell there reads it as a command line, with the arguments of the proxy after it. Use a name that that shell finds, or a path there. An empty value uses the default. |
 | `signInTimeout` | `120` | 5–600 | Seconds that the afterglow mux commands wait for the first answer of the mux daemon of another host. In that time, ssh can ask for a password or a passphrase. The window of a session of another host waits 5 seconds, and ssh asks for nothing there. |
@@ -163,6 +166,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `enabled` | `true` |  | Show desktop notifications that programs send with OSC 9, OSC 99 and OSC 777, and program status notifications (OSC 7501). Afterglow's own notifications show also when this is off. |
+| `filters` | `[]` |  | Rules for notifications that programs send and that Afterglow does not show, as filter_notification in Kitty. An empty list shows every notification. A rule has terms of the form field:pattern. The field is title, body, app or type. The pattern is a regular expression that can match any part of the field. A pattern without quotes ends at a space or at a parenthesis that it does not open. Put a pattern with spaces in double quotes. In quotes, a backslash makes the next quote or backslash a plain character. Join terms with and, or and not, and group them with parentheses. Terms side by side join with and. The rule all matches every notification. An example is app:"[ng]?vim" and not body:"(?i)update". OSC 9 and OSC 777 notifications and program status notifications (OSC 7501) have no app and no type. The title field is the title that the program sends. An OSC 9 notification has an empty title, and it shows the title of its pane. |
 | `rateLimit` | `20` | 0–1000 | Desktop notifications that the programs of one pane can show in Notifications.rateWindow seconds. Afterglow drops the notifications over the limit. A value of 0 removes the limit. Updates of a shown notification do not count. The notifications of Afterglow itself do not count, such as those of afterglow ctl notify and of the notify effect of scripts. The notification at the end of a script command run without a client counts against the limit of its pane. Such notifications of runs without a pane share one limit. |
 | `rateWindow` | `10` | 1–3600 | Seconds over which Notifications.rateLimit counts the notifications of one pane. |
 | `statusInterval` | `3000` | 0–600000 | Shortest time in milliseconds between two program status notifications (OSC 7501) of one pane. A value of 0 shows each one. |
@@ -224,6 +228,8 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | `cursorBlink` | `true` |  | Make the cursor blink. |
 | `cursorBlinkInterval` | `530` | 100–5000 | Duration in milliseconds for each visible and hidden cursor phase. |
 | `cursorShape` | `"block"` | `"block"`, `"underline"`, `"bar"` | Shape of the cursor until a program sets another one with DECSCUSR. |
+| `downloadDirectory` | `""` |  | The directory for the files that programs send (Terminal.downloads). The path must be absolute, ~, or start with ~/. An empty value, or a path of another form, uses the download directory of the desktop. |
+| `downloads` | `"ask"` | `"allow"`, `"ask"`, `"deny"` | Files that programs send with the iTerm2 protocol (OSC 1337), as it2dl does. The ask value shows a prompt with the name and the size of each file before its data comes. The program waits for the answer. The allow value saves each file in Terminal.downloadDirectory. The deny value refuses each file. |
 | `dragAnswerWait` | `100` | 0–1000 | Milliseconds that Afterglow waits for the answer of a program that uses Kitty drag and drop. It waits when a drag over the pane shows the program new types. The window does not draw while it waits. A value of 0 does not wait. |
 | `dragTreeLifetime` | `10` | 1–1440 | Minutes that Afterglow keeps the files of a Kitty drag from another host after the drop. A drop target such as a file manager can copy them after the drag ends. A change applies to the drops that come after it. |
 | `env` | `{}` |  | Variables that Afterglow adds to the environment of the shell, such as { "EDITOR": "nvim" }. Each value must be a string. A variable here replaces the value that Afterglow gives, such as COLORTERM. Afterglow ignores TERM, AFTERGLOW_SSH_HELPER and AFTERGLOW_SSH_TERMINFO here. Terminal.term, Terminal.sshIntegration and Terminal.sshTerminfo set them. Afterglow also ignores the other names that start with AFTERGLOW_, such as AFTERGLOW_PANE_ID and AFTERGLOW_SOCKET, which it sets or removes for each pane. AFTERGLOW_SHELL_INTEGRATION is not ignored: set it to 0 to turn off shell integration. New panes and new mux sessions use this value. A session of another host does not use it. |
@@ -231,21 +237,23 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | `fileTransferPassword` | `""` |  | Shared secret for Kitty file-transfer approval. An empty value always asks for approval. |
 | `graphicsFileTransfer` | `"allow"` | `"allow"`, `"deny"` | Images that programs send with the Kitty graphics protocol as a file, a temporary file or shared memory. Images sent inline always work. |
 | `hideMouseWhileTyping` | `false` |  | Hide the pointer while typing. Pointer movement shows it again. |
-| `lastOutputLimit` | `1024` | 1–65536 | Kibibytes of the last command output that the pager gets. For longer output, the pager gets the start and a note. |
-| `pager` | `"less -R"` |  | Command for viewing the last command output. Afterglow splits it into words and runs it without a shell. An empty value turns the pager off. |
+| `pager` | `"less -R"` |  | Command that shows the output of a command. The pager actions give it the last output, the first output on the screen, the last visited output or a clicked command's output. Afterglow splits it into words and runs it without a shell. An empty value turns the pager off. |
+| `pagerOutputLimit` | `1024` | 1–65536 | Kibibytes of command output that the pager (Terminal.pager) gets. For longer output, the pager gets the start and a note. |
 | `pasteReadTimeout` | `10` | 1–600 | Seconds after a paste in which the program can read the clipboard with the password of the paste event (OSC 5522). |
 | `scrollLines` | `3` | 1–50 | Rows that each notch of the mouse wheel scrolls. |
 | `scrollOnInput` | `true` |  | Scroll to the bottom on typing or paste. |
 | `scrollOnOutput` | `false` |  | Scroll to the bottom when new output arrives. |
 | `scrollback` | `10000` | 0–1000000 | Lines of history that each pane keeps. A value of 0 keeps no history. |
 | `shell` | `""` |  | Program that new panes and new mux sessions run, as a name or a path. It gets no arguments. An empty value starts your login shell. A session of another host runs your login shell there. |
-| `shellIntegration` | `true` |  | Integrate Bash, Zsh and Fish prompts in new panes and new mux sessions automatically. A session of another host does not use it. |
+| `shellIntegration` | `"enabled"` |  | Integrate Bash, Zsh and Fish in new panes and new mux sessions automatically, as in Kitty. The value is enabled, disabled, or a list of switches with spaces between them. Each switch turns off one part. The no-prompt-mark switch turns off the prompt and command marks. The no-cwd switch turns off the working directory. The no-cursor switch turns off the bar cursor at the prompt. The no-title switch turns off the title at the prompt and while a command runs. The no-sudo switch turns off TERM for sudo and run0. The no-rc switch sets the environment of the integration but does not load its script, as in Kitty. Your startup files then load it. The no-complete switch is accepted, as in Kitty, and changes nothing, because the scripts load no completions. An empty value is enabled. A session of another host does not use it. |
 | `sshControlPersist` | `10` | 1–3600 | Seconds that the ssh connection of Afterglow for the mux sessions of another host stays open with no command on it. The afterglow mux commands with --ssh and the windows of those sessions use this connection. A command in that time does not sign in again. afterglow ssh makes a connection of its own, which this setting does not change. A change applies to the connections that start after it. |
 | `sshIntegration` | `true` |  | Run ssh through afterglow ssh in integrated shells. The pane label then shows the host, and afterglow ssh offers COLORTERM and TERM_PROGRAM to the server. New panes and new mux sessions use this value. A session of another host does not use it. |
 | `sshRemoteCommands` | `false` |  | Allow the script commands that are marked remote to run from aglow run on another host. This applies to the hosts that afterglow ssh connects to, and to the panes of a mux session of another host. Every process of the remote user, and the remote root user, can then run those commands. It needs Control.enabled and Scripts.enabled. A change to on applies to the ssh sessions that start after it. A change to off closes the sockets of the running ssh sessions. A mux session follows this setting of the window that showed it last. |
 | `sshTerminfo` | `"install"` | `"install"`, `"fallback"` | What to do when TERM is afterglow: install its terminfo entry on each ssh host, or use xterm-256color there instead. New panes and new mux sessions use this value. A session of another host does not use it. |
 | `term` | `"xterm-256color"` |  | Value of TERM for the programs in the panes. An empty value uses the default. New panes and new mux sessions use this value. A session of another host keeps the value that afterglow mux new --ssh gave it. |
 | `textBlinkInterval` | `500` | 100–5000 | Duration in milliseconds for each visible and hidden phase of blinking text (SGR 5). |
+| `uploadLimit` | `16` | 1–23 | Mebibytes of the largest upload after compression (Terminal.uploads). The program reads the upload as typed input, which holds 32 MiB. Send larger files with aglow transfer. |
+| `uploads` | `"ask"` | `"ask"`, `"deny"` | Files that programs ask for with the iTerm2 protocol (OSC 1337 RequestUpload), as it2ul does. The ask value asks you first, and then shows a picker for files or for a folder. The program gets the files that you choose. The deny value refuses each request. |
 | `wordSeparators` | `` "`\"'│\|:;,()[]{}<>" `` |  | Characters that end a word for double-click selection, besides spaces. With an empty value, only spaces end a word. |
 
 ## Window
@@ -261,6 +269,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | `padding` | `6` | 0–200 | Space around the grid in logical pixels. |
 | `paneTitles` | `false` |  | Show pane titles in tabs with two or more panes. |
 | `popupCorners` | `"rounded"` | `"rounded"`, `"square"` | Corners of the border around a popup overlay. The rounded value curves each corner. The square value makes each corner a right angle. |
+| `resizeStepCells` | `2` | 1–10000 | Cells that the resize actions (resize_left, resize_right, resize_up and resize_down) move a split edge by. |
 | `scrollbar` | `"auto"` | `"auto"`, `"always"`, `"never"` | When the history scrollbar shows. The auto value shows the scrollbar while the view scrolls or the pointer is over it, then fades it out. |
 | `scrollbarHideDelay` | `1200` | 0–60000 | Milliseconds an auto scrollbar stays visible after the last scroll or after the pointer leaves. A value of 0 starts the fade at once. |
 | `scrollbarWidth` | `12` | 4–48 | Width of the history scrollbar, in logical pixels. |
@@ -331,8 +340,10 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | `scroll_top` | `"Shift+Home"` |
 | `search` | `"Ctrl+Shift+F"` |
 | `select_all` | `"Ctrl+Shift+A"` |
+| `show_first_output_on_screen` | `[]` |
 | `show_hints` | `"Ctrl+Shift+H"` |
 | `show_last_output` | `[]` |
+| `show_last_visited_output` | `[]` |
 | `show_urls_copy` | `"Ctrl+Shift+Y"` |
 | `show_urls_open` | `"Ctrl+Shift+G"` |
 | `split_down` | `"Ctrl+Shift+O"` |

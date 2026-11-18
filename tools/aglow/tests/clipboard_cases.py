@@ -10,22 +10,30 @@ file, that arguments a write cannot take are refused before the terminal sees
 them (two files of one MIME type, standard output as an input, standard input
 twice, a MIME type with a space), that inputs too large together say so, that
 an OSC 52 read which the terminal never answers ends after the timeout, that
-the list of types comes from the reply for "." only, and that Ctrl+C ends a
-write to a FIFO that has no reader.
+the list of types comes from the reply for "." only, that a PNG asked for is
+made of another image on the clipboard (the lossless one first, with its
+alpha, the first frame of an animation, a message and no file for an image
+that does not decode), and that Ctrl+C ends a write to a FIFO that has no
+reader. aglow runs in a pseudo-terminal that the test makes, or in a session
+of its own with no controlling terminal: it never reaches the terminal that
+runs the test.
 """
 import os
 import re
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import clipboard_pty  # noqa: E402
 from clipboard_pty import b64, check, run  # noqa: E402
+from icat_decode import JPEG_ADOBE, WEBP_ANIMATED, bmp, gif, near  # noqa: E402
 
 
 # The numbers of open and openat, for a kernel that shows no wait channel.
@@ -57,8 +65,11 @@ def can_see_open(directory):
     os.mkfifo(fifo)
     pid = os.fork()
     if pid == 0:
-        os.open(fifo, os.O_WRONLY)
-        os._exit(0)
+        # The child must never return into this script, which would remove the directory of the test.
+        try:
+            os.open(fifo, os.O_WRONLY)
+        finally:
+            os._exit(0)
     try:
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
@@ -101,7 +112,31 @@ class ExtraReply:
         return os.write(fd, data)
 
 
+def png_pixels(data):
+    """The (r, g, b, a) pixels of a PNG of 8-bit RGBA whose rows have filter 0, as aglow writes it."""
+    check(data.startswith(b"\x89PNG\r\n\x1a\n"), data[:8])
+    at, chunks = 8, {}
+    while at < len(data):
+        length = struct.unpack(">I", data[at:at + 4])[0]
+        kind = data[at + 4:at + 8]
+        check(zlib.crc32(data[at + 4:at + 8 + length]) == struct.unpack(">I", data[at + 8 + length:at + 12 + length])[0], kind)
+        chunks[kind] = chunks.get(kind, b"") + data[at + 8:at + 8 + length]
+        at += 12 + length
+    width, height, depth, colour = struct.unpack(">IIBB", chunks[b"IHDR"][:10])
+    check(depth == 8 and colour == 6, depth, colour)
+    raw = zlib.decompress(chunks[b"IDAT"])
+    row = 1 + width * 4
+    out = []
+    for y in range(height):
+        check(raw[y * row] == 0)
+        line = raw[y * row + 1:(y + 1) * row]
+        out += [tuple(line[x:x + 4]) for x in range(0, len(line), 4)]
+    return width, height, out
+
+
 def main():
+    if len(sys.argv) != 2:
+        sys.exit("usage: clipboard_cases.py AGLOW")
     aglow = str(Path(sys.argv[1]).resolve())
     with tempfile.TemporaryDirectory(prefix="aglow-clipboard-") as temporary:
         root = Path(temporary)
@@ -131,10 +166,41 @@ def main():
         (root / "more.bin").write_bytes(b"x" * 100)
         result = subprocess.run([aglow, "clipboard", "--mime", "application/x-most", "--mime", "application/x-more",
                                  "most.bin", "more.bin"], cwd=root, stdin=subprocess.DEVNULL, capture_output=True,
-                                timeout=30)
+                                timeout=30, start_new_session=True)
         err = result.stderr.decode(errors="replace")
         check(result.returncode == 1 and "with the inputs before it" in err and "128.0 MiB" in err, result.returncode, err)
         print("inputs too large together: passed", flush=True)
+
+        # A PNG asked for and none on the clipboard: aglow makes one of another image there, the
+        # lossless one first, and a JPEG's profile converts to sRGB.
+        picture = bmp(2, [[(10, 20, 30), (200, 100, 50)]])
+        images = {"image/jpeg": JPEG_ADOBE, "image/bmp": picture}
+        check(run(aglow, ["--get-clipboard", "from-bmp.png"], root, images) == 0)
+        check(png_pixels((root / "from-bmp.png").read_bytes()) == (2, 1, [(10, 20, 30, 255), (200, 100, 50, 255)]))
+        check(run(aglow, ["--get-clipboard", "from-jpeg.png"], root, {"image/jpeg": JPEG_ADOBE}) == 0)
+        width, height, got = png_pixels((root / "from-jpeg.png").read_bytes())
+        check((width, height) == (8, 8) and all(near(px, (66, 151, 202, 255)) for px in got), width, height, got[:2])
+        # The alpha of the image: a GIF whose second pixel is transparent.
+        transparent = gif(2, 1, 2, [{"rect": (0, 0, 1, 1), "indices": [0]}])
+        check(run(aglow, ["--get-clipboard", "from-gif.png"], root, {"image/gif": transparent}) == 0)
+        check(png_pixels((root / "from-gif.png").read_bytes()) == (2, 1, [(255, 0, 0, 255), (0, 0, 0, 0)]))
+        # The first frame of an animation: a WebP, red then blue. With a GIF there too, the GIF, which is
+        # lossless, goes first.
+        check(run(aglow, ["--get-clipboard", "from-webp.png"], root, {"image/webp": WEBP_ANIMATED}) == 0)
+        check(png_pixels((root / "from-webp.png").read_bytes()) == (4, 4, [(255, 0, 0, 255)] * 16))
+        check(run(aglow, ["--get-clipboard", "lossless.png"], root, {"image/webp": WEBP_ANIMATED, "image/gif": transparent}) == 0)
+        check(png_pixels((root / "lossless.png").read_bytes())[:2] == (2, 1))
+        # The type itself when it is there, and an image that does not decode: an error that says why, and no file.
+        check(run(aglow, ["--get-clipboard", "as-is.jpg"], root, images) == 0)
+        check((root / "as-is.jpg").read_bytes() == JPEG_ADOBE)
+        said = bytearray()
+        check(run(aglow, ["--get-clipboard", "broken.png"], root, {"image/jpeg": b"\xff\xd8\xff not a jpeg"},
+                  transcript=said) == 1)
+        check(b"Could not make a PNG of the image/jpeg on the clipboard for broken.png: " in said, bytes(said))
+        check(not (root / "broken.png").exists())
+        check(run(aglow, ["--get-clipboard", "none.png"], root, clipboard) == 1)
+        check(not (root / "none.png").exists())
+        print("a PNG made of another image: passed", flush=True)
 
         # A terminal without OSC 5522 that answers DA1 but never the OSC 52 read.
         start = time.monotonic()

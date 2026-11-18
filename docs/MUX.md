@@ -242,7 +242,7 @@ Their `AFTERGLOW_SESSION` still names the session where the pane started, becaus
 | --- | --- |
 | The title that you gave to the pane | Stays |
 | Notify When the Next Command Finishes | Stays |
-| The clipboard reads that you allowed for a password (OSC 5522) | Stay |
+| The clipboard reads and writes that you allowed for a password (OSC 5522) | Stay |
 | What scripts set with `override` and `status` | Stays |
 | The shader signals of the pane, from `afterglow ctl signal` and scripts | Go back to 0 |
 | The shader parameters that scripts set for the pane (`shader_parameters`) | Go |
@@ -250,8 +250,9 @@ Their `AFTERGLOW_SESSION` still names the session where the pane started, becaus
 | The pointer shape of the program, and the keys that you hold down | Stay |
 | Docked areas of the pane | Close. A script can dock them again when it gets `on_pane_created`. |
 | An overlay | Ends, with the error `The pane under the overlay moved to another session` |
-| A script dialog of the pane | Closes. The script gets the answer of a cancelled dialog. |
+| A script dialog of the pane | Closes. The script gets the answer of a canceled dialog. |
 | File transfers, drags and downloads, with their Save dialogs | End |
+| The question of an upload (OSC 1337 `RequestUpload`), with its file dialog | Closes in the old window. The program still waits. The next window that shows the pane asks again, while the job that asked still holds the terminal. |
 
 These moves are not possible:
 
@@ -328,6 +329,7 @@ These features work as in a pane outside a session:
 - Program status (OSC 7501), and the shell contexts (OSC 3008) in the title
 - Extra cursors
 - Images (Kitty graphics, Sixel, iTerm2) and their animations. The list below gives the differences.
+- The decode of images. A session pane uses the decoders of its daemon. A pane outside a session uses the same decoders in processes of the window. Both show the same images alike.
 - A selection or a search match in a region that a program scrolls, as an editor does: it moves with its text
 - Visibility reports (mode 2033): the program hears whether you can see the pane
 
@@ -358,11 +360,6 @@ A session pane differs from a pane outside a session in these ways:
 - The screen with its cursor, the history and the images of a pane that you cannot see wait in the daemon. They come when you can see the pane again. Until they come, the pane shows its older screen. They also come before each bell, notification or other request of the program, and before the program exits. Thus the window does not get the rows that a program in a background tab writes until it needs them.
 - Before a read of the text of a pane that you cannot see, the window gets its screen and history from the daemon. It does this also for a pane that shows again before its screen came, and before a screenshot. The window waits for them for a limited time (see [limits](#limits)).
   A read of the selection does this too. The read gets at least the text that the pane had when the window asked. It can also get text that the program wrote after that.
-- A pane outside a session decodes images with Qt, and a session pane with the decoders of its daemon. They show some images in a different way:
-  - A pane outside a session shows a WebP image only when the Qt Image Formats plugin is installed. A session pane always shows it.
-  - A pane outside a session shows a compressed BMP (run-length encoding) and a GIF whose screen has an empty side. A session pane does not show them.
-  - A session pane shows a BMP with a header of 52 or 56 bytes, or with its masks after the header (compression 6). A pane outside a session does not show it.
-  - Where the first frame of a GIF does not draw, a session pane shows nothing, as Kitty and browsers do. A pane outside a session can show the background color of the GIF there.
 - The session follows the terminal settings and the colors of the window that shows it.
   While no window shows it, it keeps those of its last window (see [settings of a session pane](#settings-of-a-session-pane)).
 
@@ -491,7 +488,7 @@ A new tab or split of the window of the session runs your shell there too.
 It starts in the directory of the program in the foreground of the pane that it opens from.
 A `cwd` or an `env` that `afterglow ctl` or a script gives for it is refused.
 `afterglow ctl` and scripts read the directory of a pane of the session only when it also exists on this computer.
-Show Last Output does not work in a window of a session of another host.
+The [command output](INPUT.md#command-output) actions do not work in a window of a session of another host. These are `show_last_output`, `show_first_output_on_screen` and `show_last_visited_output`.
 The pager runs on the host, and the output file is on this computer.
 
 `Mux.remoteCommand`, `Mux.signInTimeout` and `Terminal.sshControlPersist` are the settings of these sessions:
@@ -622,19 +619,26 @@ A window that answers a command follows its own settings too.
 
 | Command | No window shows the session | A window shows the session |
 | --- | --- | --- |
-| `ls`, `send-text`, `get-text` (screen, scrollback and last output) | The daemon acts | The daemon acts |
+| `ls`, `send-text`, `send-key`, `get-text` (screen, scrollback and last output, also with `--ansi`, `--cursor` and `--wrap-markers`) | The daemon acts | The daemon acts |
+| `colors`, `set-colors`, `set-user-var`, `signal-program` | The daemon acts on its terminal and its program of the pane | The daemon acts, and the window shows the colors with the next frame. The control socket of the window does not set the colors and the user variables of a session pane, or signal its program. The daemon has them. |
 | `close` | The daemon closes the pane, and its program ends. When it is the last pane of the session, the session ends, whatever `Mux.onClose` says. | As without a window |
 | `split` | The daemon starts the program. The pane goes beside its pane, on the side that the command names, and gets the focus. | The daemon starts the program, and the window places the pane in the same way |
 | `new-tab` | The daemon starts the program. The pane gets a new tab after the tab of its pane, and that tab shows. | The daemon starts the program, and the window places the pane in the same way |
 | `focus` | The daemon keeps the focus for the next window | The window focuses the pane |
+| `focus --direction` | The daemon finds the pane beside the pane in the session's layout, and keeps the focus for the next window | The window finds the pane and focuses it |
 | `move-pane`, `detach-tab` | The daemon moves the pane in its layout. A move to a new window makes a new session, as in a window (see [move panes and tabs](#move-panes-and-tabs)). No window shows the new session. A move to a pane of another session joins that session (see [move a pane to another session](#move-a-pane-to-another-session)). | The window moves the pane, as a drag in the window does. A move to a pane of another session joins that session, as without a window. |
-| `get-text --selection` | Empty: only a window has a selection | The window answers |
-| `set-title`, `signal`, `notify`, `action`, `new-window`, `open-directory`, `projects`, `save-project`, `open-project`, `scripts` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window answers |
+| `get-text --selection`, `get-text --last-visited-output` | Refused with `only a window that shows session 'NAME' has its SCOPE`: only a window has a selection and an output that a jump visited | The window answers |
+| `get-text --first-output-on-screen` | The daemon reads its own screen, which shows the newest rows | The window answers, from the rows that it shows |
+| `set-title`, `set-tab-title`, `resize`, `scroll`, `set-font-size`, `set-opacity`, `window`, `signal`, `notify`, `action`, `new-window`, `open-directory`, `projects`, `save-project`, `open-project`, `scripts` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window answers |
 | `overlay`, `screenshot` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window runs the overlay or takes the picture, and answers when it is done |
 | `watch` | The daemon sends the events of the session | The daemon sends the events of the session |
 
 In the refusal, `CALL` is the name of the [control call](CONTROL.md#control-calls) of the command, such as `setTitle`, `runAction` or `screenshot`.
-While a pane decodes an image, `get-text` fails at once with `pane N decodes an image: try again`.
+`split` and `new-tab` take `--env` for a pane of a session, and no other [launch option](CONTROL.md#launch-options): the daemon runs the program.
+The daemon finds the `neighbors` of `ls` and the pane of `focus --direction` from the splits of the session's layout.
+It weighs distances as a window does, in the size of the pane that a window measured last, else in cells.
+The `foreground` of `ls` is the process in the daemon's terminal of the pane.
+While a pane decodes an image, `get-text`, `send-key`, `colors` and `set-colors` fail at once with `pane N decodes an image: try again`.
 A window waits up to 5 seconds for its own reads (see [limits](#limits)).
 The daemon checks the arguments in another order than a window does.
 `screenshot` fails with `denied` before the daemon checks the pane ID.
@@ -681,7 +685,7 @@ Its calls come from a client on that host, in a pane of the session, for example
 | --- | --- |
 | `overlay`, `screenshot`, `new-window` (with or without a command), `open-directory`, `open-project`, `save-project`, `projects`, `scripts` | Refuses it: `a session of another host runs no program on this computer` |
 | `action script:ID.COMMAND` | Refuses it with `a session of another host runs only the script commands that a script marks remote, with aglow run`. `aglow run` in the session runs the script commands that a script marks remote. |
-| `action` with `paste`, `copy`, `select_all`, `show_last_output`, `new_window`, `open_config`, `reload_config`, `use_package_shaders`, `save_project`, `switch_project`, `cancel_overlay` or `end_script_key_mode` | Refuses it with `a session of another host runs no program on this computer` |
+| `action` with `paste`, `copy`, `select_all`, `show_last_output`, `show_first_output_on_screen`, `show_last_visited_output`, `new_window`, `open_config`, `reload_config`, `use_package_shaders`, `save_project`, `switch_project`, `cancel_overlay` or `end_script_key_mode` | Refuses it with `a session of another host runs no program on this computer` |
 | `notify` | Shows it. It counts against `Notifications.rateLimit` of the pane, as a notification of a program does. |
 | `split` and `new-tab` with a `cwd` or an `env`, and the `split` and `new_tab` effects of scripts with them | Refuses them: `a pane of session NAME, which runs on another host, takes no cwd or env: it starts where the pane that it opens from is`. A new pane starts in the directory of the pane that it opens from, on the host. |
 
@@ -766,7 +770,7 @@ While a window shows the session, these answers go through the window, as the an
 | Notification query (OSC 99 `p=?`) | The daemon gives the answer of a window |
 | Query of the socket of an ssh session (OSC 24569) | The daemon answers with the socket of the newest ssh session of the pane (see [remote commands of an ssh session in a session pane](#remote-commands-of-an-ssh-session-in-a-session-pane)). Without one, it answers that there is none (`error=off`). |
 | Visibility report (mode 2033) | The window says whether you can see the pane. Until a window says it, the program hears that you cannot see the pane. This is also true after a takeover, and while no window shows the session. |
-| Images | The daemon keeps the images, also while no window shows the session. It decodes PNG (Kitty graphics `f=100`) and iTerm2 images (PNG, JPEG, GIF, WebP and BMP). Each image decodes in a process of its own, which the decoder of the daemon (`aglow-mux --decode-images`) starts. It decodes with libpng, libjpeg-turbo and libwebp, which the build includes. Each process has limits on its memory, its CPU time and the system calls that it can make. A decoder process that crashes or takes too long ends, and the daemon and the other sessions go on. The images do not decode on a kernel without seccomp filters, or on a kernel older than Linux 5.3 (`pidfd_open`). They also do not decode on a processor other than x86-64, little-endian AArch64, RISC-V 64 and little-endian POWER. The daemon then writes why on its standard error, which is the journal when it runs in `aglow-mux.service`. When the decoder cannot start, images do not decode for a minute, and the daemon writes why. The window shows the images that the daemon keeps. |
+| Images | The daemon keeps the images, also while no window shows the session. It decodes PNG (Kitty graphics `f=100`) and iTerm2 images (PNG, APNG, JPEG, GIF, WebP, BMP, TIFF and netPBM). Each image decodes in a process of its own, which the decoder of the daemon (`aglow-mux --decode-images`) starts. It decodes PNG, JPEG and WebP with libpng, libjpeg-turbo and libwebp, which the build includes. It decodes GIF, BMP, TIFF and netPBM with readers of its own. It converts an image with an ICC color profile or a cICP color space to sRGB with Little CMS. Each process has limits on its memory, its CPU time and the system calls that it can make. A decoder process that crashes or takes too long ends, and the daemon and the other sessions go on. The images do not decode on a kernel without seccomp filters, or on a kernel older than Linux 5.3 (`pidfd_open`). They also do not decode on a processor other than x86-64, little-endian AArch64, RISC-V 64 and little-endian POWER64. The daemon then writes why on its standard error, which is the journal when it runs in `aglow-mux.service`. When the decoder cannot start, images do not decode for a minute, and the daemon writes why. The window shows the images that the daemon keeps. |
 
 While no window shows the session, the daemon also answers these requests.
 
@@ -776,11 +780,12 @@ While no window shows the session, the daemon also answers these requests.
 | Query of the notifications on screen (OSC 99 `p=alive`) | The daemon answers with an empty list, because no notification is on screen |
 | Bell (BEL) and flash (OSC 555) | Each pane keeps one bell and one flash for the next window (see [requests for the next window](#requests-for-the-next-window)) |
 | Notification (OSC 9, OSC 777, OSC 99) | Each pane keeps the newest ones for the next window, up to `Mux.keptNotifications` (see [requests for the next window](#requests-for-the-next-window)) |
-| Clipboard write (OSC 52 and OSC 5522) | The daemon drops it, because a late write would replace what you copied since. A clipboard write that asks for a status (OSC 5522) gets `EPERM`. |
+| Clipboard write (OSC 52 and OSC 5522) | The daemon drops it, because a late write would replace what you copied since. An OSC 5522 write gets `EPERM` as its status. |
 | Clipboard read (OSC 52 and OSC 5522) | Refused, as when you deny the request |
 | File transfer (OSC 5113) | Refused with `EPERM`, as when you deny the request. A transfer with `q=2` asks for no status and gets no answer. |
 | Drag and drop (OSC 72) | A program that asks which types the terminal supports gets the answer of a window. A drag offer (`t=o`) gets `EPERM`. No drop arrives, and no drag starts. |
-| File download (OSC 1337 `File`) | Dropped |
+| File download (OSC 1337 `File`) | Refused: no one can answer the question. The program goes on, and the data goes nowhere. |
+| File upload (OSC 1337 `RequestUpload`) | No answer: no one can choose the files or refuse them. The program waits until you stop it. |
 | Pointer shape (OSC 22), user variables (OSC 1337 `SetUserVar`), commands of shell integration (OSC 133) | The daemon keeps the last pointer shape, the user variables and the running command for the next window |
 
 ### Requests for the next window
@@ -820,9 +825,24 @@ Your settings and prompts apply, such as the questions before a clipboard read a
 | Notification (OSC 9, OSC 777, OSC 99) | The window shows it. A query of the notifications on screen (OSC 99 `p=alive`) gets the answer of the window. |
 | Clipboard write and read (OSC 52 and OSC 5522) | The window writes or reads its clipboard, and asks first as for its own panes |
 | File transfer (OSC 5113) and drag and drop (OSC 72) | The window runs them, with its questions |
-| File download (OSC 1337 `File`) | The window asks where to save the file |
+| File download (OSC 1337 `File`) | The window asks first, as for its own panes, and the program waits for the answer. The data then streams to the window. When the queue of the pane is full, the program waits: no data is dropped. A window that goes ends the download. See [a download to a slow disk](#a-download-to-a-slow-disk). |
+| File upload (OSC 1337 `RequestUpload`) | The window asks, as for its own panes. The daemon writes the answer to the program in one piece, as typed input. A request that does not fit the queue of the pane gets no answer. Only the answer of the window that the daemon asked last reaches the program. When the window goes before its answer reaches the program, the next window that shows the session asks again. It asks only while the job that asked still holds the terminal. A terminal reset keeps the question. |
 | Pointer shape (OSC 22) and user variables (OSC 1337 `SetUserVar`) | The window takes them as from its own panes. A window that attaches gets the last values. |
 | Commands of shell integration (OSC 133) | The window takes them as from its own panes, with the time that the daemon measured. A window that attaches while a command runs gets its start. |
+
+### A download to a slow disk
+
+The window writes the data of a download to the disk on a thread of its own.
+When the disk is slower than the program, the data waits in a queue of the window, up to 8 MiB.
+While that queue is full, the window reads no more events of the session.
+The bells, notifications and other requests of all panes of the session wait.
+The calls of `afterglow ctl --session`, the refreshes of hidden panes and `aglow run` in a pane of the session also wait.
+The output of the panes still shows.
+A pane that opens in the session meanwhile shows nothing, because the window learns of it from an event.
+A pane or the session that ends meanwhile stays in the window.
+The events go on when half of that queue is on the disk.
+Meanwhile the daemon keeps the events up to `Mux.eventQueue` (see [requests that wait](#requests-that-wait)).
+Past that limit, the program of the download waits.
 
 ### Requests that wait
 
@@ -830,11 +850,13 @@ The requests wait for the window in a queue of the session and in a queue of eac
 `Mux.eventQueue` sets the size of each queue. A change applies when Afterglow next attaches to a session.
 A request that finds the queue of its pane empty always fits, up to the limit of one request.
 A request that does not fit gets the answer of a session that no window shows (see [what the daemon answers](#what-the-daemon-answers)).
-Thus a notification, an OSC 52 clipboard write and a download that do not fit are dropped.
+Thus a notification and an OSC 52 clipboard write that do not fit are dropped.
 These requests are exceptions:
 
 - An answer to a query that does not fit is dropped, as a window drops one past its own limit.
 - When commands of file transfer and drag and drop do not fit, the window ends the transfer or the drag, as for its own panes.
+- A download always fits. When the queue of the pane is full, the program waits until the window took enough of the data.
+- An upload request that does not fit gets no answer, and the program waits until you stop it.
 
 These requests do not take more room when more come:
 

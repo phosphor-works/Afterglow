@@ -5027,6 +5027,7 @@ return { on_bell = function(ev)
         afterglow.select(ev.pane, "Nothing", {}),
         afterglow.read_text(ev.pane, "screen", 0),
         afterglow.read_region(ev.pane, "1", 2 * 1024 * 1024),
+        afterglow.read_text(ev.pane, "everything"),
         afterglow.overview_move(ev.pane, 1.5),
         afterglow.overview_move(ev.pane, 0, 7.5),
         afterglow.pulse(ev.pane, "flash", {color = 4.5}),
@@ -5045,19 +5046,60 @@ end }
     for (const auto& e : rec.applied) kinds << e["kind"].toString();
     // The refused moves used no structural slot, so all three splits apply.
     EXPECT_EQ(kinds, QStringList({"split", "split", "split"}));
-    ASSERT_EQ(rec.results.size(), 14);
+    ASSERT_EQ(rec.results.size(), 15);
     // Each for its own rule: a refusal for another reason would pass a check
     // of a non-empty error.
     const char* const reasons[] = {"A selector needs at least one item", "max_bytes must be a whole number from 1 to",
-        "max_bytes must be a whole number from 1 to", "overview_move needs a pane or a whole step",
+        "max_bytes must be a whole number from 1 to", "read_text scope must be screen, scrollback, selection, last-output, first-output-on-screen or last-visited-output",
+        "overview_move needs a pane or a whole step",
         "overview_move needs a pane or a whole step", "pulse needs 50 to 10000 ms and a palette color",
         // The helper's default placement is right, which needs a target.
         "left, right, up and down need a target pane",
         "placement must be left, right, up, down, new-tab or new-window",
         "new-window takes no target pane", "cwd must be a string without NUL"};
-    for (int i = 0; i < 10; ++i)
+    for (int i = 0; i < 11; ++i)
         EXPECT_TRUE(rec.results[i].second.contains(QLatin1String(reasons[i]))) << i << ": " << rec.results[i].second.toStdString();
-    EXPECT_EQ(rec.results[10].second, "unknown effect \"\"");
+    EXPECT_EQ(rec.results[11].second, "unknown effect \"\"");
+}
+
+TEST_F(ScriptHostTest, ReadTextTakesEachScope)
+{
+    WRITE(user, "scopes.luau", R"(
+return { on_bell = function(ev)
+    return {
+        afterglow.read_text(ev.pane), afterglow.read_text(ev.pane, "screen"), afterglow.read_text(ev.pane, "scrollback"),
+        afterglow.read_text(ev.pane, "selection"), afterglow.read_text(ev.pane, "first-output-on-screen"),
+        afterglow.read_text(ev.pane, "last-visited-output"),
+    }
+end }
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    QStringList scopes;
+    for (const auto& e : rec.applied) scopes << e["scope"].toString();
+    EXPECT_EQ(scopes, QStringList({"last-output", "screen", "scrollback", "selection", "first-output-on-screen", "last-visited-output"}));
+}
+
+TEST_F(ScriptHostTest, ReadTextBuiltByHandTakesTheHelpersDefaults)
+{
+    WRITE(user, "byhand.luau", R"(
+return { on_bell = function(ev)
+    return {
+        {kind = "read_text", pane = ev.pane.id},
+        {kind = "read_text", pane = ev.pane.id, scope = "bad", max_bytes = 0},
+    }
+end }
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(rec.applied[0]["scope"], "last-output");
+    EXPECT_EQ(rec.applied[0]["max_bytes"].toDouble(), 65536.0);
+    ASSERT_EQ(rec.results.size(), 2);
+    EXPECT_TRUE(rec.results[0].second.isEmpty()) << rec.results[0].second.toStdString();
+    // Both fields are wrong: the max_bytes refusal keeps its words.
+    EXPECT_TRUE(rec.results[1].second.contains(QLatin1String("max_bytes must be a whole number from 1 to")))
+        << rec.results[1].second.toStdString();
 }
 
 TEST_F(ScriptHostTest, NilEntriesInReturnedListsAreSkipped)

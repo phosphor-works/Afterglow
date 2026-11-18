@@ -49,7 +49,25 @@ Probe probeWebP(std::string_view bytes, int& width, int& height)
     return Probe::Unknown;
 }
 
-bool decodeWebP(std::string_view bytes, const FrameSink& sink, std::string& error, std::string& warning)
+ColorSpace webpColorSpace(std::string_view bytes)
+{
+    // Only the extended format holds a profile, and only when its header
+    // says so (the ICC flag), as libwebp and browsers read it.
+    ColorSpace space;
+    if (bytes.size() < 21 || bytes.substr(12, 4) != "VP8X" || !(at(bytes, 20) & 0x20)) return space;
+    for (std::size_t pos = 12; pos + 8 <= bytes.size();) {
+        const std::size_t length = little(bytes, pos + 4, 4);
+        if (length > bytes.size() - pos - 8) break;
+        if (bytes.substr(pos, 4) == "ICCP") {
+            if (length <= MaxIcc) space.icc.assign(bytes.substr(pos + 8, length));
+            break;
+        }
+        pos += 8 + length + (length & 1);
+    }
+    return space;
+}
+
+bool decodeWebP(std::string_view bytes, const FrameSink& sink, const Options&, std::string& error, std::string& warning)
 {
     int width = 0;
     int height = 0;

@@ -5,8 +5,9 @@
 # graphics and clipboard protocols from the command line, and the client of
 # the commands of Afterglow's scripts (aglow run). It uses only
 # libs/afterglow-proto (with its bundled zlib-ng and xxHash) and
-# libs/afterglow-image (with its bundled libpng, libjpeg-turbo and libwebp):
-# no Qt and no Phosphor, so that the protocols run alone on a remote host.
+# libs/afterglow-image (with its bundled libpng, libjpeg-turbo, libwebp and
+# Little CMS), and the inline AfterglowPty/CloseFrom.h: no Qt and no
+# Phosphor, so that the protocols run alone on a remote host.
 # aglow run talks to an Afterglow on the same host, from a remote host to the
 # Afterglow that afterglow ssh came from, and in a pane of a mux session to
 # aglow-mux, which passes it to the window that shows the session.
@@ -24,15 +25,9 @@ function(aglow_write_file path content)
 endfunction()
 
 # A sanitizer build (the debug preset) cannot link statically: aglow is then
-# a dynamic binary, and the test of a static one is left out. The flags of
-# each build type count too, as the compiler gets them.
-set(AGLOW_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_C_FLAGS} ${CMAKE_EXE_LINKER_FLAGS}")
-foreach(config IN LISTS CMAKE_BUILD_TYPE CMAKE_CONFIGURATION_TYPES)
-    string(TOUPPER "${config}" config)
-    string(APPEND AGLOW_FLAGS " ${CMAKE_CXX_FLAGS_${config}} ${CMAKE_C_FLAGS_${config}} ${CMAKE_EXE_LINKER_FLAGS_${config}}")
-endforeach()
-string(FIND "${AGLOW_FLAGS}" "-fsanitize" AGLOW_SANITIZED)
-if(AGLOW_SANITIZED EQUAL -1)
+# a dynamic binary, and the test of a static one is left out.
+afterglow_sanitized(AGLOW_SANITIZED)
+if(NOT AGLOW_SANITIZED)
     set(AGLOW_STATIC ON)
     # glibc and libstdc++ come as static libraries in their own packages on
     # some distributions. Without them, say what to install, before a long build.
@@ -130,6 +125,8 @@ add_executable(aglow
     Clipboard.cpp
     Commands.h
     Dnd.cpp
+    External.cpp
+    External.h
     Icat.cpp
     Image.cpp
     Image.h
@@ -140,7 +137,16 @@ add_executable(aglow
     Tty.h
 )
 target_link_libraries(aglow PRIVATE Afterglow::Proto Afterglow::Image)
+# The children that aglow forks close aglow's descriptors with the inline
+# AfterglowPty/CloseFrom.h: its include directory, not a link, which a build
+# of aglow alone has before libs/afterglow-pty is added, or without it.
+target_include_directories(aglow PRIVATE "${PROJECT_SOURCE_DIR}/libs/afterglow-pty/include")
 target_compile_definitions(aglow PRIVATE AGLOW_VERSION="${PROJECT_VERSION}")
+# With a sanitizer, the decoder child keeps aglow's standard error for its
+# reports. Otherwise it has none.
+if(AGLOW_SANITIZED)
+    target_compile_definitions(aglow PRIVATE AGLOW_SANITIZER_BUILD=1)
+endif()
 # shm_open (icat's shared memory) moved from librt into libc in glibc 2.34.
 include(CheckSymbolExists)
 check_symbol_exists(shm_open "sys/mman.h" AGLOW_SHM_OPEN_IN_LIBC)
@@ -243,17 +249,17 @@ if(BUILD_TESTING AND TARGET afterglow)
     # builds them: where find_package finds no Qt, with only phosphor-channel
     # of the Phosphor checkout of this build, and with no checkout for aglow
     # without aglow-mux, installed into a directory of the build tree. It
-    # compiles zlib-ng, the image codecs, afterglow-proto, afterglow-vt,
-    # afterglow-pty, phosphor-channel and mux/ again, so it has the label
-    # slow, and ctest -LE slow leaves it out. It takes the tools and the flags
-    # of this build: with the sanitizers of the debug preset, aglow alone
-    # links dynamically too, and needs no static runtime libraries. It also
-    # takes the places where this build found PCRE2 and its other packages:
+    # compiles zlib-ng, the image codecs, Little CMS, afterglow-proto,
+    # afterglow-vt, afterglow-pty, phosphor-channel and mux/ again, so it has
+    # the label slow, and ctest -LE slow leaves it out. It takes the tools and
+    # the flags of this build: with the sanitizers of the debug preset, aglow
+    # alone links dynamically too, and needs no static runtime libraries. It
+    # also takes the places where this build found PCRE2 and its other packages:
     # CMAKE_PREFIX_PATH, pkg-config, the toolchain file and the sysroot.
     # PROCESSORS tells ctest -j the jobs of its build, which its build of
-    # libjpeg-turbo takes too (AFTERGLOW_CODEC_BUILD_JOBS). The check turns
-    # off the link time optimization of afterglow-vt, whose -flto=auto would
-    # run more jobs (libs/afterglow-vt/CMakeLists.txt).
+    # libjpeg-turbo takes too (AFTERGLOW_CODEC_BUILD_JOBS). The check turns off
+    # the link time optimization of afterglow-vt, whose -flto=auto would run
+    # more jobs (libs/afterglow-vt/CMakeLists.txt).
     set(AGLOW_ONLY_JOBS 2)
     # A list as one argument with no semicolon: a colon separates the
     # directories, as in the environment variable CMAKE_PREFIX_PATH.
@@ -296,7 +302,7 @@ if(BUILD_TESTING)
     find_package(Python3 3.9 COMPONENTS Interpreter)
     if(NOT Python3_Interpreter_FOUND)
         message(STATUS "aglow: Python 3.9 or later was not found, so the tests aglow_clipboard_pty, aglow_run_pty, aglow_tmux_pty, "
-                       "aglow_icat_decode, aglow_clipboard_cases and aglow_icat_render are left out")
+                       "aglow_icat_decode, aglow_icat_external, aglow_clipboard_cases and aglow_icat_render are left out")
     else()
         # aglow clipboard against a terminal that the test plays in a pseudo-terminal.
         add_test(NAME aglow_clipboard_pty
@@ -313,8 +319,9 @@ if(BUILD_TESTING)
         add_test(NAME aglow_tmux_pty
                  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/tmux_pty.py $<TARGET_FILE:aglow>)
         set_tests_properties(aglow_tmux_pty PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
-        # Crafted images (GIF, WebP, BMP, PNG, JPEG), and how aglow icat
-        # handles them: icat_decode.py lists the cases.
+        # Crafted images (GIF, WebP, BMP, PNG and APNG, JPEG, TIFF, netPBM,
+        # ICC profiles), file URIs, and how aglow icat handles them:
+        # icat_decode.py lists the cases.
         add_test(NAME aglow_icat_decode
                  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/icat_decode.py $<TARGET_FILE:aglow>)
         # A TMUX that names no server: the test must keep it from aglow, or aglow
@@ -322,6 +329,13 @@ if(BUILD_TESTING)
         set(AGLOW_FOREIGN_TMUX "TMUX=${CMAKE_CURRENT_BINARY_DIR}/no-tmux-server,0,0")
         # It skips (77) after the other cases when the user reads a directory of mode 0 (root).
         set_tests_properties(aglow_icat_decode PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT "${AGLOW_FOREIGN_TMUX}")
+        # aglow icat with the programs that it runs: ImageMagick for the
+        # formats that it does not read, and curl for URLs, against a local
+        # HTTP server. It skips (77) after the other cases without magick or
+        # curl, or a format that magick cannot write.
+        add_test(NAME aglow_icat_external
+                 COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/icat_external.py $<TARGET_FILE:aglow>)
+        set_tests_properties(aglow_icat_external PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77 ENVIRONMENT "${AGLOW_FOREIGN_TMUX}")
         add_test(NAME aglow_clipboard_cases
                  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/clipboard_cases.py $<TARGET_FILE:aglow>)
         # It skips (77) on a kernel that does not show a process that waits in

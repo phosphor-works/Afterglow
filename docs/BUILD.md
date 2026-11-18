@@ -27,7 +27,7 @@ To build `aglow` and `aglow-mux` alone, without Qt, see [build aglow and aglow-m
   The shell completions offer no script commands. For these five commands, they complete file names.
   A build with `-DAFTERGLOW_BUILD_FUZZERS=ON` does not build `aglow`.
 
-The build compiles the Phosphor libraries, zlib-ng, xxHash, libpng, libjpeg-turbo and libwebp from their [source archives](#source-archives).
+The build compiles the Phosphor libraries, zlib-ng, xxHash, libpng, libjpeg-turbo, libwebp and Little CMS from their [source archives](#source-archives).
 These are C sources, so the build needs the C compiler.
 It does not use the copies that the system has.
 The libjpeg-turbo archive also holds libspng and zlib, for image files of its own API.
@@ -42,8 +42,9 @@ The notice of libjpeg-turbo covers them, and a fix of either comes with a releas
 | KF6 GlobalAccel | Registers the quick terminal shortcut with KDE global shortcuts | The desktop portal registers the shortcut. |
 | `qqc2-desktop-style` | Draws tabs, menus and prompts in the Plasma style | The controls use the Fusion style. |
 | `bash-completion` | Loads the Bash completions of `afterglow` and `aglow` | Bash does not complete `afterglow` and `aglow` arguments. |
+| ImageMagick 7 (`magick`), at run time | Lets `aglow icat` show AVIF, HEIC, JPEG XL, QOI, SVG, TGA, ICO and CUR images. With it, `aglow icat` also shows a BMP with JPEG or PNG data, and a BMP with run-length encoding that does not fit its depth. See [other formats and URLs](DESKTOP.md#other-formats-and-urls). | `aglow icat` refuses these images with a message. |
+| `curl`, at run time | Lets `aglow icat` show images from `http`, `https` and `ftp` URLs | `aglow icat` refuses these URLs with a message. |
 | NASM | Builds the SIMD code of libjpeg-turbo on x86-64 computers | `aglow` and `aglow-mux` decode JPEG images more slowly. The configuration says so. |
-| Qt Image Formats | Decodes WebP images that a program shows in a pane outside a session | Such a pane does not show WebP images. A session pane shows them. |
 | Python 3 (3.9 or later for the tests of `aglow`) | Runs the Python tests in CTest | These tests are not added to CTest. The configuration names the tests of `aglow` that it leaves out. With `AFTERGLOW_NATIVE_TESTS=ON`, the configuration stops with an error. |
 
 ## Source archives
@@ -61,6 +62,7 @@ The first configuration downloads source archives. It needs network access one t
 | libpng | `cmake/AfterglowDependencies.cmake` | Decodes PNG images in `aglow` and `aglow-mux` |
 | libjpeg-turbo | `cmake/AfterglowDependencies.cmake` | Decodes JPEG images in `aglow` and `aglow-mux` |
 | libwebp | `cmake/AfterglowDependencies.cmake` | Decodes WebP images and animations in `aglow` and `aglow-mux` |
+| Little CMS (lcms2) | `cmake/AfterglowDependencies.cmake` | Converts images with an ICC profile or a cICP chunk to sRGB in `aglow` and `aglow-mux` |
 
 CMake checks each archive against the SHA-256 hash in its pin file.
 The archives go into the CPM cache.
@@ -158,7 +160,7 @@ A distribution can also package `aglow` and `aglow-mux` on their own from this b
 This build needs CMake 3.21 or later, a C compiler, a C++20 compiler and the static C and C++ runtime libraries.
 NASM is optional, as in the full build.
 It does not need Qt.
-It compiles zlib-ng, xxHash, libpng, libjpeg-turbo and libwebp from their [source archives](#source-archives), as the full build does.
+It compiles zlib-ng, xxHash, libpng, libjpeg-turbo, libwebp and Little CMS from their [source archives](#source-archives), as the full build does.
 
 `aglow-mux` also needs:
 
@@ -213,7 +215,7 @@ sudo cmake --install build-aglow
 ```
 
 The installation contains `bin/aglow`, its license notices in `share/licenses/aglow`, and its Bash, Zsh and Fish completions.
-The license notices are those of zlib-ng, xxHash, libpng, libjpeg-turbo (with `README.ijg` and `NOTICE.IJG`), libwebp and the Unicode Character Database (`LICENSE.Unicode`).
+The license notices are those of zlib-ng, xxHash, libpng, libjpeg-turbo (with `README.ijg` and `NOTICE.IJG`), libwebp, Little CMS and the Unicode Character Database (`LICENSE.Unicode`).
 The table in [install](#install) lists them.
 A static `aglow` also has the notices of glibc and libstdc++.
 The texts of the licenses that they name are also installed. These are `LGPL-2.1-or-later.txt`, and `GPL-3.0-or-later.txt` for a static `aglow`.
@@ -241,6 +243,7 @@ It also includes the shell integration scripts, the API declarations, the exampl
 It also includes the shell completions for Bash, Zsh and Fish.
 It installs `aglow` in the same directory as `afterglow`, with its Bash, Zsh and Fish completions.
 It installs the [mux daemon](MUX.md) `aglow-mux` in the same directory as `afterglow`, because `afterglow mux` runs it from there.
+A pane also decodes the images that programs send with the `aglow-mux` next to `afterglow`. Without it, these images do not show.
 The Fish completions need Fish 4 or later.
 The license notices of the third-party code in the binaries go in `share/licenses/afterglow`:
 
@@ -253,6 +256,7 @@ The license notices of the third-party code in the binaries go in `share/license
 | `README.ijg` | The license of the Independent JPEG Group, which the notice of libjpeg-turbo names | Always |
 | `LICENSE.libwebp` | The notice of libwebp, which `aglow-mux` also contains | Always |
 | `PATENTS.libwebp` | The patent grant of libwebp | Always |
+| `LICENSE.lcms2` | The notice of Little CMS, which `aglow-mux` also contains | Always |
 | `LICENSE.Unicode` | The Unicode License v3 of the Unicode Character Database, from which the character width and grapheme tables of `afterglow` and `aglow-mux` come | Always |
 | `NOTICE.IJG` | The statement that `aglow` and `aglow-mux` are based in part on the work of the Independent JPEG Group | Always |
 | `LICENSE.Luau` and `LICENSE.Lua` | The notices of Luau and of Lua, which the scripts of `afterglow` run with | Unless the build uses the system's Luau (`PHOSPHOR_SYSTEM_LUAU`) |

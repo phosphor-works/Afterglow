@@ -13,26 +13,31 @@ do not all fit in the 320 MiB budget of an image and its warning (and frames
 that fit exactly), --loop 0, which decodes one frame, the delays of frames as
 kitty takes them, a frame far larger than its canvas, a frame partly off the
 canvas, interlaced frames, the least code size, LZW without a leading clear
-code, a GIF damaged after its frames, a WebP and its animation, BMP gaps and
-top-down rows, invalid PNG depths, a valid PNG sent as it is and a damaged one
-that is not, the longest side, the EXIF orientation of a JPEG, a PNG and a
-WebP, a JPEG without Huffman tables (as Motion JPEG), and a corrupt file,
-which the decoder child must turn into an error and not a crash of aglow. It
-also checks that a subdirectory that cannot be read leaves out only itself,
-that a named pipe in a directory is no image, that aglow stops when its
-output closes, and that a signal to aglow ends a decode that does not end,
-and the decoder child with it.
+code, a GIF damaged after its frames, a WebP and its animation, TIFF (raw,
+PackBits, and a compression that aglow refuses), netPBM (binary and plain),
+an APNG and the times of its frames, BMP gaps and top-down rows, invalid PNG
+depths, a valid PNG sent as it is and a damaged one that is not, ICC profiles
+that convert to sRGB, the longest side, the orientation of a JPEG, a PNG, a
+WebP and a TIFF, a JPEG without Huffman tables (as Motion JPEG), and a
+corrupt file, which the decoder child must turn into an error and not a
+crash of aglow. It also checks file URIs, that a subdirectory that cannot be
+read leaves out only itself, that a named pipe in a directory is no image,
+that aglow stops when its output closes, and that a signal to aglow ends a
+decode that does not end, and the decoder child with it, which runs under a
+filter of its system calls.
 
 It exits with 77 (skipped) after the other cases when it runs as a user that
 reads a directory of mode 0, such as root: the subdirectory case cannot run.
 
 aglow runs with --passthrough=none and without TMUX, so that it never changes
-the settings of a tmux that runs the test.
+the settings of a tmux that runs the test, and in a session of its own, with
+no controlling terminal: it never reaches the terminal that runs the test.
 """
 import base64
 import os
 import re
 import signal
+import socket
 import struct
 import subprocess
 import sys
@@ -46,6 +51,11 @@ def check(condition, *detail):
     """Raises AssertionError when condition is false. Not assert: python -O must not turn the checks off."""
     if not condition:
         raise AssertionError(*detail)
+
+
+def near(px, want, tolerance=1):
+    """Whether each channel of PX is within TOLERANCE of WANT."""
+    return all(abs(a - b) <= tolerance for a, b in zip(px, want))
 
 
 # Images.
@@ -158,6 +168,55 @@ def png(width, height, depth, colour, raw, extra=b""):
             + extra + png_chunk(b"IDAT", zlib.compress(raw)) + png_chunk(b"IEND", b""))
 
 
+def png_rgba(width, height, rgba):
+    """An 8-bit RGBA PNG of one colour, RGBA."""
+    return png(width, height, 8, 6, b"".join(b"\0" + bytes(rgba) * width for _ in range(height)))
+
+
+def tiff(width, height, kind, samples, data, compression=1, orientation=None):
+    """A little-endian TIFF of one strip: KIND is its photometric interpretation, of 8-bit SAMPLES, with an
+    Orientation tag when ORIENTATION is given."""
+    if compression == 32773:
+        # PackBits: literal runs of up to 128 bytes.
+        data = b"".join(bytes([len(data[at:at + 128]) - 1]) + data[at:at + 128] for at in range(0, len(data), 128))
+    entries = [(256, 4, [width]), (257, 4, [height]), (258, 3, [8] * samples), (259, 3, [compression]),
+               (262, 3, [kind]), (273, 4, [0]), (277, 3, [samples]), (278, 4, [height]), (279, 4, [len(data)])]
+    if orientation is not None:
+        # The tags go in their order: Orientation (274) after StripOffsets (273).
+        entries.insert(6, (274, 3, [orientation]))
+    start = 8 + 2 + 12 * len(entries) + 4
+    extra = b""
+    fields = b""
+    for tag, kind_of, values in entries:
+        packed = b"".join(struct.pack("<H" if kind_of == 3 else "<I", v) for v in values)
+        if tag == 273:
+            packed = b""  # set below, once the extra values have their place
+        if len(packed) > 4:
+            fields += struct.pack("<HHII", tag, kind_of, len(values), start + len(extra))
+            extra += packed
+        else:
+            fields += struct.pack("<HHI", tag, kind_of, len(values)) + (packed or b"@@@@").ljust(4, b"\0")
+    fields = fields.replace(b"@@@@", struct.pack("<I", start + len(extra)))
+    return b"II*\0" + struct.pack("<I", 8) + struct.pack("<H", len(entries)) + fields + b"\0" * 4 + extra + data
+
+
+def apng(frames):
+    """A 1 by 1 APNG of FRAMES, each (r, g, b, a, milliseconds), its first frame the default image."""
+    out = (b"\x89PNG\r\n\x1a\n" + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+           + png_chunk(b"acTL", struct.pack(">II", len(frames), 0)))
+    sequence = 0
+    for index, (r, g, b, a, ms) in enumerate(frames):
+        out += png_chunk(b"fcTL", struct.pack(">IIIIIHHBB", sequence, 1, 1, 0, 0, ms, 1000, 0, 0))
+        sequence += 1
+        data = zlib.compress(bytes([0, r, g, b, a]))
+        if index == 0:
+            out += png_chunk(b"IDAT", data)
+        else:
+            out += png_chunk(b"fdAT", struct.pack(">I", sequence) + data)
+            sequence += 1
+    return out + png_chunk(b"IEND", b"")
+
+
 def tiff_orientation(value):
     """A TIFF block of one IFD with the EXIF orientation VALUE."""
     return b"MM\x00\x2a" + struct.pack(">I", 8) + struct.pack(">H", 1) + struct.pack(">HHIHH", 0x0112, 3, 1, value, 0) + b"\0\0\0\0"
@@ -226,6 +285,64 @@ def jpeg_without_tables():
     return b"\xff\xd8" + quant + frame + scan + data + b"\xff\xd9"
 
 
+# An RGB profile compatible with Adobe RGB (1998), made with Little CMS (its primaries, D65,
+# gamma 563/256), and images of (100, 150, 200) in it, made with Pillow: Pillow's Little CMS
+# converts them to sRGB as (66, 151, 202) for the JPEG (which decodes as (100, 150, 199)) and
+# (66, 151, 203) for the others. The same files are in libs/afterglow-image/tests/ImageFiles.h.
+ADOBE_ICC = bytes.fromhex(
+    "000002786c636d73044000006d6e74725247422058595a2007ea000b0010001300070031616373704150504c000000000000000000000000"
+    "0000000000000000000000000000f6d6000100000000d32d6c636d7300000000000000000000000000000000000000000000000000000000"
+    "000000000000000000000000000000000000000b646573630000010800000072637072740000017c0000004c77747074000001c800000014"
+    "63686164000001dc0000002c7258595a00000208000000146258595a0000021c000000146758595a00000230000000147254524300000244"
+    "000000106754524300000244000000106254524300000244000000106368726d00000254000000246d6c756300000000000000010000000c"
+    "656e5553000000560000001c004100660074006500720067006c006f007700200074006500730074003a002000410064006f006200650020"
+    "005200470042002000280031003900390038002900200063006f006d00700061007400690062006c006500006d6c75630000000000000001"
+    "0000000c656e5553000000300000001c004e006f00200063006f0070007900720069006700680074002c0020007500730065002000660072"
+    "00650065006c007958595a20000000000000f6d6000100000000d32d736633320000000000010c42000005defffff325000007930000fd90"
+    "fffffba1fffffda2000003dc0000c06e58595a200000000000009c1800004fa5000004fc58595a2000000000000026310000102f0000be9b"
+    "58595a20000000000000348d0000a02c00000f95706172610000000000000000000233006368726d00000000000300000000a3d70000547b"
+    "000035c30000b5c30000266600000f5c")
+# 8 by 8.
+JPEG_ADOBE = bytes.fromhex(
+    "ffd8ffe000104a46494600010100000100010000ffe202884943435f50524f46494c45000101000002786c636d73044000006d6e74725247"
+    "422058595a2007ea000b0010001300070031616373704150504c0000000000000000000000000000000000000000000000000000f6d60001"
+    "00000000d32d6c636d7300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    "000b646573630000010800000072637072740000017c0000004c77747074000001c80000001463686164000001dc0000002c7258595a0000"
+    "0208000000146258595a0000021c000000146758595a00000230000000147254524300000244000000106754524300000244000000106254"
+    "524300000244000000106368726d00000254000000246d6c756300000000000000010000000c656e5553000000560000001c004100660074"
+    "006500720067006c006f007700200074006500730074003a002000410064006f006200650020005200470042002000280031003900390038"
+    "002900200063006f006d00700061007400690062006c006500006d6c756300000000000000010000000c656e5553000000300000001c004e"
+    "006f00200063006f0070007900720069006700680074002c002000750073006500200066007200650065006c007958595a20000000000000"
+    "f6d6000100000000d32d736633320000000000010c42000005defffff325000007930000fd90fffffba1fffffda2000003dc0000c06e5859"
+    "5a200000000000009c1800004fa5000004fc58595a2000000000000026310000102f0000be9b58595a20000000000000348d0000a02c0000"
+    "0f95706172610000000000000000000233006368726d00000000000300000000a3d70000547b000035c30000b5c30000266600000f5cffdb"
+    "0043000101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101"
+    "0101010101010101010101ffdb00430101010101010101010101010101010101010101010101010101010101010101010101010101010101"
+    "010101010101010101010101010101010101010101010101ffc00011080008000803011100021101031101ffc4001f000001050101010101"
+    "0100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d010203000411051221314106135161"
+    "07227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758"
+    "595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4"
+    "c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffc4001f0100030101010101010101010000000000"
+    "000102030405060708090a0bffc400b511000201020404030407050404000102770001020311040521310612415107617113223281081442"
+    "91a1b1c109233352f0156272d10a162434e125f11718191a262728292a35363738393a434445464748494a535455565758595a6364656667"
+    "68696a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9ca"
+    "d2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9faffda000c03010002110311003f00f68aff00420fe173ffd9")
+# 4 by 4, lossless.
+WEBP_ADOBE = bytes.fromhex(
+    "52494646b002000057454250565038580a000000200000000300000300004943435078020000000002786c636d73044000006d6e74725247"
+    "422058595a2007ea000b0010001300070031616373704150504c0000000000000000000000000000000000000000000000000000f6d60001"
+    "00000000d32d6c636d7300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    "000b646573630000010800000072637072740000017c0000004c77747074000001c80000001463686164000001dc0000002c7258595a0000"
+    "0208000000146258595a0000021c000000146758595a00000230000000147254524300000244000000106754524300000244000000106254"
+    "524300000244000000106368726d00000254000000246d6c756300000000000000010000000c656e5553000000560000001c004100660074"
+    "006500720067006c006f007700200074006500730074003a002000410064006f006200650020005200470042002000280031003900390038"
+    "002900200063006f006d00700061007400690062006c006500006d6c756300000000000000010000000c656e5553000000300000001c004e"
+    "006f00200063006f0070007900720069006700680074002c002000750073006500200066007200650065006c007958595a20000000000000"
+    "f6d6000100000000d32d736633320000000000010c42000005defffff325000007930000fd90fffffba1fffffda2000003dc0000c06e5859"
+    "5a200000000000009c1800004fa5000004fc58595a2000000000000026310000102f0000be9b58595a20000000000000348d0000a02c0000"
+    "0f95706172610000000000000000000233006368726d00000000000300000000a3d70000547b000035c30000b5c30000266600000f5c5650"
+    "384c110000002f03c000000750cb9215b9ff8188e87f0000")
+
 def children(pid):
     """The processes whose parent is PID."""
     found = []
@@ -261,13 +378,30 @@ def alive(pid):
 # What aglow sends.
 
 ENVIRONMENT = {key: value for key, value in os.environ.items() if key != "TMUX"}
+# aglow icat with its output in escape codes, as pixels where it decodes, in a window that it does not ask for.
+ICAT = ["icat", "--transfer-mode=stream", "--stdin=no", "--fit=none", "--passthrough=none", "--use-window-size=80,24,800,480"]
 
 
-def run(aglow, path, *options):
-    result = subprocess.run([aglow, "icat", "--transfer-mode=stream", "--stdin=no", "--fit=none", "--passthrough=none",
-                             "--use-window-size=80,24,800,480", *options, str(path)],
-                            capture_output=True, env=ENVIRONMENT, timeout=60)
+def run(aglow, path, *options, env=None, cwd=None, timeout=60):
+    """aglow icat on PATH: its exit code, standard output and standard error. A session of its own: aglow has no
+    controlling terminal, and never opens the terminal of the test."""
+    result = subprocess.run([aglow, *ICAT, *options, str(path)], capture_output=True, env=env or ENVIRONMENT, cwd=cwd,
+                            timeout=timeout, start_new_session=True)
     return result.returncode, result.stdout, result.stderr.decode(errors="replace")
+
+
+# The processors whose system calls the decoder child's filter knows (AfterglowProto/DecodeFilter.h). On another,
+# the child decodes with its limits alone.
+FILTERED = os.uname().machine in ("x86_64", "aarch64", "riscv64", "ppc64le")
+
+
+def seccomp(pid):
+    """The Seccomp and NoNewPrivs lines of /proc/PID/status, or None when PID is gone."""
+    try:
+        lines = Path(f"/proc/{pid}/status").read_text().splitlines()
+    except OSError:
+        return None
+    return {line.split(":")[0]: line.split(":")[1].strip() for line in lines if line.startswith(("Seccomp:", "NoNewPrivs:"))}
 
 
 def gaps(output):
@@ -452,6 +586,27 @@ def main():
         check(pixels(sent[0]) == [red] * 16 and pixels(sent[1]) == [blue] * 16, pixels(sent[0])[:1], pixels(sent[1])[:1])
         print("WebP and its animation: passed", flush=True)
 
+        # TIFF and netPBM, as kitten icat reads them, and an APNG, whose frames go as an animation: as a
+        # PNG, a terminal would show its first frame only.
+        code, sent, err = show("rgb.tif", tiff(2, 1, 2, 3, bytes([255, 0, 0, 0, 0, 255])))
+        check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [red, blue], err, sent and pixels(sent[0]))
+        code, sent, err = show("grey.tif", tiff(2, 1, 1, 1, bytes([16, 240]), compression=32773))
+        check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [(16, 16, 16, 255), (240, 240, 240, 255)], err)
+        code, sent, err = show("jpeg.tif", tiff(2, 1, 1, 1, bytes([16, 240]), compression=7))
+        check(code != 0 and "compression 7" in err and not sent, code, err)
+        code, sent, err = show("grey.pgm", b"P5\n2 1\n255\n\x10\xf0")
+        check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [(16, 16, 16, 255), (240, 240, 240, 255)], err)
+        code, sent, err = show("plain.ppm", b"P3\n# red, then blue\n2 1\n15\n15 0 0 0 0 15\n")
+        check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [red, blue], err)
+        code, out, err = show_raw("animated.png", apng([(255, 0, 0, 255, 100), (0, 0, 255, 255, 200)]))
+        sent = transmissions(out)
+        check(code == 0 and len(sent) == 2 and sent[0]["keys"]["a"] == "T" and sent[0]["keys"].get("f") != "100"
+              and sent[1]["keys"]["a"] == "f", err, len(sent), sent and sent[0]["keys"])
+        # The first frame gets its 100 ms from a=a, the second its 200 ms from a=f.
+        check(pixels(sent[0]) == [red] and pixels(sent[1]) == [blue] and gaps(out) == [100]
+              and sent[1]["keys"].get("z") == "200", pixels(sent[0]), pixels(sent[1]), gaps(out), sent[1]["keys"])
+        print("TIFF, netPBM and APNG: passed", flush=True)
+
         # A frame of 65535 pixels a side on a canvas of one, with data that spells strings of 4090
         # pixels: decoding stops once no pixel can land, in far less than the CPU limit of the child.
         # The stream is built before the clock starts: only aglow's decode is timed.
@@ -519,6 +674,27 @@ def main():
               code, err, sent and sent[0]["keys"])
         print("a damaged PNG is not sent as it is: passed", flush=True)
 
+        # Colour: a JPEG and a WebP with an ICC profile convert to sRGB; so does a PNG that aglow decodes
+        # (mirrored). One that goes as it is keeps its profile, for the terminal (Pillow's rounding: within 1).
+        for name, data, size, want in (("adobe.jpg", JPEG_ADOBE, 64, (66, 151, 202, 255)),
+                                       ("adobe.webp", WEBP_ADOBE, 16, (66, 151, 203, 255))):
+            code, sent, err = show(name, data)
+            check(code == 0 and len(sent) == 1, name, code, err)
+            got = pixels(sent[0])
+            check(len(got) == size and all(near(px, want) for px in got), name, got[:2])
+        icc_chunk = png_chunk(b"iCCP", b"adobe\0\0" + zlib.compress(ADOBE_ICC))
+        adobe_png = png(2, 1, 8, 2, b"\0" + bytes([100, 150, 200, 10, 200, 30]), icc_chunk)
+        code, sent, err = show("adobe.png", adobe_png)
+        check(code == 0 and len(sent) == 1 and sent[0]["keys"].get("f") == "100" and sent[0]["pixels"] == adobe_png, err)
+        code, sent, err = show("adobe-mirrored.png", adobe_png, "--mirror=horizontal")
+        check(code == 0 and len(sent) == 1 and sent[0]["keys"].get("f") != "100", err)
+        got = pixels(sent[0])
+        # Mirrored, its first pixel is the file's second: (10, 200, 30) in Adobe RGB, a green outside sRGB
+        # that clips to (0, 201, 0). Its second is (100, 150, 200), the colour of the JPEG and the WebP. The
+        # values are those of Pillow's ImageCms.profileToProfile from ADOBE_ICC to its sRGB profile.
+        check(near(got[0], (0, 201, 0, 255)) and near(got[1], (66, 151, 203, 255)), got)
+        print("ICC profiles convert to sRGB: passed", flush=True)
+
         # The longest side, from the header: 10,001 pixels is too long, also with all its pixels well
         # within the budget, and 10,000 decodes.
         code, sent, err = show("wide.png", png(10001, 1, 8, 2, b""))
@@ -551,7 +727,11 @@ def main():
             keys = sent[0]["keys"]
             check(keys.get("f") != "100" and keys.get("s") == "1" and keys.get("v") == "2", name, keys)
             check(pixels(sent[0]) == [red, blue], name, pixels(sent[0]))
-        print("PNG and WebP EXIF orientation: passed", flush=True)
+        # The Orientation tag of a TIFF, the same turn.
+        code, sent, err = show("turned.tif", tiff(2, 1, 2, 3, bytes([255, 0, 0, 0, 0, 255]), orientation=6))
+        check(code == 0 and len(sent) == 1 and sent[0]["keys"].get("s") == "1" and sent[0]["keys"].get("v") == "2"
+              and pixels(sent[0]) == [red, blue], code, err, sent and sent[0]["keys"], sent and pixels(sent[0]))
+        print("PNG, WebP and TIFF orientation: passed", flush=True)
 
         # A JPEG without DHT: libjpeg-turbo takes the Huffman tables of Annex K for it.
         code, sent, err = show("motion.jpg", jpeg_without_tables())
@@ -562,12 +742,27 @@ def main():
         # Corrupt data is an error from the decoder, and aglow goes on to the next image.
         corrupt = root / "corrupt.png"
         corrupt.write_bytes(valid[:41] + b"\xff" * 64)
-        result = subprocess.run([aglow, "icat", "--transfer-mode=stream", "--stdin=no", "--fit=none", "--passthrough=none",
-                                 "--use-window-size=80,24,800,480", "--mirror=horizontal", str(corrupt),
-                                 str(root / "good.png")], capture_output=True, env=ENVIRONMENT, timeout=60)
+        result = subprocess.run([aglow, *ICAT, "--mirror=horizontal", str(corrupt), str(root / "good.png")],
+                                capture_output=True, env=ENVIRONMENT, timeout=60, start_new_session=True)
         check(result.returncode == 1 and len(transmissions(result.stdout)) == 1, result.returncode, result.stderr)
         check(not_crashed(result.stderr.decode(errors="replace")), result.stderr)
         print("corrupt data: passed", flush=True)
+
+        # File URIs: a scheme of any case, and no host, localhost or the name of this computer, of any case.
+        # A name that starts with "file:" and no slash is a relative path. A URI of another host is refused.
+        good = str(root / "good.png")
+        uris = ["FILE:" + good, "file://localhost" + good, "file://LocalHost" + good]
+        if socket.gethostname():
+            uris.append("file://" + socket.gethostname().upper() + good)
+        for uri in uris:
+            code, out, err = run(aglow, uri)
+            check(code == 0 and len(transmissions(out)) == 1, uri, code, err)
+        (root / "file:relative.png").write_bytes(valid)
+        code, out, err = run(aglow, "file:relative.png", cwd=root)
+        check(code == 0 and len(transmissions(out)) == 1, code, err)
+        code, out, err = run(aglow, "file://elsewhere.invalid" + good)
+        check(code == 1 and not transmissions(out) and "not a file of this computer" in err, code, err)
+        print("file URIs: passed", flush=True)
 
         # A named pipe with an image name in a directory is no image file: aglow does not wait for a writer.
         pipes = root / "pipes"
@@ -586,9 +781,8 @@ def main():
         reader, writer = os.pipe()
         os.close(reader)
         try:
-            result = subprocess.run([aglow, "icat", "--transfer-mode=stream", "--stdin=no", "--fit=none", "--passthrough=none",
-                                     "--use-window-size=80,24,800,480", str(closed)], stdout=writer, stderr=subprocess.PIPE,
-                                    env=ENVIRONMENT, timeout=60)
+            result = subprocess.run([aglow, *ICAT, str(closed)], stdout=writer, stderr=subprocess.PIPE, env=ENVIRONMENT,
+                                    timeout=60, start_new_session=True)
         finally:
             os.close(writer)
         failures = result.stderr.decode(errors="replace").count("cannot write to the terminal")
@@ -617,24 +811,27 @@ def main():
         width = height = 8000
         (root / "big.png").write_bytes(png_of_rows(width, height, b"\0" * (1 + width * 3)))
         for stop in (signal.SIGTERM, signal.SIGKILL):
-            process = subprocess.Popen([aglow, "icat", "--transfer-mode=stream", "--stdin=no", "--fit=none",
-                                        "--passthrough=none", "--use-window-size=80,24,800,480", "--mirror=horizontal",
-                                        str(root / "big.png")], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                                       env=ENVIRONMENT)
+            process = subprocess.Popen([aglow, *ICAT, "--mirror=horizontal", str(root / "big.png")],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=ENVIRONMENT,
+                                       start_new_session=True)
             decoder = None
             try:
-                # The child sets its limits after PR_SET_PDEATHSIG. Stopped before that, it would not go
-                # with a killed aglow: wait until its limits differ from those of aglow.
+                # The child sets its limits after PR_SET_PDEATHSIG, and its filter of system calls last.
+                # Stopped before that, it would not go with a killed aglow: wait until its limits differ
+                # from those of aglow and its filter is on.
                 deadline = time.monotonic() + 30
                 while decoder is None and process.poll() is None and time.monotonic() < deadline:
                     found = children(process.pid)
                     if found:
                         own = limits(found[0])
-                        if own is not None and own != limits(process.pid):
+                        filtered = not FILTERED or (seccomp(found[0]) or {}).get("Seccomp") == "2"
+                        if own is not None and own != limits(process.pid) and filtered:
                             decoder = found[0]
                     if decoder is None:
                         time.sleep(0.005)
                 check(decoder is not None, "no decoder child that passed its setup")
+                # The filter, with no way to gain privileges.
+                check(not FILTERED or seccomp(decoder) == {"NoNewPrivs": "1", "Seccomp": "2"}, seccomp(decoder))
                 os.kill(decoder, signal.SIGSTOP)
                 process.send_signal(stop)
                 code = process.wait(timeout=10)

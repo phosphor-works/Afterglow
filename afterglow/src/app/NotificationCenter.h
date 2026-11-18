@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "../config/NotificationFilter.h"
+
 #include <AfterglowVt/Notifications.h>
 
 #include <QElapsedTimer>
@@ -15,6 +17,8 @@
 #include <QVariantMap>
 
 #include <optional>
+#include <string>
+#include <vector>
 
 namespace Afterglow {
 
@@ -46,11 +50,20 @@ public:
         m_rateWindowMs = windowMs;
     }
 
+    /// Notifications.filters: the rules of the notifications that programs
+    /// send and that are not shown.
+    void setFilters(std::vector<NotificationFilter> filters) { m_filters = std::move(filters); }
+
     /// An OSC 99 request from @p pane. The window has already applied the
-    /// request's occasion (always / unfocused / invisible).
+    /// request's occasion (always / unfocused / invisible). Its icon goes in
+    /// the 'g' cache first. Then Notifications.filters applies: a filtered
+    /// update closes the notification that it would replace. Then the rate
+    /// limit, which updates do not count against.
     void handle(Pane* pane, const AfterglowVt::NotificationRequest& request);
     /// A plain notification that a program in @p pane asked for (OSC 9,
-    /// OSC 777, program status). It counts against the rate limit.
+    /// OSC 777, program status). Notifications.filters sees @p title as the
+    /// program sent it; an empty one shows as the pane's title. Then it
+    /// counts against the rate limit.
     void showSimple(Pane* pane, const QString& title, const QString& body, int urgency = 1);
     /// Afterglow's own notice about @p pane (which may be null): input
     /// rejected, a command finished, ctl and script notify, project and move
@@ -60,6 +73,12 @@ public:
     /// of a command run that has no client. It counts against the rate
     /// limit of @p pane, or without a pane against one limit of its own.
     void showLimitedNotice(Pane* pane, const QString& title, const QString& body);
+    /// The icons that m_iconCache keeps, the least recently used going first.
+    static constexpr qsizetype MaxCachedIcons = 32;
+    /// The bytes that m_iconCache keeps. It keeps the files as the program
+    /// sent them (PNG, JPEG or GIF), not decoded images: eight of the
+    /// largest that the terminal takes (4 MiB each).
+    static constexpr std::size_t MaxCachedIconBytes = 32u * 1024 * 1024;
 
 private:
     NotificationCenter();
@@ -83,6 +102,7 @@ private:
         QString title;
         QString body; ///< plain text
         QString icon;
+        std::string imageData; ///< decoded only when the call goes out: an update that waits may be replaced
         QStringList actions;
         QVariantMap hints;
         int timeout = -1;
@@ -108,6 +128,9 @@ private:
     void track(const Pane* pane);
     void forgetServer();
     void queryCapabilities();
+    bool filtered(const NotificationFilter::Fields& fields) const;
+    /// The icon of @p data, decoded once for a run of the same bytes.
+    QImage decodedIcon(const std::string& data);
 
 private Q_SLOTS:
     void onActionInvoked(uint id, const QString& action);
@@ -122,12 +145,18 @@ private:
     QSet<const Pane*> m_tracked; ///< panes whose destruction clears their state
     QElapsedTimer m_clock; ///< monotonic: a clock step must not silence a pane
     int m_rateLimit = 20; ///< until Application sets it from Notifications.rateLimit
+    std::vector<NotificationFilter> m_filters;
     qint64 m_rateWindowMs = 10000; ///< until Application sets it from Notifications.rateWindow
     bool m_bodyMarkup = true; ///< the server reads markup in bodies (GetCapabilities)
     quint64 m_generation = 0;
     quint64 m_server = 0; ///< counts servers that went away: an id from an earlier one names nothing
-    QHash<QString, QImage> m_iconCache; ///< OSC 99 'g' ids
+    /// OSC 99 'g' ids and their bytes, decoded only for a notification that
+    /// shows: one that a filter or the rate limit hides costs no decoding.
+    QHash<QString, std::string> m_iconCache;
     QStringList m_iconCacheOrder;
+    std::size_t m_iconCacheBytes = 0;
+    std::string m_lastIconData; ///< the bytes of m_lastIcon
+    QImage m_lastIcon;
 };
 
 } // namespace Afterglow

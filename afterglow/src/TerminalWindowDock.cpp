@@ -257,6 +257,17 @@ QRect TerminalWindow::layoutDocks(QRect area, std::vector<QRect>* rects, bool* t
     return stackDocks(m_docks, area, &minimum, m.cellWidth, m.cellHeight, rects, tabBarPlaced);
 }
 
+QSize TerminalWindow::dockRoom(const Pane* pane) const
+{
+    // Each dock at its size: an area that every one of them fits in.
+    const QRect roomy(0, 0, 1 << 20, 1 << 20);
+    const auto& m = m_renderer->fonts().fonts->metrics();
+    const QSize minimum = minimumPaneSize();
+    QSize room = roomy.size() - layoutDocks(roomy, nullptr).size();
+    if (pane) room += roomy.size() - stackDocks(pane->docks(), roomy, &minimum, m.cellWidth, m.cellHeight, nullptr, nullptr).size();
+    return room;
+}
+
 QRect TerminalWindow::paneDockArea(const Pane* pane, const QRect& paneRect, std::vector<QRect>* rects) const
 {
     if (pane->docks().empty()) {

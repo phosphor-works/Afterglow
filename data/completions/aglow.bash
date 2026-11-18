@@ -27,7 +27,7 @@ _aglow_table()
             "--transfer-mode detect file stream memory" "--detect-support" "--detection-timeout -"
             "--use-window-size -" "--print-window-size" "--stdin detect yes no" "-z|--z-index -" "-l|--loop -"
             "--hold" "--unicode-placeholder" "--passthrough detect tmux none" "--image-id -"
-            "--engine auto builtin" "--silent" "-n|--no-trailing-newline") ;;
+            "--engine auto builtin magick" "--silent" "-n|--no-trailing-newline") ;;
     clipboard)
         table=("-g|--get-clipboard" "-p|--use-primary" "*-m|--mime -" "*-a|--alias -" "--wait-for-completion"
             "--password -" "--human-name -" "--detection-timeout -") ;;

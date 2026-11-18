@@ -461,8 +461,30 @@ bool kittyFunctional(Key k, KittyKey& out)
     case Key::KeypadBegin:
         out = {1, 'E'};
         return true;
+    case Key::IsoLevel3Shift:
+        out = {57453, 'u'};
+        return true;
+    case Key::IsoLevel5Shift:
+        out = {57454, 'u'};
+        return true;
+    case Key::LeftHyper:
+        out = {57445, 'u'};
+        return true;
+    case Key::LeftMeta:
+        out = {57446, 'u'};
+        return true;
+    case Key::RightHyper:
+        out = {57451, 'u'};
+        return true;
+    case Key::RightMeta:
+        out = {57452, 'u'};
+        return true;
     default:
         break;
+    }
+    if (k >= Key::MediaPlay && k <= Key::MuteVolume) {
+        out = {57428u + std::uint32_t(int(k) - int(Key::MediaPlay)), 'u'};
+        return true;
     }
     if (k >= Key::F13 && k <= Key::F35) {
         out = {57376u + std::uint32_t(int(k) - int(Key::F13)), 'u'};
@@ -481,8 +503,9 @@ bool kittyFunctional(Key k, KittyKey& out)
 
 bool isModifierKey(Key k)
 {
-    return k >= Key::CapsLock && k <= Key::RightSuper && k != Key::PrintScreen && k != Key::Pause && k != Key::Menu
-        && k != Key::ScrollLock;
+    return (k >= Key::CapsLock && k <= Key::RightSuper && k != Key::PrintScreen && k != Key::Pause && k != Key::Menu
+            && k != Key::ScrollLock)
+        || (k >= Key::IsoLevel3Shift && k <= Key::RightMeta);
 }
 
 void appendTextCodepoints(std::string& out, std::string_view utf8)
@@ -526,9 +549,15 @@ std::string encodeKittyKey(const KeyEvent& e, const Modes& modes)
 
     KittyKey kk{0, 'u'};
     const bool functional = kittyFunctional(e.key, kk);
+    // With alternate keys the code is the active layout's own character, and
+    // the base layout key tells which key it is (Ctrl+С: 1089::99). Without
+    // them Ctrl takes the Latin layout's, as Qt's shortcuts do, so that a
+    // program that knows only flag 1 sees Ctrl+C.
+    const bool alternates = (flags & KittyFlag::ReportAlternates) != 0 && !functional;
+    const bool ownLayout = alternates && e.layoutUnshifted != 0;
     if (!functional) {
         // A text key: its code is the unshifted character.
-        char32_t code = e.unshifted;
+        char32_t code = ownLayout ? e.layoutUnshifted : e.unshifted;
         if (code == 0) {
             code = firstCodepoint(e.text);
         }
@@ -570,9 +599,13 @@ std::string encodeKittyKey(const KeyEvent& e, const Modes& modes)
     if (!(letterFinal && kk.number == 1 && modifierParam == 1 && !withEvent)) {
         out += std::to_string(kk.number);
     }
-    if (kk.final == 'u' && (flags & KittyFlag::ReportAlternates) && !functional && (mods & Mod::Shift) && e.shifted != 0
-        && std::uint32_t(e.shifted) != kk.number) {
-        out += ':' + std::to_string(std::uint32_t(e.shifted));
+    if (alternates) {
+        const char32_t shifted = ownLayout ? e.layoutShifted : e.shifted;
+        const bool withShifted = (mods & Mod::Shift) && shifted != 0 && std::uint32_t(shifted) != kk.number;
+        const bool withBase = e.base >= 0x20 && e.base < 0x7F && std::uint32_t(e.base) != kk.number;
+        if (withShifted || withBase) out += ':';
+        if (withShifted) out += std::to_string(std::uint32_t(shifted));
+        if (withBase) out += ':' + std::to_string(std::uint32_t(e.base));
     }
     if (modifierParam != 1 || withEvent || !text.empty()) {
         out += ';' + std::to_string(modifierParam);
@@ -602,6 +635,19 @@ std::string encodeKey(const KeyEvent& e, const Modes& modes)
 
 std::string encodeMouse(const MouseEvent& e, const Modes& modes)
 {
+    if (e.action == MouseAction::Leave) {
+        // kitty's mouse leave: the SGR pixel format only, whatever the
+        // tracking mode, as kitty sends it. Bit 8 is the leave, 32 a motion,
+        // with the modifiers; a program ignores the position.
+        if (modes.mouseFormat != MouseFormat::SgrPixels) return {};
+        int cb = 256 | 32;
+        if (e.mods & Mod::Shift) cb |= 4;
+        if (e.mods & Mod::Alt) cb |= 8;
+        if (e.mods & Mod::Ctrl) cb |= 16;
+        char buf[64];
+        const int n = std::snprintf(buf, sizeof buf, "\x1b[<%d;%d;%dM", cb, e.pixelX + 1, e.pixelY + 1);
+        return std::string(buf, std::size_t(n));
+    }
     const MouseTracking t = modes.mouseTracking;
     if (t == MouseTracking::None) {
         return {};

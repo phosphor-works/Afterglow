@@ -6,6 +6,7 @@
 #include <AfterglowProto/Text.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <set>
 #include <string_view>
@@ -441,6 +442,93 @@ Json::Value toJson(const Layout& layout)
         out.emplace_back("moved", std::move(moved));
     }
     return out;
+}
+
+std::array<std::uint32_t, 4> Layout::neighbors(std::uint32_t pane, double width, double height) const
+{
+    std::array<std::uint32_t, 4> best{};
+    const auto tab = tabOf(pane);
+    if (!tab) return best;
+    struct Box
+    {
+        double left = 0, top = 0, right = 1, bottom = 1;
+    };
+    // The tree in preorder: each split hands its first side, then its
+    // second, to the nodes after it.
+    std::vector<Box> waiting{Box{}};
+    std::vector<std::pair<std::uint32_t, Box>> boxes;
+    for (const LayoutNode& node : tabs[*tab].tree) {
+        if (waiting.empty()) return best;
+        const Box area = waiting.back();
+        waiting.pop_back();
+        if (node.pane != 0) {
+            boxes.emplace_back(node.pane, area);
+            continue;
+        }
+        Box first = area, second = area;
+        if (node.down) {
+            first.bottom = second.top = area.top + (area.bottom - area.top) * node.ratio;
+        } else {
+            first.right = second.left = area.left + (area.right - area.left) * node.ratio;
+        }
+        waiting.push_back(second);
+        waiting.push_back(first);
+    }
+    const auto from = std::find_if(boxes.begin(), boxes.end(), [pane](const auto& b) { return b.first == pane; });
+    if (from == boxes.end()) return best;
+    const Box src = from->second;
+    // The tab in the units of @p width and @p height, which the pane fills
+    // its share of: a wide window weighs a distance across it as the
+    // window's pixels do.
+    const double scaleX = width > 0 ? width / (src.right - src.left) : 1;
+    const double scaleY = height > 0 ? height / (src.bottom - src.top) : 1;
+    // Sides that touch are equal up to the rounding of the ratios.
+    constexpr double Touch = 1e-9;
+    std::array<double, 4> bestScore{};
+    for (const auto& [id, r] : boxes) {
+        if (id == pane) continue;
+        const double acrossRows = std::abs((r.top + r.bottom) - (src.top + src.bottom)) / 2 * scaleY;
+        const double acrossCols = std::abs((r.left + r.right) - (src.left + src.right)) / 2 * scaleX;
+        for (const Side side : {Side::Right, Side::Down, Side::Left, Side::Up}) {
+            double along = 0, across = 0, touch = 0;
+            switch (side) {
+            case Side::Left:
+                along = (src.left - r.right) * scaleX;
+                across = acrossRows;
+                touch = Touch * scaleX;
+                break;
+            case Side::Right:
+                along = (r.left - src.right) * scaleX;
+                across = acrossRows;
+                touch = Touch * scaleX;
+                break;
+            case Side::Up:
+                along = (src.top - r.bottom) * scaleY;
+                across = acrossCols;
+                touch = Touch * scaleY;
+                break;
+            case Side::Down:
+                along = (r.top - src.bottom) * scaleY;
+                across = acrossCols;
+                touch = Touch * scaleY;
+                break;
+            }
+            if (along < -touch) continue;
+            // A weighted sum, as the window's: four of across for one along.
+            const double score = std::max(along, 0.0) * 4 + across;
+            const std::size_t at = std::size_t(side);
+            if (best[at] == 0 || score < bestScore[at]) {
+                best[at] = id;
+                bestScore[at] = score;
+            }
+        }
+    }
+    return best;
+}
+
+std::uint32_t Layout::neighbor(std::uint32_t pane, Side side, double width, double height) const
+{
+    return neighbors(pane, width, height)[std::size_t(side)];
 }
 
 std::optional<Layout> layoutFrom(const Json::Value& value, std::string* error)

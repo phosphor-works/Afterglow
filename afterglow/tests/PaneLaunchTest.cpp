@@ -42,7 +42,7 @@ bool unsets(const SpawnOptions& options, const std::string& name)
 Settings plainSettings()
 {
     Settings settings;
-    settings.shellIntegration = false;
+    settings.shellIntegration = QStringLiteral("disabled");
     return settings;
 }
 
@@ -237,4 +237,24 @@ TEST(PaneLaunch, TheLaunchedProgramIsTheCommandsFileName)
     EXPECT_EQ(Afterglow::launchedProgramName({}), QString());
     EXPECT_EQ(Afterglow::launchedProgramName({QStringLiteral("/usr/bin/htop"), QStringLiteral("-d")}), QStringLiteral("htop"));
     EXPECT_EQ(Afterglow::launchedProgramName({QStringLiteral("less")}), QStringLiteral("less"));
+}
+
+// Terminal.shellIntegration's switches and Terminal.cursorBlink reach an
+// integrated shell; "disabled" leaves it alone.
+TEST(PaneLaunch, TheShellIntegrationSwitchesAndCursorReachTheShell)
+{
+    Settings settings;
+    settings.shell = QStringLiteral("/bin/bash");
+    settings.shellIntegration = QStringLiteral("no-title no-sudo");
+    settings.terminal.cursorBlink = false;
+    const SpawnOptions steady = Afterglow::prepareLaunch(settings, {}, {}, {});
+    ASSERT_EQ(valueOf(steady, "AFTERGLOW_BASH_INJECT"), "1") << "the build tree's bash integration was not found";
+    EXPECT_EQ(valueOf(steady, "AFTERGLOW_SHELL_FEATURES"), "no-title no-sudo");
+    EXPECT_EQ(valueOf(steady, "AFTERGLOW_PROMPT_CURSOR"), "6");
+    settings.terminal.cursorBlink = true;
+    EXPECT_EQ(valueOf(Afterglow::prepareLaunch(settings, {}, {}, {}), "AFTERGLOW_PROMPT_CURSOR"), "5");
+    settings.shellIntegration = QStringLiteral("disabled");
+    const SpawnOptions off = Afterglow::prepareLaunch(settings, {}, {}, {});
+    EXPECT_FALSE(valueOf(off, "AFTERGLOW_SHELL_FEATURES"));
+    EXPECT_EQ(off.argv, std::vector<std::string>{"/bin/bash"});
 }

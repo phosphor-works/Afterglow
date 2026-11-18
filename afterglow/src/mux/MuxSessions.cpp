@@ -89,7 +89,7 @@ void followSettings(AfterglowMux::SessionOptions& session, const Settings& setti
     session.size = initialPaneSize(settings);
     const AfterglowMux::SessionSettings followed = sessionSettings(settings);
     session.terminal = followed.terminal;
-    session.notificationCapabilities = NotificationCenter::capabilities();
+    session.notificationCapabilities = followed.notificationCapabilities;
     session.control = followed.control;
     session.keptNotifications = followed.keptNotifications;
 }
@@ -159,6 +159,7 @@ AfterglowMux::SessionSettings sessionSettings(const Settings& settings, bool env
                                       {settings.control.enabled, settings.control.allowReadText, remoteCommandsOff(settings).toStdString(),
                                        settings.control.eventInterval}};
     out.keptNotifications = settings.mux.keptNotifications;
+    out.notificationCapabilities = settings.notifications ? NotificationCenter::capabilities() : std::string();
     if (!environment) return out;
     for (const QString& name : settings.mux.updateEnvironment) {
         // The bytes that are looked up are the name that goes: JSON carries

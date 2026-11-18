@@ -389,7 +389,10 @@ Thus state that a script keeps by pane ID does not follow the pane to the next w
 A window that shows a session while a command runs in a pane gets the start of the command from the daemon.
 The script then gets `on_command_started` when the window shows the pane, and `on_command_finished` when the command ends.
 
-`on_user_var` runs when a variable changes. Setting the same value again sends no event.
+`on_user_var` runs when a variable of a pane changes.
+A program sets a variable with iTerm2's `SetUserVar` (OSC 1337).
+`afterglow ctl set-user-var`, and the variables of a launch, set one too.
+Setting the same value again sends no event.
 A pane keeps its variables until it closes, at most 256 of them. A new variable after that is ignored.
 A program can set a title or a variable faster than Afterglow delivers the events.
 `on_title` and `on_user_var` then get the newest value, and the values in between are skipped.
@@ -862,7 +865,7 @@ return {
 | `size` | Rows for `top` and `bottom`, 1 to 8. Columns for `left` and `right`, 1 to 80. The default is 1. |
 | `tab_bar` | `true` draws a `top` area in place of the tab bar. The default is `false`. Only a `top` area with the `window` scope can have `true`. |
 | `scope` | `window` puts the area at an edge of the pane's window. `pane` puts it at an edge of the pane. The default is `window`. |
-| `fill` | A palette index from 0 to 255, or `"#rrggbb"`. It is the background of the complete area. Without it, the area uses the theme's background. Below a `Window.backgroundOpacity` of 1, the fill has the same opacity as the pane background. |
+| `fill` | A palette index from 0 to 255, or `"#rrggbb"`. It is the background of the complete area. Without it, the area uses the theme's background. When the background is translucent, the fill has the same opacity as the pane background. A `window` area follows `Window.backgroundOpacity`, or the opacity that `afterglow ctl set-opacity` sets. A `pane` area follows its pane, also a `backgroundOpacity` override of a script. |
 | `lines` | A list of lines from the top. A line is a list of runs from the left. Without `lines`, the area is empty. |
 
 A `top` or `bottom` area has at most `size` lines.
@@ -1193,12 +1196,25 @@ return afterglow.split(ev.pane, "left", {"fish"}, {
 
 ## Text and semantic regions
 
-`read_text` accepts `screen`, `scrollback`, `last-output` and `selection`.
-The default scope is `last-output`.
+`read_text` accepts these scopes:
+
+| Scope | Text |
+| --- | --- |
+| `screen` | The rows that show |
+| `scrollback` | The history and the rows of the main screen, also while the alternate screen shows |
+| `last-output` | The output of the last command (the default) |
+| `first-output-on-screen` | The output of the first command whose output shows |
+| `last-visited-output` | The output of the last command that a prompt jump or a [command output click](INPUT.md#command-output) went to |
+| `selection` | The selection |
+
+Another scope fails with `invalid_effect`.
+The output scopes need shell integration (OSC 133).
+While the alternate screen shows, `first-output-on-screen` is not available.
 Results contain `text`, `available` and `truncated`.
 `max_bytes` limits UTF-8 output to 1 to 1,048,576 bytes (1 MiB). The default is 65,536 bytes.
 Another value is refused with `invalid_effect`.
 A missing selection or unavailable region returns `available=false`.
+In a pane of a mux session, `scrollback`, `last-output` and the regions of `semantic_regions` are not available while their rows still come from the daemon. They return `available=false`, and a script can read again later.
 So does the last output of a session pane while its rows still come from the mux daemon, right after a window shows the session.
 For a session pane that you cannot see, `read_text`, `read_region` and `semantic_regions` first get the screen and the history from the mux daemon.
 They do this also for a pane that shows again before its screen came.
@@ -1222,12 +1238,12 @@ Each region has these fields:
 
 Positions use stable row IDs encoded as strings and zero-based columns.
 Strings avoid Luau number precision loss.
-`read_region(pane, id, max_bytes)` returns logical text for that region.
+`read_region(pane, region, max_bytes)` returns logical text for the region with the ID `region`.
 Unknown or fully discarded IDs are unavailable.
 Reset does not reuse IDs. Retained positions follow text reflow.
 
 Set `Scripts.allowReadText=false` to deny these queries.
-While it is `false`, `afterglow.action` also fails for `copy`, `paste`, `select_all` and `show_last_output`.
+While it is `false`, `afterglow.action` also fails for `copy`, `paste`, `select_all`, `show_last_output`, `show_first_output_on_screen` and `show_last_visited_output`.
 It controls terminal queries, not operating-system file or process access.
 A command run can have a client: `aglow run`, or a `SCRIPT.COMMAND` call of the `commands` target.
 In the handler of such a run, these queries also need `Control.allowReadText`.
@@ -1287,7 +1303,7 @@ The [typed declarations](../afterglow/src/scripting/afterglow.d.luau) give the s
 | `afterglow.pulse` | `(pane: PaneRef, effect: ("portal" \| "flash" \| "shake" \| string \| number), options: { duration_ms: number?, color: number? }?) -> Effect` |
 | `afterglow.semantic_regions` | `(pane: PaneRef) -> Effect` |
 | `afterglow.read_region` | `(pane: PaneRef, region: string, max_bytes: number?) -> Effect` |
-| `afterglow.read_text` | `(pane: PaneRef, scope: ("screen" \| "scrollback" \| "last-output" \| "selection")?, max_bytes: number?) -> Effect` |
+| `afterglow.read_text` | `(pane: PaneRef, scope: ("screen" \| "scrollback" \| "last-output" \| "first-output-on-screen" \| "last-visited-output" \| "selection")?, max_bytes: number?) -> Effect` |
 | `afterglow.state_read` | `() -> Effect` |
 | `afterglow.state_write` | `(value: {[string]: any}, revision: number) -> Effect` |
 | `afterglow.open_directory` | `(cwd: string, layout: string?) -> Effect` |

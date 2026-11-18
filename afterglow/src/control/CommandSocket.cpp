@@ -595,7 +595,7 @@ std::shared_ptr<CommandSocket::Run> CommandSocket::find(quint64 connection, cons
 
 std::optional<quint32> CommandSocket::pane(double pane, QString& error) const
 {
-    if (!std::isfinite(pane) || pane != std::floor(pane) || pane < 0 || pane > double(std::numeric_limits<quint32>::max())) {
+    if (!Control::isWhole(pane) || pane < 0 || pane > double(std::numeric_limits<quint32>::max())) {
         error = QStringLiteral("a pane ID is a whole number from 0 to %1").arg(std::numeric_limits<quint32>::max());
         return std::nullopt;
     }

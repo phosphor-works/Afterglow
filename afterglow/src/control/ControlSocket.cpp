@@ -30,11 +30,6 @@ QString readable(const SettingsStore& settings, const QString& text)
     return settings.settings().control.allowReadText ? text : QString();
 }
 
-bool isWhole(double value)
-{
-    return std::isfinite(value) && std::floor(value) == value;
-}
-
 QJsonValue paneValue(quint32 id)
 {
     return QJsonValue(qint64(id));
@@ -60,7 +55,7 @@ std::optional<quint32> ControlApi::paneId(double value)
 {
     // JSON numbers arrive as doubles. A conversion to uint would wrap -1 and
     // 2^32 + 1 onto real panes, and round 1.6 to pane 2.
-    if (isWhole(value) && value >= 0 && value <= double(std::numeric_limits<quint32>::max())) return quint32(value);
+    if (Control::isWhole(value) && value >= 0 && value <= double(std::numeric_limits<quint32>::max())) return quint32(value);
     failed(QStringLiteral("a pane ID is a whole number from 0 to %1").arg(std::numeric_limits<quint32>::max()));
     return std::nullopt;
 }
@@ -68,10 +63,10 @@ std::optional<quint32> ControlApi::paneId(double value)
 QVariantList ControlApi::listPanes()
 {
     QVariantList panes;
-    for (PaneInfo& p : m_control.panes()) {
-        p.command = readable(m_settings, p.command);
-        panes.append(Control::paneMap(p));
-    }
+    // As those of userVarChanged and the command: only with read access,
+    // which also reads the command lines of the foreground processes.
+    const bool readText = m_settings.settings().control.allowReadText;
+    for (const PaneInfo& p : m_control.panes(true, readText)) panes.append(m_control.clientPaneMap(Control::paneMap(p)));
     return panes;
 }
 
@@ -140,15 +135,22 @@ void ControlApi::screenshot(double pane, const QString& scope)
 
 QString ControlApi::getText(double pane, const QString& scope)
 {
+    return getText(pane, scope, {});
+}
+
+QString ControlApi::getText(double pane, const QString& scope, const QVariantMap& options)
+{
     const auto id = paneId(pane);
     if (!id) return {};
     const auto s = Control::scopeFromName(scope);
     if (!s) {
-        failed(QStringLiteral("scope is screen, scrollback, selection or last-output"));
+        failed(Control::BadTextScope);
         return {};
     }
+    AfterglowVt::TextFormat format;
+    if (failed(Control::textFormat(options, format))) return {};
     QString text;
-    failed(m_control.readText(*id, *s, text));
+    failed(m_control.readText(*id, *s, text, format));
     return text;
 }
 
@@ -163,6 +165,27 @@ uint ControlApi::newTab(double pane, const QString& workingDirectory, const QStr
 {
     quint32 created = 0;
     if (const auto id = paneId(pane)) failed(m_control.newTab(*id, workingDirectory, command, created));
+    return created;
+}
+
+uint ControlApi::split(double pane, const QString& direction, const QStringList& command, const QVariantMap& options)
+{
+    quint32 created = 0;
+    if (const auto id = paneId(pane)) failed(m_control.clientSplit(*id, direction, command, options, created));
+    return created;
+}
+
+uint ControlApi::newTab(double pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
+{
+    quint32 created = 0;
+    if (const auto id = paneId(pane)) failed(m_control.clientNewTab(*id, workingDirectory, command, options, created));
+    return created;
+}
+
+uint ControlApi::newWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
+{
+    quint32 created = 0;
+    failed(m_control.clientNewWindow(workingDirectory, command, options, created));
     return created;
 }
 
@@ -188,13 +211,85 @@ void ControlApi::setTitle(double pane, const QString& title)
     if (const auto id = paneId(pane)) failed(m_control.setTitle(*id, title));
 }
 
-void ControlApi::signal(double pane, double channel, double value)
+uint ControlApi::focusNeighbor(double pane, const QString& direction)
+{
+    const auto id = paneId(pane);
+    if (!id) return 0;
+    quint32 focused = 0;
+    failed(m_control.focusNeighbor(*id, direction, focused));
+    return focused;
+}
+
+void ControlApi::resizePane(double pane, const QString& direction, double cells)
+{
+    if (const auto id = paneId(pane)) failed(m_control.resizePane(*id, direction, cells));
+}
+
+void ControlApi::sendKeys(double pane, const QStringList& keys)
+{
+    if (const auto id = paneId(pane)) failed(m_control.sendKeys(*id, keys));
+}
+
+void ControlApi::scroll(double pane, const QString& unit, double amount)
+{
+    if (const auto id = paneId(pane)) failed(m_control.scroll(*id, unit, amount));
+}
+
+void ControlApi::setTabTitle(double pane, const QString& title)
+{
+    if (const auto id = paneId(pane)) failed(m_control.setTabTitle(*id, title));
+}
+
+QVariantMap ControlApi::getColors(double pane)
+{
+    QVariantMap colors;
+    if (const auto id = paneId(pane)) failed(m_control.colors(*id, colors));
+    return colors;
+}
+
+void ControlApi::setColors(double pane, const QVariantMap& colors, bool reset)
 {
     const auto id = paneId(pane);
     if (!id) return;
-    // Control names the valid channels for any value outside them.
-    const int index = isWhole(channel) && channel >= 0 && channel <= 1024 ? int(channel) : -1;
-    failed(m_control.signal(*id, index, value));
+    QString code;
+    const QString error = m_control.setColors(*id, colors, reset, &code);
+    if (code.isEmpty()) {
+        failed(error);
+        return;
+    }
+    // A code of its own goes only through a pending reply. Past the
+    // router's limit of waiting calls, the router fails the call.
+    if (const PendingReply reply = deferCall(error)) reply->fail(code, error);
+}
+
+void ControlApi::setFontSize(double pane, const QString& size)
+{
+    if (const auto id = paneId(pane)) failed(m_control.setFontSize(*id, size));
+}
+
+void ControlApi::setOpacity(double pane, double opacity)
+{
+    if (const auto id = paneId(pane)) failed(m_control.setOpacity(*id, opacity));
+}
+
+void ControlApi::setUserVar(double pane, const QString& name, const QString& value)
+{
+    if (const auto id = paneId(pane)) failed(m_control.setUserVar(*id, name, value));
+}
+
+void ControlApi::signalProgram(double pane, const QString& signal)
+{
+    if (const auto id = paneId(pane)) failed(m_control.signalProgram(*id, signal));
+}
+
+void ControlApi::setWindowState(double pane, const QString& state, double cols, double rows)
+{
+    if (const auto id = paneId(pane)) failed(m_control.setWindowState(*id, state, cols, rows));
+}
+
+void ControlApi::signal(double pane, double channel, double value)
+{
+    if (const auto id = paneId(pane)) failed(m_control.signal(*id, channel, value));
 }
 
 void ControlApi::notify(double pane, const QString& title, const QString& body)
@@ -288,7 +383,7 @@ QVariantMap ControlApi::openRemoteSocket(double pane, double pid, const QString&
         failed(QStringLiteral("this afterglow has no remote sockets"));
         return {};
     }
-    if (!isWhole(pid) || !isWhole(protocol) || std::abs(protocol) > 1e9) {
+    if (!Control::isWhole(pid) || !Control::isWhole(protocol) || std::abs(protocol) > 1e9) {
         failed(QStringLiteral("the process ID and the protocol are whole numbers"));
         return {};
     }

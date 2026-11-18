@@ -5,6 +5,8 @@
 
 #include "Session.h"
 
+#include <AfterglowPty/Pty.h>
+
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
@@ -84,9 +86,9 @@ void Attachment::startStream()
 {
     const int fd = std::exchange(m_fd, -1);
     // The window writes its input, its layout, its settings and its answers
-    // to forwarded calls on the control channel, its actions on the action
-    // channel (Attach::isAction), and the bytes of its command connections on
-    // the commands channel.
+    // to forwarded calls on the control channel, its actions and its answers
+    // to downloads on the action channel (Attach::isAction), and the bytes of
+    // its command connections on the commands channel.
     PhosphorChannel::Stream::Options options;
     options.maxChannels = 3;
     options.maxChannelId = Attach::CommandsChannel + 1;
@@ -198,7 +200,7 @@ void Attachment::paneClosed(std::unique_ptr<MuxPane> pane)
     }
     // No channel is free yet: the window still learns of the exit, with the
     // screen that the program left, once one is (sendClosed()).
-    if (!m_failed) m_closedUnlinked.push_back(std::move(pane));
+    m_closedUnlinked.push_back(std::move(pane));
 }
 
 void Attachment::sendControl(std::string json)
@@ -258,11 +260,17 @@ void Attachment::panesRemoved(const std::vector<std::pair<std::uint32_t, MuxPane
             // (deliver() finds the pane). Its size and the rest are this
             // window's. A pane that the window closed takes nothing.
             std::erase_if(held->second, [&](const Attach::Input& message) {
-                if (pane && message.type == Attach::InputType::Bytes) return false;
+                if (pane && (message.type == Attach::InputType::Bytes || message.type == Attach::InputType::UploadAnswer)) return false;
                 m_heldBytes -= message.bytes.size() + PhosphorChannel::Stream::FrameCost;
                 return true;
             });
             if (held->second.empty()) m_heldInput.erase(held);
+        }
+        // The parts of an answer for a pane that the window closed go
+        // nowhere. Those of a pane that went on wait for the rest.
+        if (const auto parts = m_uploads.find(id); !pane && parts != m_uploads.end()) {
+            m_uploadBytes -= parts->second.size();
+            m_uploads.erase(parts);
         }
         const auto it = m_panes.find(id);
         if (it == m_panes.end()) continue;
@@ -328,7 +336,8 @@ bool Attachment::deliver(Session* session, const Attach::Input& message, bool wi
     // A pane that went to another session since the window wrote: its
     // answers to the calls that the window took, and what the user typed,
     // still reach its program. Not its size, which its next window measures.
-    if (!pane && message.type == Attach::InputType::Bytes && m_findPane && m_movedPanes.contains(message.pane)) {
+    const bool bytes = message.type == Attach::InputType::Bytes || message.type == Attach::InputType::UploadAnswer;
+    if (!pane && bytes && m_findPane && m_movedPanes.contains(message.pane)) {
         pane = m_findPane(message.pane);
         // Its program ended there: the window's bytes for it go nowhere.
         if (!pane) m_movedPanes.erase(message.pane);
@@ -338,18 +347,35 @@ bool Attachment::deliver(Session* session, const Attach::Input& message, bool wi
     if (!pane) return true;
     switch (message.type) {
     case Attach::InputType::Bytes:
+    case Attach::InputType::UploadAnswer: {
         // A window that left waits for nothing: once a pane refused its
         // bytes, the rest of them go nowhere, as a cut paste must not run
         // with its Enter.
         if (windowLeft && m_cutPanes.contains(message.pane)) return true;
+        // Only the answer of the window that the pane asked last, to a
+        // question that is still open: another one would be a second answer,
+        // or reach the shell. The check and the write are not one step: a
+        // question that the program ends between them still gets the answer,
+        // as in a window. One lock over both would take m_hostMutex around
+        // the pane's m_mutex, which the reader thread takes the other way.
+        std::optional<std::uint64_t> question;
+        if (message.type == Attach::InputType::UploadAnswer && !(question = pane->uploadAnswer(m_serial))) return true;
         // The program reads slowly, or the pane's input that waits behind a
         // decode reached its bound: the input waits for room, and the pane's
-        // input after it waits behind it.
-        if (pane->input(message.bytes) != MuxPane::Input::Full) return true;
+        // input after it waits behind it. An answer counts once it went: one
+        // that is lost leaves the question to the next window.
+        const MuxPane::Input written = pane->input(message.bytes);
+        if (question && written == MuxPane::Input::Written) pane->uploadAnswered(*question);
+        if (written != MuxPane::Input::Full) return true;
         if (windowLeft) m_cutPanes.insert(message.pane);
         return windowLeft;
+    }
     case Attach::InputType::Resize:
         pane->resize(message.size);
+        break;
+    case Attach::InputType::DownloadAnswer:
+        // Only this window's answer counts: the download asked it.
+        pane->answerDownload(message.download, m_serial);
         break;
     case Attach::InputType::Reset:
         pane->reset();
@@ -380,9 +406,46 @@ bool Attachment::deliver(Session* session, const Attach::Input& message, bool wi
     case Attach::InputType::ControlReply:
     case Attach::InputType::ControlReplyPart:
     case Attach::InputType::Settings:
+    case Attach::InputType::UploadAnswerPart: // whole as an UploadAnswer (takeUpload())
         break; // not a pane's
     }
     return true;
+}
+
+std::optional<Attach::Input> Attachment::takeUpload(Attach::Input message)
+{
+    const bool part = message.type == Attach::InputType::UploadAnswerPart;
+    const auto parts = m_uploads.find(message.pane);
+    if (!part && message.type != Attach::InputType::UploadAnswer) {
+        if (parts == m_uploads.end() || message.type != Attach::InputType::Bytes) return message;
+        std::fprintf(stderr, "aglow-mux: the window of session %s sent input in the middle of an upload's answer\n", m_session.c_str());
+        m_failed = true;
+        return std::nullopt;
+    }
+    // The window writes its answer to its own pane's PTY in one piece too.
+    // It queues the parts of an answer together, so the parts of all panes
+    // together are bounded as one answer.
+    if (message.bytes.size() > AfterglowPty::Pty::MaxPendingInput - m_uploadBytes) {
+        std::fprintf(stderr, "aglow-mux: the window of session %s sent an upload's answer of more than %zu bytes\n", m_session.c_str(),
+                     AfterglowPty::Pty::MaxPendingInput);
+        m_failed = true;
+        return std::nullopt;
+    }
+    if (part) {
+        m_uploads[message.pane] += message.bytes;
+        m_uploadBytes += message.bytes.size();
+        return std::nullopt;
+    }
+    Attach::Input whole;
+    whole.type = Attach::InputType::UploadAnswer;
+    whole.pane = message.pane;
+    if (parts != m_uploads.end()) {
+        m_uploadBytes -= parts->second.size();
+        whole.bytes = std::move(parts->second);
+        m_uploads.erase(parts);
+    }
+    whole.bytes += message.bytes;
+    return whole;
 }
 
 void Attachment::hold(Attach::Input message)
@@ -419,15 +482,18 @@ void Attachment::readInput(Session& session)
     // what came after it still counts (a resize, the end of the session).
     const bool windowLeft = !m_stream->open();
     // First, and whatever input waits: a Kill does not queue behind it. What
-    // the user sees and a read of the text are not for the program: they go
-    // at once, also for a pane whose program reads nothing, and also once
-    // the input that waits holds the control channel (MaxHeldInput). A
-    // Refresh so goes ahead of a Clear, Reset or Resize that the window
-    // sent before it and that waits behind the pane's input, or on its
-    // way: the read gets the text that the program has now, which they
-    // change only once they reach the terminal. A Visible likewise goes
-    // ahead of a Resize on its way: the screens that it shows have the size
-    // that the terminal has then, and the next frame has the new size.
+    // the user sees, a read of the text and the answer to a download are not
+    // for the program: they go at once, also for a pane whose program reads
+    // nothing, and also once the input that waits holds the control channel
+    // (MaxHeldInput). The pane's output pauses for the answer to a
+    // download: its program may block in a write and read no input
+    // meanwhile, so the answer must not wait behind that input. A Refresh
+    // so goes ahead of a Clear, Reset or Resize that the window sent before
+    // it and that waits behind the pane's input, or on its way: the read
+    // gets the text that the program has now, which they change only once
+    // they reach the terminal. A Visible likewise goes ahead of a Resize on
+    // its way: the screens that it shows have the size that the terminal
+    // has then, and the next frame has the new size.
     if (PhosphorChannel::StreamReader* actions = m_stream->reader(Attach::ActionChannel)) {
         if (actions->codec() != Attach::ActionCodec) {
             m_failed = true;
@@ -520,6 +586,9 @@ void Attachment::readInput(Session& session)
             for (auto& [id, link] : m_panes) link.state.setReplicaHistory(m_replicaHistory);
             continue;
         }
+        message = takeUpload(std::move(*message));
+        if (m_failed) return;
+        if (!message) continue;
         // Behind the input that waits for the pane, in order. The input of
         // the other panes goes meanwhile.
         if (m_heldInput.contains(message->pane) || !deliver(&session, *message, windowLeft)) hold(std::move(*message));
@@ -563,7 +632,8 @@ void Attachment::readLate(Session* session)
             }
             // A window that no longer shows the session cannot end it, and
             // the daemon closes the pane for the window that shows it now.
-            // The sight and the reads of a window that went are nothing.
+            // The sight, the reads and the download answers of a window that
+            // went are nothing: its downloads ended when it went.
             if (action->type == Attach::InputType::ClosePane) m_late.closedPanes.push_back(action->pane);
         }
     }
@@ -582,6 +652,11 @@ void Attachment::readLate(Session* session)
             m_failed = true;
             return;
         }
+        // An answer to an upload that the window sent whole before it heard
+        // still goes, while no other window has the question (deliver()).
+        message = takeUpload(std::move(*message));
+        if (m_failed) return;
+        if (!message) continue;
         switch (message->type) {
         case Attach::InputType::Layout: {
             std::string error;
@@ -590,6 +665,7 @@ void Attachment::readLate(Session* session)
             break;
         }
         case Attach::InputType::Bytes:
+        case Attach::InputType::UploadAnswer:
         case Attach::InputType::Reset:
         case Attach::InputType::Clear:
             // The answers of the calls that the window got, and what the user
@@ -598,18 +674,21 @@ void Attachment::readLate(Session* session)
             deliver(session, *message, true);
             break;
         case Attach::InputType::Resize:
+        case Attach::InputType::ControlReply:
+        case Attach::InputType::ControlReplyPart:
+        case Attach::InputType::Settings:
+            // The size of a window that went, its answers (answerForwarded
+            // failed their calls when it went) and its settings: those of the
+            // window that shows the session count.
+            break;
+        case Attach::InputType::UploadAnswerPart: // whole as an UploadAnswer above
+        case Attach::InputType::DownloadAnswer:
         case Attach::InputType::Visible:
         case Attach::InputType::Refresh:
         case Attach::InputType::Kill:
         case Attach::InputType::ClosePane:
         case Attach::InputType::PaneForgotten:
-        case Attach::InputType::ControlReply:
-        case Attach::InputType::ControlReplyPart:
-        case Attach::InputType::Settings:
-            // The size of a window that went, the actions (refused above), its
-            // answers (answerForwarded failed their calls when it went) and its
-            // settings: those of the window that shows the session count.
-            break;
+            break; // the actions: refused above
         }
     }
 }

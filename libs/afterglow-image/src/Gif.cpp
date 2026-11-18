@@ -444,10 +444,10 @@ Probe probeGif(std::string_view bytes, int& width, int& height)
 {
     width = height = 0;
     if (bytes.size() < 10) return Probe::Unknown;
-    return sized(std::uint64_t(at(bytes, 6) | at(bytes, 7) << 8), std::uint64_t(at(bytes, 8) | at(bytes, 9) << 8), width, height);
+    return sized(little(bytes, 6, 2), little(bytes, 8, 2), width, height);
 }
 
-bool decodeGif(std::string_view bytes, const FrameSink& sink, std::string& error, std::string& warning)
+bool decodeGif(std::string_view bytes, const FrameSink& sink, const Options&, std::string& error, std::string& warning)
 {
     return GifDecoder(bytes).run(sink, error, warning);
 }

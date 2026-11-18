@@ -164,6 +164,11 @@ public:
     std::size_t viewportOffset() const noexcept { return m_viewportOffset; }
     void scrollViewport(long delta) noexcept;
     void resetViewport() noexcept { m_viewportOffset = 0; }
+    /// kitty's unscroll: the last @p n rows of the history, at most a
+    /// screen, come back to the top of the screen, and the screen's last
+    /// rows go. Every row that stays keeps its stable id. Returns how many
+    /// rows came back.
+    int unscroll(int n);
     /// Absolute index of the first row shown in the viewport.
     std::size_t viewportTop() const noexcept { return historySize() - m_viewportOffset; }
     /// Cells stored for history rows (trailing blanks are not).
@@ -179,6 +184,11 @@ public:
     /// rows); stable ids from an older epoch no longer refer to the same
     /// content. A change of height keeps the epoch.
     std::uint64_t layoutEpoch() const noexcept { return m_layoutEpoch; }
+    /// Grows each time history rows return to the screen (unscroll(), a
+    /// taller screen without reflow): the first visible row's id goes back,
+    /// and the ids after it name new rows from then on. Every id that
+    /// stays names the same row.
+    std::uint64_t historyRewinds() const noexcept { return m_historyRewinds; }
     /// Absolute index for a stable id, or -1 if that row is gone.
     long long absoluteIndexOf(std::uint64_t stableId) const noexcept
     {
@@ -217,6 +227,12 @@ private:
     void eraseMulticellAt(Row& row, int x);
     /// Erases only @p row's part of the block at @p x.
     void eraseMulticellInRow(Row& row, int x);
+    /// Before ICH (@p shift > 0) or DCH (< 0) shifts columns x..right of
+    /// @p row: erases the blocks that cannot move whole, and returns the left
+    /// columns of those that move.
+    std::vector<std::uint16_t> settleMulticellsForShift(Row& row, int x, int right, int shift);
+    /// After the shift: moves the map entries of @p moved by @p shift columns.
+    static void shiftMulticellKeys(Row& row, const std::vector<std::uint16_t>& moved, int shift);
     /// Erases blocks in rows top..bottom that also reach outside the region,
     /// or that have rows on both sides of row @p split.
     void eraseMulticellsCrossing(int top, int bottom, int left, int right, int split);
@@ -232,6 +248,7 @@ private:
     std::size_t m_viewportOffset = 0;
     std::uint64_t m_rowsDropped = 0;
     std::uint64_t m_layoutEpoch = 0;
+    std::uint64_t m_historyRewinds = 0;
     StyleTable m_styles;
 };
 

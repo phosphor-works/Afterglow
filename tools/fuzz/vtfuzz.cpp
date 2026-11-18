@@ -10,7 +10,8 @@
 // reset, clear, read text, reload options (the replica's view options too),
 // end the program, change visibility, encode a paste, and read the images as
 // the renderer does. The host that supports everything answers aglow's remote
-// socket query too. One
+// socket query too, decodes iTerm2 animations, and asks before a download,
+// which a control record answers or stops. One
 // record gives the rest of the input to the reader of the mux state codec
 // (StateSync.h), as a frame for a fresh replica.
 //
@@ -103,6 +104,29 @@ struct Host : AfterglowVt::ITerminalHost
     {
         return decodeImage(png, width, height, rgba);
     }
+    /// An animation for an iTerm2 image of an even length: three frames, of
+    /// no time, a short one and one past INT_MAX, which the terminal bounds.
+    bool decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<AfterglowVt::ImageFrame>& frames,
+                           std::vector<std::uint32_t>& delays) override
+    {
+        if (!permissive || data.size() % 2 == 1) {
+            return ITerminalHost::decodeImageFrames(data, maxBytes, frames, delays);
+        }
+        for (const std::uint32_t delay : {0u, 50u, 0xffffffffu}) {
+            if ((frames.size() + 1) * 16 > maxBytes) break;
+            AfterglowVt::ImageFrame frame;
+            frame.width = 2;
+            frame.height = 2;
+            frame.rgba.assign(16, std::uint8_t(0x40 * (frames.size() + 1)));
+            frames.push_back(std::move(frame));
+            delays.push_back(delay);
+        }
+        return !frames.empty();
+    }
+    /// A permissive host asks before a download, as a window does: the
+    /// terminal holds the output until a control record answers.
+    bool downloadBegin(std::string_view, std::int64_t) override { return permissive; }
+    bool downloadData(std::string_view) override { return true; }
 };
 
 /// With bracketed paste on, the paste is wrapped once and cannot end early.
@@ -141,7 +165,9 @@ struct QuietHost : AfterglowVt::ITerminalHost
 };
 
 /// As a window's session pane does after each frame: the replica animates
-/// its images on its own clock, and the renderer draws them.
+/// its images on its own clock, and the renderer draws them. The window
+/// reads it too: a click on the command line, the command of a row, the
+/// text with its styles. The marks and regions there came from the frame.
 void showReplica(AfterglowVt::Terminal& replica)
 {
     for (const std::uint64_t now : {std::uint64_t(1000), std::uint64_t(1100), std::uint64_t(5000)}) {
@@ -152,6 +178,33 @@ void showReplica(AfterglowVt::Terminal& replica)
         if (placement.isVirtual) (void)replica.graphics().placeholderSlice(placement.imageId, 0, 0, 0, 0, 0, 8, 16);
     }
     (void)placements;
+    const int cols = replica.cols();
+    const int rows = replica.rows();
+    for (const auto& [x, y] : {std::pair{0, 0}, std::pair{cols - 1, rows - 1}, std::pair{cols / 2, rows / 2},
+                               std::pair{replica.screen().cursor.x, replica.screen().cursor.y}}) {
+        (void)replica.promptClickInput(x, y);
+    }
+    const AfterglowVt::Screen& s = replica.primaryScreen();
+    const std::uint64_t first = s.rowsDropped();
+    const std::uint64_t last = first + s.totalRows() - 1;
+    (void)replica.commandOutputAt(first);
+    (void)replica.commandOutputAt(last);
+    (void)replica.firstCommandOutputIn(first, last);
+    for (const auto& region : replica.semanticRegions()) {
+        (void)replica.commandOutputAt(region.start.row);
+        (void)replica.commandOutputAt(region.end.row);
+    }
+    AfterglowVt::TextFormat format;
+    format.ansi = true;
+    format.wrapMarkers = true;
+    format.cursor = true;
+    using Scope = AfterglowVt::Terminal::TextScope;
+    for (const Scope scope : {Scope::Screen, Scope::All, Scope::LastOutput}) {
+        const std::string text = replica.text(scope, 97, nullptr, format);
+        if (text.size() > 97) {
+            __builtin_trap();
+        }
+    }
 }
 
 /// @p frame to the StateReader of a fresh replica, as a window applies what a
@@ -436,7 +489,15 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             t.programExited();
             break;
         case 10:
-            t.setVisible((a & 1) != 0);
+            // The answer to a download's question, or a stop, as the window
+            // gives them, else a change of visibility.
+            if ((op / 16) & 1) {
+                t.answerDownload((a & 1) != 0);
+            } else if ((op / 16) & 2) {
+                t.stopDownload();
+            } else {
+                t.setVisible((a & 1) != 0);
+            }
             break;
         case 11: {
             if ((op / 16) & 1) {

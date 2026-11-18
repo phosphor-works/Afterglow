@@ -11,14 +11,18 @@
 # bash-completion, source aglow.bash as well.
 
 _afterglow_ctl_commands="ls send-text get-text split move-pane detach-tab new-tab new-window focus close set-title
-signal notify scripts open-directory projects save-project open-project action watch overlay screenshot"
+set-tab-title resize send-key scroll signal notify scripts open-directory projects save-project open-project action
+watch overlay screenshot colors set-colors set-font-size set-opacity set-user-var signal-program window"
+# Key names that ctl send-key takes, of many more.
+_afterglow_keys="enter escape tab backspace space up down left right home end page_up page_down insert delete f1 f2 f3
+f4 f5 f6 f7 f8 f9 f10 f11 f12 ctrl+c ctrl+d ctrl+l ctrl+z"
 # The keybind actions that ctl action runs (afterglow/src/config/Keybinds.cpp).
 _afterglow_actions="swap_left swap_right swap_up swap_down rotate_panes_clockwise rotate_panes_counterclockwise
 pane_overview use_package_shaders move_pane_to_tab move_pane_to_window detach_tab save_project switch_project
 end_script_key_mode cancel_overlay split_right split_down split_left split_up rename_pane close_pane new_window
 new_tab close_tab rename_tab move_tab_left move_tab_right goto_tab_1 goto_tab_2 goto_tab_3 goto_tab_4 goto_tab_5
 goto_tab_6 goto_tab_7 goto_tab_8 goto_tab_9 close_window toggle_fullscreen next_tab previous_tab show_hints
-show_last_output copy_mode copy paste select_all clear_screen reset notify_on_finish focus_left focus_right focus_up
+show_last_output show_first_output_on_screen show_last_visited_output copy_mode copy paste select_all clear_screen reset notify_on_finish focus_left focus_right focus_up
 focus_down equalize_splits toggle_pane_zoom resize_left resize_right resize_up resize_down font_bigger font_smaller
 font_reset scroll_page_up scroll_page_down scroll_top scroll_bottom jump_prompt_up jump_prompt_down search
 command_palette reload_config open_config show_urls_open show_urls_copy unicode_input"
@@ -99,10 +103,11 @@ _afterglow_ctl()
     # names, but a completion runs no program but aglow run --complete, so
     # none is offered. With the cursor on the word --session itself, that
     # word is the one being completed.
-    local first=2
+    # In a pane of a session, the commands act on it as with --session.
+    local first=2 session=${AFTERGLOW_SESSION:+1}
     if [[ ${words[2]} == --session ]] && ((cword > 2)); then
         ((cword == 3)) && return
-        first=4
+        first=4 session=1
     fi
     local command=${words[first]} start=$((first + 1)) i j positional=0 text=""
     if ((cword == first)); then
@@ -124,7 +129,7 @@ _afterglow_ctl()
             # Text follows, or the command takes nothing after it.
             return
             ;;
-        --pane | --cwd | --layout)
+        --pane | --cwd | --layout | --direction | --cells | --pages | --prompt | --env | --var | --stdin-text | --size)
             ((i++))
             ;;
         --capture | --title | -w | --width | -h | --height | --position)
@@ -154,7 +159,15 @@ _afterglow_ctl()
         esac
     done
     case $prev in
-    --pane | --layout) return ;;
+    --pane | --layout | --cells | --pages | --prompt | --env | --var | --size) return ;;
+    --stdin-text)
+        _afterglow_matching screen scrollback selection last-output first-output-on-screen last-visited-output
+        return
+        ;;
+    --direction)
+        _afterglow_matching left right up down
+        return
+        ;;
     --cwd)
         _afterglow_files -d
         return
@@ -195,6 +208,15 @@ _afterglow_ctl()
             _afterglow_matching 0 1 2 3 4 5 6 7
             return
             ;;
+        signal-program:0)
+            _afterglow_matching INT TERM HUP KILL QUIT USR1 USR2 STOP CONT TSTP WINCH
+            return
+            ;;
+        send-key:*)
+            # shellcheck disable=SC2086 # the list splits into its words
+            _afterglow_matching $_afterglow_keys
+            return
+            ;;
         action:0)
             # shellcheck disable=SC2086 # the list splits into its words
             _afterglow_matching $_afterglow_actions
@@ -231,11 +253,51 @@ _afterglow_ctl()
             _afterglow_unused $pane --raw --stdin
         fi
         ;;
-    get-text) _afterglow_unused $pane "--screen|--scrollback|--selection|--last-output" ;;
+    get-text)
+        _afterglow_unused $pane "--screen|--scrollback|--selection|--last-output|--first-output-on-screen|--last-visited-output" \
+            --ansi --cursor --wrap-markers
+        ;;
     screenshot) _afterglow_unused $pane "--tab|--window" ;;
-    split) _afterglow_unused $pane "--left|--right|--up|--down" ;;
-    new-tab | new-window) _afterglow_unused $pane --cwd ;;
-    overlay) _afterglow_unused $pane --capture --cwd --title "-n|--no-stdin" "-w|--width" "-h|--height" --position "--border|--no-border" ;;
+    split)
+        # --env and --var can come again. A pane of a mux session takes
+        # only --env: its daemon starts the program.
+        if [[ $session ]]; then
+            _afterglow_unused $pane "--left|--right|--up|--down"
+            _afterglow_matching --env
+        else
+            _afterglow_unused $pane "--left|--right|--up|--down" --hold --no-focus --stdin-text --stdin-ansi
+            _afterglow_matching --env --var
+        fi
+        ;;
+    focus) _afterglow_unused $pane --direction ;;
+    colors) _afterglow_unused $pane --json ;;
+    # --all sets every pane: no --pane with it.
+    set-colors) _afterglow_unused "${pane:+$pane|}--all" --reset ;;
+    window) _afterglow_unused $pane "--fullscreen|--maximized|--normal" --size ;;
+    resize) _afterglow_unused $pane --direction --cells ;;
+    scroll)
+        # LINES or one of the options.
+        if ((positional)); then
+            _afterglow_unused $pane
+        else
+            _afterglow_unused $pane "--pages|--prompt|--top|--bottom"
+        fi
+        ;;
+    new-tab)
+        if [[ $session ]]; then
+            _afterglow_unused $pane --cwd
+            _afterglow_matching --env
+        else
+            _afterglow_unused $pane --cwd --hold --no-focus --stdin-text --stdin-ansi
+            _afterglow_matching --env --var
+        fi
+        ;;
+    new-window)
+        _afterglow_unused --cwd --hold
+        _afterglow_matching --env --var
+        ;;
+    overlay) _afterglow_unused $pane --capture --cwd --title "-n|--no-stdin" "-w|--width" "-h|--height" --position "--border|--no-border" \
+        --stdin-text --stdin-ansi ;;
     open-directory) _afterglow_unused --layout ;;
     save-project) _afterglow_unused $pane --overwrite ;;
     open-project) _afterglow_unused --new "--into-session|--no-session" ;;

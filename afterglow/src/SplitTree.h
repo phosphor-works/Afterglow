@@ -24,7 +24,7 @@ class SplitTree
 {
 public:
     enum class Direction { Right, Down, Left, Up };
-    enum class Neighbour { Left, Right, Up, Down };
+    enum class Neighbor { Left, Right, Up, Down };
 
     struct Divider
     {
@@ -88,7 +88,7 @@ public:
     bool contains(const Pane* pane) const;
     QRect rectOf(const Pane* pane) const;
     Pane* paneAt(const QPoint& pos) const;
-    Pane* neighbour(const Pane* from, Neighbour direction) const;
+    Pane* neighbor(const Pane* from, Neighbor direction) const;
     void forEachPane(const std::function<void(Pane*, const QRect&)>& fn) const;
     const std::vector<Divider>& dividers() const noexcept { return m_dividers; }
     int paneCount() const;
@@ -98,7 +98,7 @@ public:
     Pane* zoomedPane() const { return m_zoomed; }
     bool isVisible(const Pane* pane) const { return !m_zoomed || pane == m_zoomed; }
     /// Move the nearest appropriate divider by pixels in the given direction.
-    bool resizePane(Pane* pane, Neighbour direction, int pixels, int dividerWidth, const QSize& minimum);
+    bool resizePane(Pane* pane, Neighbor direction, int pixels, int dividerWidth, const QSize& minimum);
 
     /// The divider within @p tolerance pixels of @p pos, if any.
     std::optional<Divider> dividerAt(const QPoint& pos, int tolerance) const;

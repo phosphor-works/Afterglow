@@ -176,3 +176,34 @@ TEST(WideGamutColor, ParseColorSpecTakesThem)
     EXPECT_FALSE(AfterglowProto::parseColorSpec("oklch(0.9 0.05)", r, g, b));
     EXPECT_EQ(Rgb({r, g, b}), Rgb({255, 128, 0}));
 }
+
+// A colour as settings, themes and the control calls take it: hex as CSS
+// and kitty read it, blanks around it gone, no alpha, and the rest as
+// parseColorSpec.
+TEST(SettingColor, ReadsHexAsCssAndTheRestAsColorSpecs)
+{
+    const auto setting = [](const std::string& spec) {
+        std::uint8_t r = 1, g = 2, b = 3;
+        if (!AfterglowProto::parseSettingColor(spec, r, g, b)) {
+            EXPECT_EQ(Rgb({r, g, b}), Rgb({1, 2, 3})) << spec << ": a refused colour changes nothing";
+            return Refused;
+        }
+        return Rgb({r, g, b});
+    };
+    // "#fff" is white, where XParseColor reads f0f0f0.
+    EXPECT_EQ(setting("#fff"), Rgb({255, 255, 255}));
+    EXPECT_EQ(setting("#f0f"), Rgb({255, 0, 255}));
+    EXPECT_EQ(setting("#ff8000"), Rgb({255, 128, 0}));
+    // Wider components narrow as QColor narrows them.
+    EXPECT_EQ(setting("#123456789"), Rgb({0x12, 0x45, 0x78}));
+    EXPECT_EQ(setting("#ffff80800000"), Rgb({255, 128, 0}));
+    EXPECT_EQ(setting(" \t#fff\n "), Rgb({255, 255, 255}));
+    // Qt's #AARRGGBB has an alpha, which these colours do not have.
+    EXPECT_EQ(setting("#1e1e2eff"), Refused);
+    for (const char* spec : {"", "   ", "#", "#ff", "#12345", "#1234567890123", "#ggg", "# fff", "fff"}) {
+        EXPECT_EQ(setting(spec), Refused) << spec;
+    }
+    EXPECT_EQ(setting("red"), Rgb({255, 0, 0}));
+    EXPECT_EQ(setting("rgb:ff/80/00"), Rgb({255, 128, 0}));
+    EXPECT_EQ(setting(" oklch(0.9 0.05 140) "), Rgb({205, 231, 199}));
+}

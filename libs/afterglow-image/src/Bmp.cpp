@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-// BMP, which none of the three codecs reads and Qt reads itself: the
-// uncompressed kinds (1, 4 and 8 bits with a palette, 16 and 32 bits with
-// masks, 24 bits) with the OS/2 1.x header and the Windows headers of 40 to
-// 124 bytes. Run-length encoded and embedded JPEG or PNG data are refused.
+// BMP, which none of the codecs reads, as Qt reads it: the uncompressed
+// kinds (1, 4 and 8 bits with a palette, 16 and 32 bits with masks, 24 bits)
+// and the run-length encoded ones (RLE4, RLE8), with the OS/2 1.x header and
+// the Windows headers of 40 to 124 bytes. Embedded JPEG or PNG data is
+// refused.
 
 #include "Formats.h"
 
@@ -20,6 +21,8 @@ namespace {
 
 enum Compression : std::uint32_t {
     Rgb = 0,
+    Rle8 = 1,
+    Rle4 = 2,
     Bitfields = 3,
     AlphaBitfields = 6,
 };
@@ -90,6 +93,57 @@ bool readHeader(std::string_view bytes, Header& header)
     return true;
 }
 
+using Palette = std::vector<std::array<std::uint8_t, 4>>;
+
+/// Run-length encoded indices of @p bits (8 or 4) from @p data into @p rgba,
+/// @p width by @p height: runs of one index (of two that alternate in
+/// RLE4), and escapes for the end of a row, the end of the image, a move
+/// and indices as they are. Pixels that the data does not reach keep the
+/// first colour of the palette, as in Qt, and data that ends early ends the
+/// image.
+void readRle(std::string_view data, std::uint32_t bits, const Palette& palette, std::size_t width, std::size_t height, bool topDown,
+             std::vector<unsigned char>& rgba)
+{
+    for (std::size_t i = 0; i < width * height; ++i) std::memcpy(&rgba[i * 4], palette[0].data(), 4);
+    std::size_t x = 0;
+    std::size_t row = 0; // from the bottom, unless the image is top-down
+    // Index @p i of @p count from @p next(i), past the row's end lost.
+    const auto put = [&](std::size_t count, auto next) {
+        const std::size_t drawn = x < width ? std::min(count, width - x) : 0;
+        const std::size_t start = ((topDown ? row : height - 1 - row) * width + x) * 4;
+        for (std::size_t i = 0; i < drawn; ++i) std::memcpy(&rgba[start + i * 4], palette[next(i)].data(), 4);
+        x += count;
+    };
+    std::size_t pos = 0;
+    while (pos + 2 <= data.size() && row < height) {
+        const std::uint8_t count = at(data, pos);
+        const std::uint8_t value = at(data, pos + 1);
+        pos += 2;
+        if (count > 0) {
+            put(count, [&](std::size_t i) { return std::size_t(bits == 8 ? value : i % 2 == 0 ? value >> 4 : value & 0x0F); });
+        } else if (value == 0) {
+            x = 0;
+            ++row;
+        } else if (value == 1) {
+            return;
+        } else if (value == 2) {
+            if (pos + 2 > data.size()) return;
+            x += at(data, pos);
+            row += at(data, pos + 1);
+            pos += 2;
+        } else {
+            // Indices as they are, in whole 16-bit words.
+            const std::size_t length = bits == 8 ? value : (std::size_t(value) + 1) / 2;
+            if (length > data.size() - pos) return;
+            const std::string_view indices = data.substr(pos, length);
+            put(value, [&](std::size_t i) {
+                return std::size_t(bits == 8 ? at(indices, i) : i % 2 == 0 ? at(indices, i / 2) >> 4 : at(indices, i / 2) & 0x0F);
+            });
+            pos += (length + 1) & ~std::size_t(1);
+        }
+    }
+}
+
 } // namespace
 
 Probe probeBmp(std::string_view bytes, int& width, int& height)
@@ -100,7 +154,7 @@ Probe probeBmp(std::string_view bytes, int& width, int& height)
     return sized(header.width, header.height, width, height);
 }
 
-bool decodeBmp(std::string_view bytes, const FrameSink& sink, std::string& error)
+bool decodeBmp(std::string_view bytes, const FrameSink& sink, const Options&, std::string& error, std::string&)
 {
     Header header;
     int width = 0;
@@ -114,9 +168,10 @@ bool decodeBmp(std::string_view bytes, const FrameSink& sink, std::string& error
     Channel green;
     Channel blue;
     Channel alpha;
-    std::vector<std::array<std::uint8_t, 4>> palette;
+    Palette palette;
+    const bool rle = (bits == 8 && header.compression == Rle8) || (bits == 4 && header.compression == Rle4);
     if (bits == 1 || bits == 4 || bits == 8) {
-        if (header.compression != Rgb) {
+        if (header.compression != Rgb && !rle) {
             error = "the BMP is compressed, which is not supported";
             return false;
         }
@@ -169,13 +224,18 @@ bool decodeBmp(std::string_view bytes, const FrameSink& sink, std::string& error
 
     const std::size_t offset = little(bytes, 10, 4);
     const std::uint64_t stride = (header.width * bits + 31) / 32 * 4;
-    if (offset < headerEnd || offset > bytes.size() || stride * header.height > bytes.size() - offset) {
+    if (offset < headerEnd || offset > bytes.size() || (!rle && stride * header.height > bytes.size() - offset)) {
         error = "the BMP is truncated";
         return false;
     }
     const std::size_t w = std::size_t(width);
     const std::size_t h = std::size_t(height);
     std::vector<unsigned char> rgba(w * h * 4);
+    if (rle) {
+        readRle(bytes.substr(offset), bits, palette, w, h, header.topDown, rgba);
+        sink(rgba.data(), width, height, 0);
+        return true;
+    }
     for (std::size_t y = 0; y < h; ++y) {
         // Bottom-up unless the height is negative.
         const std::size_t source = offset + std::size_t(stride) * (header.topDown ? y : h - 1 - y);

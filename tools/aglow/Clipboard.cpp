@@ -7,11 +7,13 @@
 
 #include "Cli.h"
 #include "Commands.h"
+#include "Image.h"
 #include "Mime.h"
 #include "Tty.h"
 
 #include <AfterglowProto/Clipboard.h>
 #include <AfterglowProto/Fd.h>
+#include <AfterglowProto/Graphics.h>
 #include <AfterglowProto/Random.h>
 #include <AfterglowProto/Text.h>
 #include <AfterglowProto/TransferPath.h>
@@ -56,6 +58,9 @@ const Cli::Command command {
     "  aglow clipboard picture.png\n"
     "  aglow clipboard --get-clipboard picture.png notes.txt\n"
     "  aglow clipboard --get-clipboard --mime . /dev/stdout\n"
+    "\n"
+    "When a PNG is asked for and the clipboard holds none, aglow makes one from the first frame of another image "
+    "on it (TIFF, BMP, APNG, GIF, netPBM, WebP or JPEG), as kitten clipboard does.\n"
     "\n"
     "The terminal can ask for permission before a program reads the clipboard. A terminal without OSC 5522 gets "
     "OSC 52, which carries plain text only.",
@@ -332,7 +337,31 @@ struct Output
     std::string mime;
     std::string remote;
     std::string data;
+    bool toPng = false; ///< remote is another image type, which aglow converts
 };
+
+// The image types that aglow can make a PNG of: the lossless ones first,
+// then WebP, which can be lossy, and JPEG, which is.
+constexpr std::string_view ConvertibleImages[] = {
+    "image/tiff", "image/bmp", "image/x-bmp", "image/x-ms-bmp", "image/apng", "image/gif", "image/x-portable-anymap",
+    "image/x-portable-pixmap", "image/x-portable-graymap", "image/x-portable-bitmap", "image/x-portable-arbitrarymap",
+    "image/webp", "image/jpeg",
+};
+
+// A PNG of the first frame of @p data, an image that aglow decodes in a
+// child process with its limits. Empty, with @p error set, when it cannot.
+std::string pngOf(std::string_view data, std::string& error)
+{
+    const auto image = decodeImage(data, AfterglowProto::GraphicsDefaultQuota, error, 1);
+    if (!image || image->frameCount() == 0) {
+        return {};
+    }
+    std::string png = encodePng(image->frame(0), image->width, image->height);
+    if (png.empty()) {
+        error = "no memory for the PNG";
+    }
+    return png;
+}
 
 // Once the terminal is restored, aglow has nothing left to undo: SIGINT,
 // SIGTERM and SIGHUP end it as they end a shell redirection, also while
@@ -724,6 +753,16 @@ int runClipboard(int argc, char** argv)
         if (file.remote.empty() && textual(file.mime) && has("text/plain")) {
             file.remote = "text/plain";
         }
+        // A PNG from another image, as kitten clipboard makes one.
+        if (file.remote.empty() && file.mime == "image/png") {
+            for (const auto type : ConvertibleImages) {
+                if (has(std::string(type))) {
+                    file.remote = type;
+                    file.toPng = true;
+                    break;
+                }
+            }
+        }
         if (file.remote.empty()) {
             tty.restore();
             report("clipboard", "The MIME type " + file.mime + " for " + displayName(file.arg, get) + " is not on the clipboard");
@@ -753,7 +792,15 @@ int runClipboard(int argc, char** argv)
             for (const auto& mime : available) {
                 file.data += mime + "\n";
             }
-        } else if (const auto it = data.find(file.remote); it != data.end()) {
+        } else if (const auto it = data.find(file.remote); it != data.end() && file.toPng) {
+            file.data = pngOf(it->second, error);
+            if (file.data.empty()) {
+                report("clipboard", "Could not make a PNG of the " + file.remote + " on the clipboard for " + displayName(file.arg, get) + ": "
+                                        + error);
+                code = 1;
+                continue;
+            }
+        } else if (it != data.end()) {
             file.data = it->second;
         } else {
             report("clipboard", "No data for " + displayName(file.arg, get) + " with MIME type " + file.mime);

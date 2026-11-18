@@ -377,10 +377,13 @@ void MuxClient::releaseHostCalls(std::uint32_t id, bool evenHeld)
     const QPointer<Pane> target = pane->second;
     for (const AfterglowMux::Host::Call& call : ready) {
         // Once the session ended, the daemon reads no input: a request of the
-        // program would ask the user for nothing. A terminal reset (code 0)
-        // still clears a drag or a drop target of the pane.
+        // program would ask the user for nothing, and a question about a
+        // download or an upload would open a dialog for a program that is
+        // gone. A terminal reset (code 0) still clears a drag or a drop
+        // target of the pane.
         using Kind = AfterglowMux::Host::Kind;
         const bool answers = call.kind == Kind::Report || call.kind == Kind::ClipboardRequest
+            || call.kind == Kind::UploadRequest || call.kind == Kind::DownloadBegin
             || (call.kind == Kind::TerminalProtocol && call.number != 0);
         if (target && !(m_ended && answers)) target->applySessionHostCall(call);
     }
@@ -426,6 +429,7 @@ void MuxClient::bind(std::uint32_t id, Pane& pane)
 
 void MuxClient::letGo(std::uint32_t id)
 {
+    holdEvents(id, false);
     if (auto waiting = m_waitingHostCalls.extract(id); !waiting.empty()) m_waitingHostBytes -= waiting.mapped().bytes;
     m_hostParts.erase(id);
     m_maybeMovedOut.erase(id);
@@ -759,6 +763,34 @@ bool MuxClient::sendInput(std::uint32_t id, std::string_view bytes)
     return true;
 }
 
+bool MuxClient::sendUploadAnswer(std::uint32_t id, std::string_view bytes)
+{
+    if (!showing()) return false;
+    // The daemon writes the answer to the program in one piece once its
+    // UploadAnswer comes, as the window writes it to a PTY of its own. The
+    // frames queue together, so no other input of the pane comes between
+    // them.
+    Attach::Input input;
+    input.pane = id;
+    std::vector<std::string> frames;
+    std::size_t total = 0;
+    std::size_t at = 0;
+    for (; bytes.size() - at > Attach::ControlReplyPartBytes; at += Attach::ControlReplyPartBytes) {
+        input.type = Attach::InputType::UploadAnswerPart;
+        input.bytes.assign(bytes.substr(at, Attach::ControlReplyPartBytes));
+        frames.push_back(Attach::encode(input));
+        total += frames.back().size();
+    }
+    input.type = Attach::InputType::UploadAnswer;
+    input.bytes.assign(bytes.substr(at));
+    frames.push_back(Attach::encode(input));
+    total += frames.back().size();
+    if (pendingInput(id) + total > MaxWaitingInput) return false;
+    for (auto& f : frames) queueInput(std::move(f), id);
+    sendWaitingInput();
+    return true;
+}
+
 void MuxClient::queueInput(std::string frame, std::uint32_t id, bool layout, bool reply)
 {
     countWaiting(id, frame.size(), false);
@@ -816,6 +848,29 @@ void MuxClient::sendReset(std::uint32_t id)
     Attach::Input input;
     input.type = Attach::InputType::Reset;
     sendPaneInput(id, input);
+}
+
+void MuxClient::answerDownload(std::uint32_t id, Attach::DownloadReply reply)
+{
+    // On the action channel: the pane's output waits for this answer, so
+    // its program reads no input meanwhile, and the input that waits for it
+    // could hold the control channel (and the input of every pane) forever.
+    Attach::Input input;
+    input.type = Attach::InputType::DownloadAnswer;
+    input.pane = id;
+    input.download = reply;
+    sendAction(input);
+}
+
+void MuxClient::holdEvents(std::uint32_t id, bool hold)
+{
+    if (hold) {
+        if (m_panes.contains(id)) m_eventsHeld.insert(id);
+        return;
+    }
+    // The events that wait in the stream's reader: readFd() says nothing of them.
+    if (m_eventsHeld.erase(id) > 0 && m_eventsHeld.empty() && m_stream && !m_streamGone && !std::exchange(m_readQueued, true))
+        QMetaObject::invokeMethod(this, &MuxClient::readable, Qt::QueuedConnection);
 }
 
 void MuxClient::sendClear(std::uint32_t id)
@@ -1343,7 +1398,9 @@ void MuxClient::handleFrames()
             lost();
             return;
         }
-        while (events->read(frame) == ReadResult::Frame) {
+        // A pane's download that waits for its disk (holdEvents) stops the
+        // read after the event that filled its queue.
+        while (m_eventsHeld.empty() && events->read(frame) == ReadResult::Frame) {
             auto event = Attach::decodeEvent(frame);
             bool bad = !event;
             if (event && event->type == Attach::EventType::Layout) {

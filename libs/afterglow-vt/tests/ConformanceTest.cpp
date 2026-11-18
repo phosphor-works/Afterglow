@@ -3,7 +3,9 @@
 
 // The VT features esctest exercises, checked without the suite: reports and
 // queries, rectangles, column editing, protection, reverse wrap, modes,
-// colours and their stacks, character sets, VT52 and key modifiers.
+// colours and their stacks, character sets, VT52 and key modifiers. Also
+// kitty's extensions of them: DECCARA with every SGR code, and SGR 221 and
+// 222.
 
 #include "TestUtil.h"
 
@@ -242,6 +244,22 @@ TEST(Conformance, SaveAndRestoreModes)
     EXPECT_EQ(t.take(), "\x1b[?7;2$y");
 }
 
+TEST(Conformance, RestoreOfAnUnchangedReportModeReportsNothing)
+{
+    // The size and visibility reports come when a set turns them on. A
+    // restore that leaves them on sends no report, one that turns them back
+    // on does.
+    Term t(10, 2);
+    t.feed("\x1b[?2048h\x1b[?2033h");
+    t.take();
+    t.feed("\x1b[?2048;2033s\x1b[?2048;2033r\x1b[?s\x1b[?r");
+    EXPECT_EQ(t.take(), "");
+    t.feed("\x1b[?2048;2033l\x1b[?2048;2033r");
+    EXPECT_EQ(t.take(), "\x1b[48;2;10;40;100t\x1b[?999;1n");
+    t.feed("\x1b[?2048;2033l\x1b[?r");
+    EXPECT_EQ(t.take(), "\x1b[?999;1n\x1b[48;2;10;40;100t");
+}
+
 TEST(Conformance, XtsaveOf1048SavesTheCursor)
 {
     // 1048 is an action (xterm): XTSAVE saves the cursor and XTRESTORE
@@ -465,6 +483,67 @@ TEST(Conformance, RectangleAttributes)
     EXPECT_TRUE(styleAt(9, 0).has(Attr::Inverse));
     EXPECT_TRUE(styleAt(0, 1).has(Attr::Inverse));
     EXPECT_FALSE(styleAt(2, 1).has(Attr::Inverse));
+}
+
+TEST(Conformance, RectangleAttributesTakeEverySgrCode)
+{
+    // kitty extends DECCARA to every SGR code (deccara.rst): its example
+    // sets a blue background in a rectangle.
+    Term t(10, 3);
+    t.feed("abcdefghij\r\nabcdefghij\r\n");
+    // A protected character and a link on the last row.
+    t.feed("\x1b[1\"qP\x1b[0\"q\x1b]8;;http://example.com\x1b\\L\x1b]8;;\x1b\\");
+    auto styleAt = [&](int x, int y) { return t.t.screen().styles().get(t.t.screen().row(y).at(x).styleId()); };
+    t.feed("\x1b[2*x\x1b[1;2;2;3;44;3;38:2::1:2:3$r\x1b[*x");
+    EXPECT_EQ(styleAt(1, 0).bg, Color::palette(4));
+    EXPECT_EQ(styleAt(2, 1).fg, Color::rgb(1, 2, 3));
+    EXPECT_TRUE(styleAt(2, 1).has(Attr::Italic));
+    EXPECT_EQ(styleAt(3, 0).bg, Color{});
+    EXPECT_EQ(styleAt(1, 2).bg, Color{});
+    // 0 resets every rendition, as SGR 0 does, and leaves the link and
+    // DECSCA's protection.
+    t.feed("\x1b[2*x\x1b[1;1;3;10;7;31$r\x1b[1;1;3;10;0$r");
+    EXPECT_EQ(styleAt(1, 0), Style{});
+    EXPECT_TRUE(styleAt(0, 2).has(Attr::Protected));
+    EXPECT_NE(styleAt(1, 2).link, 0u);
+    EXPECT_FALSE(styleAt(1, 2).has(Attr::Inverse));
+    EXPECT_EQ(styleAt(1, 2).fg, Color{});
+}
+
+// DECCARA works out once what its codes do to any style: over cells of many
+// styles, each keeps what the codes leave and takes what they set, also with
+// a list of thousands of codes.
+TEST(Conformance, RectangleAttributesOverManyStylesKeepWhatTheCodesLeave)
+{
+    Term t(40, 2);
+    // Each cell a style of its own: bold or italic, and its own foreground.
+    for (int x = 0; x < 40; ++x) t.feed("\x1b[0;" + std::string(x % 2 ? "1" : "3") + ";38;5;" + std::to_string(x) + "mx");
+    std::string codes;
+    for (int i = 0; i < 1000; ++i) codes += ";4;24";
+    t.feed("\x1b[2*x\x1b[1;1;1;40" + codes + ";48;5;9;27;2;4:3$r");
+    auto styleAt = [&](int x) { return t.t.screen().styles().get(t.t.screen().row(0).at(x).styleId()); };
+    for (int x = 0; x < 40; ++x) {
+        const Style st = styleAt(x);
+        EXPECT_EQ(st.fg, Color::palette(std::uint8_t(x))) << x;
+        EXPECT_EQ(st.bg, Color::palette(9)) << x;
+        EXPECT_EQ(st.underline, UnderlineStyle::Curly) << x;
+        EXPECT_EQ(st.has(Attr::Bold), x % 2 == 1) << x;
+        EXPECT_EQ(st.has(Attr::Italic), x % 2 == 0) << x;
+        EXPECT_TRUE(st.has(Attr::Faint)) << x;
+        EXPECT_FALSE(st.has(Attr::Inverse)) << x;
+    }
+}
+
+TEST(Conformance, KittyBoldOffAndFaintOffAlone)
+{
+    // kitty's SGR 221 and 222 (misc-protocol.rst): 22 turns off both.
+    Term t(10, 3);
+    t.feed("\x1b[1;2m\x1b[221m");
+    EXPECT_FALSE(t.t.screen().cursor.pen.has(Attr::Bold));
+    EXPECT_TRUE(t.t.screen().cursor.pen.has(Attr::Faint));
+    t.feed("\x1b[1;2m\x1b[222m");
+    EXPECT_TRUE(t.t.screen().cursor.pen.has(Attr::Bold));
+    EXPECT_FALSE(t.t.screen().cursor.pen.has(Attr::Faint));
 }
 
 TEST(Conformance, ThemeVisibilityAndSizeReports)

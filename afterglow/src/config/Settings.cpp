@@ -9,6 +9,7 @@
 #include "MuxConnect.h"
 #include "MuxProtocol.h"
 
+#include <AfterglowPty/Pty.h>
 #include <AfterglowRender/Snapshot.h>
 #include <AfterglowVt/TextSearch.h>
 
@@ -18,7 +19,6 @@
 #include <PhosphorConfig/Schema.h>
 #include <PhosphorConfig/Store.h>
 
-#include <QColor>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -33,13 +33,29 @@
 #include <QStandardPaths>
 #include <QStyleHints>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <limits>
+#include <optional>
 
 Q_LOGGING_CATEGORY(lcConfig, "afterglow.config", QtInfoMsg)
 
 namespace Afterglow {
+
+constinit const int Settings::MaxUploadLimit = [] {
+    // UploadArchive::answerSize: "ok\n", base64 in lines of 76 with a
+    // return between them, and "\n\n".
+    const auto answerSize = [](std::size_t bytes) {
+        const std::size_t encoded = (bytes + 2) / 3 * 4;
+        const std::size_t lines = (encoded + 75) / 76;
+        return 3 + encoded + (lines ? lines - 1 : 0) + 2;
+    };
+    int mib = 0;
+    while (answerSize(std::size_t(mib + 1) << 20) <= AfterglowPty::Pty::MaxPendingInput) ++mib;
+    return mib;
+}();
 
 namespace {
 
@@ -105,6 +121,8 @@ const Choice<Settings::Bell> BellChoices[] = {{"none", Settings::Bell::None},
 const Choice<Settings::Permission> PermissionChoices[] = {{"allow", Settings::Permission::Allow},
                                                               {"ask", Settings::Permission::Ask},
                                                               {"deny", Settings::Permission::Deny}};
+const Choice<Settings::Permission> UploadChoices[] = {{"ask", Settings::Permission::Ask},
+                                                      {"deny", Settings::Permission::Deny}};
 const Choice<Settings::Permission> GraphicsTransferChoices[] = {{"allow", Settings::Permission::Allow},
                                                                 {"deny", Settings::Permission::Deny}};
 const Choice<WindowSettings::StartMode> StartModeChoices[] = {{"normal", WindowSettings::StartMode::Normal},
@@ -123,11 +141,47 @@ const Choice<MouseSettings::RightClick> RightClickChoices[] = {{"menu", MouseSet
 const Choice<MouseSettings::MiddleClick> MiddleClickChoices[] = {{"primary", MouseSettings::MiddleClick::Primary},
                                                                  {"clipboard", MouseSettings::MiddleClick::Clipboard},
                                                                  {"none", MouseSettings::MiddleClick::None}};
+const Choice<MouseSettings::CommandOutputClick> CommandOutputClickChoices[] = {
+    {"pager", MouseSettings::CommandOutputClick::Pager},
+    {"select", MouseSettings::CommandOutputClick::Select},
+    {"none", MouseSettings::CommandOutputClick::None}};
 const Choice<Qt::KeyboardModifiers> ModifierChoices[] = {{"ctrl", Qt::ControlModifier},
                                                          {"shift", Qt::ShiftModifier},
                                                          {"alt", Qt::AltModifier},
                                                          {"super", Qt::MetaModifier},
                                                          {"none", Qt::NoModifier}};
+/// The modifiers of a modifier combination ("ctrl+shift"), in the order that
+/// it is written in.
+constexpr std::array<Choice<Qt::KeyboardModifier>, 4> CombinationModifiers{{{"ctrl", Qt::ControlModifier},
+                                                                           {"shift", Qt::ShiftModifier},
+                                                                           {"alt", Qt::AltModifier},
+                                                                           {"super", Qt::MetaModifier}}};
+
+/// @p modifiers as a config writes them: "ctrl+shift".
+QString modifierNames(Qt::KeyboardModifiers modifiers)
+{
+    QStringList names;
+    for (const auto& m : CombinationModifiers) {
+        if (modifiers & m.value) names << QLatin1String(m.name);
+    }
+    return names.join(QLatin1Char('+'));
+}
+
+/// The modifiers of @p text: one or more of ctrl, shift, alt and super,
+/// joined with +, each once, in any case. Nothing for another text.
+std::optional<Qt::KeyboardModifiers> parseModifierNames(const QString& text)
+{
+    Qt::KeyboardModifiers out;
+    for (const QString& part : text.split(QLatin1Char('+'))) {
+        const QString name = part.trimmed().toLower();
+        const auto it = std::find_if(CombinationModifiers.begin(), CombinationModifiers.end(),
+                                     [&name](const auto& m) { return name == QLatin1String(m.name); });
+        if (it == CombinationModifiers.end() || (out & it->value)) return std::nullopt;
+        out |= it->value;
+    }
+    return out;
+}
+
 const Choice<QuickTerminalSettings::Position> QuickPositionChoices[] = {{"top", QuickTerminalSettings::Position::Top},
                                                                         {"bottom", QuickTerminalSettings::Position::Bottom}};
 
@@ -344,7 +398,7 @@ QVariantList defaultPalette(const AfterglowVt::TerminalOptions& term)
 {
     QVariantList out;
     for (const AfterglowVt::Rgb& c : term.basePalette) {
-        out.append(QColor(c.r, c.g, c.b).name());
+        out.append(Themes::hexName(c));
     }
     return out;
 }
@@ -361,7 +415,7 @@ PhosphorConfig::Schema buildSchema()
         features.append(QString::fromStdString(f));
     }
     const AfterglowVt::TerminalOptions& term = d.terminal;
-    const auto hex = [](AfterglowVt::Rgb c) { return QColor(c.r, c.g, c.b).name(); };
+    const auto hex = Themes::hexName;
     const QString wordSeparators = QString::fromStdU32String(std::u32string(AfterglowVt::DefaultWordBoundaries));
 
     PhosphorConfig::Schema schema;
@@ -491,9 +545,17 @@ PhosphorConfig::Schema buildSchema()
         // The daemon's bound: a session takes every value (MuxCommandTest).
         intKey(QStringLiteral("scrollback"), int(term.maxScrollback), 0, int(AfterglowMux::MaxScrollback),
                QStringLiteral("Lines of history that each pane keeps. A value of 0 keeps no history.")),
-        {QStringLiteral("shellIntegration"), d.shellIntegration, QMetaType::Bool,
-         QStringLiteral("Integrate Bash, Zsh and Fish prompts in new panes and new mux sessions automatically. A session "
-                        "of another host does not use it.")},
+        stringKey(QStringLiteral("shellIntegration"), d.shellIntegration,
+                  QStringLiteral("Integrate Bash, Zsh and Fish in new panes and new mux sessions automatically, as in Kitty. "
+                                 "The value is enabled, disabled, or a list of switches with spaces between them. Each switch "
+                                 "turns off one part. The no-prompt-mark switch turns off the prompt and command marks. The "
+                                 "no-cwd switch turns off the working directory. The no-cursor switch turns off the bar cursor "
+                                 "at the prompt. The no-title switch turns off the title at the prompt and while a command "
+                                 "runs. The no-sudo switch turns off TERM for sudo and run0. The no-rc switch "
+                                 "sets the environment of the integration but does not load its script, as in Kitty. Your "
+                                 "startup files then load it. The no-complete switch is accepted, as in Kitty, and "
+                                 "changes nothing, because the scripts load no completions. An empty value is enabled. A "
+                                 "session of another host does not use it.")),
         {QStringLiteral("sshIntegration"), d.sshIntegration, QMetaType::Bool,
          QStringLiteral("Run ssh through afterglow ssh in integrated shells. The pane label then shows the host, and afterglow ssh "
                         "offers COLORTERM and TERM_PROGRAM to the server. New panes and new mux sessions use this value. A "
@@ -517,11 +579,13 @@ PhosphorConfig::Schema buildSchema()
                               "connection of its own, which this setting does not change. A change applies to the "
                               "connections that start after it.")),
         stringKey(QStringLiteral("pager"), d.pager,
-                  QStringLiteral("Command for viewing the last command output. Afterglow splits it into words and runs it "
-                                 "without a shell. An empty value turns the pager off.")),
-        intKey(QStringLiteral("lastOutputLimit"), int(d.lastOutputLimit >> 10), 1, 65536,
-               QStringLiteral("Kibibytes of the last command output that the pager gets. For longer output, the pager gets the "
-                              "start and a note.")),
+                  QStringLiteral("Command that shows the output of a command. The pager actions give it the last output, "
+                                 "the first output on the screen, the last visited output or a clicked command's output. "
+                                 "Afterglow splits it into words and runs it without a shell. An empty value turns the "
+                                 "pager off.")),
+        intKey(QStringLiteral("pagerOutputLimit"), int(d.pagerOutputLimit >> 10), 1, 65536,
+               QStringLiteral("Kibibytes of command output that the pager (Terminal.pager) gets. For longer output, the pager "
+                              "gets the start and a note.")),
         stringKey(QStringLiteral("shell"), {},
                   QStringLiteral("Program that new panes and new mux sessions run, as a name or a path. It gets no "
                                  "arguments. An empty value starts your login shell. A session of another host runs your "
@@ -603,6 +667,23 @@ PhosphorConfig::Schema buildSchema()
                               "event (OSC 5522).")),
         enumKey(QStringLiteral("clipboardWrite"), PermissionChoices, d.clipboardWrite,
                 QStringLiteral("Programs writing the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each write.")),
+        enumKey(QStringLiteral("downloads"), PermissionChoices, d.downloads,
+                QStringLiteral("Files that programs send with the iTerm2 protocol (OSC 1337), as it2dl does. The ask value shows "
+                               "a prompt with the name and the size of each file before its data comes. The program waits for "
+                               "the answer. The allow value saves each file in Terminal.downloadDirectory. The deny value "
+                               "refuses each file.")),
+        stringKey(QStringLiteral("downloadDirectory"), d.downloadDirectory,
+                  QStringLiteral("The directory for the files that programs send (Terminal.downloads). The path must be "
+                                 "absolute, ~, or start with ~/. An empty value, or a path of another form, uses the download "
+                                 "directory of the desktop.")),
+        enumKey(QStringLiteral("uploads"), UploadChoices, d.uploads,
+                QStringLiteral("Files that programs ask for with the iTerm2 protocol (OSC 1337 RequestUpload), as it2ul does. "
+                               "The ask value asks you first, and then shows a picker for files or for a folder. The program "
+                               "gets the files that you choose. The deny value refuses each request.")),
+        intKey(QStringLiteral("uploadLimit"), int(d.uploadLimit >> 20), 1, Settings::MaxUploadLimit,
+               QStringLiteral("Mebibytes of the largest upload after compression (Terminal.uploads). The program reads the "
+                              "upload as typed input, which holds %1 MiB. Send larger files with aglow transfer.")
+                   .arg(AfterglowPty::Pty::MaxPendingInput >> 20)),
         enumKey(QStringLiteral("graphicsFileTransfer"), GraphicsTransferChoices,
                 term.graphicsFileTransfer ? Settings::Permission::Allow : Settings::Permission::Deny,
                 QStringLiteral("Images that programs send with the Kitty graphics protocol as a file, a temporary file or shared "
@@ -622,6 +703,9 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Blur content behind translucent backgrounds with KWin.")},
         {QStringLiteral("paneTitles"), d.window.paneTitles, QMetaType::Bool,
          QStringLiteral("Show pane titles in tabs with two or more panes.")},
+        intKey(QStringLiteral("resizeStepCells"), d.window.resizeStepCells, 1, WindowSettings::MaxResizeStepCells,
+               QStringLiteral("Cells that the resize actions (resize_left, resize_right, resize_up and resize_down) move a "
+                              "split edge by.")),
         enumKey(QStringLiteral("popupCorners"), PopupCornerChoices, d.window.popupCorners,
                 QStringLiteral("Corners of the border around a popup overlay. The rounded value curves each corner. The square "
                                "value makes each corner a right angle.")),
@@ -682,6 +766,17 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Allow a single press without Alt inside the selection to drag its text to another pane or "
                         "another desktop application. A click there without a move clears the selection, and other presses "
                         "there select as they do elsewhere.")},
+        {QStringLiteral("clickMovesCursor"), d.mouse.clickMovesCursor, QMetaType::Bool,
+         QStringLiteral("Move the cursor of a shell to a click on its command line. It works in a shell with shell "
+                        "integration, which marks where its prompt starts.")},
+        enumKey(QStringLiteral("commandOutputClick"), CommandOutputClickChoices, d.mouse.commandOutputClick,
+                QStringLiteral("What a right-click with Mouse.commandOutputModifier on a command does, in a shell with "
+                               "shell integration. The pager value opens the output of the command in Terminal.pager, in "
+                               "a new tab. The select value selects its output. The none value makes it a plain "
+                               "right-click.")),
+        stringKey(QStringLiteral("commandOutputModifier"), modifierNames(d.mouse.commandOutputModifier),
+                  QStringLiteral("The modifiers to hold, and no others, for Mouse.commandOutputClick. Write one or more of "
+                                 "ctrl, shift, alt and super, joined with +. super is the key that key bindings call Meta.")),
     };
     schema.groups[LinksGroup] = {
         {QStringLiteral("detectUrls"), d.links.detectUrls, QMetaType::Bool,
@@ -754,7 +849,8 @@ PhosphorConfig::Schema buildSchema()
                QStringLiteral("The largest number of notifications that each pane of a mux session keeps while no window "
                               "shows the session. The next window that shows the session shows them, oldest first. "
                               "Notifications.enabled and Notifications.rateLimit apply to them, so a value above the rate "
-                              "limit only drops the newest. When a pane has more, the oldest goes. The notifications of a pane "
+                              "limit only drops the newest. Notifications.filters applies when a window shows them, so a "
+                              "filtered notification also takes a place. When a pane has more, the oldest goes. The notifications of a pane "
                               "take at most 256 KiB, and a larger one keeps no icon. A pane also keeps a bell and a flash, "
                               "whatever this value. The session does not keep clipboard writes. The value 0 keeps no "
                               "notifications. A change applies at once to a session that a window shows.")),
@@ -798,7 +894,7 @@ PhosphorConfig::Schema buildSchema()
                               "overlay or a slow reader of its output counts. The wait for standard input before the run "
                               "starts does not count. At the limit the run ends, and aglow run exits with status 124. A "
                               "change applies to the runs that start after it.")),
-        // Kibibytes, as Terminal.lastOutputLimit: read() turns them into bytes.
+        // Kibibytes, as Terminal.pagerOutputLimit: read() turns them into bytes.
         intKey(QStringLiteral("commandStdinLimit"), int(d.scriptCommandStdinLimit >> 10), 0, MaxScriptCommandStdinLimitKiB,
                QStringLiteral("Kibibytes of standard input that a script command can get from aglow run. A run with "
                               "more input fails, and aglow run exits with status 2. A value of 0 refuses any input that is not empty.")),
@@ -893,7 +989,10 @@ PhosphorConfig::Schema buildSchema()
         intKey(QStringLiteral("quota"), int(term.graphicsQuota >> 20), 16, int(AfterglowVt::GraphicsStore::MaxQuota >> 20),
                QStringLiteral("Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps, at 4 "
                               "bytes for each pixel. A pane has a main and an alternate screen. When a screen is full, images "
-                              "without a placement go first: those sent with the transient hint (N=1), then the oldest.")),
+                              "without a placement go first: those sent with the transient hint (N=1), then the oldest. An iTerm2 "
+                              "image decodes at its own size within the larger of this quota and %1 MiB. Once it is scaled to "
+                              "its cells, it keeps at most this quota.")
+                   .arg(int(AfterglowVt::GraphicsStore::DefaultQuota >> 20))),
     };
     schema.groups[NotificationsGroup] = {
         {QStringLiteral("enabled"), d.notifications, QMetaType::Bool,
@@ -911,6 +1010,17 @@ PhosphorConfig::Schema buildSchema()
         intKey(QStringLiteral("statusInterval"), d.statusNotificationInterval, 0, 600000,
                QStringLiteral("Shortest time in milliseconds between two program status notifications (OSC 7501) of one pane. "
                               "A value of 0 shows each one.")),
+        {QStringLiteral("filters"), QVariantList{}, QMetaType::QVariantList,
+         QStringLiteral("Rules for notifications that programs send and that Afterglow does not show, as filter_notification "
+                        "in Kitty. An empty list shows every notification. A rule has terms of the form field:pattern. The "
+                        "field is title, body, app or type. The pattern is a regular expression that can match any part "
+                        "of the field. A pattern without quotes ends at a space or at a parenthesis that it does not open. "
+                        "Put a pattern with spaces in double quotes. In quotes, a backslash makes the next quote or "
+                        "backslash a plain character. Join terms with and, or and not, and group them with parentheses. "
+                        "Terms side by side join with and. The rule all matches every notification. An example is "
+                        "app:\"[ng]?vim\" and not body:\"(?i)update\". OSC 9 and OSC 777 notifications and program status "
+                        "notifications (OSC 7501) have no app and no type. The title field is the title that the program "
+                        "sends. An OSC 9 notification has an empty title, and it shows the title of its pane.")},
     };
     schema.groups[Shaders] = {
         {QStringLiteral("background"), stringList(d.shaders.background), QMetaType::QVariantList,
@@ -1796,8 +1906,34 @@ Settings SettingsStore::read()
     t.cursorBlink = st.read<bool>(Terminal, QStringLiteral("cursorBlink"));
     t.bidi = readEnum(st, Terminal, QStringLiteral("bidi"), BidiChoices, t.bidi);
     s.pager = st.read<QString>(Terminal, QStringLiteral("pager"));
-    s.lastOutputLimit = std::size_t(st.read<int>(Terminal, QStringLiteral("lastOutputLimit"))) << 10;
-    s.shellIntegration = st.read<bool>(Terminal, QStringLiteral("shellIntegration"));
+    s.pagerOutputLimit = std::size_t(st.read<int>(Terminal, QStringLiteral("pagerOutputLimit"))) << 10;
+    {
+        // Kitty's words, in any case and apart by any white space, as kitty
+        // reads them; an unknown one goes alone, as a typo in a list should.
+        // The value comes out in one form: "disabled", "enabled", or the
+        // switches that turn parts off, each once, apart by one space.
+        static const QStringList Switches = {QStringLiteral("no-prompt-mark"), QStringLiteral("no-cwd"), QStringLiteral("no-cursor"),
+                                             QStringLiteral("no-title"), QStringLiteral("no-sudo"), QStringLiteral("no-rc"),
+                                             QStringLiteral("no-complete")};
+        const QString value = st.read<QString>(Terminal, QStringLiteral("shellIntegration"));
+        bool enabled = false;
+        bool disabled = false;
+        QStringList words;
+        for (const QString& word : value.toLower().simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts)) {
+            if (word == QLatin1String("enabled")) enabled = true;
+            else if (word == QLatin1String("disabled")) disabled = true;
+            else if (Switches.contains(word)) {
+                if (!words.contains(word)) words << word;
+            } else {
+                problem(QStringLiteral("Terminal.shellIntegration: \"%1\" is not a switch. Afterglow leaves it out").arg(word));
+            }
+        }
+        // As kitty, disabled wins: the other words have nothing to turn off.
+        if (disabled && (enabled || !words.isEmpty()))
+            problem(QStringLiteral("Terminal.shellIntegration \"%1\" has disabled with other words, which do nothing. Using disabled")
+                        .arg(value.simplified()));
+        s.shellIntegration = disabled ? QStringLiteral("disabled") : words.isEmpty() ? QStringLiteral("enabled") : words.join(QLatin1Char(' '));
+    }
     s.sshIntegration = st.read<bool>(Terminal, QStringLiteral("sshIntegration"));
     s.sshTerminfo = st.read<QString>(Terminal, QStringLiteral("sshTerminfo"));
     s.sshRemoteCommands = st.read<bool>(Terminal, QStringLiteral("sshRemoteCommands"));
@@ -1858,6 +1994,21 @@ Settings SettingsStore::read()
     s.clipboardRead = readEnum(st, Terminal, QStringLiteral("clipboardRead"), PermissionChoices, s.clipboardRead);
     s.pasteReadTimeout = st.read<int>(Terminal, QStringLiteral("pasteReadTimeout"));
     s.clipboardWrite = readEnum(st, Terminal, QStringLiteral("clipboardWrite"), PermissionChoices, s.clipboardWrite);
+    s.downloads = readEnum(st, Terminal, QStringLiteral("downloads"), PermissionChoices, s.downloads);
+    s.downloadDirectory = st.read<QString>(Terminal, QStringLiteral("downloadDirectory")).trimmed();
+    if (const QString& dir = s.downloadDirectory; !dir.isEmpty() && dir != QLatin1String("~") && !dir.startsWith(QLatin1String("~/"))
+        && QDir::isRelativePath(dir)) {
+        // A relative path, or ~user, would resolve against wherever Afterglow was started.
+        problem(QStringLiteral("Terminal.downloadDirectory \"%1\" must be an absolute path, ~, or start with ~/. Using the "
+                               "download directory of the desktop")
+                    .arg(dir));
+        s.downloadDirectory.clear();
+    } else if (dir == QLatin1String("~") || dir.startsWith(QLatin1String("~/"))) {
+        // Once here: each download takes the path as it is.
+        s.downloadDirectory = QDir::homePath() + dir.mid(1);
+    }
+    s.uploads = readEnum(st, Terminal, QStringLiteral("uploads"), UploadChoices, s.uploads);
+    s.uploadLimit = std::size_t(st.read<int>(Terminal, QStringLiteral("uploadLimit"))) << 20;
     // The terminal core enforces these two itself, and Graphics.quota below.
     // t holds the default here, the one the schema has.
     t.graphicsFileTransfer = readEnum(st, Terminal, QStringLiteral("graphicsFileTransfer"), GraphicsTransferChoices,
@@ -1873,6 +2024,11 @@ Settings SettingsStore::read()
     s.notificationRateLimit = st.read<int>(NotificationsGroup, QStringLiteral("rateLimit"));
     s.notificationRateWindow = st.read<int>(NotificationsGroup, QStringLiteral("rateWindow"));
     s.statusNotificationInterval = st.read<int>(NotificationsGroup, QStringLiteral("statusInterval"));
+    for (const QString& rule : strings(NotificationsGroup, QStringLiteral("filters"))) {
+        QString error;
+        if (auto filter = NotificationFilter::parse(rule, &error)) s.notificationFilters.push_back(std::move(*filter));
+        else problem(QStringLiteral("Notifications.filters has the rule \"%1\", which Afterglow ignores: %2").arg(rule, error));
+    }
 
     // Window
     s.window.padding = st.read<int>(Window, QStringLiteral("padding"));
@@ -1881,6 +2037,7 @@ Settings SettingsStore::read()
     s.window.backgroundOpacity = st.read<double>(Window, QStringLiteral("backgroundOpacity"));
     s.window.blur = st.read<bool>(Window, QStringLiteral("blur"));
     s.window.paneTitles = st.read<bool>(Window, QStringLiteral("paneTitles"));
+    s.window.resizeStepCells = st.read<int>(Window, QStringLiteral("resizeStepCells"));
     s.window.popupCorners = readEnum(st, Window, QStringLiteral("popupCorners"), PopupCornerChoices, s.window.popupCorners);
     s.window.workingDirectory = st.read<QString>(Window, QStringLiteral("workingDirectory")).trimmed();
     if (const QString& dir = s.window.workingDirectory; !dir.isEmpty() && dir != QLatin1String("inherit")
@@ -1908,6 +2065,17 @@ Settings SettingsStore::read()
     s.mouse.touchScrollMultiplier = st.read<double>(MouseGroup, QStringLiteral("touchScrollMultiplier"));
     s.mouse.touchSelectHold = st.read<int>(MouseGroup, QStringLiteral("touchSelectHold"));
     s.mouse.dragSelection = st.read<bool>(MouseGroup, QStringLiteral("dragSelection"));
+    s.mouse.clickMovesCursor = st.read<bool>(MouseGroup, QStringLiteral("clickMovesCursor"));
+    s.mouse.commandOutputClick = readEnum(st, MouseGroup, QStringLiteral("commandOutputClick"), CommandOutputClickChoices,
+                                          s.mouse.commandOutputClick);
+    if (const QString chord = st.read<QString>(MouseGroup, QStringLiteral("commandOutputModifier"));
+        const auto modifiers = parseModifierNames(chord)) {
+        s.mouse.commandOutputModifier = *modifiers;
+    } else {
+        problem(QStringLiteral("Mouse.commandOutputModifier \"%1\" must be ctrl, shift, alt or super, or some of them joined "
+                               "with +. Using %2")
+                    .arg(chord, modifierNames(s.mouse.commandOutputModifier)));
+    }
 
     // Links
     s.links.detectUrls = st.read<bool>(LinksGroup, QStringLiteral("detectUrls"));
@@ -2164,6 +2332,16 @@ QJsonObject SettingsStore::reference()
         groups.insert(group.key(), keys);
     }
     return {{QStringLiteral("schema_version"), schema.version}, {QStringLiteral("groups"), groups}};
+}
+
+QString modifierText(Qt::KeyboardModifiers modifiers)
+{
+    QStringList names;
+    if (modifiers & Qt::ControlModifier) names << QStringLiteral("Ctrl");
+    if (modifiers & Qt::ShiftModifier) names << QStringLiteral("Shift");
+    if (modifiers & Qt::AltModifier) names << QStringLiteral("Alt");
+    if (modifiers & Qt::MetaModifier) names << QStringLiteral("Super");
+    return names.join(QLatin1Char('+'));
 }
 
 } // namespace Afterglow

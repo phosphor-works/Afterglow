@@ -22,6 +22,8 @@
 #include <QLoggingCategory>
 #include <QTimer>
 
+#include <algorithm>
+
 Q_LOGGING_CATEGORY(lcNotifications, "afterglow.notifications", QtInfoMsg)
 
 namespace {
@@ -166,15 +168,11 @@ void NotificationCenter::track(const Pane* pane)
 {
     if (!pane || m_tracked.contains(pane)) return;
     m_tracked.insert(pane);
-    connect(pane, &QObject::destroyed, this, [this, pane, prefix = QString::number(pane->id()) + QLatin1Char(':')] {
+    connect(pane, &QObject::destroyed, this, [this, pane] {
         m_tracked.remove(pane);
         m_recent.remove(pane);
         m_entries.removeIf([pane](const auto& it) { return it.value().owner == pane; });
         m_inFlight.removeIf([pane](const auto& it) { return it.key().first == pane; });
-        for (auto it = m_iconCache.begin(); it != m_iconCache.end();) {
-            if (it.key().startsWith(prefix)) { m_iconCacheOrder.removeAll(it.key()); it = m_iconCache.erase(it); }
-            else ++it;
-        }
     });
 }
 
@@ -239,8 +237,39 @@ void NotificationCenter::handle(Pane* pane, const AfterglowVt::NotificationReque
         pane->sendReply(r.aliveReply(open.join(QLatin1Char(',')).toStdString()));
         return;
     }
+    // The g cache is the application's, as the spec has it: an icon sent
+    // once serves every later notification, from any pane, for as long as
+    // Afterglow runs, even when the filter or the rate limit hides the one
+    // that brought it. The icon used last stays longest.
+    const QString cacheKey = fromUtf8(r.iconCacheId);
+    const auto touch = [this, &cacheKey] {
+        m_iconCacheOrder.removeAll(cacheKey);
+        m_iconCacheOrder.append(cacheKey);
+        while (m_iconCacheOrder.size() > MaxCachedIcons || m_iconCacheBytes > MaxCachedIconBytes) {
+            m_iconCacheBytes -= m_iconCache.take(m_iconCacheOrder.takeFirst()).size();
+        }
+    };
+    if (!r.iconData.empty() && !cacheKey.isEmpty()) {
+        std::string& cached = m_iconCache[cacheKey];
+        m_iconCacheBytes += r.iconData.size() - cached.size();
+        cached = r.iconData;
+        touch();
+    }
+    NotificationFilter::Fields fields{fromUtf8(r.title), fromUtf8(r.body), fromUtf8(r.appName), {}};
+    for (const std::string& type : r.types) fields.types.append(fromUtf8(type));
     // An update of a notification already on screen adds none.
     const uint replaces = idFor(pane, clientId);
+    if (filtered(fields)) {
+        // The program's newest content is filtered: what it replaces must
+        // not stay on screen in its place.
+        if (pending != m_inFlight.end()) {
+            pending->close = true;
+            pending->next.reset();
+        } else if (replaces) {
+            close(replaces);
+        }
+        return;
+    }
     if (pending == m_inFlight.end() && !replaces && rateLimited(pane)) {
         return;
     }
@@ -269,27 +298,15 @@ void NotificationCenter::handle(Pane* pane, const AfterglowVt::NotificationReque
     QVariantMap hints{{QStringLiteral("desktop-entry"), DesktopEntry}, {QStringLiteral("urgency"), QVariant::fromValue(uchar(r.urgency))}};
     // OSC 99 types use the freedesktop category names ("im.received", "transfer.complete").
     if (!r.types.empty()) hints.insert(QStringLiteral("category"), fromUtf8(r.types.front()));
-    QImage image;
-    if (!r.iconData.empty()) {
-        image = decodeIcon(r.iconData);
-        if (!image.isNull() && !r.iconCacheId.empty()) {
-            track(pane);
-            const QString key = QString::number(pane->id()) + QLatin1Char(':') + fromUtf8(r.iconCacheId);
-            m_iconCache.insert(key, image);
-            m_iconCacheOrder.removeAll(key);
-            m_iconCacheOrder.append(key);
-            while (m_iconCacheOrder.size() > 32) {
-                m_iconCache.remove(m_iconCacheOrder.takeFirst());
-            }
+    std::string cachedIcon;
+    if (r.iconData.empty() && !cacheKey.isEmpty()) {
+        if (const auto cached = m_iconCache.constFind(cacheKey); cached != m_iconCache.cend()) {
+            cachedIcon = *cached;
+            touch();
         }
-    } else if (!r.iconCacheId.empty()) {
-        image = m_iconCache.value(QString::number(pane->id()) + QLatin1Char(':') + fromUtf8(r.iconCacheId));
     }
     if (iconName.isEmpty() && !r.appName.empty() && QIcon::hasThemeIcon(fromUtf8(r.appName))) {
         iconName = fromUtf8(r.appName);
-    }
-    if (iconName.isEmpty() && !image.isNull()) {
-        hints.insert(QStringLiteral("image-data"), QVariant::fromValue(NotificationImage{image}));
     }
 
     const QString sound = fromUtf8(r.sound);
@@ -321,6 +338,7 @@ void NotificationCenter::handle(Pane* pane, const AfterglowVt::NotificationReque
     request.title = fromUtf8(r.title);
     request.body = fromUtf8(r.body); // may hold newlines, which the body shows as line breaks
     request.icon = iconName;
+    request.imageData = r.iconData.empty() ? std::move(cachedIcon) : r.iconData;
     request.actions = actions;
     request.hints = hints;
     request.timeout = r.expireMs < 0 ? -1 : r.expireMs;
@@ -334,12 +352,27 @@ void NotificationCenter::handle(Pane* pane, const AfterglowVt::NotificationReque
     send(request, replaces);
 }
 
+bool NotificationCenter::filtered(const NotificationFilter::Fields& fields) const
+{
+    return std::any_of(m_filters.begin(), m_filters.end(), [&](const NotificationFilter& f) { return f.matches(fields); });
+}
+
 void NotificationCenter::showSimple(Pane* pane, const QString& title, const QString& body, int urgency)
 {
-    if (rateLimited(pane)) {
+    if (filtered({title, body, {}, {}}) || rateLimited(pane)) {
         return;
     }
-    showNotice(pane, title, body, urgency);
+    showNotice(pane, title.isEmpty() && pane ? pane->title() : title, body, urgency);
+}
+
+QImage NotificationCenter::decodedIcon(const std::string& data)
+{
+    // A program that updates a notification sends its icon again each time.
+    if (data != m_lastIconData) {
+        m_lastIcon = decodeIcon(data);
+        m_lastIconData = data;
+    }
+    return m_lastIcon;
 }
 
 void NotificationCenter::showLimitedNotice(Pane* pane, const QString& title, const QString& body)
@@ -368,9 +401,14 @@ void NotificationCenter::send(const Request& request, uint replaces)
     const Key key{request.entry.owner, request.entry.clientId};
     if (!request.entry.clientId.isEmpty()) m_inFlight.insert(key, {});
     const QString body = m_bodyMarkup ? request.body.toHtmlEscaped() : request.body;
+    QVariantMap hints = request.hints;
+    if (request.icon.isEmpty()) {
+        const QImage image = request.imageData.empty() ? QImage() : decodedIcon(request.imageData);
+        if (!image.isNull()) hints.insert(QStringLiteral("image-data"), QVariant::fromValue(NotificationImage{image}));
+    }
     const QDBusPendingCall call = notificationServer().asyncCall(Interface, QStringLiteral("Notify"),
         {QStringLiteral("Afterglow"), replaces, request.icon.isEmpty() ? DesktopEntry : request.icon, request.title, body,
-         request.actions, request.hints, request.timeout});
+         request.actions, hints, request.timeout});
     auto* watcher = new QDBusPendingCallWatcher(call, this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this,
             [this, key, entry = request.entry, replaces, expireMs = request.expireMs, server = m_server](QDBusPendingCallWatcher* w) {

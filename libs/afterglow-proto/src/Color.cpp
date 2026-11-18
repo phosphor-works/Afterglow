@@ -326,4 +326,32 @@ bool parseWideGamutColor(std::string_view spec, std::uint8_t& r, std::uint8_t& g
     return true;
 }
 
+bool parseSettingColor(std::string_view spec, std::uint8_t& r, std::uint8_t& g, std::uint8_t& b)
+{
+    constexpr std::string_view Blank = " \t\n\v\f\r";
+    const std::size_t first = spec.find_first_not_of(Blank);
+    if (first == std::string_view::npos) return false;
+    spec = spec.substr(first, spec.find_last_not_of(Blank) - first + 1);
+    if (!spec.starts_with('#')) return parseColorSpec(spec, r, g, b);
+    const std::string_view digits = spec.substr(1);
+    const std::size_t each = digits.size() % 3 == 0 && digits.size() <= 12 ? digits.size() / 3 : 0;
+    if (each == 0) return false;
+    std::array<std::uint8_t, 3> out{};
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        unsigned value = 0;
+        for (const char c : digits.substr(i * each, each)) {
+            const int digit = detail::colorHexDigit(c);
+            if (digit < 0) return false;
+            value = value * 16 + unsigned(digit);
+        }
+        // Widened to 16 bits and back to 8 as QColor does (qt_div_257).
+        const unsigned wide = each == 1 ? value * 0x1111 : each == 2 ? value * 0x101 : each == 3 ? (value << 4) | (value >> 8) : value;
+        out[i] = std::uint8_t((wide - (wide >> 8) + 0x80) >> 8);
+    }
+    r = out[0];
+    g = out[1];
+    b = out[2];
+    return true;
+}
+
 } // namespace AfterglowProto

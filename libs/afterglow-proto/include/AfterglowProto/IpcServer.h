@@ -189,6 +189,8 @@ public:
     /// Writes waiting output. False when the connection failed.
     bool flush();
     bool wantsWrite() const { return m_fd >= 0 && m_out.size() > m_outOffset; }
+    /// The bytes queued that the socket has not taken yet.
+    std::size_t waitingBytes() const { return m_out.size() - m_outOffset; }
 
 private:
     bool fill();

@@ -6,7 +6,8 @@ find_package(GTest REQUIRED)
 # Application sources compiled again into a test keep the definitions they
 # ship with. The tests themselves build strings from literals.
 set_source_files_properties(../src/ProjectStore.cpp ../src/SplitTree.cpp ../src/DockArea.cpp ../src/animation/MomentumScroll.cpp
-    ../src/desktop/FileTransfer.cpp ../src/desktop/DragDrop.cpp PROPERTIES COMPILE_DEFINITIONS QT_NO_CAST_FROM_ASCII)
+    ../src/desktop/FileTransfer.cpp ../src/desktop/DragDrop.cpp ../src/desktop/UploadArchive.cpp ../src/desktop/Download.cpp
+    PROPERTIES COMPILE_DEFINITIONS QT_NO_CAST_FROM_ASCII)
 
 qt_add_executable(afterglow_app_tests
     ProjectStoreTest.cpp
@@ -25,13 +26,6 @@ set_target_properties(afterglow_app_tests PROPERTIES AUTOMOC OFF)
 include(GoogleTest)
 gtest_discover_tests(afterglow_app_tests)
 
-# The window's decoder of the images that programs send, against the files
-# of the tests of libs/afterglow-image.
-qt_add_executable(afterglow_imagedecode_tests ImageDecodeTest.cpp)
-target_link_libraries(afterglow_imagedecode_tests PRIVATE afterglow_imagedecode afterglow_image_test_files Afterglow::Proto GTest::gtest_main)
-set_target_properties(afterglow_imagedecode_tests PROPERTIES AUTOMOC OFF)
-gtest_discover_tests(afterglow_imagedecode_tests PROPERTIES TIMEOUT 60)
-
 qt_add_executable(afterglow_scripting_tests ScriptHostTest.cpp ScriptPackageTest.cpp)
 target_link_libraries(afterglow_scripting_tests PRIVATE afterglow_scripting GTest::gtest)
 target_compile_definitions(afterglow_scripting_tests PRIVATE
@@ -47,6 +41,20 @@ target_link_libraries(afterglow_config_tests PRIVATE afterglow_config afterglow_
 target_compile_definitions(afterglow_config_tests PRIVATE AFTERGLOW_THEME_DIR="${PROJECT_SOURCE_DIR}/data/themes")
 gtest_discover_tests(afterglow_config_tests)
 
+qt_add_executable(afterglow_upload_tests UploadArchiveTest.cpp ../src/desktop/UploadArchive.cpp ../src/desktop/UploadArchive.h)
+target_include_directories(afterglow_upload_tests PRIVATE ../src)
+# afterglow_config and AfterglowPty: a test checks the largest
+# Terminal.uploadLimit against the input queue of a PTY.
+target_link_libraries(afterglow_upload_tests PRIVATE Qt6::Core afterglow_config Afterglow::Proto Afterglow::Pty GTest::gtest_main)
+gtest_discover_tests(afterglow_upload_tests PROPERTIES TIMEOUT 60)
+
+# A download's file: its writer thread, its queue and its rename.
+qt_add_executable(afterglow_download_tests DownloadFileTest.cpp ../src/desktop/Download.cpp ../src/desktop/Download.h)
+target_include_directories(afterglow_download_tests PRIVATE ../src)
+target_link_libraries(afterglow_download_tests PRIVATE Qt6::Core GTest::gtest_main)
+set_target_properties(afterglow_download_tests PROPERTIES AUTOMOC OFF)
+gtest_discover_tests(afterglow_download_tests PROPERTIES TIMEOUT 60)
+
 qt_add_executable(afterglow_control_tests ControlSocketTest.cpp)
 target_link_libraries(afterglow_control_tests PRIVATE afterglow_app GTest::gtest)
 gtest_discover_tests(afterglow_control_tests PROPERTIES TIMEOUT 60)
@@ -57,11 +65,9 @@ target_link_libraries(afterglow_command_tests PRIVATE afterglow_app Afterglow::P
 # `afterglow run`, which runs the aglow next to it. Without aglow they skip,
 # and one test checks what `afterglow run` says then: it needs the afterglow
 # of every build.
-target_compile_definitions(afterglow_command_tests PRIVATE AFTERGLOW_BINARY="$<TARGET_FILE:afterglow>")
-add_dependencies(afterglow_command_tests afterglow)
+afterglow_test_runs(afterglow_command_tests AFTERGLOW_BINARY afterglow)
 if(AFTERGLOW_BUILD_AGLOW)
-    target_compile_definitions(afterglow_command_tests PRIVATE AFTERGLOW_AGLOW="$<TARGET_FILE:aglow>")
-    add_dependencies(afterglow_command_tests aglow)
+    afterglow_test_runs(afterglow_command_tests AFTERGLOW_AGLOW aglow)
 endif()
 gtest_discover_tests(afterglow_command_tests PROPERTIES TIMEOUT 60)
 
@@ -70,12 +76,10 @@ gtest_discover_tests(afterglow_command_tests PROPERTIES TIMEOUT 60)
 # without sshd. A pane runs in it, offscreen.
 qt_add_executable(afterglow_remote_tests RemoteCommandsTest.cpp)
 target_link_libraries(afterglow_remote_tests PRIVATE afterglow_app Afterglow::Proto GTest::gtest)
-target_compile_definitions(afterglow_remote_tests PRIVATE AFTERGLOW_BINARY="$<TARGET_FILE:afterglow>"
-                                                     AFTERGLOW_FAKE_SSH="${CMAKE_CURRENT_SOURCE_DIR}/fake-ssh.sh")
-add_dependencies(afterglow_remote_tests afterglow)
+afterglow_test_runs(afterglow_remote_tests AFTERGLOW_BINARY afterglow)
+target_compile_definitions(afterglow_remote_tests PRIVATE AFTERGLOW_FAKE_SSH="${CMAKE_CURRENT_SOURCE_DIR}/fake-ssh.sh")
 if(AFTERGLOW_BUILD_AGLOW)
-    target_compile_definitions(afterglow_remote_tests PRIVATE AFTERGLOW_AGLOW="$<TARGET_FILE:aglow>")
-    add_dependencies(afterglow_remote_tests aglow)
+    afterglow_test_runs(afterglow_remote_tests AFTERGLOW_AGLOW aglow)
 endif()
 gtest_discover_tests(afterglow_remote_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
@@ -87,21 +91,27 @@ gtest_discover_tests(afterglow_remote_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATF
 qt_add_executable(afterglow_mux_command_tests MuxCommandTest.cpp)
 target_link_libraries(afterglow_mux_command_tests PRIVATE afterglow_config afterglow_mux_protocol
                       PhosphorChannel::PhosphorChannel GTest::gtest_main)
-target_compile_definitions(afterglow_mux_command_tests PRIVATE AFTERGLOW_BINARY="$<TARGET_FILE:afterglow>")
-add_dependencies(afterglow_mux_command_tests afterglow aglow-mux)
+# afterglow mux runs the aglow-mux next to afterglow.
+afterglow_test_runs(afterglow_mux_command_tests AFTERGLOW_BINARY afterglow)
+add_dependencies(afterglow_mux_command_tests aglow-mux)
 gtest_discover_tests(afterglow_mux_command_tests PROPERTIES TIMEOUT 120)
 
 qt_add_executable(afterglow_pane_tests PaneProtocolTest.cpp PaneSelectionTest.cpp NestedLoopTest.cpp PaneLaunchTest.cpp)
-target_link_libraries(afterglow_pane_tests PRIVATE afterglow_app GTest::gtest)
-gtest_discover_tests(afterglow_pane_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+target_link_libraries(afterglow_pane_tests PRIVATE afterglow_app afterglow_image_test_files GTest::gtest)
+# The panes decode the images that programs send with the aglow-mux next to
+# afterglow (ProgramImages.cpp). These tests set the aglow-mux of this build
+# instead, and send it the image files of the tests of the decoders
+# (libs/afterglow-image). The decoders have their own tests in
+# libs/afterglow-image/tests and mux/tests.
+afterglow_test_runs(afterglow_pane_tests AFTERGLOW_MUX aglow-mux)
+gtest_discover_tests(afterglow_pane_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
 
 # A window's link to a session (MuxClient), with panes and no window, against
 # a daemon of its own (mux/tests/TestDaemon.h).
 qt_add_executable(afterglow_mux_client_tests MuxClientTest.cpp)
 target_link_libraries(afterglow_mux_client_tests PRIVATE afterglow_app GTest::gtest)
 target_include_directories(afterglow_mux_client_tests PRIVATE ${PROJECT_SOURCE_DIR}/mux/tests)
-target_compile_definitions(afterglow_mux_client_tests PRIVATE AFTERGLOW_MUX="$<TARGET_FILE:aglow-mux>")
-add_dependencies(afterglow_mux_client_tests aglow-mux)
+afterglow_test_runs(afterglow_mux_client_tests AFTERGLOW_MUX aglow-mux)
 gtest_discover_tests(afterglow_mux_client_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
 # A popup as the window's settings make it look, rendered offscreen.
@@ -129,10 +139,10 @@ gtest_discover_tests(afterglow_audio_tests)
 
 qt_add_executable(afterglow_shell_tests ShellIntegrationTest.cpp)
 target_link_libraries(afterglow_shell_tests PRIVATE afterglow_shell afterglow_mux_protocol Afterglow::Vt GTest::gtest_main)
-target_compile_definitions(afterglow_shell_tests PRIVATE AFTERGLOW_BINARY="$<TARGET_FILE:afterglow>"
-                                                   AFTERGLOW_TEST_SHELL_DIR="${PROJECT_SOURCE_DIR}/data/shell-integration"
-    AFTERGLOW_TEST_TERMINFO_SOURCE="${PROJECT_SOURCE_DIR}/data/terminfo/afterglow.terminfo")
-add_dependencies(afterglow_shell_tests afterglow)
+afterglow_test_runs(afterglow_shell_tests AFTERGLOW_BINARY afterglow)
+target_compile_definitions(afterglow_shell_tests PRIVATE AFTERGLOW_TEST_SHELL_DIR="${PROJECT_SOURCE_DIR}/data/shell-integration"
+    AFTERGLOW_TEST_TERMINFO_SOURCE="${PROJECT_SOURCE_DIR}/data/terminfo/afterglow.terminfo"
+    AFTERGLOW_TEST_TERMINFO_DIR="${CMAKE_BINARY_DIR}/share/terminfo")
 gtest_discover_tests(afterglow_shell_tests)
 
 qt_add_executable(afterglow_shader_tests ShaderControlsTest.cpp)
@@ -200,7 +210,6 @@ target_include_directories(afterglow_dnd_tests PRIVATE ../src)
 target_link_libraries(afterglow_dnd_tests PRIVATE Qt6::Gui Qt6::GuiPrivate Afterglow::Proto GTest::gtest)
 # The tests of a drop on aglow dnd run the aglow of this build.
 if(AFTERGLOW_BUILD_AGLOW)
-    target_compile_definitions(afterglow_dnd_tests PRIVATE AFTERGLOW_AGLOW="$<TARGET_FILE:aglow>")
-    add_dependencies(afterglow_dnd_tests aglow)
+    afterglow_test_runs(afterglow_dnd_tests AFTERGLOW_AGLOW aglow)
 endif()
 gtest_discover_tests(afterglow_dnd_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

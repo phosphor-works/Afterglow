@@ -170,6 +170,7 @@ private:
         int cols = 0;
         int rows = 0;
         std::uint64_t epoch = 0;
+        std::uint64_t rewinds = 0; ///< Screen::historyRewinds() at the last reset
         /// Stable ids of the replica's history: [from, to).
         std::uint64_t from = 0;
         std::uint64_t to = 0;
@@ -334,6 +335,14 @@ private:
         /// The oldest row that the writer sends at all (its AppendTag): rows in
         /// [oldest, from) are still to come.
         std::uint64_t oldest = 0;
+        /// A view scrolled back when the screen started over in the same
+        /// layout (an unscroll, a new height): the stable id of its top row,
+        /// which the view goes back to as the history comes again. It lets
+        /// go once the view is there, or once the window moves the view
+        /// from viewOffset, the offset that the reader gave it last.
+        bool keepView = false;
+        std::uint64_t viewTop = 0;
+        std::size_t viewOffset = 0;
         std::unordered_map<std::uint32_t, Style> styles; ///< the writer's definitions, with the writer's link ids
         std::unordered_map<std::uint32_t, std::pair<std::string, std::string>> links;
         std::unordered_map<std::uint32_t, std::uint32_t> linkCache; ///< the writer's link id to the replica's
@@ -367,6 +376,10 @@ private:
         std::uint32_t frameCommands = 0;
         std::uint64_t sequence = 0;
     };
+
+    /// Moves a view that @p st keeps (ScreenState::keepView) toward its top
+    /// row, as far as the history of @p s reaches.
+    static void keepView(Screen& s, ScreenState& st);
 
     ScreenState m_screens[2];
     Epoch m_epochs[2];

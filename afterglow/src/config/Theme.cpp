@@ -169,30 +169,18 @@ std::optional<AfterglowVt::Rgb>* konsoleTarget(Theme& theme, const QString& sect
 
 std::optional<AfterglowVt::Rgb> rgbFromName(const QString& name)
 {
-    const QString value = name.trimmed();
-    if (value.startsWith(QLatin1Char('#'))) {
-        // Qt reads "#fff" as white, as CSS and kitty do. XParseColor, which
-        // the escape codes follow, reads it as f0f0f0. Qt reads eight digits
-        // as #AARRGGBB, and these colours have no alpha, so "#1e1e2eff"
-        // would come out a different colour with no warning.
-        if (value.size() == 9) {
-            return std::nullopt;
-        }
-        const QColor c = QColor::fromString(value);
-        if (!c.isValid()) {
-            return std::nullopt;
-        }
-        return AfterglowVt::Rgb{std::uint8_t(c.red()), std::uint8_t(c.green()), std::uint8_t(c.blue())};
-    }
-    // The X11 names (with no "transparent"), rgb:, rgbi:, OKLCH and LAB, as
-    // the escape codes and kitty read them.
-    const QByteArray utf8 = value.toUtf8();
+    // The mux daemon reads the colours of afterglow ctl --session with the same rules.
+    const QByteArray utf8 = name.toUtf8();
     AfterglowVt::Rgb rgb;
-    if (!AfterglowProto::parseColorSpec(std::string_view(utf8.constData(), std::size_t(utf8.size())), rgb.r, rgb.g,
-                                        rgb.b)) {
+    if (!AfterglowProto::parseSettingColor(std::string_view(utf8.constData(), std::size_t(utf8.size())), rgb.r, rgb.g, rgb.b)) {
         return std::nullopt;
     }
     return rgb;
+}
+
+QString hexName(AfterglowVt::Rgb rgb)
+{
+    return QStringLiteral("#%1%2%3").arg(rgb.r, 2, 16, QLatin1Char('0')).arg(rgb.g, 2, 16, QLatin1Char('0')).arg(rgb.b, 2, 16, QLatin1Char('0'));
 }
 
 bool isColorName(const QString& name)

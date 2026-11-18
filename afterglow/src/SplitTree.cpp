@@ -169,13 +169,13 @@ QSize SplitTree::minimumSize(const Node* node, int dividerWidth, const QSize& mi
     return {extent(a.width(), b.width()), std::max(a.height(), b.height())};
 }
 
-bool SplitTree::resizePane(Pane* pane, Neighbour direction, int pixels, int dividerWidth, const QSize& minimum)
+bool SplitTree::resizePane(Pane* pane, Neighbor direction, int pixels, int dividerWidth, const QSize& minimum)
 {
     if (m_zoomed || pixels <= 0) return false;
     Node* leaf = find(m_root.get(), pane);
     if (!leaf) return false;
-    const bool vertical = direction == Neighbour::Up || direction == Neighbour::Down;
-    const bool positive = direction == Neighbour::Right || direction == Neighbour::Down;
+    const bool vertical = direction == Neighbor::Up || direction == Neighbor::Down;
+    const bool positive = direction == Neighbor::Right || direction == Neighbor::Down;
     Node* target = nullptr;
     for (Node* child = leaf; child->parent; child = child->parent) {
         Node* parent = child->parent;
@@ -303,7 +303,7 @@ Pane* SplitTree::paneAt(const QPoint& pos) const
     return hit;
 }
 
-Pane* SplitTree::neighbour(const Pane* from, Neighbour direction) const
+Pane* SplitTree::neighbor(const Pane* from, Neighbor direction) const
 {
     const Node* source = find(m_root.get(), from);
     const QRect src = source ? source->rect : QRect();
@@ -322,22 +322,22 @@ Pane* SplitTree::neighbour(const Pane* from, Neighbour direction) const
         long along = 0;
         long across = 0;
         switch (direction) {
-        case Neighbour::Left:
+        case Neighbor::Left:
             candidate = r.right() < src.left();
             along = src.left() - r.right();
             across = std::abs(r.center().y() - centre.y());
             break;
-        case Neighbour::Right:
+        case Neighbor::Right:
             candidate = r.left() > src.right();
             along = r.left() - src.right();
             across = std::abs(r.center().y() - centre.y());
             break;
-        case Neighbour::Up:
+        case Neighbor::Up:
             candidate = r.bottom() < src.top();
             along = src.top() - r.bottom();
             across = std::abs(r.center().x() - centre.x());
             break;
-        case Neighbour::Down:
+        case Neighbor::Down:
             candidate = r.top() > src.bottom();
             along = r.top() - src.bottom();
             across = std::abs(r.center().x() - centre.x());

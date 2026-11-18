@@ -5,7 +5,8 @@
 // own (TestDaemon.h), with panes and no window: the channels of the panes
 // that come and go, a detach, the jobs of panes, the screens that the
 // daemon holds and their refresh, a search while the history still comes,
-// the answers to control calls that wait,
+// the answers to control calls that wait, the answer to an upload, the
+// events that a pane holds while its download waits for the disk,
 // panes that start and move out without a wait of the GUI thread, and a
 // daemon that refuses the attach.
 
@@ -21,6 +22,7 @@
 #include <AfterglowProto/IpcServer.h>
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QGuiApplication>
 #include <QScopeGuard>
@@ -660,12 +662,17 @@ TEST(MuxClient, ASearchWaitsForTheHistoryOfASession)
         return state != std::string::npos && state + 2 < stat.size() && stat[state + 2] == 'T';
     }));
     ASSERT_EQ(replica(Terminal::TextScope::All).find("late-marker"), std::string::npos);
+    // Control::readText refuses the scrollback while it says so: the text
+    // has blank lines for the rows on their way.
+    bool arriving = false;
+    (void)pane.text(Terminal::TextScope::All, {}, &arriving);
+    EXPECT_TRUE(arriving);
 
     QObject listener;
     QStringList statuses;
     QObject::connect(&pane, &Pane::searchStatusChanged, &listener, [&](const QString& status) { statuses << status; });
     const QString searching = QStringLiteral("Searching…");
-    const QString arriving = QStringLiteral("Older lines are still arriving");
+    const QString arrivingNotice = QStringLiteral("Older lines are still arriving");
     // The window reads what the socket holds meanwhile, which is less than
     // the history. The search covers the rows that the pane had when it
     // started. Its text has a limit (searchText), which the history passes:
@@ -673,7 +680,7 @@ TEST(MuxClient, ASearchWaitsForTheHistoryOfASession)
     pane.search(QStringLiteral("late-marker"), 0, false);
     ASSERT_TRUE(waitFor([&] { return !statuses.isEmpty() && statuses.last() != searching; }, 15000));
     EXPECT_TRUE(statuses.last().startsWith(QStringLiteral("No matches"))) << statuses.join(QLatin1Char('|')).toStdString();
-    EXPECT_TRUE(statuses.last().contains(arriving, Qt::CaseInsensitive)) << statuses.join(QLatin1Char('|')).toStdString();
+    EXPECT_TRUE(statuses.last().contains(arrivingNotice, Qt::CaseInsensitive)) << statuses.join(QLatin1Char('|')).toStdString();
     // Once all of it came, the same search starts again, and finds it.
     ASSERT_TRUE(signalDaemon(daemon.pid(), SIGCONT));
     stopped = false;
@@ -681,7 +688,10 @@ TEST(MuxClient, ASearchWaitsForTheHistoryOfASession)
         if (statuses.last() != searching) pane.search(QStringLiteral("late-marker"), 1, false);
         return statuses.last().startsWith(QStringLiteral("1 of 1"));
     }, 30000)) << statuses.join(QLatin1Char('|')).toStdString();
-    EXPECT_FALSE(statuses.last().contains(arriving, Qt::CaseInsensitive)) << statuses.last().toStdString();
+    EXPECT_FALSE(statuses.last().contains(arrivingNotice, Qt::CaseInsensitive)) << statuses.last().toStdString();
+    // The history came from the newest row back: the oldest came last.
+    (void)pane.text(Terminal::TextScope::All, {}, &arriving);
+    EXPECT_FALSE(arriving);
 }
 
 // The PaneOpened of a pane that newPaneLater() asked for can come before
@@ -875,6 +885,77 @@ TEST(MuxClient, ARefusalWithoutWordsNamesTheCall)
     QString why;
     EXPECT_FALSE(MuxClient::attach(QStringLiteral("s"), false, &why, AfterglowMux::Route{sockets, {}, {}}, std::size_t(1) << 20, 1000));
     EXPECT_EQ(why, QStringLiteral("the mux daemon refused attach (CALL_FAILED)"));
+}
+
+// The window's answer to a program of a session pane that asks for an
+// upload (OSC 1337 RequestUpload), larger than one frame, reaches the
+// program whole: the daemon writes it once its last part came.
+TEST(MuxClient, AnUploadsAnswerReachesTheProgramWhole)
+{
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    Shown shown = show(daemon, "upload");
+    ASSERT_TRUE(shown.client && shown.first);
+    // Base64 lines over two parts of an answer.
+    std::string answer = "ok\n";
+    while (answer.size() < 2 * AfterglowMux::Attach::ControlReplyPartBytes + 1000) answer += "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=\n";
+    const std::string out = daemon.dir() + "/upload";
+    const std::string script = "stty raw -echo; printf '\\033]1337;RequestUpload=format=tgz\\a'; head -c " + std::to_string(answer.size())
+        + " > " + out;
+    auto pane = newPane(*shown.client, shown.client, {"/bin/sh", "-c", script});
+    ASSERT_TRUE(pane);
+    bool asked = false;
+    QObject::connect(pane.get(), &Pane::uploadAsked, [&asked] { asked = true; });
+    ASSERT_TRUE(waitFor([&] { return asked; })) << daemon.errors();
+    ASSERT_TRUE(pane->answerUpload(answer));
+    std::string got;
+    ASSERT_TRUE(waitFor(
+        [&] {
+            got = MuxTest::readFile(out);
+            return got.size() >= answer.size();
+        },
+        20000))
+        << got.size() << daemon.errors();
+    EXPECT_TRUE(got == answer);
+}
+
+// MuxClient::holdEvents, as a session pane's download that waits for its
+// disk calls it: a bell of the program waits, and its pane's frames still
+// come. Once the pane lets the events go, the bell applies with no more
+// input.
+TEST(MuxClient, HeldEventsWaitWhileTheFramesCome)
+{
+    using AfterglowVt::Terminal;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    Shown shown = show(daemon, "held");
+    ASSERT_TRUE(shown.client && shown.first);
+    // No echo: the bell comes only from what cat writes.
+    auto pane = newPane(*shown.client, shown.client, {"/bin/sh", "-c", "stty -echo; exec cat"});
+    ASSERT_TRUE(pane);
+    ASSERT_TRUE(waitFor([&] { return pane->sessionSynced(); })) << daemon.errors();
+    const auto replica = [&pane] { return pane->readTerminal([](const Terminal& t) { return t.text(Terminal::TextScope::Screen); }); };
+    int bells = 0;
+    QObject::connect(pane.get(), &Pane::bellRang, [&bells] { ++bells; });
+    // The shell may not have turned the echo off yet: wait for cat. Its
+    // bell, which no hold stops, says how long one takes on this machine.
+    QElapsedTimer free;
+    free.start();
+    ASSERT_TRUE(pane->sendInput("ready\a\n"));
+    ASSERT_TRUE(waitFor([&] { return replica().find("ready") != std::string::npos && bells == 1; })) << bells << daemon.errors();
+    const qint64 oneBell = free.elapsed();
+
+    const std::uint32_t id = pane->sessionPaneId();
+    shown.client->holdEvents(id, true);
+    ASSERT_TRUE(pane->sendInput("before\aafter\n"));
+    ASSERT_TRUE(waitFor([&] { return replica().find("beforeafter") != std::string::npos; })) << replica() << daemon.errors();
+    // Three times what the free bell took, were the events read. A check
+    // that nothing came can only miss a fault, never fail on a slow run.
+    waitFor([] { return false; }, int(std::max<qint64>(300, 3 * oneBell)));
+    EXPECT_EQ(bells, 1);
+
+    shown.client->holdEvents(id, false);
+    EXPECT_TRUE(waitFor([&] { return bells == 2; })) << bells << daemon.errors();
 }
 
 // The settings that a window sends its session: the variables of

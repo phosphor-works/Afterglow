@@ -143,9 +143,15 @@ std::string differs(const Terminal& a, const Terminal& b)
     }
     // What a frame carries besides the screens.
     if (std::string d = regionsDiffer(a, b); !d.empty()) return "shell marks: " + d;
-    if (a.atShellPrompt() != b.atShellPrompt() || a.promptTakesClicks() != b.promptTakesClicks()
-        || a.hasCommandOutput() != b.hasCommandOutput() || a.promptRedrawPending() != b.promptRedrawPending()) {
+    if (a.atShellPrompt() != b.atShellPrompt() || a.hasCommandOutput() != b.hasCommandOutput()
+        || a.promptRedrawPending() != b.promptRedrawPending()) {
         return "shell state";
+    }
+    // A click on the command line sends the same input from both: a few
+    // cells, so that random runs stay fast.
+    for (const auto& [x, y] : {std::pair{0, 0}, std::pair{a.cols() - 1, a.rows() - 1}, std::pair{a.cols() / 2, a.rows() / 2},
+                               std::pair{a.screen().cursor.x, a.screen().cursor.y}}) {
+        if (a.promptClickInput(x, y) != b.promptClickInput(x, y)) return "prompt click";
     }
     if (std::string d = statusDiffers(a, b); !d.empty()) return d;
     if (!(a.contexts().stack() == b.contexts().stack())) return "contexts";
@@ -179,6 +185,24 @@ struct SyncHost : RecordingHost
     std::vector<std::pair<bool, RegionScroll>> scrolls;
     int statusChanges = 0;
     void programStatusChanged() override { ++statusChanges; }
+    // An iTerm2 "animation": two 2x2 frames, red and green, of 30 and 40 ms.
+    bool decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<ImageFrame>& frames,
+                           std::vector<std::uint32_t>& delays) override
+    {
+        if (data != "animation") return RecordingHost::decodeImageFrames(data, maxBytes, frames, delays);
+        for (const std::uint8_t channel : {0, 1}) {
+            ImageFrame f;
+            f.width = f.height = 2;
+            for (int i = 0; i < 4; ++i) {
+                std::uint8_t px[4] = {0, 0, 0, 255};
+                px[channel] = 255;
+                f.rgba.insert(f.rgba.end(), px, px + 4);
+            }
+            frames.push_back(std::move(f));
+        }
+        delays = {30, 40};
+        return true;
+    }
     void regionScrolled(const RegionScroll& s) override
     {
         if (record) record->add(terminal->modes().altScreen, s);
@@ -310,7 +334,11 @@ std::string imagesDiffer(const Terminal& a, const Terminal& b)
                 || image.animation != o.animation || image.maxLoops != o.maxLoops || image.loopsDone != o.loopsDone
                 || image.currentFrame != o.currentFrame || image.stateCommands != o.stateCommands
                 || image.frameCommands != o.frameCommands) {
-                return screen + "image " + std::to_string(id);
+                return screen + "image " + std::to_string(id) + " (anim " + std::to_string(int(image.animation)) + "/"
+                    + std::to_string(int(o.animation)) + " frame " + std::to_string(image.currentFrame) + "/"
+                    + std::to_string(o.currentFrame) + " cmds " + std::to_string(image.stateCommands) + "/"
+                    + std::to_string(o.stateCommands) + " seq " + std::to_string(image.sequence) + "/" + std::to_string(o.sequence)
+                    + " loops " + std::to_string(image.loopsDone) + "/" + std::to_string(o.loopsDone) + ")";
             }
             for (std::size_t i = 0; i < image.frames.size(); ++i) {
                 const ImageFrame& f = *image.frames[i];
@@ -476,6 +504,36 @@ TEST(StateSync, TransparentBackgroundsKeepTheirOpacity)
     EXPECT_FALSE(colors[2].has_value());
 }
 
+TEST(StateSync, PromptClickModesReachTheReplica)
+{
+    // click_events=2 with a secondary prompt, then special_key=1: a click on
+    // the replica in the window sends what the daemon's terminal would.
+    Pair p(30, 8, 100);
+    p.source.feed("\x1b]133;A;click_events=2\x1b\\$ \x1b]133;B\x1b\\for x in 1\r\n\x1b]133;A;k=s\x1b\\> echo");
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(differs(p.source, p.replica), "");
+    for (int row = 0; row < 3; ++row) {
+        EXPECT_EQ(p.replica.promptClickInput(3, row), p.source.promptClickInput(3, row)) << row;
+    }
+    EXPECT_EQ(p.replica.promptClickInput(3, 1), "\x1b[<0;4;0M\x1b[<0;4;0m");
+    p.source.feed("\r\n\x1b]133;C\x1b\\\x1b]133;D;0\x1b\\\x1b]133;A;special_key=1\x1b\\$ \x1b]133;B\x1b\\ab");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    const int row = p.source.screen().cursor.y;
+    EXPECT_EQ(p.replica.promptClickInput(2, row), "\x1b[1;1u\x1b[1;1u");
+    EXPECT_EQ(p.replica.promptClickInput(2, row), p.source.promptClickInput(2, row));
+    // With history, the stable ids of the marks are past the indexes of the
+    // visible rows: the replica maps them as the source does.
+    Pair h(30, 4, 100);
+    for (int i = 0; i < 10; ++i) h.source.feed("line\r\n");
+    h.source.feed("\x1b]133;A;click_events=2\x1b\\$ \x1b]133;B\x1b\\for x in 1\r\n\x1b]133;A;k=s\x1b\\> echo");
+    ASSERT_TRUE(h.sync(&error)) << error;
+    ASSERT_GT(h.source.primaryScreen().historySize(), 0u);
+    const int secondary = h.source.screen().cursor.y;
+    for (int y = 0; y < 4; ++y) EXPECT_EQ(h.replica.promptClickInput(3, y), h.source.promptClickInput(3, y)) << y;
+    EXPECT_EQ(h.replica.promptClickInput(3, secondary), "\x1b[<0;4;0M\x1b[<0;4;0m");
+}
+
 TEST(StateSync, ShellIntegrationMarksAndRegions)
 {
     Pair p(30, 8, 100);
@@ -491,12 +549,12 @@ TEST(StateSync, ShellIntegrationMarksAndRegions)
     EXPECT_EQ(p.replica.text(Terminal::TextScope::LastOutput), p.source.text(Terminal::TextScope::LastOutput));
     EXPECT_NE(p.replica.text(Terminal::TextScope::LastOutput), "");
     EXPECT_TRUE(p.replica.atShellPrompt());
-    EXPECT_TRUE(p.replica.promptTakesClicks());
+    EXPECT_NE(p.replica.promptClickInput(0, p.replica.screen().cursor.y), "");
     // A command runs: the replica leaves the prompt with the source.
     p.source.feed("sleep 1\r\n\x1b]133;C\x1b\\");
     ASSERT_TRUE(p.sync(&error)) << error;
     EXPECT_FALSE(p.replica.atShellPrompt());
-    EXPECT_FALSE(p.replica.promptTakesClicks());
+    EXPECT_EQ(p.replica.promptClickInput(0, p.replica.screen().cursor.y), "");
     EXPECT_EQ(regionsDiffer(p.source, p.replica), "");
     // Output past the screen: the regions keep their rows by stable id.
     for (int i = 0; i < 20; ++i) p.source.feed("line\r\n");
@@ -752,6 +810,35 @@ TEST(StateSync, AnAnimationRunsOnTheReplicasClock)
     p.source.feed(apc("a=a,i=10,c=1,q=2"));
     ASSERT_TRUE(p.sync(&error)) << error;
     EXPECT_EQ(p.replica.graphics().images().at(10).currentFrame, 0u);
+}
+
+// An animated iTerm2 image is an internal image: its frames and their times
+// reach the replica, which runs it on its own clock and moves it with its
+// rows.
+TEST(StateSync, AnITerm2AnimationReachesTheReplica)
+{
+    Pair p(30, 8, 100);
+    p.source.resize(30, 8, 10, 20);
+    p.source.feed("ab\x1b]1337;File=inline=1:" + AfterglowProto::base64Encode("animation") + "\x07");
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
+    ASSERT_EQ(p.replica.graphics().placements().size(), 1u);
+    const std::uint32_t id = p.replica.graphics().placements()[0].imageId;
+    const Image& image = p.replica.graphics().images().at(id);
+    EXPECT_TRUE(image.isSixel);
+    ASSERT_EQ(image.frames.size(), 2u);
+    EXPECT_EQ(image.gaps, (std::vector<std::uint32_t>{30, 40}));
+    ASSERT_EQ(image.animation, Image::Animation::Running);
+    p.replica.advanceAnimations(1000);
+    p.replica.advanceAnimations(1030);
+    EXPECT_EQ(image.currentFrame, 1u);
+    // The source's own clock, at the same times.
+    p.source.advanceAnimations(1000);
+    p.source.advanceAnimations(1030);
+    for (int i = 0; i < 10; ++i) p.source.feed("\r\n");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
 }
 
 TEST(StateSync, AFinishedAnimationPlaysAgainForItsCommand)
@@ -1166,15 +1253,43 @@ TEST(StateSync, ReaderRefusesBadNewSections)
         out.push_back(char(tag));
         return out + varint(payload.size()) + payload;
     };
+    // The shell section: the zone, the click byte, running, the redraw, the
+    // four marks (a valid byte, then its row and column), the next region
+    // id, and the regions (id, flags, start row and column, end row and
+    // column). @p head is its first four bytes, @p marks the marks.
+    const auto shell = [](std::string head, std::string marks, std::string regions) {
+        return head + marks + regions;
+    };
+    const std::string noMarks(4, '\0');
+    const std::string past = varint((std::uint64_t(INT64_MAX) / 65536) + 1);
+    // Positive controls: each case below differs from one of these in the
+    // one thing that it names.
+    for (const auto& [name, bytes] : std::vector<std::pair<const char*, std::string>>{
+             {"no marks", frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x00\x00", 2)))},
+             {"a region", frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x02\x01\x01\x00\x00\x00\x00\x00", 8)))},
+             {"click mode 2 with the special key", frame(11, shell(std::string("\x01\x06\x00\x00", 4), noMarks, std::string("\x00\x00", 2)))},
+             {"a mark", frame(11, shell(std::string(4, '\0'), std::string("\x00\x00\x00\x01\x05\x02", 6), std::string("\x00\x00", 2)))},
+         }) {
+        StateReader reader;
+        Terminal replica(20, 4, p.replicaHost);
+        std::string why;
+        EXPECT_TRUE(reader.apply(replica, bytes, &why)) << name << ": " << why;
+    }
     for (const auto& [name, bytes] : std::vector<std::pair<const char*, std::string>>{
              {"a scroll of no rows", frame(15, std::string("\x00\x01\x00\x05\x02\x00\x01\x01\x01", 9))},
              {"a scroll that moves nothing", frame(15, std::string("\x00\x01\x00\x01\x02\x00\x01\x01\x00", 9))},
-             {"a shell zone past Input", frame(11, std::string("\x03\x00\x00\x00\x00\x00\x00\x00\x00", 9))},
-             {"a region id past the next one", frame(11, std::string("\x00\x00\x00\x00\x00\x00\x00\x01\x01\x01\x00\x00\x00\x00\x00", 15))},
-             {"a prompt redraw of 2", frame(11, std::string("\x00\x00\x00\x02\x00\x00\x00\x00\x00", 9))},
-             {"a shell mark that is valid twice", frame(11, std::string("\x00\x00\x00\x00\x02", 5))},
-             {"a region of kind 3", frame(11, std::string("\x00\x00\x00\x00\x00\x00\x00\x02\x01\x00\x03\x00\x00\x00\x00", 15))},
-             {"a region with an unknown flag", frame(11, std::string("\x00\x00\x00\x00\x00\x00\x00\x02\x01\x00\x10\x00\x00\x00\x00", 15))},
+             {"a shell zone past Input", frame(11, shell(std::string("\x03\x00\x00\x00", 4), noMarks, std::string("\x00\x00", 2)))},
+             {"a click mode of 3", frame(11, shell(std::string("\x00\x03\x00\x00", 4), noMarks, std::string("\x00\x00", 2)))},
+             {"an unknown click bit", frame(11, shell(std::string("\x00\x08\x00\x00", 4), noMarks, std::string("\x00\x00", 2)))},
+             {"a region id past the next one", frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x01\x01\x01\x00\x00\x00\x00\x00", 8)))},
+             {"a prompt redraw of 2", frame(11, shell(std::string("\x00\x00\x00\x02", 4), noMarks, std::string("\x00\x00", 2)))},
+             {"a shell mark that is valid twice", frame(11, shell(std::string(4, '\0'), std::string("\x00\x00\x00\x02", 4), std::string("\x00\x00", 2)))},
+             {"a shell mark past the last row id", frame(11, shell(std::string(4, '\0'), std::string("\x00\x00\x00\x01", 4) + past + std::string(1, '\0'), std::string("\x00\x00", 2)))},
+             {"a region of kind 3", frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x02\x01\x01\x03\x00\x00\x00\x00", 8)))},
+             {"a region with an unknown flag", frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x02\x01\x01\x10\x00\x00\x00\x00", 8)))},
+             {"a region past the last row id", frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x02\x01\x01\x00", 4) + past + std::string(3, '\0')))},
+             {"a reset past the last row id", frame(4, std::string(1, '\0') + varint(20) + varint(4) + past + std::string(1, '\0'))},
+             {"history past the last row id", frame(8, std::string(2, '\0') + past + std::string(1, '\0'))},
              {"a lost flag of 2", frame(15, std::string("\x02\x00", 2))},
              {"a varint of more than 64 bits", frame(15, std::string("\x00\x80\x80\x80\x80\x80\x80\x80\x80\x80\x02", 11))},
              {"a status kind past Auth", frame(12, std::string("\x01\x00\x00\x7f\x01\x00\x00\x00\x01", 9))},
@@ -1479,6 +1594,9 @@ TEST(StateSync, RandomOutputStaysEqual)
         "\x1b]10;rgb:%d/f/f\x1b\\", "\x1b]11;rgb:%d/0/0\x1b\\", "\x1b]17;rgb:%d/20/30\x1b\\", "\x1b]19;rgb:%d/40/50\x1b\\",
         "\x1b]110\x1b\\", "\x1b]111\x1b\\", "\x1b]112\x1b\\", "\x1b]117\x1b\\", "\x1b]119\x1b\\", "\x1b]104;%d\x1b\\",
         "\x1b[#P", "\x1b[#Q", "\x1b]30001\x1b\\", "\x1b]30101\x1b\\",
+        // Clicks on the command line, kitty's unscroll and DECCARA.
+        "\x1b]133;A;click_events=2\x1b\\> ", "\x1b]133;A;k=s\x1b\\> ", "\x1b]133;A;special_key=1\x1b\\$ ",
+        "\x1b[%d+T", "\x1b[2;1;%d;%d;1;4:3;3%d$r",
     };
     for (unsigned seed = 1; seed <= 60; ++seed) {
         std::mt19937 rng(seed);
@@ -1497,6 +1615,7 @@ TEST(StateSync, RandomOutputStaysEqual)
         std::uint64_t markFloor = 0;
         std::uint64_t markLast = 0;
         std::uint64_t markEpoch = 0;
+        std::uint64_t markRewinds = 0;
         const auto takeMark = [&] {
             if (!markWanted) return;
             markWanted = false;
@@ -1505,14 +1624,17 @@ TEST(StateSync, RandomOutputStaysEqual)
             markFloor = s.rowsDropped();
             markLast = s.rowsDropped() + s.historySize() + std::uint64_t(s.rows()) - 1;
             markEpoch = s.layoutEpoch();
+            markRewinds = s.historyRewinds();
         };
         // A read takes the text that the mark took: the replica has every
         // row of it, unless a reflow or a reset numbered the rows anew since,
-        // or the replica's history let them go.
+        // history rows came back to the screen and its last rows went, or
+        // the replica's history let them go.
         const auto checkMark = [&] {
             if (markChecked || !p.writer.textMarked()) return std::string();
             markChecked = true;
             if (p.source.primaryScreen().layoutEpoch() != markEpoch) return std::string();
+            if (p.source.primaryScreen().historyRewinds() != markRewinds) return std::string();
             const std::uint64_t first = std::max(markFloor, p.replica.primaryScreen().rowsDropped());
             if (first > markLast || p.reader.received(first, markLast)) return std::string();
             return "rows " + std::to_string(first) + " to " + std::to_string(markLast) + " of the mark did not come";
@@ -1710,6 +1832,54 @@ TEST(StateSync, AScrolledBackViewStaysOnItsRows)
     EXPECT_EQ(differs(p.source, p.replica), "");
 }
 
+// An unscroll starts the replica's screen over, and its history comes again:
+// a view scrolled back goes back to its rows, as the source's stays on them.
+TEST(StateSync, AScrolledBackViewStaysOnItsRowsOverAnUnscroll)
+{
+    for (const std::size_t budget : {std::size_t(1) << 20, std::size_t(600)}) {
+        SCOPED_TRACE(budget);
+        Pair p(30, 5, 200, budget);
+        for (int i = 0; i < 50; ++i) p.source.feed("line " + std::to_string(i) + "\r\n");
+        std::string error;
+        ASSERT_TRUE(p.sync(&error)) << error;
+        p.source.scrollViewport(10);
+        p.replica.scrollViewport(10);
+        const Screen& replica = p.replica.screen();
+        const std::string top = rowText(replica, replica.absoluteRow(replica.viewportTop()));
+        p.source.feed("\x1b[3+T");
+        ASSERT_TRUE(p.sync(&error)) << error;
+        EXPECT_EQ(p.source.screen().viewportOffset(), 7u);
+        EXPECT_EQ(replica.viewportOffset(), p.source.screen().viewportOffset());
+        EXPECT_EQ(rowText(replica, replica.absoluteRow(replica.viewportTop())), top);
+        EXPECT_EQ(differs(p.source, p.replica), "");
+    }
+}
+
+// A second unscroll before the history came again from the first: the view
+// still goes back to its top row, not to the bottom or to the oldest row that
+// had come.
+TEST(StateSync, AScrolledBackViewStaysOnItsRowsOverTwoUnscrolls)
+{
+    Pair p(30, 5, 200, 600);
+    for (int i = 0; i < 50; ++i) p.source.feed("line " + std::to_string(i) + "\r\n");
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    p.source.scrollViewport(10);
+    p.replica.scrollViewport(10);
+    const Screen& replica = p.replica.screen();
+    const std::string top = rowText(replica, replica.absoluteRow(replica.viewportTop()));
+    p.source.feed("\x1b[3+T");
+    ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
+    ASSERT_TRUE(p.writer.pending());
+    ASSERT_NE(rowText(replica, replica.absoluteRow(replica.viewportTop())), top);
+    p.source.feed("\x1b[3+T");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(p.source.screen().viewportOffset(), 4u);
+    EXPECT_EQ(replica.viewportOffset(), p.source.screen().viewportOffset());
+    EXPECT_EQ(rowText(replica, replica.absoluteRow(replica.viewportTop())), top);
+    EXPECT_EQ(differs(p.source, p.replica), "");
+}
+
 TEST(StateSync, MarginsRemoteHostsLargeExitCodesAndPendingWraps)
 {
     Pair p(20, 6, 100);
@@ -1767,6 +1937,33 @@ TEST(StateSync, TheReplicaNumbersItsRowsAsTheWriterWhileTheHistoryCatchesUp)
     ASSERT_FALSE(p.replicaHost.scrolls.empty());
     EXPECT_EQ(p.replicaHost.scrolls.back().second.top, p.sourceHost.scrolls.back().second.top);
     EXPECT_EQ(differs(p.source, p.replica), "");
+}
+
+// History rows that come back to the screen (kitty's unscroll) take ids that
+// the replica has as history, or still waits for: it starts over, in the
+// same numbering, so that the window keeps what it holds by row id.
+TEST(StateSync, AnUnscrollStartsTheReplicasRowsOverInTheSameNumbering)
+{
+    // Unscrolled while the history still comes, a few rows a frame.
+    Pair p(20, 4, 1000, 600);
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    for (int i = 0; i < 300; ++i) p.source.feed("line " + std::to_string(i) + "\r\n");
+    ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
+    ASSERT_TRUE(p.writer.pending());
+    const std::uint64_t epoch = p.replica.primaryScreen().layoutEpoch();
+    p.source.feed("\x1b[3+T");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(differs(p.source, p.replica), "");
+    EXPECT_EQ(p.replica.primaryScreen().layoutEpoch(), epoch);
+    // Unscrolled, then written over and scrolled back between two frames:
+    // the ids are those of before, and their rows hold other text.
+    p.source.feed("\x1b[H\x1b[2Knew a\r\n\x1b[2Knew b\x1b[4;1H\n\n");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    p.source.feed("\x1b[2+T\x1b[H\x1b[2Kother a\r\n\x1b[2Kother b\x1b[4;1H\n\n");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(differs(p.source, p.replica), "");
+    EXPECT_EQ(p.replica.primaryScreen().layoutEpoch(), epoch);
 }
 
 TEST(StateSync, ANewLayoutNumbersTheReplicasRowsAnew)

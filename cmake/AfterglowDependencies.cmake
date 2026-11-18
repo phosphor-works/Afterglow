@@ -42,7 +42,7 @@
 include_guard(GLOBAL)
 
 # ─── Pins ────────────────────────────────────────────────────────────────────
-set(AFTERGLOW_DEPS phosphor-libs zlib-ng xxhash libpng libjpeg-turbo libwebp)
+set(AFTERGLOW_DEPS phosphor-libs zlib-ng xxhash libpng libjpeg-turbo libwebp lcms2)
 
 # The phosphor-libs commit (LGPL-2.1-or-later, phosphor-works/phosphor-libs)
 # that the Phosphor libraries are built from (cmake/AfterglowPhosphor.cmake).
@@ -90,6 +90,14 @@ set(AFTERGLOW_DEP_libwebp_VERSION "1.6.0")
 set(AFTERGLOW_DEP_libwebp_URL "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz")
 set(AFTERGLOW_DEP_libwebp_FILE "libwebp-1.6.0.tar.gz")
 set(AFTERGLOW_DEP_libwebp_SHA256 "e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564")
+
+# Little CMS (MIT license): the colour conversion of images with an ICC
+# profile or a cICP chunk to sRGB. The hash matches the release archive on
+# GitHub and the one on SourceForge.
+set(AFTERGLOW_DEP_lcms2_VERSION "2.20")
+set(AFTERGLOW_DEP_lcms2_URL "https://github.com/mm2/Little-CMS/releases/download/lcms2.20/lcms2-2.20.tar.gz")
+set(AFTERGLOW_DEP_lcms2_FILE "lcms2-2.20.tar.gz")
+set(AFTERGLOW_DEP_lcms2_SHA256 "18ff5504fa9cc8a2b1f3591180d90ead16c8a2ea78e530523b46eab70e1ca6b9")
 
 # CPM.cmake itself, the same release that phosphor-libs pins, so that the
 # phosphor-libs module uses this copy.
@@ -305,9 +313,9 @@ endfunction()
 #
 # Installs into <directory> the notices of the third-party code and data that
 # the binaries hold: zlib-ng and xxHash (libs/afterglow-proto), the image
-# codecs (AFTERGLOW_IMAGE_NOTICES of libs/afterglow-image), and the license of
-# the Unicode Character Database, from which libs/afterglow-vt has its
-# generated tables (UnicodeTables.inc). Its callers are the license
+# codecs and Little CMS (AFTERGLOW_IMAGE_NOTICES of libs/afterglow-image), and
+# the license of the Unicode Character Database, from which libs/afterglow-vt
+# has its generated tables (UnicodeTables.inc). Its callers are the license
 # directory of the application in a whole build (afterglow/CMakeLists.txt),
 # and those of aglow (tools/aglow/CMakeLists.txt) and aglow-mux
 # (mux/CMakeLists.txt) in a build of the two alone. aglow holds no Unicode

@@ -17,6 +17,8 @@
 
 #include <gtest/gtest.h>
 
+#include <climits>
+
 using namespace AfterglowVt;
 using namespace AfterglowVt::Test;
 using AfterglowProto::base64Encode;
@@ -51,9 +53,133 @@ struct Host : RecordingHost
         }
         return true;
     }
+    // "animation": three 4x2 frames, red, green and blue, of 0, 50 and 5 ms.
+    // "photo": one 512x512 frame, as a decoder gives it within maxBytes.
+    // "many": more frames than an image keeps, of a delay past INT_MAX.
+    bool decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<ImageFrame>& frames,
+                           std::vector<std::uint32_t>& delays) override
+    {
+        if (data == "photo" || data == "many") {
+            lastMaxBytes = maxBytes;
+            const std::uint32_t side = data == "photo" ? 512 : 1;
+            const std::size_t count = data == "photo" ? 1 : GraphicsStore::MaxFrames + 5;
+            if (std::size_t(side) * side * 4 * count > maxBytes) return false;
+            for (std::size_t i = 0; i < count; ++i) {
+                ImageFrame f;
+                f.width = f.height = side;
+                f.rgba.assign(std::size_t(side) * side * 4, 200);
+                frames.push_back(std::move(f));
+                delays.push_back(0xffffffffu);
+            }
+            return true;
+        }
+        if (data != "animation") return RecordingHost::decodeImageFrames(data, maxBytes, frames, delays);
+        lastMaxBytes = maxBytes;
+        for (const std::uint8_t channel : {0, 1, 2}) {
+            ImageFrame f;
+            f.width = 4;
+            f.height = 2;
+            for (int i = 0; i < 8; ++i) {
+                std::uint8_t px[4] = {0, 0, 0, 255};
+                px[channel] = 255;
+                f.rgba.insert(f.rgba.end(), px, px + 4);
+            }
+            frames.push_back(std::move(f));
+        }
+        delays = {0, 50, 5};
+        return true;
+    }
+    std::size_t lastMaxBytes = 0;
 };
 
 } // namespace
+
+TEST(Extensions, ITerm2AnimatedImagesPlayAndLoop)
+{
+    // An animated GIF in OSC 1337 plays, as in iTerm2 and WezTerm: every
+    // frame, a frame of 10 ms or less for 100 ms (as browsers play old
+    // GIFs), looping while it shows. The decode gets the graphics quota,
+    // and at least the default one.
+    Host host;
+    TerminalOptions options;
+    options.graphicsQuota = 1 << 20;
+    Terminal t(20, 6, host, options);
+    t.resize(20, 6, 8, 16);
+    t.feed("\x1b]1337;File=inline=1:" + base64Encode("animation") + "\x07");
+    EXPECT_EQ(host.lastMaxBytes, GraphicsStore::DefaultQuota);
+    ASSERT_EQ(t.graphics().placements().size(), 1u);
+    const Image& img = t.graphics().images().at(t.graphics().placements()[0].imageId);
+    ASSERT_EQ(img.frames.size(), 3u);
+    EXPECT_EQ(img.gaps, (std::vector<std::uint32_t>{100, 50, 100}));
+    EXPECT_EQ(img.animation, Image::Animation::Running);
+    EXPECT_EQ(img.maxLoops, 0u);
+    EXPECT_EQ(img.frames[1]->rgba[1], 255); // green
+    // It moves on while it shows: the second frame after 100 ms, then the
+    // third, then the first again.
+    t.advanceAnimations(1000);
+    EXPECT_EQ(img.currentFrame, 0u);
+    t.advanceAnimations(1100);
+    EXPECT_EQ(img.currentFrame, 1u);
+    t.advanceAnimations(1150);
+    EXPECT_EQ(img.currentFrame, 2u);
+    t.advanceAnimations(1250);
+    EXPECT_EQ(img.currentFrame, 0u);
+    // A still image gets no time and does not run.
+    t.feed("\x1b[4;1H\x1b]1337;File=inline=1:" + base64Encode("picture") + "\x07");
+    ASSERT_EQ(t.graphics().placements().size(), 2u);
+    const Image& still = t.graphics().images().at(t.graphics().placements()[1].imageId);
+    EXPECT_EQ(still.frames.size(), 1u);
+    EXPECT_EQ(still.animation, Image::Animation::Stopped);
+}
+
+// An image decodes at its natural size, before width= and height= shrink
+// it: a large photo shown small shows with a quota lower than its natural
+// size. The quota bounds what is kept: an animation keeps the frames that
+// fit it once shrunk, and no more than an image keeps, with delays that a
+// replica takes.
+TEST(Extensions, ITerm2ImagesDecodeWithinTheDefaultQuotaAndKeepWithinTheirs)
+{
+    Host host;
+    TerminalOptions options;
+    options.graphicsQuota = 64 << 10;
+    Terminal t(20, 6, host, options);
+    t.resize(20, 6, 8, 16);
+    t.feed("\x1b]1337;File=inline=1;width=8;height=4:" + base64Encode("photo") + "\x07");
+    EXPECT_EQ(host.lastMaxBytes, GraphicsStore::DefaultQuota);
+    ASSERT_EQ(t.graphics().placements().size(), 1u);
+    const Image& photo = t.graphics().images().at(t.graphics().placements()[0].imageId);
+    ASSERT_EQ(photo.frames.size(), 1u);
+    EXPECT_LE(photo.frames[0]->byteSize(), std::size_t(64) << 10);
+    EXPECT_EQ(photo.width, 64u);
+    // Three 4x2 frames of 32 bytes in a quota of 80: the first two.
+    TerminalOptions small;
+    small.graphicsQuota = 80;
+    Terminal few(20, 6, host, small);
+    few.resize(20, 6, 8, 16);
+    few.feed("\x1b]1337;File=inline=1:" + base64Encode("animation") + "\x07");
+    ASSERT_EQ(few.graphics().placements().size(), 1u);
+    const Image& two = few.graphics().images().at(few.graphics().placements()[0].imageId);
+    EXPECT_EQ(two.frames.size(), 2u);
+    EXPECT_EQ(two.gaps, (std::vector<std::uint32_t>{100, 50}));
+    // A quota of 0 keeps nothing: the image is not decoded at all.
+    TerminalOptions none;
+    none.graphicsQuota = 0;
+    Terminal nothing(20, 6, host, none);
+    nothing.resize(20, 6, 8, 16);
+    host.lastMaxBytes = 0;
+    nothing.feed("\x1b]1337;File=inline=1:" + base64Encode("photo") + "\x07");
+    EXPECT_EQ(host.lastMaxBytes, 0u);
+    EXPECT_TRUE(nothing.graphics().placements().empty());
+    // A decoder that gives too many frames, of too long a delay.
+    Terminal many(20, 6, host);
+    many.resize(20, 6, 8, 16);
+    many.feed("\x1b]1337;File=inline=1:" + base64Encode("many") + "\x07");
+    ASSERT_EQ(many.graphics().placements().size(), 1u);
+    const Image& kept = many.graphics().images().at(many.graphics().placements()[0].imageId);
+    EXPECT_EQ(kept.frames.size(), GraphicsStore::MaxFrames);
+    ASSERT_EQ(kept.gaps.size(), GraphicsStore::MaxFrames);
+    EXPECT_EQ(kept.gaps.front(), std::uint32_t(INT_MAX));
+}
 
 TEST(Extensions, ShellReportedCommandLine)
 {
@@ -72,14 +198,125 @@ TEST(Extensions, ShellReportedCommandLine)
 
 TEST(Extensions, PromptClickEvents)
 {
+    // kitty's protocol: a shell that asks (click_events=1) gets an SGR click
+    // with an absolute y; one that does not gets cursor keys.
     Host host;
     Terminal t(40, 6, host);
-    t.feed("\x1b]133;A;click_events=1\x07$ \x1b]133;B\x07");
-    EXPECT_TRUE(t.promptTakesClicks());
-    t.feed("x\r\n\x1b]133;C\x07");
-    EXPECT_FALSE(t.promptTakesClicks()); // running, not at the prompt
-    t.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
-    EXPECT_FALSE(t.promptTakesClicks()); // this prompt did not ask
+    t.feed("\x1b]133;A;click_events=1\x07$ \x1b]133;B\x07" "abc");
+    EXPECT_EQ(t.promptClickInput(2, 0), "\x1b[<0;3;1M\x1b[<0;3;1m");
+    t.feed("\r\n\x1b]133;C\x07");
+    EXPECT_EQ(t.promptClickInput(2, 0), ""); // running, not at the prompt
+    t.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07" "abc");
+    EXPECT_EQ(t.promptClickInput(2, 1), "\x1b[D\x1b[D\x1b[D");
+    EXPECT_EQ(t.promptClickInput(2, 0), ""); // above this prompt
+}
+
+TEST(Extensions, PromptClickModesSpecialKeyAndSecondaryPrompt)
+{
+    Host host;
+    Terminal t(40, 6, host);
+    // click_events=2: y relative to the top line of the current prompt, the
+    // secondary prompt when it starts on or above the click.
+    t.feed("\x1b]133;A;click_events=2\x07$ \x1b]133;B\x07" "for x in 1\r\n\x1b]133;A;k=s\x07> echo");
+    EXPECT_EQ(t.promptClickInput(4, 0), "\x1b[<0;5;0M\x1b[<0;5;0m");
+    EXPECT_EQ(t.promptClickInput(4, 1), "\x1b[<0;5;0M\x1b[<0;5;0m");
+    EXPECT_EQ(t.promptClickInput(4, 2), "\x1b[<0;5;1M\x1b[<0;5;1m");
+    // The secondary prompt moves with its row, as the prompt does: after SD
+    // the prompt is on row 1 and the secondary prompt on row 2.
+    t.feed("\x1b[T");
+    EXPECT_EQ(t.promptClickInput(4, 1), "\x1b[<0;5;0M\x1b[<0;5;0m");
+    EXPECT_EQ(t.promptClickInput(4, 2), "\x1b[<0;5;0M\x1b[<0;5;0m");
+    t.feed("\x1b[S");
+    // The secondary prompt is no new prompt: the command typed before it stays.
+    t.feed("\r\n\x1b]133;C\x07");
+    ASSERT_EQ(host.commandsStarted.size(), 1u);
+    EXPECT_EQ(host.commandsStarted[0].substr(0, 10), "for x in 1");
+    // special_key=1: kitty's key 1 in place of the arrows.
+    t.feed("\x1b]133;D;0\x07\x1b]133;A;special_key=1\x07$ \x1b]133;B\x07" "ab");
+    const int row = t.screen().cursor.y;
+    EXPECT_EQ(t.promptClickInput(2, row), "\x1b[1;1u\x1b[1;1u");
+    t.feed("\x1b[D\x1b[D");
+    EXPECT_EQ(t.promptClickInput(4, row), "\x1b[1u\x1b[1u");
+    // No click on the command line with mouse tracking or on the alternate screen.
+    t.feed("\x1b[?1000h");
+    EXPECT_EQ(t.promptClickInput(4, row), "");
+    t.feed("\x1b[?1000l\x1b[?1049h");
+    EXPECT_EQ(t.promptClickInput(4, row), "");
+}
+
+// As kitty: a click moves the cursor only from the prompt of a shell whose
+// prompt start shows at or above the cursor, with the cursor shown. A
+// program that the shell started without a C mark (a shell that sends A
+// only) reads its own input: cursor keys would reach it.
+TEST(Extensions, APromptClickNeedsThePromptStart)
+{
+    Host host;
+    Terminal t(40, 6, host);
+    t.feed("$ cat\r\nabc");
+    EXPECT_EQ(t.promptClickInput(0, 1), "");
+    // A prompt start that the screen no longer shows counts for nothing.
+    t.feed("\x1b]133;A\x07$ ab\r\n\r\n\r\n\r\n\r\n\r\nxy");
+    EXPECT_EQ(t.promptClickInput(0, 5), "");
+    t.feed("\x1b[2J\x1b[H\x1b]133;A\x07$ abc");
+    EXPECT_EQ(t.promptClickInput(2, 0), "\x1b[D\x1b[D\x1b[D");
+    t.feed("\x1b[?25l");
+    EXPECT_EQ(t.promptClickInput(2, 0), "");
+}
+
+// The secondary prompt (k=s) moves with its row: through a resize, an
+// unscroll; a new prompt and a k=s in output or on the alternate screen
+// leave no secondary prompt.
+TEST(Extensions, TheSecondaryPromptFollowsItsRow)
+{
+    Host host;
+    Terminal t(40, 6, host);
+    t.feed("\x1b]133;A;click_events=2\x07$ \x1b]133;B\x07" "for x\r\n\x1b]133;A;k=s\x07> echo");
+    EXPECT_EQ(t.promptClickInput(4, 1), "\x1b[<0;5;0M\x1b[<0;5;0m");
+    // A narrower screen reflows: the prompt rows stay as the shell drew them.
+    t.resize(30, 6, 0, 0);
+    EXPECT_EQ(t.promptClickInput(4, 1), "\x1b[<0;5;0M\x1b[<0;5;0m");
+    // An unscroll brings back a history row above them: both move down with
+    // their rows, and the blank row at the bottom goes.
+    Terminal scrolled(40, 6, host);
+    scrolled.feed("a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\n\x1b[H\x1b[J");
+    ASSERT_GT(scrolled.primaryScreen().historySize(), 0u);
+    scrolled.feed("\x1b]133;A;click_events=2\x07$ \x1b]133;B\x07" "for x\r\n\x1b]133;A;k=s\x07> echo");
+    EXPECT_EQ(scrolled.promptClickInput(4, 1), "\x1b[<0;5;0M\x1b[<0;5;0m");
+    scrolled.feed("\x1b[1+T");
+    // The cursor stays on row 1, now the primary prompt's row: the click on
+    // row 2 counts from the secondary prompt there, not from row 1.
+    EXPECT_EQ(scrolled.promptClickInput(4, 2), "\x1b[<0;5;0M\x1b[<0;5;0m");
+    // A new prompt clears it: y counts from the new prompt.
+    t.feed("\r\n\x1b]133;A;click_events=2\x07$ \x1b]133;B\x07" "ls\r\nmore");
+    const int prompt = t.screen().cursor.y - 1;
+    EXPECT_EQ(t.promptClickInput(2, prompt + 1), "\x1b[<0;3;1M\x1b[<0;3;1m");
+    // k=s in the output, or on the alternate screen, marks nothing.
+    t.feed("\r\n\x1b]133;C\x07\x1b]133;A;k=s\x07");
+    t.feed("\x1b]133;D;0\x07\x1b]133;A;click_events=2\x07$ \x1b]133;B\x07" "ls\r\nmore");
+    const int next = t.screen().cursor.y - 1;
+    EXPECT_EQ(t.promptClickInput(2, next + 1), "\x1b[<0;3;1M\x1b[<0;3;1m");
+    t.feed("\x1b[?1049h\x1b]133;A;k=s\x07\x1b[?1049l");
+    EXPECT_EQ(t.promptClickInput(2, next + 1), "\x1b[<0;3;1M\x1b[<0;3;1m");
+}
+
+TEST(Extensions, ShellQuotedCommandLines)
+{
+    // cmdline= is bash's printf %q: backslashes, quotes and $'...'.
+    Host host;
+    Terminal t(40, 6, host);
+    for (const char* line : {"echo\\ hi\\ there", "printf $'a\\tb\\x41\\101\\u00e9'", "echo 'it'\\''s' \"q\\\"d\"",
+                             "$'unclosed\\n", "echo\\ a\\;\\ echo\\ b"}) {
+        t.feed(std::string("\x1b]133;A\x07$ \x1b]133;B\x07x\r\n\x1b]133;C;cmdline=") + line + "\x07\x1b]133;D;0\x07");
+    }
+    ASSERT_EQ(host.commandsStarted.size(), 5u);
+    // A ';' of the command line, quoted, is no end of the option.
+    EXPECT_EQ(host.commandsStarted[4], "echo a; echo b");
+    EXPECT_EQ(host.commandsStarted[0], "echo hi there");
+    EXPECT_EQ(host.commandsStarted[1], "printf a\tbAA\u00e9");
+    EXPECT_EQ(host.commandsStarted[2], "echo it's q\"d");
+    // An unclosed $' runs to the end, and the line feed at the end goes, as
+    // for any command line.
+    EXPECT_EQ(host.commandsStarted[3], "unclosed");
 }
 
 TEST(Extensions, VSCodeShellIntegration)
@@ -265,6 +502,19 @@ TEST(Extensions, HostSessionsAreBoundedAndReset)
     ASSERT_EQ(host.calls.size(), 8u);
     EXPECT_EQ(host.calls[6], (std::pair<int, std::string>{0, ""}));
     EXPECT_EQ(host.calls[7], (std::pair<int, std::string>{0, ""}));
+}
+
+TEST(Extensions, ITerm2SetMarkMarksTheCursorRowOnTheMainScreen)
+{
+    // A mark that jump-to-prompt finds, as iTerm2's marks are.
+    Host host;
+    Terminal t(20, 4, host);
+    t.feed("one\r\ntwo\x1b]1337;SetMark\x07");
+    EXPECT_FALSE(t.screen().row(0).promptStart);
+    EXPECT_TRUE(t.screen().row(1).promptStart);
+    // The alternate screen keeps no marks: a full-screen program redraws it.
+    t.feed("\x1b[?1049h\x1b[2;1H\x1b]1337;SetMark\x07");
+    EXPECT_FALSE(t.screen().row(1).promptStart);
 }
 
 TEST(Extensions, ITerm2Commands)
@@ -500,45 +750,243 @@ TEST(Extensions, LegacyNotificationsRejectControlsAndBadUtf8)
     EXPECT_EQ(host.notified, "T\xe2\x80\xa9|b\xc3\xa9");
 }
 
-TEST(Extensions, DownloadsRequireCompleteValidBoundedData)
+namespace {
+// Records the downloads of a terminal: their begin, data and end.
+struct DownloadHost : RecordingHost
 {
-    struct Host : RecordingHost
+    bool answerLater = true; ///< hold the input, as a window that asks
+    std::vector<std::pair<std::string, std::int64_t>> begun;
+    std::string data;
+    std::size_t dataBytes = 0;
+    bool keepData = true;
+    std::vector<bool> ended;
+    bool failWrites = false;
+    bool downloadBegin(std::string_view name, std::int64_t size) override
     {
-        int count = 0;
-        std::string name;
-        std::string data;
-        void downloadFile(std::string_view n, std::string_view d) override
-        {
-            ++count;
-            name = n;
-            data = d;
-        }
-    } host;
+        begun.emplace_back(std::string(name), size);
+        data.clear();
+        dataBytes = 0;
+        return answerLater;
+    }
+    bool downloadData(std::string_view bytes) override
+    {
+        dataBytes += bytes.size();
+        if (keepData) data.append(bytes);
+        return !failWrites;
+    }
+    void downloadEnd(bool complete) override { ended.push_back(complete); }
+};
+} // namespace
+
+TEST(Extensions, ADownloadHoldsTheOutputUntilItsAnswer)
+{
+    // iTerm2 asks before a download (OSC 1337 File without inline=1): the
+    // output after its head waits for the answer, then the data streams.
+    DownloadHost host;
     Terminal t(20, 4, host);
-    t.feed("\x1b]1337;File=name=dGVzdC50eHQ=;size=5:aGVsbG8=\x07");
-    ASSERT_EQ(host.count, 1);
-    EXPECT_EQ(host.name, "test.txt");
+    t.feed("before\x1b]1337;File=name=dGVzdC50eHQ=;size=5:aGVsbG8=\x07" "after");
+    ASSERT_EQ(host.begun.size(), 1u);
+    EXPECT_EQ(host.begun[0], (std::pair<std::string, std::int64_t>{"test.txt", 5}));
+    EXPECT_TRUE(t.holdsInput());
+    EXPECT_EQ(rowText(t, 0), "before");
+    EXPECT_TRUE(host.data.empty());
+    // More output waits too.
+    t.feed("more");
+    EXPECT_EQ(rowText(t, 0), "before");
+    t.answerDownload(true);
+    EXPECT_EQ(rowText(t, 0), "before"); // the answer parses nothing itself
+    t.feed("");
+    EXPECT_FALSE(t.holdsInput());
     EXPECT_EQ(host.data, "hello");
-    t.feed("\x1b]1337;File=size=6:aGVsbG8=\x07");
-    t.feed("\x1b]1337;File=size=99999999:aGVsbG8=\x07");
-    t.feed("\x1b]1337;File=:aGVsbG8!\x07");
-    EXPECT_EQ(host.count, 1);
-    t.feed("\x1b]1337;MultipartFile=name=dGVzdC50eHQ=;size=5\x07\x1b]1337;FilePart=aGVs\x07");
-    EXPECT_EQ(host.count, 1);
-    t.feed("\x1b]1337;FilePart=bG8=\x07\x1b]1337;FileEnd\x07");
-    EXPECT_EQ(host.count, 2);
+    EXPECT_EQ(host.ended, (std::vector<bool>{true}));
+    EXPECT_EQ(rowText(t, 0), "beforeaftermore");
+    // Refused: its data goes nowhere, and the output goes on.
+    t.feed("\r\n\x1b]1337;File=size=5:aGVsbG8=\x07" "next");
+    ASSERT_EQ(host.begun.size(), 2u);
+    EXPECT_EQ(host.begun[1], (std::pair<std::string, std::int64_t>{"", 5}));
+    t.answerDownload(false);
+    t.feed("");
+    EXPECT_TRUE(host.data.empty());
+    EXPECT_EQ(host.ended.size(), 1u);
+    EXPECT_EQ(rowText(t, 1), "next");
+    // A host that refuses at once holds nothing.
+    host.answerLater = false;
+    t.feed("\r\n\x1b]1337;File=:aGVsbG8=\x07" "now");
+    EXPECT_FALSE(t.holdsInput());
+    EXPECT_EQ(rowText(t, 2), "now");
+    EXPECT_EQ(host.ended.size(), 1u);
+}
+
+TEST(Extensions, DownloadsEndCompleteOnlyWithValidDataOfTheirSize)
+{
+    DownloadHost host;
+    Terminal t(20, 4, host);
+    // How the download of @p osc ended, or -1 when it did not end once.
+    const auto run = [&](const std::string& osc) {
+        const std::size_t before = host.ended.size();
+        t.feed(osc);
+        t.answerDownload(true);
+        t.feed("");
+        return host.ended.size() == before + 1 ? int(host.ended.back()) : -1;
+    };
+    // More data than declared stops at once; less ends incomplete; bad
+    // base64 fails; no size takes what comes, unpadded too.
+    EXPECT_EQ(run("\x1b]1337;File=size=4:aGVsbG8=\x07"), 0);
+    EXPECT_EQ(run("\x1b]1337;File=size=6:aGVsbG8=\x07"), 0);
+    EXPECT_EQ(run("\x1b]1337;File=:aGVsbG8!\x07"), 0);
+    EXPECT_EQ(run("\x1b]1337;File=:aGVsbG8\x07"), 1);
     EXPECT_EQ(host.data, "hello");
+    // Line breaks in the data do not count, and a group may be cut between
+    // two reads of the output.
+    std::size_t ends = host.ended.size();
+    t.feed("\x1b]1337;File=size=11:aGVsbG8g");
+    t.answerDownload(true);
+    for (const char c : std::string("d2\r\n9y\nbGQ=\x07")) t.feed(std::string(1, c));
+    EXPECT_EQ(host.data, "hello world");
+    ASSERT_EQ(host.ended.size(), ends + 1);
+    EXPECT_TRUE(host.ended.back());
+    // A host that cannot write ends it.
+    host.failWrites = true;
+    EXPECT_EQ(run("\x1b]1337;File=size=5:aGVsbG8=\x07"), 0);
+    host.failWrites = false;
+    // CAN cuts the stream short.
+    ends = host.ended.size();
+    t.feed("\x1b]1337;File=size=5:aGVs");
+    t.answerDownload(true);
+    t.feed("\x18");
+    ASSERT_EQ(host.ended.size(), ends + 1);
+    EXPECT_FALSE(host.ended.back());
+    // So does another sequence after its ESC: a shell's prompt mark, or RIS.
+    // Only ST ends it whole.
+    for (const std::string cut : {"\x1b]133;A\x07", "\x1b" "c", "\x1b\x1b\\"}) {
+        EXPECT_EQ(run("\x1b]1337;File=:aGVsbG8=" + cut), 0) << cut;
+    }
+    EXPECT_EQ(run("\x1b]1337;File=:aGVsbG8=\x1b\\"), 1);
+    // An ST that comes in the next read still ends it whole.
+    ends = host.ended.size();
+    t.feed("\x1b]1337;File=:aGVsbG8=\x1b");
+    t.answerDownload(true);
+    t.feed("");
+    EXPECT_EQ(host.ended.size(), ends);
+    t.feed("\\");
+    ASSERT_EQ(host.ended.size(), ends + 1);
+    EXPECT_TRUE(host.ended.back());
+    // 01337 is 1337, as for every other OSC 1337 command.
+    EXPECT_EQ(run("\x1b]01337;File=:aGVsbG8=\x07"), 1);
+    // An inline image stays an image.
+    const std::size_t begun = host.begun.size();
+    t.feed("\x1b]1337;File=inline=1:aGVsbG8=\x07");
+    EXPECT_EQ(host.begun.size(), begun);
+}
+
+TEST(Extensions, MultipartDownloadsStreamTheirParts)
+{
+    DownloadHost host;
+    Terminal t(20, 4, host);
+    t.feed("\x1b]1337;MultipartFile=name=dGVzdC50eHQ=;size=5\x07" "x");
+    ASSERT_EQ(host.begun.size(), 1u);
+    EXPECT_TRUE(t.holdsInput());
+    EXPECT_EQ(rowText(t, 0), "");
+    t.answerDownload(true);
+    t.feed("\x1b]1337;FilePart=aGVs\x07\x1b]1337;FilePart=bG8=\x07");
+    EXPECT_EQ(host.data, "hello");
+    EXPECT_TRUE(host.ended.empty());
     t.feed("\x1b]1337;FileEnd\x07");
-    EXPECT_EQ(host.count, 2);
-    // 8 MiB is the most a download may hold.
-    const std::string limit(8u * 1024 * 1024, 'x');
-    t.feed("\x1b]1337;File=name=dGVzdC50eHQ=;size=" + std::to_string(limit.size() + 1) + ":"
-           + base64Encode(limit + "x") + "\x07");
-    EXPECT_EQ(host.count, 2);
-    t.feed("\x1b]1337;File=name=dGVzdC50eHQ=;size=" + std::to_string(limit.size()) + ":" + base64Encode(limit)
-           + "\x07");
-    ASSERT_EQ(host.count, 3);
-    EXPECT_EQ(host.data.size(), limit.size());
+    EXPECT_EQ(host.ended, (std::vector<bool>{true}));
+    EXPECT_EQ(rowText(t, 0), "x");
+    // A new file ends one under way, incomplete.
+    t.feed("\x1b]1337;MultipartFile=size=5\x07");
+    t.answerDownload(true);
+    t.feed("\x1b]1337;FilePart=aGVs\x07\x1b]1337;MultipartFile=size=1\x07");
+    EXPECT_EQ(host.ended, (std::vector<bool>{true, false}));
+}
+
+TEST(Extensions, ADownloadLargerThanTheParsersStringBufferStreams)
+{
+    // 72 MiB of base64 in one OSC, past the 64 MiB that the parser keeps of
+    // a string: it streams, and nothing of it stays in the parser.
+    DownloadHost host;
+    host.keepData = false;
+    Terminal t(20, 4, host);
+    const std::size_t bytes = std::size_t(54) << 20;
+    t.feed("\x1b]1337;File=size=" + std::to_string(bytes) + ":");
+    t.answerDownload(true);
+    const std::string chunk = base64Encode(std::string(3 << 16, 'x'));
+    for (std::size_t sent = 0; sent < bytes; sent += std::size_t(3) << 16) t.feed(chunk);
+    t.feed("\x07");
+    EXPECT_EQ(host.dataBytes, bytes);
+    EXPECT_EQ(host.ended, (std::vector<bool>{true}));
+}
+
+// An empty download whose head and end come in one read: the end waits for
+// the answer too, and an accepted one ends whole.
+TEST(Extensions, AnEmptyDownloadInOneReadWaitsForItsAnswer)
+{
+    DownloadHost host;
+    Terminal t(20, 4, host);
+    t.feed("\x1b]1337;File=name=ZQ==;size=0:\x07" "after");
+    ASSERT_EQ(host.begun.size(), 1u);
+    EXPECT_TRUE(t.holdsInput());
+    EXPECT_TRUE(host.ended.empty());
+    t.answerDownload(true);
+    t.feed("");
+    EXPECT_EQ(host.ended, (std::vector<bool>{true}));
+    EXPECT_EQ(rowText(t, 0), "after");
+}
+
+// The program exits in a download: the stream ends incomplete, also when the
+// pane's exit message that follows has an ESC, and a question that waits
+// goes. The output that waited with it is still parsed, its data dropped.
+TEST(Extensions, AnExitEndsADownloadIncomplete)
+{
+    DownloadHost host;
+    Terminal t(20, 4, host);
+    t.feed("\x1b]1337;File=size=10:aGVs");
+    t.answerDownload(true);
+    t.feed("");
+    ASSERT_TRUE(host.ended.empty());
+    t.programExited();
+    EXPECT_EQ(host.ended, (std::vector<bool>{false}));
+    t.feed("\r\n\x1b[1mexit\x1b[m");
+    EXPECT_EQ(host.ended, (std::vector<bool>{false}));
+    EXPECT_EQ(rowText(t, 1), "exit");
+    // Still waiting for its answer: the question goes, and the output after
+    // the download's end shows.
+    DownloadHost asked;
+    Terminal held(20, 4, asked);
+    held.feed("\x1b]1337;File=:aGVsbG8=\x07" "bye");
+    ASSERT_TRUE(held.holdsInput());
+    held.programExited();
+    EXPECT_FALSE(held.holdsInput());
+    EXPECT_EQ(asked.ended, (std::vector<bool>{false}));
+    EXPECT_TRUE(asked.data.empty());
+    EXPECT_EQ(rowText(held, 0), "bye");
+    // A second download that waited behind the first asks nothing: no
+    // program is left to send it. Its data goes nowhere, and the output
+    // after it shows.
+    DownloadHost twice;
+    Terminal both(20, 4, twice);
+    both.feed("\x1b]1337;File=:aGVsbG8=\x07\x1b]1337;File=:aGVsbG8=\x07" "bye");
+    ASSERT_TRUE(both.holdsInput());
+    both.programExited();
+    EXPECT_FALSE(both.holdsInput());
+    EXPECT_EQ(twice.begun.size(), 1u);
+    EXPECT_EQ(twice.ended, (std::vector<bool>{false}));
+    EXPECT_TRUE(twice.data.empty());
+    EXPECT_EQ(rowText(both, 0), "bye");
+    // A reset drops the output that waited: no base64 of the download shows.
+    DownloadHost reset;
+    Terminal again(20, 4, reset);
+    again.feed("\x1b]1337;File=:aGVsbG8gd29ybGQ=\x07");
+    again.reset();
+    again.feed("x");
+    EXPECT_EQ(rowText(again, 0), "x");
+    // VT52 mode takes no OSC: no download either.
+    DownloadHost vt52;
+    Terminal old(20, 4, vt52);
+    old.feed("\x1b[?2l\x1b]1337;File=:aGVsbG8=\x07");
+    EXPECT_TRUE(vt52.begun.empty());
+    EXPECT_FALSE(old.holdsInput());
 }
 
 TEST(Extensions, MultipleCursorsQueryCoordinatesAndLifecycle)

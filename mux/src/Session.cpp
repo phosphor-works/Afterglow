@@ -179,6 +179,12 @@ void Session::join(std::unique_ptr<MuxPane> pane) noexcept
     // (MuxPane::setWindow), which then gets them, or the next one does.
     pane->setWatched(m_watched);
     pane->setKeptNotifications(std::size_t(m_options.keptNotifications));
+    // And the answer to OSC 99's query of this session's window. Out of
+    // memory, the pane keeps the old one: it still joins whole.
+    try {
+        pane->setNotificationCapabilities(m_options.notificationCapabilities);
+    } catch (const std::exception&) {
+    }
     m_panes.push_back(std::move(pane));
 }
 
@@ -191,6 +197,10 @@ void Session::kill()
 void Session::applySettings(const SessionSettings& settings)
 {
     m_options.control = settings.control;
+    if (m_options.notificationCapabilities != settings.notificationCapabilities) {
+        m_options.notificationCapabilities = settings.notificationCapabilities;
+        for (const auto& pane : m_panes) pane->setNotificationCapabilities(settings.notificationCapabilities);
+    }
     if (m_options.keptNotifications != settings.keptNotifications) {
         m_options.keptNotifications = settings.keptNotifications;
         for (const auto& pane : m_panes) pane->setKeptNotifications(std::size_t(settings.keptNotifications));

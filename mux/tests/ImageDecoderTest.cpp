@@ -16,9 +16,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -29,6 +32,7 @@
 #include <signal.h>
 #include <spawn.h>
 #include <sys/eventfd.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -59,10 +63,62 @@ Decoded decode(ImageDecoder& decoder, std::string_view data, ImageFormats format
 }
 
 /// The daemon's decoder: one server for the tests, as for a daemon.
-Decoded decode(std::string_view data, ImageFormats formats)
+ImageDecoder& shared()
 {
     static ImageDecoder decoder(AFTERGLOW_MUX);
-    return decode(decoder, data, formats);
+    return decoder;
+}
+
+Decoded decode(std::string_view data, ImageFormats formats)
+{
+    return decode(shared(), data, formats);
+}
+
+/// @p data as an iTerm2 image of a pane decodes (ImageFormats::CommonFrames,
+/// decodeFrames): its first frame, which a still image has alone.
+Decoded iterm(ImageDecoder& decoder, std::string_view data)
+{
+    Decoded d;
+    std::vector<AfterglowMux::DecodedFrame> frames;
+    d.ok = decoder.decodeFrames(data, ImageDecoder::MaxBytes, frames, -1) && !frames.empty();
+    if (!d.ok) return d;
+    d.width = frames[0].width;
+    d.height = frames[0].height;
+    d.rgba = std::move(frames[0].rgba);
+    return d;
+}
+
+Decoded iterm(std::string_view data)
+{
+    return iterm(shared(), data);
+}
+
+/// The frames of @p data, up to @p maxBytes of pixels, with the shared
+/// decoder: none when it decodes none.
+std::vector<AfterglowMux::DecodedFrame> framesOf(std::string_view data, std::size_t maxBytes = std::size_t(1) << 20)
+{
+    std::vector<AfterglowMux::DecodedFrame> frames;
+    if (!shared().decodeFrames(data, maxBytes, frames, -1)) frames.clear();
+    return frames;
+}
+
+/// The pixel at @p x, @p y of @p rgba, @p width wide: empty past its end.
+std::vector<std::uint8_t> pixelAt(const std::vector<std::uint8_t>& rgba, std::uint32_t width, std::uint32_t x, std::uint32_t y)
+{
+    const std::size_t at = (std::size_t(y) * width + x) * 4;
+    if (at + 4 > rgba.size()) return {};
+    return std::vector<std::uint8_t>(rgba.begin() + std::ptrdiff_t(at), rgba.begin() + std::ptrdiff_t(at + 4));
+}
+
+/// A GIF of @p count frames, each the first frame of TestFiles::Gif: red,
+/// 100 ms.
+std::string gifOf(std::size_t count)
+{
+    const std::size_t first = Gif.find("\x21\xf9");
+    const std::size_t second = Gif.find("\x21\xf9", first + 2);
+    std::string out = Gif.substr(0, first);
+    for (std::size_t i = 0; i < count; ++i) out += Gif.substr(first, second - first);
+    return out + ';';
 }
 
 /// The processes that @p parent started: for this process, the servers of
@@ -131,9 +187,9 @@ bool decodeRuns()
 
 TEST(MuxImageDecoder, APngDecodesToItsPixelsWithStraightAlpha)
 {
-    for (const ImageFormats formats : {ImageFormats::Png, ImageFormats::Common}) {
-        const Decoded d = decode(Png, formats);
-        EXPECT_TRUE(d.ok) << int(formats);
+    for (const bool kitty : {true, false}) {
+        const Decoded d = kitty ? decode(Png, ImageFormats::Png) : iterm(Png);
+        EXPECT_TRUE(d.ok) << kitty;
         if (!d.ok) continue;
         EXPECT_EQ(d.width, 3u);
         EXPECT_EQ(d.height, 2u);
@@ -143,31 +199,64 @@ TEST(MuxImageDecoder, APngDecodesToItsPixelsWithStraightAlpha)
     }
 }
 
-TEST(MuxImageDecoder, AnItermImageCanBeJpegGifWebPOrBmp)
+TEST(MuxImageDecoder, AnItermImageCanBeOfEachFormatThatTheLibraryReads)
 {
-    Decoded d = decode(Bmp, ImageFormats::Common);
-    ASSERT_TRUE(d.ok);
+    Decoded d = iterm(Bmp);
+    EXPECT_TRUE(d.ok);
     EXPECT_EQ(d.width, 2u);
     EXPECT_EQ(d.height, 2u);
     EXPECT_EQ(d.rgba, (std::vector<std::uint8_t>{255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255}));
-    // The first frame of an animation, as the window shows it.
-    d = decode(Gif, ImageFormats::Common);
-    ASSERT_TRUE(d.ok);
-    EXPECT_EQ(d.width, 4u);
-    EXPECT_EQ(d.height, 4u);
+    // The first frame of an animation: AnimationsGiveEachFrameWithinTheBounds
+    // has the others.
+    for (const std::string* file : {&Gif, &WebpAnimated}) {
+        d = iterm(*file);
+        EXPECT_TRUE(d.ok);
+        EXPECT_EQ(d.width, 4u);
+        EXPECT_EQ(d.height, 4u);
+        EXPECT_EQ(d.rgba, repeat({255, 0, 0, 255}, 16));
+    }
+    d = iterm(Apng);
+    EXPECT_TRUE(d.ok);
     EXPECT_EQ(d.rgba, repeat({255, 0, 0, 255}, 16));
-    d = decode(WebpAnimated, ImageFormats::Common);
-    ASSERT_TRUE(d.ok);
-    EXPECT_EQ(d.width, 4u);
-    EXPECT_EQ(d.height, 4u);
-    EXPECT_EQ(d.rgba, repeat({255, 0, 0, 255}, 16));
-    d = decode(Webp, ImageFormats::Common);
-    ASSERT_TRUE(d.ok);
+    // TIFF and netPBM, which the library reads itself.
+    d = iterm(TiffRgb);
+    EXPECT_TRUE(d.ok);
+    EXPECT_EQ(d.width, 3u);
+    EXPECT_EQ(d.height, 2u);
+    EXPECT_EQ(d.rgba, (std::vector<std::uint8_t>{255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 10, 20, 30, 255, 200, 100, 50, 255, 1, 2, 3, 255}));
+    d = iterm(std::string("P6\n1 1\n255\n\xff\x00\x00", 14));
+    EXPECT_TRUE(d.ok);
+    EXPECT_EQ(d.rgba, (std::vector<std::uint8_t>{255, 0, 0, 255}));
+    // An ICC profile and a cICP chunk convert to sRGB in the decoding
+    // process too, under its system call filter.
+    d = iterm(JpegAdobe);
+    EXPECT_TRUE(d.ok);
+    const std::vector<std::uint8_t> adobe = pixelAt(d.rgba, d.width, 0, 0);
+    ASSERT_EQ(adobe.size(), 4u);
+    EXPECT_NEAR(adobe[0], 66, 1);
+    EXPECT_NEAR(adobe[1], 151, 1);
+    EXPECT_NEAR(adobe[2], 202, 1);
+    d = decode(PngCicpP3, ImageFormats::Png);
+    EXPECT_TRUE(d.ok);
+    ASSERT_EQ(d.width, 2u);
+    ASSERT_EQ(d.height, 1u);
+    const std::vector<std::uint8_t> p3 = pixelAt(d.rgba, d.width, 0, 0);
+    const std::vector<std::uint8_t> green = pixelAt(d.rgba, d.width, 1, 0);
+    ASSERT_EQ(p3.size(), 4u);
+    ASSERT_EQ(green.size(), 4u);
+    EXPECT_NEAR(p3[0], 83, 1);
+    EXPECT_NEAR(p3[1], 152, 1);
+    EXPECT_NEAR(p3[2], 205, 1);
+    EXPECT_NEAR(green[0], 0, 1);
+    EXPECT_NEAR(green[1], 204, 1);
+    EXPECT_NEAR(green[2], 0, 1);
+    d = iterm(Webp);
+    EXPECT_TRUE(d.ok);
     EXPECT_EQ(d.width, 2u);
     EXPECT_EQ(d.height, 2u);
     EXPECT_EQ(d.rgba, repeat({255, 0, 0, 255}, 4));
-    d = decode(Jpeg, ImageFormats::Common);
-    ASSERT_TRUE(d.ok);
+    d = iterm(Jpeg);
+    EXPECT_TRUE(d.ok);
     EXPECT_EQ(d.width, 8u);
     EXPECT_EQ(d.height, 8u);
     ASSERT_EQ(d.rgba.size(), 8u * 8 * 4);
@@ -178,19 +267,80 @@ TEST(MuxImageDecoder, AnItermImageCanBeJpegGifWebPOrBmp)
     EXPECT_EQ(notRed, 0);
 }
 
+// kitty's f=100 shows the default image of an APNG, as kitty does, also one
+// that the animation does not show; iTerm2 shows the animation.
+TEST(MuxImageDecoder, KittyShowsTheDefaultImageOfAnApng)
+{
+    Decoded d = decode(ApngHiddenDefault, ImageFormats::Png);
+    EXPECT_TRUE(d.ok);
+    EXPECT_EQ(d.width, 2u);
+    EXPECT_EQ(d.height, 1u);
+    EXPECT_EQ(d.rgba, (std::vector<std::uint8_t>{128, 128, 128, 255, 128, 128, 128, 255}));
+    d = iterm(ApngHiddenDefault);
+    EXPECT_TRUE(d.ok);
+    EXPECT_EQ(d.rgba, (std::vector<std::uint8_t>{255, 255, 255, 255, 255, 255, 255, 255}));
+    const std::vector<AfterglowMux::DecodedFrame> frames = framesOf(ApngHiddenDefault);
+    ASSERT_EQ(frames.size(), 2u);
+    EXPECT_EQ(frames[1].rgba, (std::vector<std::uint8_t>{0, 0, 0, 255, 0, 0, 0, 255}));
+}
+
+// Each frame for iTerm2's animations, with its time, as the panes of a
+// window and of a session take them.
+TEST(MuxImageDecoder, AnimationsGiveEachFrameWithinTheBounds)
+{
+    for (const std::string* file : {&Gif, &WebpAnimated}) {
+        SCOPED_TRACE(file == &Gif ? "GIF" : "WebP");
+        std::vector<AfterglowMux::DecodedFrame> frames = framesOf(*file);
+        if (frames.size() != 2) {
+            ADD_FAILURE() << frames.size() << " frames";
+            continue;
+        }
+        EXPECT_EQ(frames[0].delayMs, 100u);
+        EXPECT_EQ(frames[1].delayMs, 100u);
+        EXPECT_EQ(frames[0].rgba, repeat({255, 0, 0, 255}, 16));
+        EXPECT_EQ(frames[1].rgba, repeat({0, 0, 255, 255}, 16));
+        // A frame of 4 by 4 is 64 bytes: 100 hold the first, not the
+        // second, and a single frame shows with no time.
+        frames = framesOf(*file, 100);
+        if (frames.size() != 1) {
+            ADD_FAILURE() << frames.size() << " frames within 100 bytes";
+            continue;
+        }
+        EXPECT_EQ(frames[0].delayMs, 0u);
+    }
+    // An APNG: its frames on the canvas, with their times.
+    const std::vector<AfterglowMux::DecodedFrame> apng = framesOf(Apng);
+    ASSERT_EQ(apng.size(), 3u);
+    EXPECT_EQ(apng[0].delayMs, 100u);
+    EXPECT_EQ(apng[1].delayMs, 50u);
+    EXPECT_EQ(apng[2].delayMs, 30u);
+    EXPECT_EQ(apng[0].rgba, repeat({255, 0, 0, 255}, 16));
+    // A still image: one frame, with no time.
+    const std::vector<AfterglowMux::DecodedFrame> still = framesOf(Png);
+    ASSERT_EQ(still.size(), 1u);
+    EXPECT_EQ(still[0].delayMs, 0u);
+    // An animation that the decoder cannot finish keeps the frames before
+    // the fault: the third frame of this APNG is out of sequence.
+    EXPECT_EQ(framesOf(ApngBadSequence).size(), 2u);
+    // At most GraphicsMaxFrames frames: the rest go.
+    const std::vector<AfterglowMux::DecodedFrame> many = framesOf(gifOf(AfterglowProto::GraphicsMaxFrames + 5));
+    EXPECT_EQ(many.size(), AfterglowProto::GraphicsMaxFrames);
+}
+
 TEST(MuxImageDecoder, RefusesOtherFormatsAndBadFiles)
 {
     // kitty's f=100 is PNG only.
-    for (const std::string* file : {&Jpeg, &Gif, &Bmp, &Webp}) EXPECT_FALSE(decode(*file, ImageFormats::Png).ok);
-    // Formats that no decoder here reads (PPM, TGA): their signature is unknown.
+    const std::string ppm("P6\n1 1\n255\n\xff\x00\x00", 14);
+    for (const std::string* file : {&Jpeg, &Gif, &Bmp, &Webp, &TiffRgb, &ppm}) EXPECT_FALSE(decode(*file, ImageFormats::Png).ok);
+    EXPECT_TRUE(iterm(ppm).ok);
+    // A format that no decoder here reads (TGA): its signature is unknown.
     // Corrupt files of the formats that it reads are the library's tests
     // (Image.ImageDecode.*): there a sanitizer's report fails the test,
     // where here it ends a decoding process as a refusal does.
-    EXPECT_FALSE(decode(std::string("P6\n1 1\n255\n\xff\x00\x00", 14), ImageFormats::Common).ok);
     const std::string tga("\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x01\x00\x18\x00\x00\x00\xff", 21);
-    EXPECT_FALSE(decode(tga, ImageFormats::Common).ok);
-    EXPECT_FALSE(decode("", ImageFormats::Common).ok);
-    EXPECT_FALSE(decode("not an image at all", ImageFormats::Common).ok);
+    EXPECT_FALSE(iterm(tga).ok);
+    EXPECT_FALSE(iterm("").ok);
+    EXPECT_FALSE(iterm("not an image at all").ok);
     EXPECT_FALSE(decode(Png.substr(0, 40), ImageFormats::Png).ok);
     // A side past what a terminal takes: refused from the header, though
     // the file is whole.
@@ -199,7 +349,7 @@ TEST(MuxImageDecoder, RefusesOtherFormatsAndBadFiles)
     // 335,560,000 bytes, 15,680 more than the 320 MiB.
     EXPECT_FALSE(decode(greyPng(10000, 8389), ImageFormats::Png).ok);
     // Apple's CgBI: a chunk before IHDR.
-    EXPECT_FALSE(decode(cgbi(), ImageFormats::Common).ok);
+    EXPECT_FALSE(iterm(cgbi()).ok);
     // The next decode works: nothing of the failures stays.
     EXPECT_TRUE(decode(Png, ImageFormats::Png).ok);
 }
@@ -344,25 +494,128 @@ TEST(MuxImageDecoder, ADecodeThatWaitsForAnotherEndsWhenItsPaneCloses)
     EXPECT_LT(took, std::chrono::milliseconds(500));
 }
 
-TEST(MuxImageDecoder, TheServerTakesOnlyItsDaemon)
+TEST(MuxImageDecoder, TheServerTakesOnlyItsClientOfItsVersion)
 {
-    // aglow-mux --decode-images runs only as the child of the daemon
-    // whose process id it gets: the parent of this process is not its
-    // parent.
-    pid_t pid = 0;
+    // aglow-mux --decode-images runs only as the child of the client whose
+    // process id it gets, and of the version of its wire: another version
+    // ends at once with its status, which the client reads.
+    const auto server = [](const std::string& parent, std::optional<std::string> version) {
+        pid_t pid = 0;
+        posix_spawn_file_actions_t actions;
+        posix_spawn_file_actions_init(&actions);
+        posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+        const std::string argument(AfterglowMux::DecodeServerArgument);
+        std::string parentArgument = parent;
+        std::vector<char*> argv{const_cast<char*>(AFTERGLOW_MUX), const_cast<char*>(argument.c_str()), parentArgument.data()};
+        if (version) argv.push_back(version->data());
+        argv.push_back(nullptr);
+        char* const env[] = {nullptr};
+        const int spawned = ::posix_spawn(&pid, AFTERGLOW_MUX, &actions, nullptr, argv.data(), env);
+        posix_spawn_file_actions_destroy(&actions);
+        int status = -1;
+        if (spawned != 0 || ::waitpid(pid, &status, 0) != pid) return -1;
+        return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    };
+    const std::string self = std::to_string(::getpid());
+    EXPECT_EQ(server(std::to_string(::getppid()), std::string(AfterglowMux::DecodeWireVersion)), 1);
+    EXPECT_EQ(server(self, std::string("0")), 64);
+    EXPECT_EQ(server(self, std::nullopt), 64);
+}
+
+TEST(MuxImageDecoder, TheServerStartsNoProcessForFormatsOfNoVersion)
+{
+    // A request byte that names no ImageFormats gets the answer with no
+    // process, and the server goes on.
+    int pair[2] = {-1, -1};
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, pair), 0);
+    AfterglowProto::UniqueFd client(pair[0]);
+    AfterglowProto::UniqueFd serverEnd(pair[1]);
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
-    posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
-    const std::string argument(AfterglowMux::DecodeServerArgument);
-    std::string other = std::to_string(::getppid());
-    char* const argv[] = {const_cast<char*>(AFTERGLOW_MUX), const_cast<char*>(argument.c_str()), other.data(), nullptr};
+    posix_spawn_file_actions_adddup2(&actions, serverEnd.get(), STDIN_FILENO);
+    posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+    std::string argument(AfterglowMux::DecodeServerArgument);
+    std::string parent = std::to_string(::getpid());
+    std::string version(AfterglowMux::DecodeWireVersion);
+    char* argv[] = {const_cast<char*>(AFTERGLOW_MUX), argument.data(), parent.data(), version.data(), nullptr};
     char* const env[] = {nullptr};
+    pid_t pid = 0;
     const int spawned = ::posix_spawn(&pid, AFTERGLOW_MUX, &actions, nullptr, argv, env);
     posix_spawn_file_actions_destroy(&actions);
     ASSERT_EQ(spawned, 0);
-    int status = 0;
+    serverEnd.reset();
+
+    const auto request = [&client](std::uint8_t formats) -> std::optional<std::uint8_t> {
+        // An empty image: a process refuses it at once.
+        AfterglowProto::UniqueFd reader(::open("/dev/null", O_RDONLY | O_CLOEXEC));
+        AfterglowProto::UniqueFd writer(::open("/dev/null", O_WRONLY | O_CLOEXEC));
+        if (!reader.valid() || !writer.valid()) return std::nullopt;
+        iovec io{&formats, 1};
+        alignas(cmsghdr) char control[CMSG_SPACE(2 * sizeof(int))] = {};
+        msghdr message{};
+        message.msg_iov = &io;
+        message.msg_iovlen = 1;
+        message.msg_control = control;
+        message.msg_controllen = sizeof control;
+        cmsghdr* c = CMSG_FIRSTHDR(&message);
+        c->cmsg_level = SOL_SOCKET;
+        c->cmsg_type = SCM_RIGHTS;
+        c->cmsg_len = CMSG_LEN(2 * sizeof(int));
+        const int fds[2] = {reader.get(), writer.get()};
+        std::memcpy(CMSG_DATA(c), fds, sizeof fds);
+        if (::sendmsg(client.get(), &message, MSG_NOSIGNAL) != 1) return std::nullopt;
+        std::uint8_t answer = 0xff;
+        alignas(cmsghdr) char received[CMSG_SPACE(sizeof(int))] = {};
+        iovec back{&answer, 1};
+        msghdr reply{};
+        reply.msg_iov = &back;
+        reply.msg_iovlen = 1;
+        reply.msg_control = received;
+        reply.msg_controllen = sizeof received;
+        if (::recvmsg(client.get(), &reply, MSG_CMSG_CLOEXEC) != 1) return std::nullopt;
+        for (cmsghdr* r = CMSG_FIRSTHDR(&reply); r; r = CMSG_NXTHDR(&reply, r)) {
+            int pidfd = -1;
+            std::memcpy(&pidfd, CMSG_DATA(r), sizeof pidfd);
+            ::close(pidfd);
+        }
+        return answer;
+    };
+    EXPECT_EQ(request(0x7f), std::optional<std::uint8_t>(0));
+    // The server still answers: a request of a known format gets its process.
+    EXPECT_EQ(request(std::uint8_t(ImageFormats::Png)), std::optional<std::uint8_t>(1));
+    client.reset();
+    int status = -1;
     ASSERT_EQ(::waitpid(pid, &status, 0), pid);
-    EXPECT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 1) << status;
+    EXPECT_TRUE(WIFEXITED(status));
+}
+
+TEST(MuxImageDecoder, AServerOfAnotherVersionStartsNoMore)
+{
+    // A client hears why, and starts that executable no more. A server that
+    // says so (64), and an aglow-mux from before the version argument, whose
+    // usage error (2) refuses the arguments of this one.
+    for (const char* status : {"64", "2"}) {
+        TempDir dir;
+        ASSERT_FALSE(dir.path.empty());
+        const std::string starts = (dir.path / "starts").string();
+        const std::string other = dir.script("other", "echo started >> " + shellQuoted(starts) + "\nexit " + status);
+        SKIP_WITHOUT(other);
+        std::vector<std::string> reports;
+        std::mutex mutex;
+        ImageDecoder decoder(other, ImageDecoder::WaitMs, [&](const std::string& line) {
+            std::lock_guard lock(mutex);
+            reports.push_back(line);
+        });
+        for (int i = 0; i < 3; ++i) EXPECT_FALSE(decode(decoder, Png, ImageFormats::Png).ok) << status;
+        std::ifstream log(starts);
+        int count = 0;
+        for (std::string line; std::getline(log, line);) ++count;
+        EXPECT_EQ(count, 1) << status;
+        std::lock_guard lock(mutex);
+        EXPECT_TRUE(std::any_of(reports.begin(), reports.end(), [](const std::string& line) {
+            return line.find("of another version") != std::string::npos;
+        })) << status << ' ' << testing::PrintToString(reports);
+    }
 }
 
 TEST(MuxImageDecoder, ADecodingProcessHasItsLimitsAndItsFilter)
@@ -422,7 +675,7 @@ TEST(MuxImageDecoder, PanesDecodeAtOnce)
     const std::string* const files[] = {&Png, &Gif, &Bmp};
     std::vector<Decoded> alone;
     for (const std::string* file : files) {
-        alone.push_back(decode(decoder, *file, ImageFormats::Common));
+        alone.push_back(iterm(decoder, *file));
         ASSERT_TRUE(alone.back().ok);
     }
     std::vector<std::thread> panes;
@@ -431,7 +684,7 @@ TEST(MuxImageDecoder, PanesDecodeAtOnce)
         panes.emplace_back([&decoder, &wrong, &files, &alone, pane] {
             for (int i = 0; i < 20; ++i) {
                 const std::size_t which = std::size_t(pane + i) % 3;
-                const Decoded d = decode(decoder, *files[which], ImageFormats::Common);
+                const Decoded d = iterm(decoder, *files[which]);
                 const Decoded& expected = alone[which];
                 if (!d.ok || d.width != expected.width || d.height != expected.height || d.rgba != expected.rgba) ++wrong;
             }

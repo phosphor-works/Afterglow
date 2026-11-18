@@ -19,6 +19,8 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Text attributes, including curly, dotted and dashed underlines, underline colors, overlines and OSC 8 hyperlinks.
 - Rectangular editing (DECFRA, DECCRA), character repeat (REP) and cursor shapes (DECSCUSR).
 - Kitty's ED 22, which moves the lines of the screen into the scrollback before it erases the screen.
+- Kitty's unscroll (`CSI n + T`), which brings lines back from the scrollback, and Kitty's SGR 221 and 222, which turn off bold or faint alone.
+- DECCARA with every SGR code, as Kitty extends it, and XTSAVE and XTRESTORE without modes for the modes that have no side effects.
 - Status queries: DECRQM, DECRQSS, XTGETTCAP and XTWINOPS size reports.
 - Synchronized output (mode 2026), grapheme clustering (mode 2027) and in-band resize reports (mode 2048).
 - Color-scheme change reports (mode 2031) and visibility reports (mode 2033).
@@ -27,8 +29,9 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 ### Keyboard and mouse
 
-- The Kitty keyboard protocol, with a flag stack for each screen, and xterm `modifyOtherKeys`.
-- Mouse reporting in X10, normal, button-event and any-event modes, with UTF-8, SGR, urxvt and SGR-pixel encodings.
+- The Kitty keyboard protocol, with a flag stack for each screen, alternate keys with the base layout key, and the level and media keys.
+- xterm `modifyOtherKeys`.
+- Mouse reporting in X10, normal, button-event and any-event modes, with UTF-8, SGR, urxvt and SGR-pixel encodings. With SGR pixels, a program learns when the pointer leaves its pane, as in Kitty.
 - Focus reports, bracketed paste and alternate-scroll mode.
 - `Keybinds.remapModifiers`, which makes one modifier act as another in Afterglow, as `remap_modifiers` does in Kitty. Bindings, the link modifier, mouse selection and programs get the modifier that a key becomes.
 - Keypad keys with Num Lock off, which the Kitty protocol reports as keypad keys, and the function keys F13 to F35.
@@ -47,7 +50,10 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Kitty images sent as a file, a temporary file or shared memory, unless `Terminal.graphicsFileTransfer` is `deny`.
 - An image memory limit for the main and the alternate screen of each pane (`Graphics.quota`, 320 MiB each by default). Images without a placement go first: those sent with the transient hint (`N=1`), then the oldest.
 - Sixel images.
-- iTerm2 inline images and file downloads (OSC 1337), with a native Save dialog. The dialog moves with its pane to another window. It closes when its pane of a mux session moves to a new session.
+- The images that programs send decode in processes of their own, in local and in session panes alike. Each process has limits on its memory, its time and the system calls that it can make. This needs `aglow-mux` next to `afterglow`, a kernel with seccomp filters and `pidfd_open`, and a processor that the filter knows. PNG, APNG, JPEG, GIF, WebP, BMP, TIFF and netPBM images show. An image with an ICC color profile or a cICP color space shows in sRGB, as in Kitty.
+- iTerm2 inline images, which play when they are animated GIF, WebP or APNG images.
+- File downloads (OSC 1337) of any size, as `it2dl` sends them. Afterglow asks before the data comes, with the name of the file and its size when the program declares it. The program waits for the answer (`Terminal.downloads`, `Terminal.downloadDirectory`). The dialog moves with its pane to another window. It closes when its pane of a mux session moves to a new session.
+- File uploads that a program asks for with OSC 1337 `RequestUpload`, as `it2ul` does. Afterglow asks, then sends the chosen files or folder as iTerm2 does: a tar archive compressed with gzip, in base64 as typed input (`Terminal.uploads`, `Terminal.uploadLimit`). When a pane of a mux session moves to another session, the next window that shows the pane asks again.
 - Kitty text sizing (OSC 66).
 - The Kitty multiple-cursors protocol, with mixed block and beam layering.
 
@@ -65,19 +71,21 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 ### Shell integration
 
-- Automatic integration for Bash 4.4 or later, Zsh and Fish 4 or later.
-- Prompt, command and exit-status markers (OSC 133 and OSC 633).
+- Automatic integration for Bash 4.4 or later, Zsh and Fish, with Kitty's switches in `Terminal.shellIntegration` (`no-prompt-mark`, `no-cwd`, `no-cursor`, `no-title`, `no-sudo`, `no-rc`, `no-complete`). It adds a bar cursor at the prompt, and a `TERM` that `sudo` and `run0` can use. In Bash and Zsh, it sets the directory and the command as the title. Fish sets its own titles. A Fish older than 4 gets the prompt marks from Afterglow.
+- Prompt, command and exit-status markers (OSC 133 and OSC 633), with Kitty's secondary prompt (`k=s`) and command lines quoted as by `printf %q`.
+- A click on the command line moves the cursor of the shell there, as Kitty does. The shell gets arrow keys, Kitty's special key or the SGR click of `click_events`. `Mouse.clickMovesCursor` turns it off.
 - The working directory from OSC 7, OSC 9;9, OSC 633 and iTerm2 `CurrentDir`. New tabs and splits start there when it is on this host.
 - A pane closes when its shell exits, also while a background job holds the terminal.
-- Command navigation, last-command output in a pager up to `Terminal.lastOutputLimit` (1 MiB by default), and command status in tab and pane labels.
+- Command navigation, last-command output in a pager up to `Terminal.pagerOutputLimit` (1 MiB by default), and command status in tab and pane labels.
 - Shell contexts (OSC 3008) for remote and elevated sessions, and program status reports (OSC 7501).
 - `afterglow ssh`, which integrated shells use for `ssh`. It labels the pane with the remote host and installs the `afterglow` terminfo entry on the host when needed.
 
 ### Clipboard, notifications and files
 
 - Clipboard access through OSC 52 and the Kitty clipboard protocol (OSC 5522).
-- Clipboard reads ask first by default, and the prompt starts on Deny. `Terminal.clipboardWrite` allows, asks for or denies writes.
-- Desktop notifications from OSC 9, OSC 777 and the Kitty notification protocol (OSC 99), which `Notifications.enabled` turns on and off.
+- Clipboard reads ask first by default, and the prompt starts on Deny. `Terminal.clipboardWrite` allows, asks for or denies writes. **Always allow** for a program's password allows its later requests of the same kind, reads or writes.
+- Desktop notifications from OSC 9, OSC 777 and the Kitty notification protocol (OSC 99), which `Notifications.enabled` turns on and off. With notifications off, programs that ask learn that the terminal shows none.
+- `Notifications.filters`, rules for the notifications that Afterglow does not show, as `filter_notification` in Kitty. A rule matches the title, body, application and type of a notification.
 - A notification limit for each pane (`Notifications.rateLimit` in `Notifications.rateWindow`, 20 in 10 seconds by default). Notices from Afterglow itself do not count, and neither do `afterglow ctl notify` and script notifications. The notice at the end of a script command that has no client counts.
 - Settings for the shortest time between two bell sounds (`Terminal.bellSoundInterval`) and between two status notifications of a pane (`Notifications.statusInterval`).
 - `Control.eventInterval` sets the shortest time between two control events of one kind for a pane.
@@ -90,13 +98,14 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Received file transfers keep the read, write and execute bits of a mode. Afterglow drops the set-user-ID, set-group-ID and sticky bits.
 - Local file drops, quoted for the shell and sent as bracketed paste.
 - Text drops, pasted with the size limit and the question of a paste, unless the program in the pane accepts drops.
-- `aglow`, a client for Kitty file transfer, drag and drop, images and the clipboard. It does not need Kitty. It is one static binary, which you can copy to a remote host with a kernel and processor that it supports. `aglow icat` shows PNG, JPEG, GIF, WebP and BMP images, and plays GIF and WebP animations. Its `transfer`, `dnd`, `icat` and `clipboard` commands take the options of `kitten`, with a few differences that the compatibility document lists.
+- `aglow`, a client for Kitty file transfer, drag and drop, images and the clipboard. It does not need Kitty. It is one static binary, which you can copy to a remote host with a kernel and processor that it supports. `aglow icat` shows PNG, JPEG, GIF, WebP, BMP, TIFF and netPBM images, and plays GIF, WebP and APNG animations. It converts an image with an ICC color profile or a cICP color space to sRGB. When ImageMagick is installed, `aglow icat` also shows AVIF, HEIC, JPEG XL, QOI, SVG, TGA, ICO and CUR images with ImageMagick. ImageMagick also shows two kinds of BMP images that `aglow` cannot read. These are BMP images with JPEG or PNG data, and BMP images with run-length encoding that does not fit their depth. When curl is installed, `aglow icat` shows images at http, https and ftp URLs. `aglow clipboard` makes a PNG of another image on the clipboard when you ask for a PNG. The `transfer`, `dnd`, `icat` and `clipboard` commands of `aglow` take the options of `kitten`, with a few differences that the compatibility document lists.
 - `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard`, which run the `aglow` that is installed with Afterglow.
 - `AFTERGLOW_AGLOW_ONLY` builds `aglow` and `aglow-mux` alone, for a remote host or packages of their own. This build needs no Qt. It installs only the two programs, the private libraries of `aglow-mux`, the completions of `aglow` and the license notices. `aglow-mux` needs PCRE2 and phosphor-channel from phosphor-libs, which the configuration downloads. With `AFTERGLOW_BUILD_MUX` off, the build makes `aglow` alone and needs neither.
 
 ### Windows, tabs and panes
 
 - Tabs and split panes, with pane zoom, resize, swap, rotation and directional focus.
+- `Window.resizeStepCells` sets the cells that the resize actions move a split edge by.
 - Ctrl+Shift+Alt+= equalizes the splits of a tab. Ctrl++ and Ctrl+= make the font larger.
 - Animated splits whose motion takes any Phosphor curve, such as a spring or a cubic Bézier.
 - Phosphor curves for the cursor, scrolling, the visual bell and the quick terminal (`Animation.cursorCurve`, `scrollCurve`, `bellCurve` and `QuickTerminal.curve`).
@@ -109,11 +118,11 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Terminal sessions that keep running without a window, in the `aglow-mux` daemon. `afterglow mux new` starts a session with one pane and shows it in a window. `afterglow mux attach` shows a session in a window, and `afterglow mux detach` closes that window. One window at a time shows a session, and a second one takes it over. The session follows the settings of the window that shows it, also after you edit them. `Mux.updateEnvironment` names the variables that a session of this computer takes from Afterglow each time a window shows it, such as `SSH_AUTH_SOCK`. `Mux.onClose` decides whether closing that window, or its last tab or pane, ends the session. `afterglow mux ls` and `afterglow mux kill` list and end the sessions.
 - A new tab or split in the window of a session starts a new pane of the session. The daemon keeps the tabs and splits, with their ratios, focus, zoom and the titles of tabs and panes. The next window shows them again. Closing one pane or tab ends only its programs. A pane or a tab that moves to a new window goes on as a new session in a new window. A pane that moves into the window of another session of the same daemon joins that session, and its program keeps running. `afterglow ctl --session` can also move a pane to a pane of another session.
 - The `--ssh DESTINATION` option of the `afterglow mux` commands keeps sessions on another host and shows them in a window here. The commands run `aglow-mux proxy` there over an ssh connection of Afterglow. You sign in once, and ssh needs no port forward. A session there runs your login shell with the environment of your login there. The `afterglow` terminfo entry is installed there as `afterglow ssh` installs it. When the connection breaks, the session keeps running there. `Mux.remoteCommand` names the program that ssh runs there. `Mux.signInTimeout` sets how long Afterglow waits while you sign in. `Terminal.sshControlPersist` sets how long the connection stays open.
-- `afterglow ctl --session NAME` acts on a session through the daemon, also while no window shows it. `afterglow ctl` in a session pane acts on its session. The daemon lists panes, sends and reads their text, and splits, opens, focuses, moves and closes them. It passes the commands that only a window can do to the window that shows the session, `overlay` and `screenshot` too. `afterglow ctl --session NAME watch` prints the events of the session's panes. A session of another host runs no program of this computer through them, and reads and writes none of its projects, scripts, screen or clipboard. `aglow run` and `afterglow run` in a session pane run the commands of the scripts of that window. In a session of another host, they run only the commands that a script marks remote, as in an ssh session of that host. `afterglow ssh` in a session pane gets remote commands too. The daemon keeps the socket that ssh forwards, and the window that shows the session runs the commands.
-- The window that shows a session answers the requests of its programs, as for its own panes. These are bells, notifications, the clipboard, file transfers, drag and drop, downloads, pointer shapes, user variables and the commands of shell integration. The window asks its usual questions first. `Mux.eventQueue` sets how much waits for a slow window.
+- `afterglow ctl --session NAME` acts on a session through the daemon, also while no window shows it. `afterglow ctl` in a session pane acts on its session. The daemon lists panes, sends and reads their text, and types keys. It reads and sets colors and user variables, and signals programs. It splits, opens, focuses, moves and closes panes. It passes the commands that only a window can do to the window that shows the session, `overlay` and `screenshot` too. `afterglow ctl --session NAME watch` prints the events of the session's panes. A session of another host runs no program of this computer through them, and reads and writes none of its projects, scripts, screen or clipboard. `aglow run` and `afterglow run` in a session pane run the commands of the scripts of that window. In a session of another host, they run only the commands that a script marks remote, as in an ssh session of that host. `afterglow ssh` in a session pane gets remote commands too. The daemon keeps the socket that ssh forwards, and the window that shows the session runs the commands.
+- The window that shows a session answers the requests of its programs, as for its own panes. These are bells, notifications, the clipboard, file transfers, drag and drop, downloads, uploads, pointer shapes, user variables and the commands of shell integration. The window asks its usual questions first. `Mux.eventQueue` sets how much waits for a slow window.
 - While no window shows a session, each pane keeps its bell, its flash and its newest notifications. The next window rings that bell, flashes the pane and shows those notifications, also for the pane that has the focus. `Mux.keptNotifications` sets how many notifications each pane keeps. The daemon keeps no clipboard writes, because a late write would replace what you copied since.
-- A session pane shows the marks of shell integration, program status, shell contexts, extra cursors and images. Before a window shows a session, its cells have the size of your font, so images that the programs print then show too. Each image decodes in a process of its own, so a decoder that crashes cannot end your sessions. The daemon decodes PNG and iTerm2 images (PNG, JPEG, GIF, WebP and BMP). A selection moves with its text in a region that a program scrolls. The program hears whether you can see the pane (mode 2033).
-- A quick terminal on a Wayland layer surface, toggled by a global shortcut. It slides from the top or bottom edge of a chosen screen. It slides away while a file transfer prompt or a Save dialog of one of its panes is open. It comes back when the dialog closes.
+- A session pane shows the marks of shell integration, program status, shell contexts, extra cursors and images. Before a window shows a session, its cells have the size of your font, so images that the programs print then show too. Each image decodes in a process of its own, so a decoder that crashes cannot end your sessions. The daemon decodes PNG and iTerm2 images (PNG, APNG, JPEG, GIF, WebP, BMP, TIFF and netPBM). A selection moves with its text in a region that a program scrolls. The program hears whether you can see the pane (mode 2033).
+- A quick terminal on a Wayland layer surface, toggled by a global shortcut. It slides from the top or bottom edge of a chosen screen. It slides away while a question or a file dialog of one of its panes is open. Examples are the questions of a file transfer, a download and an upload. It comes back when the dialog closes.
 - Optional background blur on KWin, window transparency and a history scrollbar over the pane that fades when idle.
 - `Window.tabBarHeight` sets the height of the tab bar, and `Window.scrollbarWidth` sets the width of the scrollbar.
 
@@ -122,6 +131,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Search with PCRE2 regular expressions, across soft-wrapped lines.
 - Keyboard selection in character, line and rectangle modes.
 - With `Mouse.dragSelection` on (off by default, as in Kitty), selected text drags to another pane or another desktop application.
+- The output of a command in the pager. This is the last output, the first output on the screen, or the last output that a prompt jump went to. A Ctrl+Shift+right-click (`Mouse.commandOutputModifier`) opens the output that you click, or selects it (`Mouse.commandOutputClick`). Scripts read the same outputs with `read_text`.
 - Text hints that copy, open or run commands on regular-expression matches, and URL hints, labeled from `Hints.alphabet`.
 - Links open directly when their scheme is in `Links.schemes` (http, https, mailto, ftp and file by default). Other links ask first.
 - Keybindings with multi-key sequences, a leader key and named key tables.
@@ -161,6 +171,11 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - `new_tab(pane)` starts in the directory of that pane and opens its tab after the tab of that pane.
 - Script control of the pane overview, pane pulses, `on_tab_switch`, and split origins in `on_pane_created`.
 - External control through `afterglow ctl` and a control socket, with access settings and merged state events.
+- `afterglow ctl` drives panes as `kitten @` does, so that editor plugins such as smart-splits.nvim can move between editor splits and panes. `focus --direction` focuses the pane on one side and exits with status 1 at the edge. `resize --direction` moves an edge by a number of cells. `send-key` types keys by name in the program's keyboard mode. `scroll` scrolls by lines, pages or prompts, or to an end. `set-tab-title` names a tab. `ls --json` also tells whether the shell is at its prompt, the user variables, the foreground process and the neighboring panes.
+- `afterglow ctl colors` prints a pane's colors. `set-colors` sets them as its program would, from `NAME=COLOR` words or a theme name or file, on one pane or all with `--all`, after `--reset`.
+- `afterglow ctl set-font-size`, `set-opacity`, `set-user-var`, `signal-program` and `window` do what `kitten @ set-font-size`, `set-background-opacity`, `set-user-vars`, `signal-child` and `resize-os-window` do. `signal-program` signals the foreground process group of the pane. That is the running program, or the shell at its prompt. `window` makes a window full screen, maximized or normal, and sizes it in cells.
+- `afterglow ctl get-text --ansi` writes pane text with its colors, attributes and links, as kitty-scrollback.nvim reads it. `--cursor` adds the cursor and `--wrap-markers` marks wrapped rows. `--first-output-on-screen` and `--last-visited-output` read the outputs of the command output actions.
+- `afterglow ctl split`, `new-tab` and `new-window` take `--env`, `--var` and `--hold`. `split` and `new-tab` also take `--no-focus`, and `--stdin-text SCOPE`, which gives a program the pane's text on its standard input, as `kitten @ launch --stdin-source` does. `overlay --stdin-text` does too.
 - `afterglow ctl screenshot` saves a PNG of a pane, its tab or its window as the window shows it, with the shader packs. With `--window` it includes the tab bar. It needs `Control.allowReadText`.
 - Script commands. A script or package declares each command with a summary. A usage text, a palette title and standard input are optional. A script can also change its commands at run time with `afterglow.set_commands`, which takes the same map of names as the package manifest.
 - Commands that a script marks `remote` also run from a remote host, with `aglow run` in an `afterglow ssh` session. They need `Terminal.sshRemoteCommands`, which is off by default, and `Control.enabled` and `Scripts.enabled`. `Terminal.sshIntegration` is not necessary, because you can also run `afterglow ssh` yourself.
@@ -214,7 +229,7 @@ See [performance measurements](docs/PERFORMANCE.md) for workloads, conditions an
 - With no settings file, every setting has its default. The first change of a setting creates the file, which holds only the values that differ from the defaults. Only its owner can read the file.
 - Problems in the settings file show as a notice. Examples are an unknown key, a value of the wrong type and a value that is not a color.
 - A settings file that does not parse is never replaced. The current settings stay until it is correct. At start, Afterglow then uses the defaults, with `Scripts.enabled` and `Control.enabled` off until the file holds a JSON object or is deleted. A file that becomes empty before that does not turn them on. An `-o` override of either key with a boolean value still sets it.
-- `--config FILE` reads another settings file. The `themes`, `shaders` and `scripts` directories beside it take the place of your own.
+- `--config FILE` reads another settings file. The `themes`, `shaders`, `shader-presets` and `scripts` directories beside it take the place of your own.
 - The desktop's fixed-width font and size by default, with the `calt` and `liga` features. `Font.sizeStep` sets the font size step.
 - A clean exit on `SIGTERM`, `SIGINT` and `SIGHUP` that closes the windows and the control socket. A signal that Afterglow inherited as ignored stays ignored.
 

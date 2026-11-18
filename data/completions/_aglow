@@ -239,7 +239,7 @@ _aglow() {
                 '--unicode-placeholder[show images through placeholder characters]' \
                 '--passthrough=[pass through tmux]:passthrough:(detect tmux none)' \
                 '--image-id=[graphics protocol id]:id:' \
-                '--engine=[engine that decodes images]:engine:(auto builtin)' \
+                '--engine=[engine that decodes images]:engine:(auto builtin magick)' \
                 '--silent[not used, for compatibility]' \
                 '(-n --no-trailing-newline)'{-n,--no-trailing-newline}'[leave the cursor after the image]' \
                 $help \

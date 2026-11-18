@@ -7,6 +7,9 @@
 #include "Tty.h"
 
 #include <AfterglowImage/Decode.h>
+#include <AfterglowProto/DecodeFilter.h>
+#include <AfterglowProto/DecodeProcess.h>
+#include <AfterglowProto/DecodeRecord.h>
 #include <AfterglowProto/Fd.h>
 #include <AfterglowProto/Graphics.h>
 #include <AfterglowProto/Limits.h>
@@ -20,8 +23,6 @@
 #include <cstring>
 #include <fcntl.h>
 #include <new>
-#include <poll.h>
-#include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -165,13 +166,15 @@ int webpOrientation(std::string_view bytes)
 }
 
 // The EXIF orientation of an image: 1 is upright, 5 to 8 swap its sides. As
-// kitten icat, aglow reads it in a JPEG, a PNG and a WebP.
+// kitten icat, aglow reads it in a JPEG, a PNG and a WebP, and the
+// Orientation tag of a TIFF, which is the same tag in the file's first IFD.
 int exifOrientation(std::string_view bytes)
 {
     switch (AfterglowImage::format(bytes)) {
     case AfterglowImage::Format::Jpeg: return jpegOrientation(bytes);
     case AfterglowImage::Format::Png: return pngOrientation(bytes);
     case AfterglowImage::Format::WebP: return webpOrientation(bytes);
+    case AfterglowImage::Format::Tiff: return tiffOrientation(bytes);
     default: return 1;
     }
 }
@@ -206,28 +209,8 @@ std::string orient(const unsigned char* rgba, int width, int height, int orienta
     return out;
 }
 
-// What the decoder child sends its parent, in this order: frames, then Error,
-// or TooMany, or an optional Warning and End. The parent stops reading at
-// Error and at TooMany.
-enum class Kind : std::uint32_t { Frame, Warning, Error, TooMany, End };
-
-struct Record
-{
-    Kind kind = Kind::End;
-    std::int32_t width = 0;
-    std::int32_t height = 0;
-    std::int32_t delay = 0;
-    std::uint64_t length = 0;
-};
-
-// A message from the child is never longer than this.
-constexpr std::uint64_t MaxMessage = 4096;
-
-bool send(int fd, const Record& record, std::string_view payload = {})
-{
-    return AfterglowProto::writeAll(fd, std::string_view(reinterpret_cast<const char*>(&record), sizeof record))
-        && AfterglowProto::writeAll(fd, payload);
-}
+using AfterglowProto::DecodeRecord;
+using Kind = DecodeRecord::Kind;
 
 // The signals that Tty catches to stop a command. While the parent waits
 // for the child, they are blocked, and ppoll() takes them in its mask only:
@@ -255,36 +238,6 @@ private:
     sigset_t m_waiting;
 };
 
-// Reads @p size bytes from the child. False at its end, and with
-// @p interrupted set when a signal that Tty caught stops the command.
-bool readChild(int fd, void* data, std::size_t size, const SignalGate& gate, bool& interrupted)
-{
-    auto* p = static_cast<char*>(data);
-    while (size > 0) {
-        if (Tty::signalPending()) {
-            interrupted = true;
-            return false;
-        }
-        pollfd ready { fd, POLLIN, 0 };
-        if (::ppoll(&ready, 1, nullptr, gate.waiting()) < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return false;
-        }
-        const ssize_t n = ::read(fd, p, size);
-        if (n < 0 && errno == EINTR) {
-            continue;
-        }
-        if (n <= 0) {
-            return false;
-        }
-        p += n;
-        size -= std::size_t(n);
-    }
-    return true;
-}
-
 struct Limits
 {
     int orientation = 1;
@@ -299,30 +252,38 @@ struct Limits
 // The exit status of a decoder child that ran out of the memory that aglow
 // allows. Any other status but 0 is a crash, also the 1 of a sanitizer.
 constexpr int OutOfMemoryStatus = 3;
+// The exit status of a decoder child that cannot limit its system calls
+// where AfterglowProto::allowOnlyDecoding() knows the processor: it decodes
+// nothing, as the decoding processes of aglow-mux.
+constexpr int NoFilterStatus = 4;
+// The exit status of a decoder child that cannot set up its standard
+// descriptors: no descriptor or no /dev/null is left.
+constexpr int SetupStatus = 5;
 
+// The child writes to @p fd and makes the other system calls that decoding
+// needs only, as the decoding processes of aglow-mux do:
+// AfterglowProto::startDecodingProcess says what else it does.
 [[noreturn]] void runChild(int fd, std::string_view bytes, const Limits& limits, pid_t parent)
 {
-    // The child ends with the parent, also when a signal kills the parent
-    // before it can kill the child.
-    ::prctl(PR_SET_PDEATHSIG, SIGKILL);
-    if (::getppid() != parent) {
-        ::_exit(0);
+#ifdef AGLOW_SANITIZER_BUILD
+    constexpr bool keepStandardError = true;
+#else
+    constexpr bool keepStandardError = false;
+#endif
+    if (!AfterglowProto::startDecodingProcess(parent, -1, fd, keepStandardError)) {
+        ::_exit(SetupStatus);
     }
-    // The signals that the parent catches kill the child, so that Ctrl+C
-    // stops a long decode, and SIGCONT no longer runs the parent's handler.
-    // SIGPIPE ends the child when the parent stops reading.
-    for (const int number : { SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGWINCH, SIGCONT }) {
-        struct sigaction inherited { };
-        if (::sigaction(number, nullptr, &inherited) == 0 && inherited.sa_handler != SIG_IGN) {
-            std::signal(number, SIG_DFL);
-        }
-    }
-    std::signal(SIGPIPE, SIG_DFL);
-    AfterglowProto::limit(RLIMIT_CORE, 0, 0);
+    fd = STDOUT_FILENO;
     AfterglowProto::limit(RLIMIT_CPU, limits.seconds, limits.seconds + 1);
     // The address space at the fork holds aglow and the file.
     const std::uint64_t base = AfterglowProto::addressSpaceOr(bytes.size());
     AfterglowProto::limit(RLIMIT_AS, rlim_t(base + limits.memory), rlim_t(base + limits.memory));
+    // On a processor whose system calls the filter does not know, the child
+    // decodes with its limits alone: aglow runs on any host that it is
+    // copied to.
+    if (AfterglowProto::DecodeFilterKnown && !AfterglowProto::allowOnlyDecoding()) {
+        ::_exit(NoFilterStatus);
+    }
     int code = 0;
     try {
         std::size_t frames = 0;
@@ -340,30 +301,29 @@ constexpr int OutOfMemoryStatus = 3;
                 return false;
             }
             if (++frames > limits.maxFrames) {
-                written = send(fd, { Kind::TooMany });
+                written = AfterglowProto::writeDecodeRecord(fd, { Kind::TooMany });
                 return false;
             }
-            const std::size_t size = std::size_t(width) * std::size_t(height) * 4;
-            const Record record { Kind::Frame, limits.width, limits.height, delay, size };
+            std::string turned;
             if (limits.orientation != 1) {
-                written = send(fd, record, orient(rgba, width, height, limits.orientation));
-            } else {
-                written = send(fd, record, std::string_view(reinterpret_cast<const char*>(rgba), size));
+                turned = orient(rgba, width, height, limits.orientation);
             }
+            const void* pixels = limits.orientation != 1 ? static_cast<const void*>(turned.data()) : rgba;
+            written = AfterglowProto::writeDecodeFrame(fd, std::uint32_t(limits.width), std::uint32_t(limits.height), delay, pixels);
             return written && !(limits.stopAtMax && frames == limits.maxFrames);
         }, error, warning);
         if (mismatch) {
             error = "the image is not what its header says";
         }
         if (!ok || mismatch) {
-            error.resize(std::min<std::size_t>(error.size(), MaxMessage));
-            send(fd, { Kind::Error, 0, 0, 0, error.size() }, error);
+            error.resize(std::min<std::size_t>(error.size(), DecodeRecord::MaxText));
+            AfterglowProto::writeDecodeRecord(fd, { Kind::Error, 0, 0, 0, error.size() }, error);
         } else if (written) {
             if (!warning.empty()) {
-                warning.resize(std::min<std::size_t>(warning.size(), MaxMessage));
-                send(fd, { Kind::Warning, 0, 0, 0, warning.size() }, warning);
+                warning.resize(std::min<std::size_t>(warning.size(), DecodeRecord::MaxText));
+                AfterglowProto::writeDecodeRecord(fd, { Kind::Warning, 0, 0, 0, warning.size() }, warning);
             }
-            send(fd, { Kind::End });
+            AfterglowProto::writeDecodeRecord(fd, { Kind::End });
         }
     } catch (const std::bad_alloc&) {
         code = OutOfMemoryStatus; // under the memory limit: the parent reads why from the exit
@@ -424,6 +384,12 @@ std::string childFailure(int status)
     if (WIFEXITED(status) && WEXITSTATUS(status) == OutOfMemoryStatus) {
         return "the image needs more memory to decode than aglow allows";
     }
+    if (WIFEXITED(status) && WEXITSTATUS(status) == SetupStatus) {
+        return "the image decoder cannot set up its standard input, output and error (no free descriptor or no /dev/null)";
+    }
+    if (WIFEXITED(status) && WEXITSTATUS(status) == NoFilterStatus) {
+        return "the image decoder cannot limit its system calls (seccomp) here, so it decodes nothing";
+    }
     return "the decoder crashed on this file, which is corrupt";
 }
 
@@ -436,8 +402,8 @@ bool imageSize(std::string_view bytes, int& width, int& height, std::string& err
         error = "not an image that aglow can read";
         return false;
     case AfterglowImage::Probe::TooLarge:
-        error = "the image is " + std::to_string(width) + "x" + std::to_string(height) + " pixels, and a terminal takes no side longer than "
-            + std::to_string(AfterglowProto::GraphicsMaxSide);
+        error = "the image is " + std::to_string(width) + "x" + std::to_string(height) + " pixels, and aglow decodes no side longer than "
+            + std::to_string(AfterglowProto::GraphicsMaxSide) + ", the longest that a terminal takes";
         return false;
     case AfterglowImage::Probe::Image:
         break;
@@ -480,6 +446,11 @@ bool isPng(std::string_view bytes)
             return false;
         }
         data |= chunk.starts_with("IDAT");
+        // An APNG: a terminal shows one image of a PNG, so aglow decodes
+        // the frames and sends them as an animation, as kitten icat does.
+        if (chunk.starts_with("acTL")) {
+            return false;
+        }
         i += 12 + length;
         if (chunk.starts_with("IEND")) {
             break;
@@ -510,6 +481,9 @@ bool isPng(std::string_view bytes)
 
 std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std::string& error, std::size_t maxFrames)
 {
+    // The reason is this decode's: a message that the caller kept from an
+    // earlier step must not stand for a child that crashed.
+    error.clear();
     Image image;
     if (!imageSize(bytes, image.width, image.height, error)) {
         return std::nullopt;
@@ -560,14 +534,21 @@ std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std
     bool tooMany = false;
     bool interrupted = false;
     const SignalGate gate;
-    auto readExact = [&](void* data, std::size_t size) { return readChild(reader.get(), data, size, gate, interrupted); };
+    AfterglowProto::DecodeWait wait;
+    wait.mask = gate.waiting();
+    wait.stopped = Tty::signalPending;
+    auto readExact = [&](void* data, std::size_t size) {
+        const AfterglowProto::DecodeRead read = AfterglowProto::readFromDecoder(reader.get(), data, size, wait);
+        interrupted = read == AfterglowProto::DecodeRead::Interrupted;
+        return read == AfterglowProto::DecodeRead::Done;
+    };
     for (;;) {
-        Record record;
+        DecodeRecord record;
         if (!readExact(&record, sizeof record)) {
             break;
         }
         if (record.kind == Kind::Frame) {
-            if (record.width != image.width || record.height != image.height || record.length != frameBytes
+            if (record.width != std::uint32_t(image.width) || record.height != std::uint32_t(image.height) || record.length != frameBytes
                 || image.m_frames.size() >= limits.maxFrames) {
                 error = "the image is not what its header says";
                 break;
@@ -588,7 +569,7 @@ std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std
             finished = true;
             break;
         }
-        if ((record.kind != Kind::Warning && record.kind != Kind::Error) || record.length > MaxMessage) {
+        if ((record.kind != Kind::Warning && record.kind != Kind::Error) || record.length > DecodeRecord::MaxText) {
             error = "the image decoder sent data that is not valid";
             break;
         }
@@ -634,6 +615,61 @@ std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std
         image.m_delays.assign(image.m_delays.size(), 100);
     }
     return image;
+}
+
+namespace {
+
+std::string pngOfRows(std::string_view rgba, int width, int height)
+{
+    // Each row with filter 0 (none) before it.
+    const std::size_t row = std::size_t(width) * 4;
+    std::string raw;
+    raw.reserve((row + 1) * std::size_t(height));
+    for (int y = 0; y < height; ++y) {
+        raw.push_back('\0');
+        raw.append(rgba.substr(std::size_t(y) * row, row));
+    }
+    const std::string data = AfterglowProto::zlibCompress(raw);
+    if (data.empty()) {
+        return {};
+    }
+    std::string png("\x89PNG\r\n\x1a\n", 8);
+    const auto chunk = [&](std::string_view type, std::string_view body) {
+        const auto put32 = [&](std::uint32_t value) {
+            for (int shift = 24; shift >= 0; shift -= 8) {
+                png.push_back(char(value >> shift));
+            }
+        };
+        put32(std::uint32_t(body.size()));
+        const std::size_t start = png.size();
+        png.append(type);
+        png.append(body);
+        put32(AfterglowProto::crc32Of(std::string_view(png).substr(start)));
+    };
+    std::string header;
+    for (const std::uint32_t value : { std::uint32_t(width), std::uint32_t(height) }) {
+        for (int shift = 24; shift >= 0; shift -= 8) {
+            header.push_back(char(value >> shift));
+        }
+    }
+    header.append(std::string("\x08\x06\x00\x00\x00", 5)); // 8 bits, RGBA, deflate, filters, no interlace
+    chunk("IHDR", header);
+    chunk("IDAT", data);
+    chunk("IEND", {});
+    return png;
+}
+
+} // namespace
+
+std::string encodePng(std::string_view rgba, int width, int height)
+{
+    // The rows that zlib takes are a second copy of the pixels, which may
+    // not fit where the decoded frame did.
+    try {
+        return pngOfRows(rgba, width, height);
+    } catch (const std::bad_alloc&) {
+        return {};
+    }
 }
 
 Resizer::Resizer(int width, int height, int newWidth, int newHeight)
@@ -794,14 +830,15 @@ bool frameOpaque(const std::string& rgba)
     return true;
 }
 
-std::string dropAlpha(const std::string& rgba)
+void dropAlpha(std::string& rgba)
 {
-    std::string rgb;
-    rgb.reserve(rgba.size() / 4 * 3);
-    for (std::size_t i = 0; i + 3 < rgba.size(); i += 4) {
-        rgb.append(rgba, i, 3);
+    // Each pixel moves down to where its RGB bytes go: never past a pixel
+    // that is still to be read.
+    std::size_t to = 0;
+    for (std::size_t i = 0; i + 3 < rgba.size(); i += 4, to += 3) {
+        std::memmove(rgba.data() + to, rgba.data() + i, 3);
     }
-    return rgb;
+    rgba.resize(to);
 }
 
 } // namespace Aglow

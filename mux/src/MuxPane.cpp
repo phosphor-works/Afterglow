@@ -141,7 +141,7 @@ MuxPane::~MuxPane()
     // (reset() clears the pointer before the PTY's destructor runs). Then
     // the PTY closes, which hangs up the program. A decode that runs ends
     // at once, and so does each one after it: the thread does not wait for
-    // an image.
+    // an image. A thread that paused its output for a download stops too.
     if (m_stopDecode.valid()) {
         const std::uint64_t one = 1;
         (void)!::write(m_stopDecode.get(), &one, sizeof one);
@@ -188,7 +188,7 @@ bool MuxPane::leads(pid_t session) const
     return m_pty && !m_exited && session > 0 && m_pty->pid() == session;
 }
 
-MuxPane::Facts MuxPane::facts() const
+MuxPane::Facts MuxPane::facts(bool userVars) const
 {
     Facts facts;
     {
@@ -197,7 +197,9 @@ MuxPane::Facts MuxPane::facts() const
         facts.directory = m_checkedDirectory;
         facts.size = m_size;
         if (m_commandRunning) facts.command = m_command;
+        if (userVars) facts.userVars = m_userVars;
     }
+    facts.atPrompt = m_atPrompt.load();
     if (facts.directory.empty()) facts.directory = directory();
     return facts;
 }
@@ -208,11 +210,65 @@ void MuxPane::keepSizeLocked()
     m_size = {m_terminal.cols(), m_terminal.rows(), m_terminal.cellWidth(), m_terminal.cellHeight()};
 }
 
-std::optional<std::string> MuxPane::text(AfterglowVt::Terminal::TextScope scope) const
+std::optional<std::string> MuxPane::text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::TextFormat& format) const
 {
     std::lock_guard lock(m_mutex);
     if (m_decoding) return std::nullopt;
-    return m_terminal.text(scope);
+    return m_terminal.text(scope, MaxText, nullptr, format);
+}
+
+std::optional<std::string> MuxPane::firstOutputOnScreen(const AfterglowVt::TextFormat& format) const
+{
+    std::lock_guard lock(m_mutex);
+    if (m_decoding) return std::nullopt;
+    // The primary screen's rows that show; the alternate screen has no output.
+    if (m_terminal.modes().altScreen) return std::string();
+    const AfterglowVt::Screen& screen = m_terminal.screen();
+    const std::uint64_t top = screen.rowsDropped() + screen.viewportTop();
+    const auto region = m_terminal.firstCommandOutputIn(top, top + std::uint64_t(screen.rows() - 1));
+    if (!region) return std::string();
+    return m_terminal.semanticRegionText(*region, MaxText, nullptr, format).value_or(std::string());
+}
+
+std::optional<std::vector<AfterglowVt::Terminal::NamedColor>> MuxPane::colors() const
+{
+    std::lock_guard lock(m_mutex);
+    if (m_decoding) return std::nullopt;
+    return m_terminal.namedColors();
+}
+
+MuxPane::Colors MuxPane::applyColors(const std::vector<std::string>& payloads)
+{
+    Colors result = Colors::Applied;
+    std::size_t applied = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_decoding) return Colors::Decoding;
+        for (const std::string& payload : payloads) {
+            if (!m_terminal.applyColorOsc(payload)) {
+                result = Colors::NotAColor;
+                break;
+            }
+            ++applied;
+        }
+    }
+    // As after output: the window's next frame has what changed. One wake
+    // for each burst, as ptyData() gives it.
+    if (applied > 0 && !m_changed.exchange(true)) m_wake();
+    return result;
+}
+
+std::optional<AfterglowPty::ForegroundProcess> MuxPane::foreground(bool withCmdline) const
+{
+    if (!m_pty || m_exited) return std::nullopt;
+    return m_pty->foreground(withCmdline);
+}
+
+std::optional<AfterglowVt::Modes> MuxPane::modes() const
+{
+    std::lock_guard lock(m_mutex);
+    if (m_decoding) return std::nullopt;
+    return m_terminal.modes();
 }
 
 std::string MuxPane::directory() const
@@ -317,10 +373,36 @@ MuxPane::Forward MuxPane::forward(const Host::Call& call)
 void MuxPane::setWindow(std::uint64_t window, std::size_t queueBytes)
 {
     bool wake = false;
+    bool download = false;
+    std::optional<AfterglowPty::ForegroundProcess> holder;
     {
-        std::lock_guard lock(m_hostMutex);
+        std::unique_lock lock(m_hostMutex);
+        // Whether the job that asked for files still holds the terminal, for
+        // a question that a window that went did not answer. Without shell
+        // integration, which ends it with the command, this tells a program
+        // that still waits from a shell that would run the answer. Read with
+        // the lock let go, as uploadRequested() reads it, and only for such a
+        // question: the daemon calls this for each pane in each pass. Looked
+        // for under the lock that decides the rest, so that no question comes
+        // between the look and the rest unseen. Only this thread changes
+        // m_window: a question that comes while the lock is let go goes to
+        // the old window, and the rest takes it from there.
+        if (window && m_window != window && (m_uploadAsked || m_kept.upload())) {
+            lock.unlock();
+            holder = foreground(false);
+            lock.lock();
+        }
         m_hostLimit = queueBytes;
-        if (m_window == window) return;
+        if (m_window == window) {
+            // A larger queue can have room for the download's data.
+            const bool room = downloadRoomLocked();
+            lock.unlock();
+            if (room) resumeOutput();
+            return;
+        }
+        // The download of the window that goes ends: the reader thread that
+        // paused for its answer, or for room, looks again.
+        download = m_downloadWindow != 0;
         // The window went before it got them. Answered under the lock, before
         // the answers to newer calls (Pty::write calls nothing back). Each one
         // leaves the queue first, so it goes once: a failure loses that one
@@ -335,6 +417,11 @@ void MuxPane::setWindow(std::uint64_t window, std::size_t queueBytes)
             keepWaitingLocked(waiting);
             if (!waiting.encoded.empty()) answerUnsent(waiting.encoded);
         }
+        // The window that goes did not answer the upload's question, which it
+        // may have shown: the program still waits, and the next window asks.
+        // Nobody answers meanwhile, as without a window.
+        if (m_uploadAsked) m_kept.askUpload();
+        m_uploadAsked = false;
         m_bellWaiting = m_flashWaiting = m_pointerWaiting = false;
         m_userVarsWaiting.clear();
         m_commandForwarded = false;
@@ -357,22 +444,29 @@ void MuxPane::setWindow(std::uint64_t window, std::size_t queueBytes)
             // What rang and what the program notified while no window showed
             // the pane. Each one leaves what is kept once it waits: a failure
             // leaves the rest for the next try.
-            if (m_bellKept) {
+            if (m_kept.bell()) {
                 wake = pushLocked(WaitingCall{Host::Kind::Bell, Host::encode(Host::make(Host::Kind::Bell)), {}, 0}) || wake;
                 m_bellWaiting = true;
-                m_bellKept = false;
+                m_kept.takeBell();
             }
-            if (m_flashKept) {
+            if (m_kept.flash()) {
                 wake = pushLocked(WaitingCall{Host::Kind::Flash, Host::encode(Host::make(Host::Kind::Flash)), {}, 0}) || wake;
                 m_flashWaiting = true;
-                m_flashKept = false;
+                m_kept.takeFlash();
             }
             while (!m_kept.empty()) {
-                const KeptCall& kept = m_kept.front();
+                const KeptCalls::Call& kept = m_kept.front();
                 wake = pushLocked(WaitingCall{kept.kind, kept.encoded, {}, 0}) || wake;
-                m_keptBytes -= kept.encoded.size();
-                m_kept.pop_front();
+                m_kept.popFront();
             }
+            if (m_kept.upload() && holder && holder->pid == m_uploadAsker) {
+                wake = pushLocked(WaitingCall{Host::Kind::UploadRequest, Host::encode(Host::make(Host::Kind::UploadRequest)), {}, 0}) || wake;
+                m_uploadAsked = true;
+                // The answer of the window that went no longer counts: this
+                // one may show the question already.
+                m_uploadWindow = window;
+            }
+            m_kept.takeUpload();
         }
         // Last: a failure above leaves the old window, and the next pass tries
         // again from the start.
@@ -384,6 +478,7 @@ void MuxPane::setWindow(std::uint64_t window, std::size_t queueBytes)
     // see the pane is for the new window to say. A report that fails (no
     // memory to queue it) is not tried again: the next window says anew.
     setVisible(false, window);
+    if (download) resumeOutput();
 }
 
 std::optional<std::string> MuxPane::frame(AfterglowVt::StateWriter& writer, std::size_t maxBytes, bool screens)
@@ -445,10 +540,22 @@ void MuxPane::setVisibleLocked(bool visible, std::uint64_t window)
 std::vector<std::string> MuxPane::takeHostCalls(std::uint64_t window, std::size_t budget)
 {
     std::vector<std::string> calls;
-    std::lock_guard lock(m_hostMutex);
+    bool room = false;
+    {
+        std::lock_guard lock(m_hostMutex);
+        takeHostCallsLocked(window, budget, calls);
+        // The download's data that waits for room goes on.
+        room = downloadRoomLocked();
+    }
+    if (room) resumeOutput();
+    return calls;
+}
+
+void MuxPane::takeHostCallsLocked(std::uint64_t window, std::size_t budget, std::vector<std::string>& calls)
+{
     // A setWindow() that failed part of the way left calls for a window that
     // the pane does not have yet.
-    if (m_window != window) return calls;
+    if (m_window != window) return;
     std::size_t taken = 0;
     while (!m_hostCalls.empty() && m_hostCalls.front().number <= m_framed) {
         WaitingCall& front = m_hostCalls.front();
@@ -476,7 +583,6 @@ std::vector<std::string> MuxPane::takeHostCalls(std::uint64_t window, std::size_
         m_hostCalls.pop_front();
         calls.push_back(std::move(encoded));
     }
-    return calls;
 }
 
 bool MuxPane::hasHostCalls(std::uint64_t window) const
@@ -523,7 +629,7 @@ void MuxPane::bell()
         std::lock_guard lock(m_hostMutex);
         if (m_watched) watched = watchLocked({WatchEvent::Kind::Bell});
         if (!m_window) {
-            m_bellKept = true;
+            m_kept.ring(Host::Kind::Bell);
         } else if (!m_bellWaiting) {
             m_bellWaiting = true;
             wake = pushLocked(WaitingCall{Host::Kind::Bell, Host::encode(Host::make(Host::Kind::Bell)), {}, 0});
@@ -532,13 +638,57 @@ void MuxPane::bell()
     if (wake || watched) m_wake();
 }
 
+bool MuxPane::uploadRequested()
+{
+    // Without a window, or past Mux.eventQueue, no person can choose the
+    // files or cancel: the terminal writes nothing, and the program waits
+    // until its user interrupts it.
+    bool wake = false;
+    bool queued = false;
+    // The job that asks: a later window asks for it only while it holds the
+    // terminal. Read before the lock, which the daemon's thread waits on.
+    const auto asker = foreground(false);
+    {
+        std::lock_guard lock(m_hostMutex);
+        if (!m_window) return false;
+        queued = queueLocked(Host::encode(Host::make(Host::Kind::UploadRequest)), Host::Kind::UploadRequest, Fit::Queue, &wake);
+        if (queued) {
+            m_uploadAsked = true;
+            m_uploadAsker = asker ? asker->pid : 0;
+            m_uploadWindow = m_window;
+            ++m_uploadQuestion;
+        }
+    }
+    if (wake) m_wake();
+    return queued;
+}
+
+std::optional<std::uint64_t> MuxPane::uploadAnswer(std::uint64_t window) const
+{
+    std::lock_guard lock(m_hostMutex);
+    // Also an answer that the window sent before it heard that it went,
+    // while no other window has the question.
+    if (window == 0 || window != m_uploadWindow || !(m_uploadAsked || m_kept.upload())) return std::nullopt;
+    return m_uploadQuestion;
+}
+
+void MuxPane::uploadAnswered(std::uint64_t question)
+{
+    std::lock_guard lock(m_hostMutex);
+    // The program has it, and the next window must not ask. A question that
+    // the program asked since, after it read the answer, stays.
+    if (question != m_uploadQuestion) return;
+    m_uploadAsked = false;
+    m_kept.dropUpload();
+}
+
 void MuxPane::flash()
 {
     bool wake = false;
     {
         std::lock_guard lock(m_hostMutex);
         if (!m_window) {
-            m_flashKept = true;
+            m_kept.ring(Host::Kind::Flash);
             return;
         }
         if (m_flashWaiting) return;
@@ -575,14 +725,19 @@ void MuxPane::pointerShapeChanged(std::string_view shape)
 
 void MuxPane::userVarChanged(std::string_view name, std::string_view value)
 {
+    (void)keepUserVar(name, value);
+}
+
+bool MuxPane::keepUserVar(std::string_view name, std::string_view value)
+{
     bool wake = false;
     bool watched = false;
     {
         std::lock_guard lock(m_hostMutex);
         const auto it = m_userVars.find(std::string(name));
         // Shells set the same values at every prompt.
-        if (it != m_userVars.end() && it->second == value) return;
-        if (it == m_userVars.end() && m_userVars.size() >= MaxUserVars) return;
+        if (it != m_userVars.end() && it->second == value) return true;
+        if (it == m_userVars.end() && m_userVars.size() >= MaxUserVars) return false;
         m_userVars[std::string(name)] = value;
         if (m_watched) watched = watchLocked({WatchEvent::Kind::UserVar, std::string(name), std::string(value)});
         if (m_window && !m_userVarsWaiting.contains(std::string(name))) {
@@ -591,6 +746,7 @@ void MuxPane::userVarChanged(std::string_view name, std::string_view value)
         }
     }
     if (wake || watched) m_wake();
+    return true;
 }
 
 void MuxPane::commandStarted(std::string_view command)
@@ -625,6 +781,10 @@ void MuxPane::commandFinished(int exitCode)
         if (m_watched) watched = watchLocked({WatchEvent::Kind::CommandFinished, {}, m_command, exitCode, call.value});
         m_commandRunning = false;
         m_command.clear();
+        // The command that asked for files ended: its answer must not go to
+        // the shell, as a window's pane decides too.
+        m_uploadAsked = false;
+        m_kept.dropUpload();
         // An end alone would end a command that, for the window, never ran.
         // The end of a start that went always goes: one for each start.
         if (std::exchange(m_commandForwarded, false)) (void)queueLocked(Host::encode(call), Host::Kind::CommandFinished, Fit::Always, &wake);
@@ -637,20 +797,26 @@ bool MuxPane::decodePng(std::string_view png, std::uint32_t& width, std::uint32_
     return decodeOutsideLock(png, ImageFormats::Png, width, height, rgba);
 }
 
-bool MuxPane::decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
+bool MuxPane::decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<AfterglowVt::ImageFrame>& frames,
+                                std::vector<std::uint32_t>& delays)
 {
-    return decodeOutsideLock(data, ImageFormats::Common, width, height, rgba);
+    return outsideLock([&] { return m_images.decodeFrames(data, maxBytes, frames, delays, m_stopDecode.get()); });
 }
 
 bool MuxPane::decodeOutsideLock(std::string_view data, ImageFormats formats, std::uint32_t& width, std::uint32_t& height,
                                 std::vector<std::uint8_t>& rgba)
+{
+    return outsideLock([&] { return m_images.decode(data, formats, width, height, rgba, m_stopDecode.get()); });
+}
+
+bool MuxPane::outsideLock(const std::function<bool()>& decode)
 {
     // Reader thread, in the feed of ptyData(), m_mutex held. A decode can
     // take seconds, and the daemon's one thread takes m_mutex for the frames
     // and the changes of this pane: it lets m_mutex go while it decodes.
     // The terminal stays the reader's, whose parse is in the middle of a
     // command: the daemon's thread sees m_decoding and leaves it alone.
-    if (!m_feedLock) return m_images.decode(data, formats, width, height, rgba, m_stopDecode.get());
+    if (!m_feedLock) return decode();
     m_decoding = true;
     m_feedLock->unlock();
     struct Relock
@@ -662,7 +828,7 @@ bool MuxPane::decodeOutsideLock(std::string_view data, ImageFormats formats, std
             pane.m_decoding = false;
         }
     } relock{*this};
-    return m_images.decode(data, formats, width, height, rgba, m_stopDecode.get());
+    return decode();
 }
 
 void MuxPane::regionScrolled(const AfterglowVt::RegionScroll& scroll)
@@ -672,10 +838,145 @@ void MuxPane::regionScrolled(const AfterglowVt::RegionScroll& scroll)
     m_scrolls.add(m_terminal.modes().altScreen, scroll);
 }
 
-void MuxPane::downloadFile(std::string_view name, std::string_view data)
+bool MuxPane::downloadBegin(std::string_view name, std::int64_t size)
 {
-    // Without a window, the download is dropped: no user can be asked.
-    forward(Host::make(Host::Kind::Download, std::string(name), std::string(data)));
+    // Reader thread, m_mutex held. The window asks, as for a pane of its
+    // own, and the terminal holds the output meanwhile (pauseForDownload()).
+    // Without a window no user can answer: refused.
+    Host::Call call = Host::make(Host::Kind::DownloadBegin, std::string(name));
+    call.value = size < 0 ? 0 : std::uint64_t(size) + 1;
+    bool wake = false;
+    {
+        std::lock_guard host(m_hostMutex);
+        if (!queueLocked(Host::encode(call), Host::Kind::DownloadBegin, Fit::Always, &wake)) return false;
+        m_downloadWindow = m_window;
+        m_downloadAsking = true;
+    }
+    if (wake) m_wake();
+    return true;
+}
+
+bool MuxPane::downloadData(std::string_view bytes)
+{
+    // Never dropped: past Mux.eventQueue, pauseForDownload() holds the output
+    // until the window took enough. Encoded outside the lock, as forward()
+    // does, and without a copy into a call: a chunk can be large.
+    std::string encoded = Host::encodeDownloadData(bytes);
+    bool wake = false;
+    {
+        std::lock_guard host(m_hostMutex);
+        // A window that went, or that stopped the download: the terminal
+        // fails it, and its end goes nowhere.
+        if (!m_window || m_window != m_downloadWindow || m_downloadAsking) return false;
+        if (!queueLocked(std::move(encoded), Host::Kind::DownloadData, Fit::Always, &wake)) return false;
+    }
+    if (wake) m_wake();
+    return true;
+}
+
+void MuxPane::downloadEnd(bool complete)
+{
+    bool wake = false;
+    {
+        std::lock_guard host(m_hostMutex);
+        if (m_window && m_window == m_downloadWindow) {
+            (void)queueLocked(Host::encode(Host::make(Host::Kind::DownloadEnd, {}, {}, complete ? 1 : 0)), Host::Kind::DownloadEnd,
+                              Fit::Always, &wake);
+        }
+        m_downloadWindow = 0;
+        m_downloadAsking = false;
+    }
+    if (wake) m_wake();
+}
+
+void MuxPane::answerDownload(Attach::DownloadReply reply, std::uint64_t window)
+{
+    // Daemon's thread. The window answers in the order of its calls, on one
+    // channel: a Stop of a download that ended comes before the answer to
+    // the next one, while that one still asks, and so stops nothing.
+    {
+        std::lock_guard host(m_hostMutex);
+        if (window == 0 || m_downloadWindow != window) return;
+        if (m_downloadAsking == (reply == Attach::DownloadReply::Stop)) return;
+        m_downloadAsking = false;
+        // A refusal and a stop end the download with no downloadEnd() of
+        // the terminal. A stop needs nothing more: the next data of the
+        // download finds no window, and the terminal fails it.
+        if (reply != Attach::DownloadReply::Accept) m_downloadWindow = 0;
+    }
+    if (reply != Attach::DownloadReply::Stop) {
+        // The reader thread parses what waited, as it does in a window's
+        // pane: the download's data may wait for this thread.
+        const bool accept = reply == Attach::DownloadReply::Accept;
+        std::lock_guard lock(m_mutex);
+        if (m_decoding) {
+            // The terminal is the reader thread's: it answers at the end of
+            // its feed (pauseForDownload()).
+            m_deferred.push_back([this, accept] { m_terminal.answerDownload(accept); });
+            m_changesWaiting.store(true);
+        } else {
+            m_terminal.answerDownload(accept);
+        }
+    }
+    // After the answer, which the reader paused under m_mutex for.
+    resumeOutput();
+}
+
+void MuxPane::resumeOutput()
+{
+    if (m_pty) m_pty->pauseOutput(false);
+}
+
+bool MuxPane::runDeferredLocked()
+{
+    const std::vector<std::function<void()>> changes = std::exchange(m_deferred, {});
+    for (const std::function<void()>& change : changes) change();
+    // After them: input that finds it clear goes after the changes.
+    m_changesWaiting.store(false);
+    const bool frame = std::exchange(m_frameDeferred, false);
+    return frame || !changes.empty();
+}
+
+bool MuxPane::pauseForDownload()
+{
+    // Reader thread, m_mutex held. As a window's pane, the PTY reads no more
+    // while a download's question waits, so the program waits too, and
+    // while the download's data fills the window's queue; what the window
+    // types still reaches it. A window that goes answers no. Each change
+    // that ends the pause resumes the output (resumeOutput()): the answer
+    // (answerDownload()), room in the queue (takeHostCalls()) and another
+    // window (setWindow()). The pause comes under m_hostMutex, so none of
+    // them comes between the look and the pause. The pane's end stops the
+    // PTY, paused or not.
+    bool ran = false;
+    for (;;) {
+        // What the daemon's thread left for the end of the feed while an
+        // image decoded goes first: an answer among it, and changes that
+        // must come before those of the pause.
+        ran = runDeferredLocked() || ran;
+        // The output that an answer let go parses, and may ask again. With
+        // nothing held, the feed does nothing.
+        if (!m_terminal.holdsInput()) m_terminal.feed({});
+        const bool holding = m_terminal.holdsInput();
+        bool asked = false;
+        {
+            std::lock_guard host(m_hostMutex);
+            asked = m_window != 0 && m_window == m_downloadWindow;
+            const bool full = asked && !holding && m_hostBytes > m_hostLimit;
+            m_downloadFull = full;
+            if (holding && !asked) {
+                // No window can answer now: refused, which the terminal does
+                // not report.
+                m_downloadWindow = 0;
+                m_downloadAsking = false;
+            } else if (holding || full) {
+                if (m_pty) m_pty->pauseOutput(true);
+                return ran;
+            }
+        }
+        if (!holding) return ran;
+        m_terminal.answerDownload(false);
+    }
 }
 
 void MuxPane::desktopNotification(const AfterglowVt::NotificationRequest& request)
@@ -693,7 +994,11 @@ bool MuxPane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
     // The window asks the user and answers, as for a terminal of its own.
     Host::Call call = Host::make(Host::Kind::ClipboardRequest);
     call.clipboard = request;
-    if (forward(call) != Forward::Queued) answerLocally(call);
+    // A window whose queue is full is busy: the program may ask again.
+    // Without a window there is no clipboard to give (answerWithoutWindow).
+    const Forward forwarded = forward(call);
+    if (forwarded == Forward::NoRoom) writeDirect(request.refusal("EBUSY"));
+    else if (forwarded == Forward::NoWindow) answerLocally(call);
     return true;
 }
 
@@ -718,6 +1023,10 @@ void MuxPane::terminalProtocol(int code, std::string_view payload)
     {
         // Decided under one lock: a window may come or go meanwhile.
         std::lock_guard lock(m_hostMutex);
+        // Code 0 here is a reset (RIS), which the daemon's terminal alone
+        // reports: it never calls Terminal::programExited(), ptyClosed()
+        // ends the question instead. The command that asked for files may
+        // still wait for them after a reset, so its question stays.
         if (!m_window) {
             noWindow = true;
         } else if (m_protocolLostWaiting || !queueLocked(std::move(encoded), Host::Kind::TerminalProtocol, Fit::Queue, &wake)) {
@@ -743,14 +1052,22 @@ void MuxPane::answerLocally(const Host::Call& call)
     if (const std::string answer = Host::answerWithoutWindow(call); !answer.empty()) writeDirect(answer);
 }
 
+void MuxPane::setNotificationCapabilities(std::string capabilities)
+{
+    std::lock_guard lock(m_hostMutex);
+    m_notificationCapabilities = std::move(capabilities);
+}
+
+std::string MuxPane::notificationCapabilities()
+{
+    std::lock_guard lock(m_hostMutex);
+    return m_notificationCapabilities;
+}
+
 void MuxPane::setKeptNotifications(std::size_t count)
 {
     std::lock_guard lock(m_hostMutex);
-    m_keptLimit = count;
-    while (m_kept.size() > m_keptLimit) {
-        m_keptBytes -= m_kept.front().encoded.size();
-        m_kept.pop_front();
-    }
+    m_kept.setLimit(count);
 }
 
 std::string MuxPane::keptEncoding(const Host::Call& call)
@@ -781,42 +1098,9 @@ void MuxPane::keep(const Host::Call& call)
         // before: this one waits behind them, one bounded call past the
         // queue's limit, as the kept ones went.
         if (m_window) queueLocked(std::move(encoded), call.kind, Fit::Always, &wake);
-        else keepLocked(call, std::move(encoded));
+        else m_kept.keep(call, std::move(encoded));
     }
     if (wake) m_wake();
-}
-
-void MuxPane::keepLocked(const Host::Call& call, std::string encoded)
-{
-    using Request = AfterglowVt::NotificationRequest;
-    std::string id;
-    if (call.kind == Host::Kind::DesktopNotification) {
-        if (call.notification.kind == Request::Kind::Alive) return;
-        // As on a screen: a notification with the id of a kept one replaces
-        // it, and a close of that id takes it away.
-        if (!call.notification.id.empty()) {
-            for (auto it = m_kept.begin(); it != m_kept.end();) {
-                if (it->kind == Host::Kind::DesktopNotification && it->id == call.notification.id) {
-                    m_keptBytes -= it->encoded.size();
-                    it = m_kept.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-        }
-        if (call.notification.kind == Request::Kind::Close) return;
-        id = call.notification.id;
-    } else if (call.kind != Host::Kind::Notify) {
-        return;
-    }
-    if (m_keptLimit == 0 || encoded.size() > MaxKeptBytes) return;
-    while (!m_kept.empty() && (m_kept.size() >= m_keptLimit || m_keptBytes + encoded.size() > MaxKeptBytes)) {
-        m_keptBytes -= m_kept.front().encoded.size();
-        m_kept.pop_front();
-    }
-    const std::size_t bytes = encoded.size();
-    m_kept.push_back(KeptCall{call.kind, std::move(encoded), std::move(id)});
-    m_keptBytes += bytes;
 }
 
 void MuxPane::keepUnsent(std::string_view encoded)
@@ -832,7 +1116,7 @@ void MuxPane::keepUnsent(std::string_view encoded)
     // a close of an OSC 99 notification still takes it away.
     if (kind == Host::Kind::Bell || kind == Host::Kind::Flash) {
         std::lock_guard lock(m_hostMutex);
-        (kind == Host::Kind::Bell ? m_bellKept : m_flashKept) = true;
+        m_kept.ring(kind);
         return;
     }
     if (kind != Host::Kind::Notify && kind != Host::Kind::DesktopNotification) return;
@@ -843,17 +1127,17 @@ void MuxPane::keepUnsent(std::string_view encoded)
     // Encoded outside the lock, as keep() does: an icon can be large.
     std::string kept = keptEncoding(*call);
     std::lock_guard lock(m_hostMutex);
-    keepLocked(*call, std::move(kept));
+    m_kept.keep(*call, std::move(kept));
 }
 
 void MuxPane::keepWaitingLocked(const WaitingCall& waiting)
 {
     switch (waiting.kind) {
-    case Host::Kind::Bell: m_bellKept = true; break;
-    case Host::Kind::Flash: m_flashKept = true; break;
+    case Host::Kind::Bell:
+    case Host::Kind::Flash: m_kept.ring(waiting.kind); break;
     case Host::Kind::Notify:
     case Host::Kind::DesktopNotification:
-        if (const std::optional<Host::Call> call = Host::decode(waiting.encoded)) keepLocked(*call, keptEncoding(*call));
+        if (const std::optional<Host::Call> call = Host::decode(waiting.encoded)) m_kept.keep(*call, keptEncoding(*call));
         break;
     default: break;
     }
@@ -872,15 +1156,13 @@ void MuxPane::ptyData(std::string_view bytes)
             ~Unset() { lock = nullptr; }
         } unset{m_feedLock};
         m_terminal.feed(bytes);
+        deferred = pauseForDownload();
         // What the daemon's thread did not wait for while an image decoded,
         // in its order. After the feed: the decode ends in the middle of a
         // command of the program, which the parse finishes first.
-        const std::vector<std::function<void()>> changes = std::exchange(m_deferred, {});
-        for (const std::function<void()>& change : changes) change();
-        // After them: input that finds it clear goes after the changes.
-        m_changesWaiting.store(false);
-        const bool frame = std::exchange(m_frameDeferred, false);
-        deferred = frame || !changes.empty();
+        deferred = runDeferredLocked() || deferred;
+        // After the changes: a reset leaves the prompt.
+        m_atPrompt.store(m_terminal.atShellPrompt());
         if (std::exchange(m_reportChanged, false)) {
             reported = m_terminal.workingDirectory();
             if (!reported->starts_with("file://") && remoteContext(m_terminal.contexts(), hostName())) reported->clear();
@@ -903,6 +1185,12 @@ void MuxPane::ptyClosed(int status)
 {
     m_exitStatus = status;
     m_exited = true;
+    {
+        // The program that asked for files ended: no window asks for it.
+        std::lock_guard lock(m_hostMutex);
+        m_uploadAsked = false;
+        m_kept.dropUpload();
+    }
     m_wake();
 }
 
@@ -948,6 +1236,7 @@ void MuxPane::change(std::function<void()> change)
             return;
         }
         change();
+        m_atPrompt.store(m_terminal.atShellPrompt());
     }
     if (!m_changed.exchange(true)) m_wake();
 }

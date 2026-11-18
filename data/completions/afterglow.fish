@@ -14,7 +14,8 @@ set -g __afterglow_actions swap_left swap_right swap_up swap_down rotate_panes_c
     detach_tab save_project switch_project end_script_key_mode cancel_overlay split_right split_down split_left \
     split_up rename_pane close_pane new_window new_tab close_tab rename_tab move_tab_left move_tab_right \
     goto_tab_1 goto_tab_2 goto_tab_3 goto_tab_4 goto_tab_5 goto_tab_6 goto_tab_7 goto_tab_8 goto_tab_9 \
-    close_window toggle_fullscreen next_tab previous_tab show_hints show_last_output copy_mode copy paste \
+    close_window toggle_fullscreen next_tab previous_tab show_hints show_last_output show_first_output_on_screen \
+    show_last_visited_output copy_mode copy paste \
     select_all clear_screen reset notify_on_finish focus_left focus_right focus_up focus_down equalize_splits \
     toggle_pane_zoom resize_left resize_right resize_up resize_down font_bigger font_smaller font_reset \
     scroll_page_up scroll_page_down scroll_top scroll_bottom jump_prompt_up jump_prompt_down search \
@@ -107,14 +108,26 @@ function __afterglow_window
     __afterglow_print $offer
 end
 
+# The options of a launch that $argv does not give yet; --env and --var can come again.
+function __afterglow_launch_offer
+    printf '%s\n' --env\t'A variable for the program' --var\t'A user variable of the pane'
+    contains -- --hold $argv; or printf '%s\n' --hold\t'Keep the pane after the program exits'
+    contains -- --no-focus $argv; or printf '%s\n' --no-focus\t'Keep the focus where it is'
+    contains -- --stdin-text $argv; or printf '%s\n' --stdin-text\t'Pane text as standard input'
+    contains -- --stdin-ansi $argv; or printf '%s\n' --stdin-ansi\t'With its styles'
+end
+
 function __afterglow_ctl
     set -l cur (commandline -ct)
     set -l options -h\t'Show the usage' --help\t'Show the usage' --session\t'Act on a mux session'
     # --session NAME comes before the command. afterglow mux ls lists the
-    # names, but a completion runs no program but aglow run --complete.
+    # names, but a completion runs no program but aglow run --complete. In a
+    # pane of a session, the commands act on it as with --session.
+    set -l session (set -q AFTERGLOW_SESSION; and test -n "$AFTERGLOW_SESSION"; and echo 1)
     if test "$argv[1]" = --session
         set -q argv[2]; or return
         set -e argv[1..2]
+        set session 1
         # The usage only comes first: a command follows.
         set options
     end
@@ -126,6 +139,12 @@ function __afterglow_ctl
                 split\t'Split the pane' move-pane\t'Move the pane beside another' \
                 detach-tab\t"Move the pane's tab to a new window" new-tab\t'Open a tab' new-window\t'Open a window' \
                 focus\t'Focus the pane' close\t'Close the pane' set-title\t"Set the pane's title" \
+                set-tab-title\t"Set the title of the pane's tab" resize\t'Move an edge of the pane' \
+                send-key\t'Type keys by name' scroll\t'Scroll the pane' \
+                colors\t"Print the pane's colors" set-colors\t'Set colors of the pane' \
+                set-font-size\t'Set the font size' set-opacity\t"Set the window's background opacity" \
+                set-user-var\t'Set user variables of the pane' \
+                signal-program\t'Send a signal to the program in the foreground' window\t"Change the pane's window" \
                 signal\t'Set a shader signal' notify\t'Show a desktop notification' \
                 scripts\t'Show script diagnostics' open-directory\t'Open a directory' \
                 projects\t'List saved projects' save-project\t'Save the window layout' \
@@ -149,13 +168,15 @@ function __afterglow_ctl
                     complete -C (string join ' ' -- $rest "$cur")
                 end
                 return
-            case --pane --cwd --layout --capture --title -w --width -h --height --position
+            case --pane --cwd --layout --direction --cells --pages --prompt --env --var --stdin-text --size --capture --title -w --width -h --height --position
                 # The options after --layout are those of overlay. Elsewhere they are no option of ctl.
                 if test $command = overlay; or not contains -- $argv[$i] --capture --title -w --width -h --height --position
                     if test $i -eq $n
                         # The cursor is at the option's value.
                         test $argv[$i] = --cwd; and __fish_complete_directories "$cur"
                         test $argv[$i] = --capture; and __afterglow_print stdout file none
+                        test $argv[$i] = --direction; and __afterglow_print left right up down
+                        test $argv[$i] = --stdin-text; and __afterglow_print screen scrollback selection last-output first-output-on-screen last-visited-output
                         test $argv[$i] = --position
                         and __afterglow_print center top bottom left right top-left top-right bottom-left bottom-right
                         return
@@ -192,6 +213,14 @@ function __afterglow_ctl
             case signal:0
                 __afterglow_print 0 1 2 3 4 5 6 7
                 return
+            case signal-program:0
+                __afterglow_print INT TERM HUP KILL QUIT USR1 USR2 STOP CONT TSTP WINCH
+                return
+            case 'send-key:*'
+                # Of the many names that send-key takes.
+                __afterglow_print enter escape tab backspace space up down left right home end page_up page_down \
+                    insert delete f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12 ctrl+c ctrl+d ctrl+l ctrl+z
+                return
             case action:0
                 __afterglow_print $__afterglow_actions
                 # The word at the cursor is text, not a pattern: compared, not matched.
@@ -212,8 +241,10 @@ function __afterglow_ctl
         end
     end
     set -l offer
+    # set-colors --all sets every pane: no --pane with it.
     if not contains -- $command ls watch scripts projects open-directory open-project new-window
-        contains -- --pane $argv; or set -a offer --pane\t'The pane'
+        contains -- --pane $argv; or begin; test $command = set-colors; and contains -- --all $argv; end
+        or set -a offer --pane\t'The pane'
     end
     switch $command
         case ls
@@ -226,17 +257,50 @@ function __afterglow_ctl
                 and set -a offer --stdin\t'Send standard input'
             end
         case get-text
-            string match -q -r -- '^--(screen|scrollback|selection|last-output)$' $argv
+            string match -q -r -- '^--(screen|scrollback|selection|last-output|first-output-on-screen|last-visited-output)$' $argv
             or set -a offer --screen\t'The screen' --scrollback\t'The scrollback' --selection\t'The selection' \
-                --last-output\t'The output of the last command'
+                --last-output\t'The output of the last command' \
+                --first-output-on-screen\t'The first command output on the screen' \
+                --last-visited-output\t'The output that a prompt jump visited last'
+            for flag in --ansi --cursor --wrap-markers
+                contains -- $flag $argv; or set -a offer $flag
+            end
         case screenshot
             string match -q -r -- '^--(tab|window)$' $argv
             or set -a offer --tab\t'The panes of its tab' --window\t'The whole window'
         case split
             string match -q -r -- '^--(left|right|up|down)$' $argv
             or set -a offer --left --right --up --down
+            set -a offer (__afterglow_launch_offer $argv)
+            # A pane of a mux session takes only --env: its daemon starts the program.
+            test -n "$session"; and set offer (string match -v -r -- '^--(var|hold|no-focus|stdin-text|stdin-ansi)' $offer)
         case new-tab new-window
             contains -- --cwd $argv; or set -a offer --cwd\t'Working directory'
+            set -a offer (__afterglow_launch_offer $argv)
+            # new-window reads no pane, and takes the focus.
+            test $command = new-window; and set offer (string match -v -r -- '^--(no-focus|stdin-text|stdin-ansi)' $offer)
+            test $command = new-tab; and test -n "$session"
+            and set offer (string match -v -r -- '^--(var|hold|no-focus|stdin-text|stdin-ansi)' $offer)
+        case focus
+            contains -- --direction $argv; or set -a offer --direction\t'Focus the pane on that side'
+        case colors
+            contains -- --json $argv; or set -a offer --json\t'Print JSON'
+        case set-colors
+            contains -- --all $argv; or contains -- --pane $argv; or set -a offer --all\t'Every pane'
+            contains -- --reset $argv; or set -a offer --reset\t'The configured colors first'
+        case window
+            string match -q -r -- '^--(fullscreen|maximized|normal)$' $argv
+            or set -a offer --fullscreen --maximized --normal
+            contains -- --size $argv; or set -a offer --size\t'The cells of one pane'
+        case resize
+            contains -- --direction $argv; or set -a offer --direction\t'The edge that moves'
+            contains -- --cells $argv; or set -a offer --cells\t'Cells to move it (2)'
+        case scroll
+            # LINES or one of the options.
+            if test $positional -eq 0; and not string match -q -r -- '^--(pages|prompt|top|bottom)$' $argv
+                set -a offer --pages\t'Pages down, up when negative' --prompt\t'Prompts down, up when negative' \
+                    --top\t'To the top' --bottom\t'To the bottom'
+            end
         case overlay
             contains -- --capture $argv; or set -a offer --capture\t'Where the result comes from'
             contains -- --cwd $argv; or set -a offer --cwd\t'Working directory'
@@ -251,6 +315,8 @@ function __afterglow_ctl
             contains -- --position $argv; or set -a offer --position\t'Where the popup sits'
             contains -- --border $argv; or contains -- --no-border $argv
             or set -a offer --border\t'Draw a border' --no-border\t'Draw no border'
+            contains -- --stdin-text $argv; or set -a offer --stdin-text\t'Pane text as standard input'
+            contains -- --stdin-ansi $argv; or set -a offer --stdin-ansi\t'With its styles'
         case open-directory
             contains -- --layout $argv; or set -a offer --layout\t'A saved layout'
         case save-project

@@ -83,7 +83,8 @@ std::string encode(const Input& input)
     std::string out(1, char(input.type));
     varint(out, input.pane);
     if (input.type == InputType::Bytes || input.type == InputType::Layout || input.type == InputType::ControlReply
-        || input.type == InputType::Settings || input.type == InputType::ControlReplyPart) {
+        || input.type == InputType::Settings || input.type == InputType::ControlReplyPart || input.type == InputType::UploadAnswerPart
+        || input.type == InputType::UploadAnswer) {
         out += input.bytes;
     } else if (input.type == InputType::Resize) {
         for (const int v : {input.size.cols, input.size.rows, input.size.cellWidth, input.size.cellHeight}) {
@@ -91,6 +92,8 @@ std::string encode(const Input& input)
         }
     } else if (input.type == InputType::Visible) {
         out.push_back(input.visible ? 1 : 0);
+    } else if (input.type == InputType::DownloadAnswer) {
+        out.push_back(char(input.download));
     }
     return out;
 }
@@ -102,11 +105,13 @@ std::optional<Input> decodeInput(std::string_view frame)
     const std::uint8_t type = r.byte();
     input.pane = std::uint32_t(r.varint(0xffffffffu));
     if (!r.ok()) return std::nullopt;
-    if (type == std::uint8_t(InputType::Bytes) || type == std::uint8_t(InputType::Layout) || type == std::uint8_t(InputType::ControlReply)
+    const bool forProgram = type == std::uint8_t(InputType::Bytes) || type == std::uint8_t(InputType::UploadAnswerPart)
+        || type == std::uint8_t(InputType::UploadAnswer);
+    if (forProgram || type == std::uint8_t(InputType::Layout) || type == std::uint8_t(InputType::ControlReply)
         || type == std::uint8_t(InputType::Settings) || type == std::uint8_t(InputType::ControlReplyPart)) {
         // Only the bytes for a program name a pane: the window's layout, its
         // settings and its answers to control calls are the session's.
-        if (type != std::uint8_t(InputType::Bytes) && input.pane != 0) return std::nullopt;
+        if (!forProgram && input.pane != 0) return std::nullopt;
         input.type = InputType(type);
         input.bytes = std::string(r.rest());
         return input;
@@ -118,11 +123,13 @@ std::optional<Input> decodeInput(std::string_view frame)
         input.type = InputType(type);
         return input;
     }
-    if (type == std::uint8_t(InputType::Visible)) {
-        const std::uint8_t visible = r.byte();
-        if (!r.ok() || !r.done() || visible > 1) return std::nullopt;
-        input.type = InputType::Visible;
-        input.visible = visible;
+    if (type == std::uint8_t(InputType::Visible) || type == std::uint8_t(InputType::DownloadAnswer)) {
+        const std::uint8_t value = r.byte();
+        const std::uint8_t most = type == std::uint8_t(InputType::Visible) ? 1 : std::uint8_t(DownloadReply::Stop);
+        if (!r.ok() || !r.done() || value > most) return std::nullopt;
+        input.type = InputType(type);
+        if (input.type == InputType::Visible) input.visible = value == 1;
+        else input.download = DownloadReply(value);
         return input;
     }
     if (type != std::uint8_t(InputType::Resize)) return std::nullopt;

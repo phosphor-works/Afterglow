@@ -87,15 +87,20 @@ QStringList candidates(const QString& name, const QStringList& dirs, const QStri
 QString locate(const QString& name, const QStringList& dirs, const QString& base = {});
 
 /// A colour as a setting or a theme writes it, with white space around it
-/// or not: "#rgb", "#rrggbb", "#rrrgggbbb" or "#rrrrggggbbbb" as Qt reads
-/// them ("#fff" is white), and otherwise what AfterglowProto::parseColorSpec
-/// reads for the escape codes: an X11 colour name in any case, "rgb:r/g/b",
-/// "rgbi:r/g/b", "oklch(L C H)" or "lab(L a b)". Empty for anything else,
-/// and for eight hex digits and "transparent": these colours have no alpha.
+/// or not (AfterglowProto::parseSettingColor): "#rgb", "#rrggbb",
+/// "#rrrgggbbb" or "#rrrrggggbbbb" as Qt reads them ("#fff" is white), and
+/// otherwise what AfterglowProto::parseColorSpec reads for the escape codes:
+/// an X11 colour name in any case, "rgb:r/g/b", "rgbi:r/g/b", "oklch(L C H)"
+/// or "lab(L a b)". Empty for anything else, and for eight hex digits and
+/// "transparent": these colours have no alpha.
 std::optional<AfterglowVt::Rgb> rgbFromName(const QString& name);
 
 /// Whether rgbFromName() reads @p name.
 bool isColorName(const QString& name);
+
+/// @p rgb as "#rrggbb" in lowercase, as settings, themes and the control
+/// calls write a colour, and as rgbFromName() reads it back.
+QString hexName(AfterglowVt::Rgb rgb);
 
 /// Whether @p data is an Afterglow JSON theme rather than a Ghostty, kitty or
 /// Konsole one: parse() decides the format by the content, not the file name.

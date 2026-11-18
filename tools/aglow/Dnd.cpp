@@ -1206,7 +1206,7 @@ std::optional<Picture> Dnd::makePicture()
     std::string pixels = resizeFrame(image->frame(0), image->width, image->height, width, height);
     const bool opaque = frameOpaque(pixels);
     if (opaque) {
-        pixels = dropAlpha(pixels);
+        dropAlpha(pixels);
     }
     return Picture { AfterglowProto::dndDataPackets({ { "t", "p" },
                                                       { "x", "-1" },

@@ -11,7 +11,8 @@ script makes and plays as the terminal. It never reaches a tmux of the
 session that runs the test. With allow-passthrough on and off, it checks:
 
 - aglow icat: the graphics commands reach the terminal. With the option off,
-  aglow turns it on for its pane itself.
+  aglow turns it on for its pane itself. A tmux that never answers (a script
+  on PATH before it) does not hold aglow past --detection-timeout.
 - aglow run: the query for the socket of an ssh session (OSC 24569) passes
   through, with the status report that ends the wait, and the reply comes
   back. The status report alone ends the wait too. With the option off,
@@ -102,6 +103,26 @@ def icat_cases(aglow, scratch, tmux):
         # With the option off, aglow turned it on for its pane.
         check(read(f"{out}.option") == "on\n", passthrough, read(f"{out}.option"))
         print(f"icat in tmux with allow-passthrough {passthrough}: passed", flush=True)
+
+    # A tmux command that never ends, as a tmux whose server does not answer: aglow gives up on it after the
+    # detection timeout, says so, and shows the image. The fake tmux is aglow's alone: the pane's shell keeps
+    # its PATH.
+    fake = os.path.join(scratch, "fake-tmux")
+    os.mkdir(fake)
+    with open(os.path.join(fake, "tmux"), "w") as f:
+        f.write("#!/bin/sh\nexec sleep 60\n")
+    os.chmod(os.path.join(fake, "tmux"), 0o755)
+    out = os.path.join(scratch, "icat-hung")
+    q = shlex.quote
+    command = (f"s=$(date +%s%N); PATH={q(fake)}:\"$PATH\" {q(aglow)} icat --stdin=no --detection-timeout=1"
+               f" --use-window-size=80,24,800,480 {q(image)} > /dev/tty 2> {q(out + '.err')}; echo $? > {q(out + '.status')};"
+               f" e=$(date +%s%N); echo $(( (e - s) / 1000000 )) > {q(out + '.ms')}")
+    tmux.run("off", command, lambda _: None)
+    took = int(read(f"{out}.ms") or "999999")
+    check(read(f"{out}.status") == "0\n", read(f"{out}.status"), read(f"{out}.err"))
+    check("Could not turn on tmux passthrough" in (read(f"{out}.err") or ""), read(f"{out}.err"))
+    check(took < 5000, "aglow waited for the tmux that never answers", took)
+    print("icat with a tmux that never answers: passed", flush=True)
 
 
 def run_cases(aglow, scratch, tmux):

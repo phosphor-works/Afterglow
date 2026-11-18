@@ -376,6 +376,16 @@ TEST(Themes, ReadsColorForms)
     EXPECT_TRUE(Themes::rgbFromName(QStringLiteral(" red ")) == Rgb(255, 0, 0));
     EXPECT_FALSE(Themes::isColorName(QString()));
     EXPECT_FALSE(Themes::isColorName(QStringLiteral("#12345")));
+    // Each hex form as QColor widens it, and no alpha.
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("#abc")) == Rgb(0xaa, 0xbb, 0xcc));
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("#123456789")) == Rgb(0x12, 0x45, 0x78));
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("#ffff80000000")) == Rgb(255, 128, 0));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("#1e1e2eff")));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("#12g")));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("  ")));
+    // hexName writes what rgbFromName reads back.
+    EXPECT_EQ(Themes::hexName(Rgb(0x0a, 0xbc, 0xff)), QStringLiteral("#0abcff"));
+    EXPECT_TRUE(Themes::rgbFromName(Themes::hexName(Rgb(1, 2, 3))) == Rgb(1, 2, 3));
 }
 
 TEST(Themes, RejectsFilesWithoutColours)
@@ -774,7 +784,7 @@ TEST_F(ConfigTest, ReadsFontColorTerminalAndWindowSettings)
         "Terminal": {"env": {"EDITOR": "nvim", "BAD=KEY": "x"}, "wordSeparators": " ,", "scrollLines": 5,
                      "confirmClose": false, "hideMouseWhileTyping": true},
         "Window": {"workingDirectory": "home", "startMode": "MAXIMIZED", "decorations": false, "tabBar": "sometimes", "tabBarHeight": 100,
-                   "scrollbar": "always", "scrollbarHideDelay": 90000, "scrollbarWidth": 2},
+                   "scrollbar": "always", "scrollbarHideDelay": 90000, "scrollbarWidth": 2, "resizeStepCells": 0},
         "Animation": {"splitCurve": " 0.2,0,0,1 ", "splitDuration": 5}
     })");
     SettingsStore store(config);
@@ -805,6 +815,12 @@ TEST_F(ConfigTest, ReadsFontColorTerminalAndWindowSettings)
     EXPECT_EQ(s.window.tabBarHeight, 64); // clamped
     EXPECT_EQ(WindowSettings{}.tabBarHeight, 30);
     EXPECT_EQ(WindowSettings{}.scrollbarWidth, 12);
+    EXPECT_EQ(s.window.resizeStepCells, 1); // clamped
+    EXPECT_EQ(WindowSettings{}.resizeStepCells, 2);
+    const QString steps = write(QStringLiteral("steps.json"), R"({"Window": {"resizeStepCells": 5}})");
+    EXPECT_EQ(SettingsStore(steps).settings().window.resizeStepCells, 5);
+    const QString far = write(QStringLiteral("far.json"), R"({"Window": {"resizeStepCells": 99999}})");
+    EXPECT_EQ(SettingsStore(far).settings().window.resizeStepCells, WindowSettings::MaxResizeStepCells);
     EXPECT_EQ(s.animation.splitCurve, QStringLiteral("0.2,0,0,1"));
     EXPECT_EQ(s.animation.splitDuration, 16); // clamped
 }
@@ -1038,7 +1054,7 @@ TEST_F(ConfigTest, ReadsSymbolMapMouseAndLinkSettings)
         "Terminal": {"cursorBlinkInterval": 20, "scrollOnOutput": true, "scrollOnInput": false,
                      "ambiguousWide": true, "bellSound": " default "},
         "Window": {"balancePadding": true},
-        "Mouse": {"rightClick": "copy-or-paste", "middleClick": "clipboard"},
+        "Mouse": {"rightClick": "copy-or-paste", "middleClick": "clipboard", "commandOutputClick": "select"},
         "Links": {"detectUrls": false, "openWith": "firefox --new-tab", "modifier": "none"}
     })");
     SettingsStore store(config);
@@ -1058,6 +1074,7 @@ TEST_F(ConfigTest, ReadsSymbolMapMouseAndLinkSettings)
     EXPECT_TRUE(s.window.balancePadding);
     EXPECT_EQ(s.mouse.rightClick, MouseSettings::RightClick::CopyOrPaste);
     EXPECT_EQ(s.mouse.middleClick, MouseSettings::MiddleClick::Clipboard);
+    EXPECT_EQ(s.mouse.commandOutputClick, MouseSettings::CommandOutputClick::Select);
     EXPECT_FALSE(s.links.detectUrls);
     EXPECT_EQ(s.links.openWith, QStringLiteral("firefox --new-tab"));
     EXPECT_EQ(s.links.modifier, Qt::KeyboardModifiers(Qt::NoModifier));
@@ -1118,14 +1135,147 @@ TEST_F(ConfigTest, AudioDefaultsAndOverrides)
     EXPECT_EQ(custom.settings().audio.inputSource, QStringLiteral("speakers.monitor"));
 }
 
+TEST_F(ConfigTest, CommandOutputClickDefaultsToThePagerAndFallsBack)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_EQ(defaults.settings().mouse.commandOutputClick, MouseSettings::CommandOutputClick::Pager);
+    SettingsStore none(write(QStringLiteral("none.json"), R"({"Mouse": {"commandOutputClick": "none"}})"));
+    EXPECT_EQ(none.settings().mouse.commandOutputClick, MouseSettings::CommandOutputClick::None);
+    SettingsStore bad(write(QStringLiteral("bad.json"), R"({"Mouse": {"commandOutputClick": "open"}})"));
+    EXPECT_EQ(bad.settings().mouse.commandOutputClick, MouseSettings::CommandOutputClick::Pager);
+    EXPECT_TRUE(mentions(bad.problems(), QStringLiteral("Mouse.commandOutputClick must be one of")))
+        << bad.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+TEST_F(ConfigTest, CommandOutputModifierIsACombinationOfModifiers)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_EQ(defaults.settings().mouse.commandOutputModifier, Qt::ControlModifier | Qt::ShiftModifier);
+    EXPECT_EQ(modifierText(defaults.settings().mouse.commandOutputModifier), QStringLiteral("Ctrl+Shift"));
+    SettingsStore alt(write(QStringLiteral("alt.json"), R"({"Mouse": {"commandOutputModifier": " Super + alt "}})"));
+    EXPECT_EQ(alt.settings().mouse.commandOutputModifier, Qt::AltModifier | Qt::MetaModifier);
+    EXPECT_TRUE(alt.problems().isEmpty()) << alt.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_EQ(modifierText(alt.settings().mouse.commandOutputModifier), QStringLiteral("Alt+Super"));
+    // No modifier, another name, or one twice: the default, with a problem.
+    for (const char* chord : {"", "none", "ctrl+hyper", "ctrl+ctrl", "ctrl+"}) {
+        SettingsStore bad(write(QStringLiteral("bad.json"),
+                                QStringLiteral(R"({"Mouse": {"commandOutputModifier": "%1"}})").arg(QLatin1String(chord)).toUtf8()));
+        EXPECT_EQ(bad.settings().mouse.commandOutputModifier, Qt::ControlModifier | Qt::ShiftModifier) << chord;
+        EXPECT_TRUE(mentions(bad.problems(), QStringLiteral("Mouse.commandOutputModifier"))) << chord;
+    }
+}
+
+TEST_F(ConfigTest, ActionTraitsGateTextReadsSessionsAndPaneActions)
+{
+    // Every action has its entry, with its traits: the last of the enum
+    // too.
+    for (int i = int(Action::None) + 1; i < int(Action::Count); ++i) {
+        EXPECT_TRUE(Keybinds::allActions().contains(Action(i))) << i;
+    }
+    EXPECT_EQ(Keybinds::allActions().size(), qsizetype(Action::Count) - 1);
+    for (Action a : Keybinds::allActions()) {
+        // Every action is found by its name.
+        EXPECT_EQ(Keybinds::fromToken(Keybinds::token(a)), a) << Keybinds::token(a).toStdString();
+        // An action that reads pane text reaches past a session's window too.
+        if (Keybinds::readsPaneText(a)) {
+            EXPECT_TRUE(Keybinds::reachesThisComputer(a)) << Keybinds::token(a).toStdString();
+        }
+    }
+    EXPECT_EQ(Keybinds::fromToken(QStringLiteral("no_such_action")), Action::None);
+    for (Action a : {Action::Copy, Action::Paste, Action::SelectAll, Action::ShowLastOutput, Action::ShowFirstOutputOnScreen,
+                     Action::ShowLastVisitedOutput})
+        EXPECT_TRUE(Keybinds::readsPaneText(a)) << Keybinds::token(a).toStdString();
+    for (Action a : {Action::Search, Action::CopyMode, Action::NewTab, Action::None})
+        EXPECT_FALSE(Keybinds::readsPaneText(a)) << Keybinds::token(a).toStdString();
+    for (Action a : {Action::NewWindow, Action::OpenConfig, Action::ReloadConfig, Action::UsePackageShaders, Action::SaveProject,
+                     Action::SwitchProject, Action::EndScriptKeyMode, Action::CancelOverlay})
+        EXPECT_TRUE(Keybinds::reachesThisComputer(a)) << Keybinds::token(a).toStdString();
+    for (Action a : {Action::SplitRight, Action::NewTab, Action::CommandPalette, Action::DetachTab, Action::None})
+        EXPECT_FALSE(Keybinds::reachesThisComputer(a)) << Keybinds::token(a).toStdString();
+    for (Action a : {Action::Copy, Action::SplitRight, Action::NewTab, Action::NewWindow, Action::ShowLastVisitedOutput,
+                     Action::MovePaneToWindow})
+        EXPECT_TRUE(Keybinds::isPaneAction(a)) << Keybinds::token(a).toStdString();
+    for (Action a : {Action::CloseTab, Action::CommandPalette, Action::EndScriptKeyMode, Action::CancelOverlay,
+                     Action::OpenConfig, Action::None})
+        EXPECT_FALSE(Keybinds::isPaneAction(a)) << Keybinds::token(a).toStdString();
+}
+
+TEST_F(ConfigTest, ShellIntegrationReadsKittysWordsInOneForm)
+{
+    const auto read = [&](const char* value, QStringList* problems = nullptr) {
+        SettingsStore store(write(QStringLiteral("shell.json"),
+                                  QStringLiteral(R"({"Terminal": {"shellIntegration": "%1"}})").arg(QString::fromUtf8(value)).toUtf8()));
+        if (problems) *problems = store.problems();
+        return store.settings().shellIntegration;
+    };
+    EXPECT_EQ(SettingsStore(write(QStringLiteral("none.json"), "{}")).settings().shellIntegration, QStringLiteral("enabled"));
+    EXPECT_EQ(read(""), QStringLiteral("enabled"));
+    EXPECT_EQ(read("disabled"), QStringLiteral("disabled"));
+    // Any case and any white space, each switch once; enabled adds nothing to switches.
+    EXPECT_EQ(read("No-Title\\tno-sudo\\n no-title Enabled"), QStringLiteral("no-title no-sudo"));
+    // Kitty's no-rc and no-complete are switches too.
+    QStringList problems;
+    EXPECT_EQ(read("no-rc No-Complete no-rc", &problems), QStringLiteral("no-rc no-complete"));
+    EXPECT_TRUE(problems.isEmpty()) << problems.join(QLatin1Char('\n')).toStdString();
+    EXPECT_EQ(read("no-cwd no-color", &problems), QStringLiteral("no-cwd"));
+    EXPECT_TRUE(mentions(problems, QStringLiteral("\"no-color\" is not a switch")));
+    EXPECT_EQ(read("no-color", &problems), QStringLiteral("enabled"));
+    // disabled wins, and the words that do nothing beside it are reported.
+    EXPECT_EQ(read("enabled disabled", &problems), QStringLiteral("disabled"));
+    EXPECT_TRUE(mentions(problems, QStringLiteral("has disabled with other words")));
+    EXPECT_EQ(read("disabled no-cwd", &problems), QStringLiteral("disabled"));
+    EXPECT_TRUE(mentions(problems, QStringLiteral("has disabled with other words")));
+    EXPECT_EQ(read("DISABLED", &problems), QStringLiteral("disabled"));
+    EXPECT_TRUE(problems.isEmpty()) << problems.join(QLatin1Char('\n')).toStdString();
+}
+
+TEST_F(ConfigTest, DownloadsAndUploadsHaveTheirChoicesAndLimits)
+{
+    const Settings defaults = SettingsStore(write(QStringLiteral("none.json"), "{}")).settings();
+    EXPECT_EQ(defaults.downloads, Settings::Permission::Ask);
+    EXPECT_EQ(defaults.uploads, Settings::Permission::Ask);
+    EXPECT_TRUE(defaults.downloadDirectory.isEmpty());
+    EXPECT_EQ(defaults.uploadLimit, std::size_t(16) << 20);
+    // uploads has no allow: the picker is the consent.
+    SettingsStore allow(write(QStringLiteral("allow.json"), R"({"Terminal": {"uploads": "allow", "downloads": "never"}})"));
+    EXPECT_EQ(allow.settings().uploads, Settings::Permission::Ask);
+    EXPECT_EQ(allow.settings().downloads, Settings::Permission::Ask);
+    EXPECT_TRUE(mentions(allow.problems(), QStringLiteral("Terminal.uploads must be one of")));
+    EXPECT_TRUE(mentions(allow.problems(), QStringLiteral("Terminal.downloads must be one of")));
+    SettingsStore low(write(QStringLiteral("low.json"), R"({"Terminal": {"uploadLimit": 0}})"));
+    EXPECT_EQ(low.settings().uploadLimit, std::size_t(1) << 20);
+    SettingsStore high(write(QStringLiteral("high.json"), R"({"Terminal": {"uploadLimit": 1000}})"));
+    EXPECT_EQ(high.settings().uploadLimit, std::size_t(Settings::MaxUploadLimit) << 20);
+    // 32 MiB of input holds the answer of 23 MiB in base64, with its line ends.
+    EXPECT_EQ(Settings::MaxUploadLimit, 23);
+    // A directory that would resolve against wherever Afterglow started is the desktop's.
+    for (const char* directory : {"Downloads", "~someone/Downloads", "./here"}) {
+        SettingsStore relative(write(QStringLiteral("relative.json"),
+                                     QStringLiteral(R"({"Terminal": {"downloadDirectory": "%1"}})").arg(QString::fromUtf8(directory)).toUtf8()));
+        EXPECT_TRUE(relative.settings().downloadDirectory.isEmpty()) << directory;
+        EXPECT_TRUE(mentions(relative.problems(), QStringLiteral("Terminal.downloadDirectory"))) << directory;
+    }
+    // ~ is the home directory once, at the read.
+    for (const auto& [directory, expected] : {std::pair{"/tmp/afterglow", QStringLiteral("/tmp/afterglow")},
+                                             std::pair{"~", QDir::homePath()},
+                                             std::pair{"~/Downloads", QDir::homePath() + QStringLiteral("/Downloads")}}) {
+        SettingsStore kept(write(QStringLiteral("kept.json"),
+                                 QStringLiteral(R"({"Terminal": {"downloadDirectory": " %1 "}})").arg(QString::fromUtf8(directory)).toUtf8()));
+        EXPECT_EQ(kept.settings().downloadDirectory, expected) << directory;
+        EXPECT_TRUE(kept.problems().isEmpty()) << directory;
+    }
+}
+
 TEST_F(ConfigTest, StructuralActionClassification)
 {
     for (Action action : {Action::SplitRight, Action::SplitLeft, Action::SplitDown, Action::SplitUp,
-                          Action::NewTab, Action::NewWindow, Action::ClosePane, Action::CloseTab, Action::CloseWindow}) {
-        EXPECT_TRUE(Keybinds::isStructural(action));
+                          Action::NewTab, Action::NewWindow, Action::ClosePane, Action::CloseTab, Action::CloseWindow,
+                          Action::ShowLastOutput, Action::ShowFirstOutputOnScreen, Action::ShowLastVisitedOutput,
+                          Action::MovePaneToTab, Action::MovePaneToWindow, Action::DetachTab, Action::SwitchProject}) {
+        EXPECT_TRUE(Keybinds::isStructural(action)) << Keybinds::token(action).toStdString();
     }
-    for (Action action : {Action::Copy, Action::NextTab, Action::MoveTabLeft, Action::RenamePane, Action::EqualizeSplits}) {
-        EXPECT_FALSE(Keybinds::isStructural(action));
+    for (Action action : {Action::Copy, Action::NextTab, Action::MoveTabLeft, Action::RenamePane, Action::EqualizeSplits, Action::None}) {
+        EXPECT_FALSE(Keybinds::isStructural(action)) << Keybinds::token(action).toStdString();
     }
 }
 
@@ -1321,7 +1471,7 @@ TEST_F(ConfigTest, BidiAndScriptReadPolicyHaveExplicitDefaultsAndOverrides)
 TEST_F(ConfigTest, ScriptCommandLimitsHaveDefaultsOverridesAndRanges)
 {
     // The two byte limits are KiB in the file and bytes in Settings, as
-    // Terminal.lastOutputLimit.
+    // Terminal.pagerOutputLimit.
     const auto path = write(QStringLiteral("commands.json"), "{}");
     const Settings defaults = SettingsStore(path).settings();
     EXPECT_EQ(defaults.scriptCommandTimeout, 600000);
@@ -1635,18 +1785,18 @@ TEST_F(ConfigTest, ContextDurationDefaultOverrideAndClamps)
     EXPECT_EQ(high.settings().animation.contextDuration, 5000);
 }
 
-TEST_F(ConfigTest, LastOutputLimitIsKibibytesWithAClamp)
+TEST_F(ConfigTest, PagerOutputLimitIsKibibytesWithAClamp)
 {
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
-    EXPECT_EQ(defaults.settings().lastOutputLimit, std::size_t(1024) << 10);
+    EXPECT_EQ(defaults.settings().pagerOutputLimit, std::size_t(1024) << 10);
 
-    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Terminal": {"lastOutputLimit": 4096}})"));
-    EXPECT_EQ(custom.settings().lastOutputLimit, std::size_t(4096) << 10);
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Terminal": {"pagerOutputLimit": 4096}})"));
+    EXPECT_EQ(custom.settings().pagerOutputLimit, std::size_t(4096) << 10);
 
-    SettingsStore low(write(QStringLiteral("low.json"), R"({"Terminal": {"lastOutputLimit": 0}})"));
-    EXPECT_EQ(low.settings().lastOutputLimit, std::size_t(1) << 10);
-    SettingsStore high(write(QStringLiteral("high.json"), R"({"Terminal": {"lastOutputLimit": 999999}})"));
-    EXPECT_EQ(high.settings().lastOutputLimit, std::size_t(65536) << 10);
+    SettingsStore low(write(QStringLiteral("low.json"), R"({"Terminal": {"pagerOutputLimit": 0}})"));
+    EXPECT_EQ(low.settings().pagerOutputLimit, std::size_t(1) << 10);
+    SettingsStore high(write(QStringLiteral("high.json"), R"({"Terminal": {"pagerOutputLimit": 999999}})"));
+    EXPECT_EQ(high.settings().pagerOutputLimit, std::size_t(65536) << 10);
 }
 
 TEST_F(ConfigTest, FileTransferDeltaLimitIsGibibytesWithAClamp)
@@ -1883,6 +2033,105 @@ TEST_F(ConfigTest, LimitsDefaultAndOverride)
     SettingsStore moved(write(QStringLiteral("moved.json"), R"({"Terminal": {"notifications": false}})"));
     EXPECT_TRUE(moved.settings().notifications);
     EXPECT_TRUE(mentions(moved.problems(), QStringLiteral("Unknown setting Terminal.notifications")));
+}
+
+// Notifications.filters, as kitty's filter_notification: field:regexp terms
+// with and, or, not, parentheses and all. A rule that does not parse is a
+// problem, and the others stay.
+TEST_F(ConfigTest, NotificationFilterRules)
+{
+    using Fields = NotificationFilter::Fields;
+    const auto all = NotificationFilter::parse(QStringLiteral("all"), nullptr);
+    ASSERT_TRUE(all);
+    const auto rule = [&](const char* text) {
+        QString error;
+        auto filter = NotificationFilter::parse(QString::fromUtf8(text), &error);
+        EXPECT_TRUE(filter) << text << ": " << error.toStdString();
+        return filter.value_or(*all);
+    };
+    const Fields vimUpdate{QStringLiteral("vim"), QStringLiteral("An Update is ready"), QStringLiteral("nvim"), {}};
+    const Fields vimSaved{QStringLiteral("vim"), QStringLiteral("saved"), QStringLiteral("gvim"), {}};
+    const Fields mail{QStringLiteral("hello there"), QStringLiteral("abc then def"), QStringLiteral("mutt"),
+                      {QStringLiteral("im.received"), QStringLiteral("x")}};
+    // kitty's examples.
+    const NotificationFilter vim = rule(R"(app:"[ng]?vim" and not body:"(?i)update")");
+    EXPECT_FALSE(vim.matches(vimUpdate));
+    EXPECT_TRUE(vim.matches(vimSaved));
+    EXPECT_FALSE(vim.matches(mail));
+    const NotificationFilter either = rule(R"(title:hello or body:"abc.*def")");
+    EXPECT_TRUE(either.matches(mail));
+    EXPECT_FALSE(either.matches(vimSaved));
+    EXPECT_TRUE(rule("all").matches(Fields{}));
+    // A search anywhere in the field; terms side by side join with and;
+    // parentheses group; a type matches any of the types.
+    EXPECT_TRUE(rule("title:ell").matches(mail));
+    EXPECT_FALSE(rule("title:ell app:vim").matches(mail));
+    EXPECT_TRUE(rule("not (app:vim or app:emacs) type:^im\\.").matches(mail));
+    EXPECT_TRUE(rule("type:(im|x)$").matches(mail));
+    EXPECT_FALSE(rule("type:im").matches(vimSaved));
+    // Keywords and fields in any case, and a quoted value after a space, as
+    // in kitty. In quotes, \" and \\ stand for a quote and a backslash.
+    EXPECT_TRUE(rule("Title:ell AND NOT App:vim").matches(mail));
+    EXPECT_TRUE(rule("body: \"abc then\"").matches(mail));
+    EXPECT_TRUE(rule(R"(body:"say \"hi\"")").matches(Fields{{}, QStringLiteral("say \"hi\""), {}, {}}));
+    EXPECT_TRUE(rule(R"(body:"a\\d")").matches(Fields{{}, QStringLiteral("a7"), {}, {}}));
+    // A pattern without quotes ends at a parenthesis that it does not open.
+    EXPECT_TRUE(rule("(title:hel(l)o)").matches(mail));
+    // \w is Unicode, as in kitty's Python re.
+    EXPECT_TRUE(rule("title:^\\w+$").matches(Fields{QStringLiteral("übersicht"), {}, {}, {}}));
+    // Rules that do not parse, each for its own reason.
+    const std::pair<const char*, const char*> bad[] = {
+        {"", "the rule ends where a term should be"},
+        {"titl:x", "\"titl\" is not a field"},
+        {"title:", "title: has no pattern"},
+        {"title: x", "title: has no pattern"},
+        {"title:(", "is not a regular expression"},
+        {"(title:x", "a parenthesis is not closed"},
+        {"title:x)", "unexpected text after the rule"},
+        {"title:x and", "the rule ends where a term should be"},
+        {"hello", "\"hello\" is not a term"},
+        {"title:\"open", "a quote is not closed"},
+        {"not", "the rule ends where a term should be"},
+    };
+    for (const auto& [text, reason] : bad) {
+        QString error;
+        EXPECT_FALSE(NotificationFilter::parse(QString::fromUtf8(text), &error)) << text;
+        EXPECT_TRUE(error.contains(QLatin1String(reason))) << text << ": " << error.toStdString();
+    }
+    // Parentheses nest at most 32 deep; not, and and or do not nest, so a
+    // long chain of them parses and matches without a deep recursion.
+    const auto nested = [](int depth) {
+        return QString(depth, QLatin1Char('(')) + QStringLiteral("title:x") + QString(depth, QLatin1Char(')'));
+    };
+    QString error;
+    EXPECT_TRUE(NotificationFilter::parse(nested(32), &error)) << error.toStdString();
+    EXPECT_FALSE(NotificationFilter::parse(nested(33), &error));
+    EXPECT_TRUE(error.contains(QLatin1String("nests more than 32 levels"))) << error.toStdString();
+    QString nots;
+    for (int i = 0; i < 100001; ++i) nots += QStringLiteral("not ");
+    const auto negated = NotificationFilter::parse(nots + QStringLiteral("title:x"), &error);
+    ASSERT_TRUE(negated) << error.toStdString();
+    EXPECT_FALSE(negated->matches(Fields{QStringLiteral("x"), {}, {}, {}}));
+    EXPECT_TRUE(negated->matches(Fields{QStringLiteral("y"), {}, {}, {}}));
+    // Terms without a pattern but two: 100000 patterns would each compile,
+    // and take about 250 MiB.
+    QStringList terms;
+    for (int i = 0; i < 100000; ++i) terms << (i == 5 || i == 99999 ? QStringLiteral("title:^x%1$").arg(i) : QStringLiteral("not all"));
+    const auto chained = NotificationFilter::parse(terms.join(QStringLiteral(" or ")) + QStringLiteral(" and body:z"), &error);
+    ASSERT_TRUE(chained) << error.toStdString();
+    EXPECT_TRUE(chained->matches(Fields{QStringLiteral("x99999"), QStringLiteral("z"), {}, {}}));
+    EXPECT_FALSE(chained->matches(Fields{QStringLiteral("x99999"), QStringLiteral("y"), {}, {}}));
+    EXPECT_TRUE(chained->matches(Fields{QStringLiteral("x5"), {}, {}, {}}));
+
+    SettingsStore store(write(QStringLiteral("filter.json"),
+                              R"({"Notifications": {"filters": ["app:vim", "titl:bad", 3, "  "]}})"));
+    ASSERT_EQ(store.settings().notificationFilters.size(), 1u);
+    EXPECT_EQ(store.settings().notificationFilters[0].text(), QStringLiteral("app:vim"));
+    // The blank rule goes with no problem, as a blank entry of any list.
+    EXPECT_EQ(store.problems().size(), 2) << store.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Notifications.filters has the rule \"titl:bad\"")));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Notifications.filters[2] must be a string")));
+    EXPECT_TRUE(SettingsStore(write(QStringLiteral("none.json"), "{}")).settings().notificationFilters.empty());
 }
 
 TEST(Config, SchemaDefaultsHaveTheirDeclaredTypes)
@@ -2974,14 +3223,20 @@ TEST_F(ConfigTest, EverySettingReachesTheSettings)
                     QJsonObject{{QStringLiteral("pattern"), QStringLiteral("x+")}, {QStringLiteral("action"), QStringLiteral("open")}}};
             } else if (name == QLatin1String("Keybinds.bindings")) {
                 value = QJsonObject{{QStringLiteral("new_tab"), QStringLiteral("Ctrl+Alt+F12")}};
+            } else if (name == QLatin1String("Terminal.shellIntegration")) {
+                value = QStringLiteral("no-title no-sudo");
             } else if (name == QLatin1String("Keybinds.remapModifiers")) {
                 value = QStringLiteral("ctrl:super super:ctrl");
             } else if (name == QLatin1String("Shaders.params")) {
                 value = QJsonObject{{QStringLiteral("bloom"), QJsonObject{{QStringLiteral("strength"), 0.5}}}};
-            } else if (name == QLatin1String("Window.workingDirectory")) {
+            } else if (name == QLatin1String("Mouse.commandOutputModifier")) {
+                value = QStringLiteral("alt");
+            } else if (name == QLatin1String("Window.workingDirectory") || name == QLatin1String("Terminal.downloadDirectory")) {
                 value = QStringLiteral("~/afterglow-test");
             } else if (name == QLatin1String("Mux.updateEnvironment")) {
                 value = QJsonArray{QStringLiteral("TEST_VARIABLE")};
+            } else if (name == QLatin1String("Notifications.filters")) {
+                value = QJsonArray{QStringLiteral("app:afterglow-test")};
             } else if (def.expectedType == QMetaType::QVariantMap) {
                 // Not AFTERGLOW_: Afterglow keeps those names for itself.
                 value = QJsonObject{{QStringLiteral("TEST_VARIABLE"), QStringLiteral("1")}};

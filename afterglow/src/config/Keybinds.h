@@ -75,6 +75,8 @@ enum class Action {
     ResizeDown,
     CopyMode,
     ShowLastOutput,
+    ShowFirstOutputOnScreen,
+    ShowLastVisitedOutput,
     ShowHints,
     SwapLeft, SwapRight, SwapUp, SwapDown,
     RotatePanesClockwise, RotatePanesCounterclockwise, PaneOverview, UsePackageShaders,
@@ -82,6 +84,7 @@ enum class Action {
     SaveProject, SwitchProject,
     EndScriptKeyMode, ///< always ends a script's key mode, so a script cannot keep the keyboard
     CancelOverlay, ///< ends the focused pane's overlay, whose result is cancelled
+    Count, ///< not an action: the number of the values before it, for a test that goes through them
 };
 
 /// Key combinations bound to actions. Config form: { "split_right": "Ctrl+Shift+E",
@@ -121,9 +124,33 @@ public:
     static bool usesLeader(const QString& sequence);
 
     static QString token(Action action);
+    /// The action that the config names @p token, or Action::None.
+    static Action fromToken(const QString& token);
     /// Display name of an action, for the command palette.
     static QString title(Action action);
     static QList<Action> allActions();
+    /// Whether @p action reads or changes one pane, or starts from it (a
+    /// split, tab or window opens in its directory): the actions that a pane
+    /// offers to a screen reader. The others act the same from every pane
+    /// (switching, moving, detaching and closing tabs, closing the window,
+    /// fonts, fullscreen, equalize and rotate, the overview, shaders,
+    /// projects, the configuration and the palette), and End Script Key
+    /// Mode and Cancel Overlay take the keys back from a script or an
+    /// overlay.
+    static bool isPaneAction(Action action);
+    /// Whether @p action moves text with no user step between: pane text to
+    /// the clipboard, the primary selection or a pager file (Copy, Select
+    /// All, the pager actions), or the clipboard, which can hold another
+    /// pane's text, into the pane (Paste). afterglow ctl needs
+    /// Control.allowReadText for it, and scripts Scripts.allowReadText.
+    static bool readsPaneText(Action action);
+    /// Whether @p action reaches past the window of a session and its panes:
+    /// it opens a window of this computer, reads or writes its clipboard,
+    /// puts pane text in a pager, opens, reads or writes its config or
+    /// projects, or ends the key mode or the overlay that the user holds.
+    /// The prompts and the palette in the session's window stay in it. A
+    /// session of another host may not run these here.
+    static bool reachesThisComputer(Action action);
     /// Actions that create or destroy panes, tabs or windows.
     static bool isStructural(Action action);
 

@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <condition_variable>
@@ -722,4 +723,183 @@ TEST(Pty, TheDescriptorsThatProcListsCloseFromTheFirst)
     ASSERT_EQ(::waitpid(child, &status, 0), child);
     ASSERT_TRUE(WIFEXITED(status));
     EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+
+// The signals of afterglow ctl signal-program, by name or number.
+TEST(Pty, SignalsByNameOrNumber)
+{
+    using AfterglowPty::signalNumber;
+    EXPECT_EQ(signalNumber("INT"), SIGINT);
+    EXPECT_EQ(signalNumber("SIGTERM"), SIGTERM);
+    EXPECT_EQ(signalNumber("sigkill"), SIGKILL);
+    EXPECT_EQ(signalNumber("winch"), SIGWINCH);
+    EXPECT_EQ(signalNumber("CLD"), SIGCHLD);
+    EXPECT_EQ(signalNumber("IOT"), SIGABRT);
+    EXPECT_EQ(signalNumber("POLL"), SIGIO);
+    EXPECT_EQ(signalNumber("9"), 9);
+    EXPECT_EQ(signalNumber("31"), 31);
+    EXPECT_EQ(signalNumber(std::to_string(SIGRTMIN)), SIGRTMIN);
+    EXPECT_EQ(signalNumber(std::to_string(SIGRTMAX)), SIGRTMAX);
+    EXPECT_EQ(signalNumber("RTMIN"), SIGRTMIN);
+    EXPECT_EQ(signalNumber("SIGRTMIN+2"), SIGRTMIN + 2);
+    EXPECT_EQ(signalNumber("rtmax-1"), SIGRTMAX - 1);
+    EXPECT_EQ(signalNumber("RTMAX"), SIGRTMAX);
+    // 32 and 33 are glibc's own, below SIGRTMIN.
+    for (int reserved = 32; reserved < SIGRTMIN; ++reserved) EXPECT_FALSE(signalNumber(std::to_string(reserved))) << reserved;
+    for (const std::string& bad : {std::string(""), std::string("0"), std::to_string(SIGRTMAX + 1), std::string("1000"), std::string("SIG"),
+                                  std::string("SIGNOPE"), std::string("-9"), std::string("9x"), std::string("+9"), std::string("RTMIN-1"),
+                                  std::string("RTMAX+1"), "RTMIN+" + std::to_string(SIGRTMAX - SIGRTMIN + 1), std::string("RTMIN+")}) {
+        EXPECT_FALSE(signalNumber(bad)) << bad;
+    }
+}
+
+// The leader of the foreground group with its arguments, without the NULs
+// that pad rewritten ones; without them when they are not asked for.
+TEST(Pty, ForegroundIsTheLeaderOfTheGroupWithItsArguments)
+{
+    SpawnOptions options;
+    options.argv = {"/bin/sh", "-c", "sleep 30; :", "x", "", ""};
+    Listener listener;
+    auto pty = Pty::spawn(options, listener);
+    ASSERT_TRUE(pty);
+    std::optional<ForegroundProcess> process;
+    for (int i = 0; i < 500; ++i) {
+        process = pty->foreground();
+        if (process && !process->cmdline.empty() && process->cmdline.front() == "/bin/sh") break;
+        std::this_thread::sleep_for(10ms);
+    }
+    ASSERT_TRUE(process);
+    EXPECT_EQ(process->pid, pty->pid());
+    EXPECT_EQ(process->cmdline, (std::vector<std::string>{"/bin/sh", "-c", "sleep 30; :", "x"}));
+    EXPECT_FALSE(process->cwd.empty());
+    const auto bare = pty->foreground(false);
+    ASSERT_TRUE(bare);
+    EXPECT_EQ(bare->pid, pty->pid());
+    EXPECT_TRUE(bare->cmdline.empty());
+}
+
+// "true | sleep 30" with job control: the group's leader, true, ends at
+// once, and the group runs on in the foreground. A signal still reaches it.
+TEST(Pty, SignalsAForegroundGroupWhoseLeaderExited)
+{
+    if (::access("/bin/bash", X_OK) != 0) GTEST_SKIP() << "no /bin/bash";
+    SpawnOptions options;
+    options.argv = {"/bin/bash", "--norc", "--noprofile", "-c", "set -m; true | sleep 30; echo DONE $?"};
+    Listener listener;
+    auto pty = Pty::spawn(options, listener);
+    ASSERT_TRUE(pty);
+    // The sleep of the pipeline, in a group whose leader is gone.
+    const auto groupOfSleep = [&]() -> pid_t {
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it("/proc", ec), end; !ec && it != end; it.increment(ec)) {
+            const std::string name = it->path().filename().string();
+            pid_t pid = 0;
+            if (std::from_chars(name.data(), name.data() + name.size(), pid).ec != std::errc{}) continue;
+            std::ifstream comm(it->path() / "comm");
+            std::string command;
+            std::getline(comm, command);
+            const auto stat = processStat(pid);
+            if (command == "sleep" && stat && stat->session == pty->pid() && stat->group != pid) return pid_t(stat->group);
+        }
+        return 0;
+    };
+    pid_t group = 0;
+    for (int i = 0; i < 500; ++i) {
+        group = groupOfSleep();
+        if (group > 0 && ::kill(group, 0) != 0 && errno == ESRCH) break;
+        group = 0;
+        std::this_thread::sleep_for(10ms);
+    }
+    ASSERT_GT(group, 0) << "no foreground group without its leader";
+    EXPECT_FALSE(pty->foreground());
+    ASSERT_TRUE(pty->signalForeground(SIGTERM));
+    ASSERT_TRUE(listener.waitClosed());
+    std::lock_guard lock(listener.mutex);
+    EXPECT_NE(listener.terminal.find("DONE 143"), std::string::npos) << listener.terminal;
+}
+
+// While a listener waits with output paused, what the user types still
+// reaches the program. The rest of the output, and the exit after it, come
+// once output resumes.
+TEST(Pty, PausedOutputStillWritesInput)
+{
+    std::string directory = (std::filesystem::temp_directory_path() / "afterglow-pause-XXXXXX").string();
+    ASSERT_TRUE(::mkdtemp(directory.data()));
+    // Also after an assertion that ends the test early.
+    struct Remove
+    {
+        const char* path;
+        ~Remove()
+        {
+            std::error_code ignored;
+            std::filesystem::remove_all(path, ignored);
+        }
+    } removeDirectory{directory.c_str()};
+    const std::string file = directory + "/typed";
+    struct Pausing : Listener
+    {
+        Pty* pty = nullptr;
+        std::atomic<int> empty{0};
+        std::size_t emptyAt = 0; ///< the bytes that came before the empty call
+        void ptyData(std::string_view bytes) override
+        {
+            if (bytes.empty()) {
+                ++empty;
+                std::lock_guard lock(mutex);
+                emptyAt = terminal.size();
+            }
+            Listener::ptyData(bytes);
+            if (bytes.find("READY") != std::string_view::npos) pty->pauseOutput(true);
+        }
+    } listener;
+    SpawnOptions options = shell("printf READY; read x; printf '%s' \"$x\" > '" + file + "'; printf AFTER");
+    options.deferStart = true;
+    auto pty = Pty::spawn(options, listener);
+    ASSERT_TRUE(pty);
+    listener.pty = pty.get();
+    ASSERT_TRUE(pty->start());
+    {
+        std::unique_lock lock(listener.mutex);
+        ASSERT_TRUE(listener.changed.wait_for(lock, 10s, [&] { return listener.terminal.find("READY") != std::string::npos; }));
+    }
+    ASSERT_TRUE(pty->write("typed\n"));
+    std::string typed;
+    for (int i = 0; i < 500 && typed != "typed"; ++i) {
+        std::this_thread::sleep_for(10ms);
+        std::ifstream in(file);
+        typed.assign(std::istreambuf_iterator<char>(in), {});
+    }
+    EXPECT_EQ(typed, "typed");
+    // The program wrote AFTER and exited: a zombie, which the reader reaps
+    // only once it reports the exit. Its pidfd woke the reader with the
+    // exit; the reader then has a moment to act on it (wrongly).
+    const pid_t child = pty->pid();
+    bool zombie = false;
+    for (int i = 0; i < 500 && !zombie; ++i) {
+        const auto stat = processStat(child);
+        zombie = stat && stat->state == 'Z';
+        if (!zombie) std::this_thread::sleep_for(10ms);
+    }
+    EXPECT_TRUE(zombie);
+    // Nothing tells when the reader has acted on the wake, so give it a
+    // moment. A check that nothing came can only miss a fault on a slow run,
+    // never fail on one.
+    std::this_thread::sleep_for(50ms);
+    {
+        std::lock_guard lock(listener.mutex);
+        EXPECT_EQ(listener.terminal.find("AFTER"), std::string::npos) << listener.terminal;
+        EXPECT_FALSE(listener.closed);
+    }
+    EXPECT_EQ(listener.empty.load(), 0);
+    pty->pauseOutput(false);
+    ASSERT_TRUE(listener.waitClosed());
+    {
+        std::lock_guard lock(listener.mutex);
+        EXPECT_NE(listener.terminal.find("AFTER"), std::string::npos) << listener.terminal;
+        // The listener heard that output resumed, before the rest of it.
+        EXPECT_EQ(listener.empty.load(), 1);
+        EXPECT_GE(listener.terminal.find("AFTER"), listener.emptyAt);
+        ASSERT_TRUE(WIFEXITED(listener.status));
+        EXPECT_EQ(WEXITSTATUS(listener.status), 0);
+    }
 }

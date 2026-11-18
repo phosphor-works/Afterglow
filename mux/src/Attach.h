@@ -67,7 +67,11 @@ class Session;
 /// (Mux.eventQueue). Then the events that wait: Mux.eventQueue, with one host
 /// call, one call of `afterglow ctl` or one part of a command connection past
 /// it (relayRoom(): the daemon passes no more of them to a window that has no
-/// room), and the input above. A session has at most MaxSessionPanes panes.
+/// room), the input above (MaxHeldInput, and the one message that passed it:
+/// a whole answer to an upload, as much as one PTY queues), and the parts of
+/// the answers to uploads that wait for their end: as much as one PTY
+/// queues, for all panes together. A session has at most MaxSessionPanes
+/// panes.
 ///
 /// The daemon never blocks on a window. A pane whose program exited keeps
 /// its terminal here until its last frames and calls went; a takeover, a
@@ -276,10 +280,19 @@ private:
     /// is not: its PTY has no room, or the pane's input that waits behind a
     /// decode reached its bound (MuxPane::Input::Full). Then it waits. With
     /// @p windowLeft, bytes that the pane refuses are lost, and so are the
-    /// pane's bytes after them (m_cutPanes).
+    /// pane's bytes after them (m_cutPanes). The answer to an upload goes
+    /// as bytes too, only when it is this window's (MuxPane::uploadAnswer()).
     bool deliver(Session* session, const Attach::Input& message, bool windowLeft);
     /// Holds @p message behind the input that waits for its pane.
     void hold(Attach::Input message);
+    /// Takes a part of an upload's answer (Attach::InputType::UploadAnswer
+    /// and UploadAnswerPart) into m_uploads, or other input. Gives back the
+    /// message to deliver: the whole answer as an UploadAnswer once its last
+    /// part came, other input as it is. Nothing for a part, and for a window
+    /// that failed (m_failed): answers that wait for their parts larger
+    /// together than a PTY's queue, or input of the pane in the middle of
+    /// its answer.
+    std::optional<Attach::Input> takeUpload(Attach::Input message);
     /// Sends the input that waits for room in each PTY, as far as it goes;
     /// with @p windowLeft, it waits for nothing. True when some went.
     bool sendHeldInput(Session& session, bool windowLeft);
@@ -363,6 +376,11 @@ private:
     bool m_layoutSent = false; ///< the first event, before any PaneOpened
     std::vector<std::string> m_controlReplies; ///< Attach::InputType::ControlReply, for the daemon
     std::string m_controlReplyParts; ///< the ControlReplyPart frames of the reply that comes
+    /// By pane: the UploadAnswerPart frames of the answer that comes. The
+    /// program gets none of it unless all of it came: a cut archive would
+    /// hold it as long as a missing one, and Ctrl+C is the person's.
+    std::map<std::uint32_t, std::string> m_uploads;
+    std::size_t m_uploadBytes = 0; ///< of m_uploads
     std::vector<Attach::RelayFrame> m_relayFrames; ///< from CommandsChannel, for the daemon
     bool m_outputEnded = false; ///< all went, and the stream's output ended: the window closes
 

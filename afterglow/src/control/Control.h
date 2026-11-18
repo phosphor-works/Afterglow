@@ -5,13 +5,16 @@
 
 #include "Capture.h"
 #include "OverlayInputs.h"
+#include "../SplitTree.h"
 #include "../scripting/OverlaySpec.h"
 
 #include <AfterglowProto/Remote.h>
+#include <AfterglowVt/Terminal.h>
 
 #include <QHash>
 #include <QJsonObject>
 #include <QList>
+#include <QMap>
 #include <QObject>
 #include <QPair>
 #include <QPointer>
@@ -20,6 +23,7 @@
 #include <QStringList>
 #include <QVariantMap>
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -36,6 +40,7 @@ class Pane;
 class ProjectStore;
 class SettingsStore;
 class TerminalWindow;
+struct PaneLaunchOptions;
 struct SessionLink;
 struct ControlMailbox;
 
@@ -54,6 +59,24 @@ struct PaneInfo
     /// Where the shell runs when not here as you ("root", "deploy@prod-1").
     QString context;
     quint32 tabId = 0; ///< stable within this process, unlike the tab's position (tab)
+    /// The facts below are known: listPanes gathers them, with a read of
+    /// /proc for each pane, and the other users of a pane's map do not.
+    bool facts = false;
+    /// The cursor is in a shell prompt or its input (OSC 133).
+    bool atPrompt = false;
+    /// The values of OSC 1337 SetUserVar.
+    QMap<QString, QString> userVars;
+    /// The leader of the foreground process group, for a pane whose program
+    /// runs in this process: none for a session pane, whose daemon knows it.
+    struct Foreground
+    {
+        qint64 pid = 0;
+        QStringList cmdline;
+        QString cwd;
+    };
+    std::optional<Foreground> foreground;
+    /// The pane beside it in its tab, 0 for none: left, right, up, down.
+    std::array<quint32, 4> neighbors{};
 };
 
 /// What afterglow lets other programs (the control socket) and scripts (Luau) do: one
@@ -64,7 +87,9 @@ class Control : public QObject
     Q_OBJECT
 
 public:
-    enum class TextScope { Screen, Scrollback, Selection, LastOutput };
+    /// FirstOutputOnScreen and LastVisitedOutput as kitty's get-text extents
+    /// first_cmd_output_on_screen and last_visited_cmd_output.
+    enum class TextScope { Screen, Scrollback, Selection, LastOutput, FirstOutputOnScreen, LastVisitedOutput };
     using WindowFactory = std::function<TerminalWindow*(const QString& workingDirectory, const QStringList& command, bool empty)>;
     /// Starts a script command ("<script id>.<command>") with no arguments and
     /// no client, from @p source (ev.source). Returns an error, or empty.
@@ -112,7 +137,10 @@ public:
     void attachWindow(TerminalWindow* window);
     void setScriptCommandRunner(ScriptCommandRunner runner) { m_scriptCommands = std::move(runner); }
 
-    QList<PaneInfo> panes() const;
+    /// With @p facts, each pane's PaneInfo::facts too, for listPanes: the
+    /// command line of the foreground process only with @p cmdlines, which
+    /// read access gives (Pane::foreground).
+    QList<PaneInfo> panes(bool facts = false, bool cmdlines = true) const;
     std::optional<PaneInfo> paneInfo(quint32 id) const;
     bool hasPane(quint32 id) const { return find(id); }
     /// Sets what @p pane answers to `aglow run`'s query for its ssh
@@ -201,7 +229,9 @@ public:
     void detachTab(quint32 pane, PaneMoved done);
     QString sendText(quint32 pane, const QString& text);
     /// Honours Control.allowReadText.
-    QString readText(quint32 pane, TextScope scope, QString& out);
+    /// @p format: plain, or with styles, wrap markers or the cursor (not for
+    /// a selection, which is plain text).
+    QString readText(quint32 pane, TextScope scope, QString& out, const AfterglowVt::TextFormat& format = {});
     /// Bounded script query, subject to Scripts.allowReadText. With
     /// @p clientRun, for a command run whose output goes to a client
     /// (`aglow run`, a socket call), also to Control.allowReadText: the
@@ -223,11 +253,78 @@ public:
     void newTab(quint32 pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options, PaneMade done);
     QString newWindow(const QString& workingDirectory, const QStringList& command, quint32& created);
     QString newWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options, quint32& created);
+
+    /// The side that @p name (left, right, up or down) names, for a split
+    /// or a move.
+    static std::optional<SplitTree::Direction> splitDirection(const QString& name);
+    /// The longest name of a user variable, in bytes, as OSC 1337 takes it.
+    static constexpr qsizetype MaxUserVarName = qsizetype(AfterglowVt::ITerminalHost::MaxUserVarName);
+    /// Why @p name cannot name a user variable, as OSC 1337 SetUserVar
+    /// takes one: 1 to MaxUserVarName bytes, and no =. Empty when it can.
+    static QString userVarName(const QString& name);
+    /// The refusal of a new user variable of pane @p id, which has
+    /// ITerminalHost::MaxUserVars.
+    static QString userVarsFull(quint32 id);
+    /// split, newTab and newWindow for a control client, with the options
+    /// of a script's launch (cwd, env, and size for a split) and those that
+    /// kitten @ launch has besides: focus, hold, vars, stdin_text and
+    /// stdin_ansi. The pane's text goes to the program only with
+    /// Control.allowReadText, as getText, and only to a command: a shell
+    /// would run it.
+    QString clientSplit(quint32 pane, const QString& direction, const QStringList& command, const QVariantMap& options, quint32& created);
+    QString clientNewTab(quint32 pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options,
+                         quint32& created);
+    QString clientNewWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options, quint32& created);
     QString focus(quint32 pane);
     QString close(quint32 pane);
     QString setTitle(quint32 pane, const QString& title);
+    /// Focuses the pane beside @p pane on @p direction, which @p focused
+    /// gets. An error at the edge.
+    QString focusNeighbor(quint32 pane, const QString& direction, quint32& focused);
+    /// Moves a split edge of @p pane by @p cells toward @p direction, as
+    /// the resize actions and tmux's resize-pane do: the edge on that side,
+    /// else the one on the other side.
+    /// @p cells, as the clients send numbers: a whole number from 1 to
+    /// MaxResizeCells.
+    QString resizePane(quint32 pane, const QString& direction, double cells);
+    static constexpr int MaxResizeCells = 10000;
+    /// A JSON number that is a whole number: the clients send numbers as
+    /// doubles, and a conversion would wrap or round one that is not.
+    static bool isWhole(double value);
+    /// Sends the keys that @p keys name as typed keys: none when a name
+    /// names no key.
+    QString sendKeys(quint32 pane, const QStringList& keys);
+    /// @p unit: lines, pages, top, bottom or prompt. A positive @p amount
+    /// goes down, to the newest text: a whole number of at most
+    /// MaxScrollAmount either way.
+    QString scroll(quint32 pane, const QString& unit, double amount);
+    static constexpr qint64 MaxScrollAmount = 1'000'000'000;
+    QString setTabTitle(quint32 pane, const QString& title);
+    /// The colours of @p pane by the names of Terminal::namedColors.
+    QString colors(quint32 pane, QVariantMap& out);
+    /// Sets the colours of @p colors (a name to a colour as a theme writes
+    /// it) on @p pane as its program would, after the configured ones come
+    /// back with @p reset. Not for a session pane, whose daemon has its
+    /// terminal: that refusal sets @p code to SessionPaneCode.
+    QString setColors(quint32 pane, const QVariantMap& colors, bool reset, QString* code = nullptr);
+    /// setColors() refuses a session pane in these words.
+    static const QString SessionPaneColors;
+    /// The error code of that refusal, by which set-colors --all of
+    /// afterglow ctl passes over session panes.
+    static constexpr const char* SessionPaneCode = "session_pane";
+    /// @p size: points, or "+N" and "-N" points more or fewer.
+    QString setFontSize(quint32 pane, const QString& size);
+    QString setOpacity(quint32 pane, double opacity);
+    QString setUserVar(quint32 pane, const QString& name, const QString& value);
+    /// @p signal: a name such as INT or SIGTERM, or a number.
+    QString signalProgram(quint32 pane, const QString& signal);
+    /// @p state: fullscreen, maximized, normal or empty; then @p cols x
+    /// @p rows cells for one pane, whole numbers to MaxWindowCells, or 0
+    /// and 0 for no size.
+    QString setWindowState(quint32 pane, const QString& state, double cols, double rows);
+    static constexpr int MaxWindowCells = 10000;
     /// Sets shader signal @p channel (0-7, uSignal in shaders) on the pane.
-    QString signal(quint32 pane, int channel, double value);
+    QString signal(quint32 pane, double channel, double value);
     static constexpr int MaxSignalPanes = 128;
     /// Validates the complete batch before updating the anchor's pane/tab/window.
     QString signalsBatch(quint32 pane, const QString& scope, const QVariantList& values, QVariantList& updated);
@@ -264,8 +361,7 @@ public:
     /// @p pane, a paneMap, as it leaves for a client: commands can carry
     /// secrets, and leave only with Control.allowReadText.
     QVariantMap clientPaneMap(QVariantMap pane) const;
-    /// copy, paste, select_all and show_last_output move pane text to the
-    /// clipboard, into another pane or into a file, with no user step between.
+    /// Keybinds::readsPaneText for the action named @p action.
     static bool readsPaneText(const QString& action);
 
     using ScriptReply = std::function<void(QString, QVariantMap)>;
@@ -333,6 +429,12 @@ public:
     /// and the overlay call of the control socket.
     static QString localDirectory(QString& cwd);
     static QString scopeName(TextScope scope);
+    /// The names of the text scopes, for the words of an error.
+    static const QString TextScopeNames;
+    static const QString BadTextScope;
+    /// The format that the options of getText ask for: ansi, cursor and
+    /// wrap_markers, each a boolean. An error for another key or type.
+    static QString textFormat(const QVariantMap& options, AfterglowVt::TextFormat& format);
     static std::optional<TextScope> scopeFromName(const QString& name);
     /// The capture scope that @p name (pane, tab or window) names.
     static std::optional<CaptureScope> captureScopeFromName(const QString& name);
@@ -363,6 +465,28 @@ Q_SIGNALS:
     void tabSwitched(quint32 pane, quint32 fromTab, quint32 toTab, int direction);
 
 private:
+    static QString noPane(quint32 id);
+    /// The refusal of a side that is not left, right, up or down.
+    static QString badDirection();
+    /// What a control client's launch asks for besides a script's.
+    struct LaunchExtras;
+    static QString readLaunchExtras(const QVariantMap& options, const QStringList& command, LaunchExtras& extras);
+    /// The options of a new pane in @p window that @p input and @p extras
+    /// ask for, with the text of pane @p source as its input when they ask.
+    QString prepareLaunch(const TerminalWindow& window, quint32 source, const QString& cwd, const QStringList& command,
+                          const QVariantMap& input, const LaunchExtras* extras, PaneLaunchOptions& options);
+    /// What @p extras ask of the pane @p added once it runs: its user
+    /// variables, and the focus back on @p before (a split: a tab without
+    /// focus opens behind the current one, and passes none).
+    static void afterLaunch(Pane* added, Pane* before, TerminalWindow* window, const LaunchExtras& extras);
+    /// split, newTab and newWindow, with the @p extras of a control client
+    /// or none.
+    QString splitWith(quint32 pane, const QString& direction, const QStringList& command, const QVariantMap& input,
+                      const LaunchExtras* extras, quint32& created);
+    QString newTabWith(quint32 pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& input,
+                       const LaunchExtras* extras, quint32& created);
+    QString newWindowWith(const QString& workingDirectory, const QStringList& command, const QVariantMap& input,
+                          const LaunchExtras* extras, quint32& created);
     /// The window that shows mux session @p session of this computer, or nullptr.
     TerminalWindow* sessionWindow(const QString& session) const;
     /// openProject() into a mux session named @p name: its window, or a new
@@ -382,7 +506,7 @@ private:
     void projectDialog(Pane* pane, bool save);
     void attachPane(Pane* pane);
     Pane* find(quint32 id, TerminalWindow** window = nullptr) const;
-    static PaneInfo describe(TerminalWindow* window, Pane* pane);
+    static PaneInfo describe(TerminalWindow* window, Pane* pane, bool facts = false, bool cmdline = true);
     /// Shows a window made by m_newWindow as Window.startMode asks.
     void showNew(TerminalWindow* window) const;
     /// Encodes @p image as a PNG on m_encoder, then gives its base64 to

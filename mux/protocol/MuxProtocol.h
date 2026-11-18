@@ -31,7 +31,7 @@ namespace AfterglowMux {
 /// (AfterglowVt::StateCodec, StateSync.h) change with it. MuxProtocolTest
 /// pins the keys of the options to this number, so that a new key changes it
 /// too.
-inline constexpr int ProtocolVersion = 24;
+inline constexpr int ProtocolVersion = 27;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -42,6 +42,15 @@ inline constexpr const char* Target = "mux";
 inline constexpr std::array<std::string_view, 11> ControlEvents{
     "paneCreated", "paneMoved",    "paneClosed",   "titleChanged",   "bell",          "commandStarted",
     "commandFinished", "statusChanged", "focusChanged", "userVarChanged", "contextChanged"};
+
+/// The text scopes of the getText call of the control target, as the error
+/// for another scope names them: a window and the daemon say the same.
+inline constexpr const char* TextScopeNames =
+    "screen, scrollback, selection, last-output, first-output-on-screen or last-visited-output";
+/// The error of getText for the cursor option with a scope of one output
+/// region (first-output-on-screen, last-visited-output), whose text ends
+/// before the cursor's place: a window and the daemon say the same.
+inline constexpr const char* CursorScopeError = "cursor is for the screen, scrollback and last-output scopes";
 
 namespace Fn {
 inline constexpr const char* Version = "version"; ///< () -> {version, protocol}
@@ -321,6 +330,9 @@ struct SessionSettings
     std::vector<std::pair<std::string, std::optional<std::string>>> environment{};
     /// Mux.keptNotifications, as in SessionOptions.
     int keptNotifications = int(DefaultKeptNotifications);
+    /// The answer to OSC 99's query, as in SessionOptions: empty while the
+    /// window shows no notifications (Notifications.enabled).
+    std::string notificationCapabilities{};
     bool operator==(const SessionSettings&) const = default;
 };
 /// The most variables that the settings of a window name.

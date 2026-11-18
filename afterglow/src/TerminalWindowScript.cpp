@@ -106,7 +106,7 @@ QString TerminalWindow::scriptShader(const QString& owner, Pane* pane, const QVa
         if (now - m_sceneSampleMs >= 100 || m_sceneSample.value(QStringLiteral("tab_id")).toUInt() != activeTabId()) {
             quint64 rows = 0;
             for (Pane* p : panes()) if (tabIdOf(p) == activeTabId())
-                rows += p->withTerminal([](auto& t) { return t.primaryScreen().historySize(); });
+                rows += p->readTerminal([](const auto& t) { return t.primaryScreen().historySize(); });
             const auto& audio = m_device.audioLevels();
             m_sceneSample = {{QStringLiteral("tab_id"), activeTabId()}, {QStringLiteral("history_rows"), rows},
                 {QStringLiteral("history_normalized"), double(rows) / (double(rows) + 5000.)},

@@ -12,6 +12,8 @@
 #include <xkbcommon/xkbcommon-keysyms.h>
 #include <xkbcommon/xkbcommon.h>
 
+#include <algorithm>
+
 namespace Afterglow {
 
 using AfterglowVt::Key;
@@ -124,12 +126,22 @@ Key modifierKeyFromKeysym(std::uint32_t keysym)
     case XKB_KEY_Control_R:
         return Key::RightControl;
     case XKB_KEY_Alt_L:
-    case XKB_KEY_Meta_L:
         return Key::LeftAlt;
     case XKB_KEY_Alt_R:
-    case XKB_KEY_Meta_R:
-    case XKB_KEY_ISO_Level3_Shift: // AltGr, as the keycode table had it
         return Key::RightAlt;
+    // kitty's own codes: a Meta key is no Alt key.
+    case XKB_KEY_Meta_L:
+        return Key::LeftMeta;
+    case XKB_KEY_Meta_R:
+        return Key::RightMeta;
+    case XKB_KEY_Hyper_L:
+        return Key::LeftHyper;
+    case XKB_KEY_Hyper_R:
+        return Key::RightHyper;
+    case XKB_KEY_ISO_Level3_Shift: // AltGr
+        return Key::IsoLevel3Shift;
+    case XKB_KEY_ISO_Level5_Shift:
+        return Key::IsoLevel5Shift;
     case XKB_KEY_Super_L:
         return Key::LeftSuper;
     case XKB_KEY_Super_R:
@@ -200,10 +212,19 @@ bool qtKeyMatches(Key key, int qtKey)
         return qtKey == Qt::Key_Control;
     case Key::LeftAlt:
     case Key::RightAlt:
-        return qtKey == Qt::Key_Alt || qtKey == Qt::Key_AltGr || qtKey == Qt::Key_Meta;
+        return qtKey == Qt::Key_Alt || qtKey == Qt::Key_Meta;
+    case Key::IsoLevel3Shift:
+        return qtKey == Qt::Key_AltGr;
     case Key::LeftSuper:
     case Key::RightSuper:
         return qtKey == Qt::Key_Super_L || qtKey == Qt::Key_Super_R || qtKey == Qt::Key_Meta;
+    case Key::LeftHyper:
+        return qtKey == Qt::Key_Hyper_L;
+    case Key::RightHyper:
+        return qtKey == Qt::Key_Hyper_R;
+    case Key::LeftMeta:
+    case Key::RightMeta:
+        return qtKey == Qt::Key_Meta;
     case Key::CapsLock:
         return qtKey == Qt::Key_CapsLock;
     case Key::NumLock:
@@ -231,12 +252,18 @@ char32_t firstCodepoint(const QString& s)
     return cp < 0x20 || cp == 0x7F ? 0 : cp;
 }
 
+/// The key event as XkbKeyboard recorded it from the compositor.
+XkbKeyboard::Event xkbEventOf(const QKeyEvent* e)
+{
+    return {std::uint32_t(e->timestamp()), e->nativeScanCode(), e->type() != QEvent::KeyRelease};
+}
+
 } // namespace
 
 char32_t bindingBaseKey(const QKeyEvent* event)
 {
     const XkbKeyboard& xkb = XkbKeyboard::instance();
-    char32_t base = xkb.unshiftedCodepoint(event->nativeScanCode());
+    char32_t base = xkb.unshiftedCodepoint(xkbEventOf(event));
     // "H" in a binding means the key that types h on the first Latin layout.
     if (base < 0x20 || base >= 0x7F) base = xkb.latinCodepoints(event->nativeScanCode()).first;
     return base;
@@ -251,21 +278,28 @@ AfterglowVt::KeyEvent mapKeyEvent(const QKeyEvent* e, QByteArray& textStorage)
     } else if (e->isAutoRepeat()) {
         out.action = AfterglowVt::KeyAction::Repeat;
     }
+    // The layout and the locks as they were at this key, not as later keys
+    // of the same read of the compositor's events left them.
     const XkbKeyboard& xkb = XkbKeyboard::instance();
-    if (xkb.capsLock()) {
+    const XkbKeyboard::Event event = xkbEventOf(e);
+    if (xkb.capsLock(event)) {
         out.mods |= AfterglowVt::Mod::CapsLock;
     }
-    if (xkb.numLock()) {
+    if (xkb.numLock(event)) {
         out.mods |= AfterglowVt::Mod::NumLock;
     }
     const int k = e->key();
 
     // The layout decides what a key is: a keycode table would call a Caps
     // Lock remapped to Escape Caps Lock, and send nothing for it.
-    const std::uint32_t keysym = xkb.keysym(e->nativeScanCode());
+    const std::uint32_t keysym = xkb.keysym(event);
+    // Without a keymap, the right Alt key is AltGr when Qt says so, as the
+    // keymap would say (ISO_Level3_Shift).
+    Key byKeycode = modifierKeyFromKeycode(e->nativeScanCode());
+    if (byKeycode == Key::RightAlt && k == Qt::Key_AltGr) byKeycode = Key::IsoLevel3Shift;
     const Key mk = keysym != XKB_KEY_NoSymbol ? modifierKeyFromKeysym(keysym)
-        : qtKeyMatches(modifierKeyFromKeycode(e->nativeScanCode()), k) ? modifierKeyFromKeycode(e->nativeScanCode())
-                                                                        : Key::Text;
+        : qtKeyMatches(byKeycode, k)          ? byKeycode
+                                              : Key::Text;
     if (mk != Key::Text) {
         out.key = mk;
         return out;
@@ -290,6 +324,42 @@ AfterglowVt::KeyEvent mapKeyEvent(const QKeyEvent* e, QByteArray& textStorage)
     }
 
     switch (k) {
+    case Qt::Key_MediaPlay:
+        out.key = Key::MediaPlay;
+        break;
+    case Qt::Key_MediaPause:
+        out.key = Key::MediaPause;
+        break;
+    case Qt::Key_MediaTogglePlayPause:
+        out.key = Key::MediaPlayPause;
+        break;
+    case Qt::Key_MediaStop:
+        out.key = Key::MediaStop;
+        break;
+    case Qt::Key_AudioForward:
+        out.key = Key::MediaFastForward;
+        break;
+    case Qt::Key_AudioRewind:
+        out.key = Key::MediaRewind;
+        break;
+    case Qt::Key_MediaNext:
+        out.key = Key::MediaTrackNext;
+        break;
+    case Qt::Key_MediaPrevious:
+        out.key = Key::MediaTrackPrevious;
+        break;
+    case Qt::Key_MediaRecord:
+        out.key = Key::MediaRecord;
+        break;
+    case Qt::Key_VolumeDown:
+        out.key = Key::LowerVolume;
+        break;
+    case Qt::Key_VolumeUp:
+        out.key = Key::RaiseVolume;
+        break;
+    case Qt::Key_VolumeMute:
+        out.key = Key::MuteVolume;
+        break;
     case Qt::Key_Return:
         out.key = Key::Enter;
         break;
@@ -346,16 +416,20 @@ AfterglowVt::KeyEvent mapKeyEvent(const QKeyEvent* e, QByteArray& textStorage)
             out.key = Key::Text;
             // The layout's unshifted character; Qt's key() is the shifted
             // symbol for punctuation (Shift+1 reports '!').
-            out.unshifted = xkb.unshiftedCodepoint(e->nativeScanCode());
-            char32_t shifted = xkb.shiftedCodepoint(e->nativeScanCode());
+            out.unshifted = xkb.unshiftedCodepoint(event);
+            char32_t shifted = xkb.shiftedCodepoint(event);
             // Ctrl+C under a Cyrillic or Greek layout is still ^C: control
             // characters come from the Latin layout, as Qt's shortcuts do.
+            // kitty's alternate keys report the layout's own characters.
             if ((e->modifiers() & Qt::ControlModifier) && out.unshifted >= 0x80) {
                 if (const auto latin = xkb.latinCodepoints(e->nativeScanCode()); latin.first != 0) {
+                    out.layoutUnshifted = out.unshifted;
+                    out.layoutShifted = shifted;
                     out.unshifted = latin.first;
                     shifted = latin.second;
                 }
             }
+            out.base = xkb.baseLayoutCodepoint(e->nativeScanCode());
             if (out.unshifted == 0 && k >= 0x20 && k < 0x7F) {
                 out.unshifted = (k >= 'A' && k <= 'Z') ? char32_t(k - 'A' + 'a') : char32_t(k);
             }
@@ -489,9 +563,16 @@ Qt::KeyboardModifiers modifiersAfter(const QKeyEvent& event)
     if (role.modifier == Qt::NoModifier) return event.modifiers();
     // The state that Qt stores, from before the key, with the key's own bit:
     // Qt flips that bit only for the keys that it names Shift, Control, Alt
-    // and Meta, and drops it when the key of the other side is held.
+    // and Meta, and drops it when the key of the other side is held. The bit
+    // stays while another key of the modifier is down, as kitty's spec says
+    // for a release of one of two Ctrl keys.
     Qt::KeyboardModifiers modifiers = static_cast<const QInputEvent&>(event).modifiers();
-    modifiers.setFlag(role.modifier, event.type() != QEvent::KeyRelease);
+    const std::vector<std::uint32_t> held = XkbKeyboard::instance().heldKeysAfter(
+        std::uint32_t(event.timestamp()), event.nativeScanCode(), event.type() != QEvent::KeyRelease);
+    const bool otherHeld = std::any_of(held.begin(), held.end(), [&](std::uint32_t keycode) {
+        return keycode != event.nativeScanCode() && modifierRoleOf(keycode).modifier == role.modifier;
+    });
+    modifiers.setFlag(role.modifier, event.type() != QEvent::KeyRelease || otherHeld);
     return modifiers;
 }
 

@@ -11,6 +11,7 @@
 #include <AfterglowProto/Transfer.h>
 
 #include <array>
+#include <cstdint>
 #include <vector>
 
 namespace AfterglowMux::Host {
@@ -207,6 +208,7 @@ std::string encode(const Call& call)
     switch (call.kind) {
     case Kind::Bell:
     case Kind::Flash:
+    case Kind::UploadRequest:
         break;
     case Kind::Notify:
         o.string(call.title);
@@ -215,9 +217,17 @@ std::string encode(const Call& call)
         break;
     case Kind::ClipboardWrite:
     case Kind::UserVar:
-    case Kind::Download:
         o.string(call.title);
         o.string(call.text);
+        break;
+    case Kind::DownloadBegin:
+        o.string(call.title);
+        o.varint(call.value);
+        break;
+    case Kind::DownloadData:
+        return encodeDownloadData(call.text);
+    case Kind::DownloadEnd:
+        o.signedInt(call.number);
         break;
     case Kind::DesktopNotification:
         encodeNotification(o, call.notification);
@@ -244,16 +254,27 @@ std::string encode(const Call& call)
     return out;
 }
 
+std::string encodeDownloadData(std::string_view data)
+{
+    std::string out;
+    out.reserve(1 + 10 + data.size());
+    Out o(out);
+    o.byte(std::uint8_t(Kind::DownloadData));
+    o.string(data);
+    return out;
+}
+
 std::optional<Call> decode(std::string_view bytes)
 {
     In in(bytes);
     Call call;
     const std::uint8_t kind = in.byte();
-    if (kind < std::uint8_t(Kind::Bell) || kind > std::uint8_t(Kind::ProtocolLost)) return std::nullopt;
+    if (kind < std::uint8_t(Kind::Bell) || kind > std::uint8_t(Kind::UploadRequest)) return std::nullopt;
     call.kind = Kind(kind);
     switch (call.kind) {
     case Kind::Bell:
     case Kind::Flash:
+    case Kind::UploadRequest:
         break;
     case Kind::Notify:
         call.title = in.string();
@@ -262,9 +283,21 @@ std::optional<Call> decode(std::string_view bytes)
         break;
     case Kind::ClipboardWrite:
     case Kind::UserVar:
-    case Kind::Download:
         call.title = in.string();
         call.text = in.string();
+        break;
+    case Kind::DownloadBegin:
+        call.title = in.string();
+        call.value = in.varint();
+        // The size that the terminal gives, at most INT64_MAX, + 1.
+        if (call.value > std::uint64_t(INT64_MAX) + 1) return std::nullopt;
+        break;
+    case Kind::DownloadData:
+        call.text = in.string();
+        break;
+    case Kind::DownloadEnd:
+        call.number = in.signedInt();
+        if (call.number != 0 && call.number != 1) return std::nullopt;
         break;
     case Kind::DesktopNotification:
         if (!decodeNotification(in, call.notification)) return std::nullopt;
@@ -367,6 +400,11 @@ std::string answerWithoutWindow(const Call& call)
         return call.notification.kind == AfterglowVt::NotificationRequest::Kind::Alive ? call.notification.aliveReply() : std::string();
     case Kind::Report:
         return call.text;
+    case Kind::UploadRequest:
+        // No person can choose the files, nor cancel: nothing goes, as from
+        // a terminal that refuses (ITerminalHost::uploadRequested). Ctrl+C,
+        // iTerm2's answer to a cancel, is a signal that only a person sends.
+        return {};
     default:
         return {};
     }

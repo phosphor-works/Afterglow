@@ -83,6 +83,29 @@ AFTERGLOWPTY_EXPORT std::optional<ProcessStat> parseProcessStat(std::string_view
 /// process is gone or the file does not parse.
 AFTERGLOWPTY_EXPORT std::optional<ProcessStat> processStat(pid_t pid);
 
+/// The number of signal @p name: "INT", "SIGINT", "sigint", "2", or a
+/// real-time signal as kill -l names it ("RTMIN+2", "RTMAX"). The numbers
+/// are 1 to 31 and SIGRTMIN to SIGRTMAX: glibc keeps the ones between for
+/// its threads. Nothing for another name or number.
+AFTERGLOWPTY_EXPORT std::optional<int> signalNumber(std::string_view name);
+
+/// The leader of the foreground process group of a terminal, as `afterglow
+/// ctl ls` and kitty's `ls` show it.
+struct ForegroundProcess
+{
+    /// The bytes of the arguments that are read: past them, the last
+    /// argument is cut and the others are left out.
+    static constexpr std::size_t MaxCmdlineBytes = 4096;
+    pid_t pid = 0;
+    /// Its arguments, from /proc: empty for a process with none (a kernel
+    /// thread), one that /proc does not show, or when they were not asked
+    /// for. The NULs that pad rewritten arguments are dropped, and with them
+    /// empty arguments at the end.
+    std::vector<std::string> cmdline;
+    /// Its working directory, empty when it was removed or /proc does not show it.
+    std::string cwd;
+};
+
 /// Receives pty events on the pty's I/O thread.
 class IPtyListener
 {
@@ -155,9 +178,36 @@ public:
     /// The name of the job in the foreground when it is not the child itself
     /// (a program the shell is running); empty while the shell has the terminal.
     std::string foregroundProcess() const;
+    /// The leader of the foreground process group, the shell too: nothing
+    /// once the child exited, while no group of its session has the
+    /// terminal, and when the leader of the group exited (a zombie too). It
+    /// reads only /proc. Without @p withCmdline, the arguments are not read:
+    /// /proc/PID/cmdline waits for the memory lock of the process, which a
+    /// process stuck on a file system that does not answer can hold.
+    std::optional<ForegroundProcess> foreground(bool withCmdline = true) const;
+    /// Sends @p signal to the foreground process group, as a key such as
+    /// Ctrl+C does through the terminal (`afterglow ctl signal-program`),
+    /// also when its leader exited ("cmd | less" after cmd ended). False
+    /// once the child exited, while no group of its session has the
+    /// terminal, or when kill() fails. On false, errno is kill(2)'s when it
+    /// failed (EPERM for a group of another user), else 0.
+    bool signalForeground(int signal) const;
+    /// Stops reading the child's output, or reads it again. While output is
+    /// paused, the I/O thread calls no ptyData() and keeps writing queued
+    /// input: a Ctrl+C that the user types while the listener waits for an
+    /// answer reaches the program. The child exits are reported once output
+    /// resumes, after what the child wrote. Thread-safe, and ptyData() may
+    /// call it: the bytes that it got are all the listener's, and no more
+    /// come until output resumes. Then the I/O thread first calls ptyData()
+    /// with no bytes, for the listener to go on with what it held (a
+    /// terminal that stopped at a question, Terminal::feed({})).
+    void pauseOutput(bool paused);
 
 private:
     Pty(int masterFd, int wakeFd, int pidFd, pid_t pid, IPtyListener& listener);
+    /// The foreground process group when it is one of the child's session,
+    /// else -1.
+    pid_t foregroundGroup() const;
     void run();
     void wake();
     bool flushPending();
@@ -189,6 +239,8 @@ private:
     std::atomic<bool> m_accepting{true};
 
     std::atomic<bool> m_stop{false};
+    std::atomic<bool> m_paused{false}; ///< pauseOutput()
+    std::atomic<bool> m_resumed{false}; ///< output resumed: ptyData({}) is due
     std::thread m_thread;
 };
 

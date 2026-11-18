@@ -33,7 +33,7 @@ Group names and key names are case-sensitive.
 {
   "Font": {"size": 12, "antialiasing": "grayscale"},
   "Colors": {"theme": "afterglow-dark"},
-  "Terminal": {"shellIntegration": true, "scrollback": 10000},
+  "Terminal": {"shellIntegration": "enabled", "scrollback": 10000},
   "Window": {"padding": 8}
 }
 ```

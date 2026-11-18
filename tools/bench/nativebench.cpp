@@ -174,7 +174,7 @@ int main(int argc, char** argv)
         QJsonArray features{QStringLiteral("calt"), QStringLiteral("liga")};
         for (int i = 1; i <= 10; ++i) features.append(QStringLiteral("ss%1").arg(i, 2, 10, QLatin1Char('0')));
         QJsonObject settings{{QStringLiteral("Terminal"),QJsonObject{{QStringLiteral("cursorBlink"),mode==QLatin1String("idle-blink")},
-            {QStringLiteral("scrollback"),1000000}, {QStringLiteral("shellIntegration"),false}}},
+            {QStringLiteral("scrollback"),1000000}, {QStringLiteral("shellIntegration"),QStringLiteral("disabled")}}},
             {QStringLiteral("Window"),QJsonObject{{QStringLiteral("decorations"),false}, {QStringLiteral("tabBar"),QStringLiteral("never")}}},
             {QStringLiteral("Font"),QJsonObject{{QStringLiteral("family"),QStringLiteral("Monaspace Neon Var")}, {QStringLiteral("size"),11},
                 {QStringLiteral("features"),features}, {QStringLiteral("antialiasing"),QStringLiteral("grayscale")},

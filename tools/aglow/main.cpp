@@ -21,7 +21,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <fcntl.h>
+#include <poll.h>
+#include <spawn.h>
+#include <sys/wait.h>
 #include <unistd.h>
+#include <vector>
+
+extern char** environ;
 
 #ifndef AGLOW_VERSION
 #define AGLOW_VERSION "0.0.0"
@@ -79,6 +86,64 @@ bool readAll(int fd, std::string& out)
         }
         out.append(buffer, std::size_t(n));
     }
+}
+
+TmuxRun runTmux(std::initializer_list<const char*> args, long long deadline)
+{
+    TmuxRun run;
+    int out[2];
+    if (::pipe2(out, O_CLOEXEC | O_NONBLOCK) != 0) {
+        return run;
+    }
+    std::vector<char*> argv { const_cast<char*>("tmux") };
+    for (const char* arg : args) {
+        argv.push_back(const_cast<char*>(arg));
+    }
+    argv.push_back(nullptr);
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_adddup2(&actions, out[1], STDOUT_FILENO);
+    posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+    pid_t pid = 0;
+    run.started = ::posix_spawnp(&pid, "tmux", &actions, nullptr, argv.data(), environ) == 0;
+    posix_spawn_file_actions_destroy(&actions);
+    ::close(out[1]);
+    // The end of tmux's output: tmux exits there.
+    bool ended = false;
+    while (run.started && !ended) {
+        pollfd ready { out[0], POLLIN, 0 };
+        const int polled = ::poll(&ready, 1, int(std::max(0LL, deadline - nowMs())));
+        if (polled < 0 && errno == EINTR) {
+            continue;
+        }
+        if (polled <= 0) {
+            break;
+        }
+        char bytes[256];
+        const ssize_t n = ::read(out[0], bytes, sizeof bytes);
+        if (n < 0 && (errno == EINTR || errno == EAGAIN)) {
+            continue;
+        }
+        if (n <= 0) {
+            ended = true;
+        } else {
+            run.output.append(bytes, std::size_t(n));
+        }
+    }
+    ::close(out[0]);
+    if (!run.started) {
+        return run;
+    }
+    // A tmux that did not answer in time ends now, so that the wait for it
+    // is short.
+    run.late = !ended;
+    if (run.late) {
+        ::kill(pid, SIGKILL);
+    }
+    while (::waitpid(pid, &run.status, 0) < 0 && errno == EINTR) {
+    }
+    return run;
 }
 
 } // namespace Aglow

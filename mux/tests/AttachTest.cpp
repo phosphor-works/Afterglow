@@ -17,6 +17,7 @@
 #include <AfterglowProto/Remote.h>
 #include <AfterglowProto/Version.h>
 #include <AfterglowVt/Graphics.h>
+#include <AfterglowVt/KeyNames.h>
 #include <AfterglowVt/StateSync.h>
 #include <AfterglowVt/Terminal.h>
 #include <PhosphorChannel/Stream.h>
@@ -528,6 +529,47 @@ TEST(MuxAttach, AWindowSeesTheScreenAndTypes)
     const auto info = sessionNamed(daemon, "sh");
     ASSERT_TRUE(info);
     EXPECT_TRUE(info->attached);
+}
+
+// The answer to OSC 99's query follows the window's settings: none while
+// the window shows no notifications (Notifications.enabled), as from a
+// terminal without the protocol. DA1 after it shows that the query was read.
+TEST(MuxAttach, TheNotificationQueryFollowsTheWindowsSettings)
+{
+    if (!pythonFound()) GTEST_SKIP() << "python3 is not installed";
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::string answers = daemon.dir() + "/answers";
+    SessionOptions o = daemon.options(ask("\\x1b]99;i=n:p=?;\\x1b\\\\\\x1b[c", "c", answers, true), "s");
+    o.notificationCapabilities = "p=title";
+    ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "s"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "go?"); })) << w.screen();
+    SessionSettings settings{o.terminal, o.control};
+    settings.notificationCapabilities.clear();
+    ASSERT_TRUE(w.sendSettings(settings));
+    // After the settings, on the same stream: the program asks now. The
+    // window passes DA1's answer on (AReportFollowsTheCommandsBeforeIt).
+    ASSERT_TRUE(w.type("x"));
+    ASSERT_TRUE(w.until([&] { return exists(answers); })) << daemon.errors();
+    EXPECT_TRUE(readFile(answers).starts_with("\x1b[?")) << readFile(answers);
+    EXPECT_EQ(readFile(answers).find("99;"), std::string::npos) << readFile(answers);
+
+    // Other capabilities of the window: the query gets those.
+    const std::string changed = daemon.dir() + "/changed";
+    SessionOptions other = daemon.options(ask("\\x1b]99;i=n:p=?;\\x1b\\\\\\x1b[c", "c", changed, true), "t");
+    other.notificationCapabilities = "p=title";
+    ASSERT_TRUE(daemon.newSession(other)) << daemon.lastError();
+    Window next;
+    ASSERT_EQ(next.attach(daemon, "t"), "");
+    ASSERT_TRUE(next.until([&] { return next.pane != 0 && contains(next.screen(), "go?"); })) << next.screen();
+    settings.notificationCapabilities = "p=body";
+    ASSERT_TRUE(next.sendSettings(settings));
+    ASSERT_TRUE(next.type("x"));
+    ASSERT_TRUE(next.until([&] { return exists(changed); })) << daemon.errors();
+    EXPECT_NE(readFile(changed).find("p=body"), std::string::npos) << readFile(changed);
+    EXPECT_EQ(readFile(changed).find("p=title"), std::string::npos) << readFile(changed);
 }
 
 TEST(MuxAttach, APaneTakesTheLowestFreeChannel)
@@ -1226,6 +1268,223 @@ TEST(MuxAttach, AClipboardReadWaitsForTheWindowsAnswer)
     EXPECT_EQ(readFile(answer), asked.osc52Reply("from the window"));
 }
 
+namespace {
+
+/// A program that waits for a line, then sends each of @p files as an iTerm2
+/// download named got.bin, with its size, then prints @p tail and waits.
+std::vector<std::string> downloads(const std::vector<std::string>& files, const std::string& tail)
+{
+    std::vector<std::string> argv{"/bin/sh", "-c",
+                                  "read -r _; for f in \"$@\"; do printf '\\033]1337;File=name=Z290LmJpbg==;size=%s:' \"$(stat -c %s \"$f\")\"; "
+                                  "base64 -w 0 \"$f\"; printf '\\007'; done; printf '" + tail + "'; exec cat",
+                                  "sh"};
+    argv.insert(argv.end(), files.begin(), files.end());
+    return argv;
+}
+
+/// @p bytes of data that no two downloads share, in @p file.
+std::string payloadIn(const std::string& file, std::size_t bytes, int seed)
+{
+    std::string payload(bytes, '\0');
+    for (std::size_t i = 0; i < payload.size(); ++i) payload[i] = char(i * 13 + std::size_t(seed));
+    std::ofstream(file, std::ios::binary) << payload;
+    return payload;
+}
+
+Attach::Input downloadAnswer(std::uint32_t pane, Attach::DownloadReply reply)
+{
+    Attach::Input answer;
+    answer.type = Attach::InputType::DownloadAnswer;
+    answer.pane = pane;
+    answer.download = reply;
+    return answer;
+}
+
+std::size_t countOf(const Window& w, Host::Kind kind)
+{
+    return std::size_t(std::count_if(w.calls.begin(), w.calls.end(), [kind](const Host::Call& c) { return c.kind == kind; }));
+}
+
+/// The place of the first call of @p kind in the window's calls, or their
+/// count.
+std::size_t firstOf(const Window& w, Host::Kind kind)
+{
+    return std::size_t(std::find_if(w.calls.begin(), w.calls.end(), [kind](const Host::Call& c) { return c.kind == kind; }) - w.calls.begin());
+}
+
+} // namespace
+
+// An iTerm2 download in a session pane: the window asks, as for a pane of its
+// own, while the program waits; then the data streams to the window as host
+// calls, none dropped also past Mux.eventQueue, and ends whole. A window
+// that reads slowly holds the program: the data waits for room, not in the
+// daemon without a bound. The data never shows as text.
+TEST(MuxAttach, ADownloadAsksTheWindowAndStreamsItsData)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::string file = daemon.dir() + "/payload";
+    const std::string payload = payloadIn(file, 3 << 20, 0);
+    // The program sends once the window shows it (a line typed then): with
+    // no window, the daemon refuses a download.
+    ASSERT_TRUE(daemon.newSession(daemon.options(downloads({file}, "after"), "take"))) << daemon.lastError();
+    Window w;
+    // A small window of the stream, and the smallest queue, a third of the
+    // file: the data waits for room.
+    w.streamWindow = std::size_t(64) << 10;
+    ASSERT_EQ(w.attach(daemon, "take", true, std::size_t(MinEventQueue)), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    ASSERT_TRUE(w.type("\r"));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::DownloadBegin); })) << daemon.errors();
+    const Host::Call& begin = w.calls[firstOf(w, Host::Kind::DownloadBegin)];
+    EXPECT_EQ(begin.title, "got.bin");
+    EXPECT_EQ(begin.value, payload.size() + 1);
+    // The program waits for the answer: the daemon took nothing after the
+    // download's head.
+    ASSERT_TRUE(w.roundTrip());
+    EXPECT_FALSE(hasCall(w, Host::Kind::DownloadData));
+    EXPECT_FALSE(contains(w.screen(), "after"));
+    // A window that reads no events: the data fills the channel and the
+    // queue, and the program waits for room.
+    w.readEvents = false;
+    ASSERT_TRUE(w.send(downloadAnswer(w.pane, Attach::DownloadReply::Accept)));
+    // A program that waits in its write shows only by what it does not
+    // print: no state of the daemon tells it. A slow run can only pass here
+    // wrongly, never fail.
+    EXPECT_FALSE(w.until([&] { return contains(w.screen(), "after"); }, 1s)) << w.screen();
+    w.readEvents = true;
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::DownloadEnd); }, 30s)) << daemon.errors();
+    std::string received;
+    for (const Host::Call& c : w.calls) {
+        if (c.kind == Host::Kind::DownloadData) received += c.text;
+    }
+    EXPECT_EQ(w.calls[firstOf(w, Host::Kind::DownloadEnd)].number, 1);
+    EXPECT_TRUE(received == payload) << received.size();
+    // In their order: the question, the data, the end.
+    EXPECT_LT(firstOf(w, Host::Kind::DownloadBegin), firstOf(w, Host::Kind::DownloadData));
+    std::size_t lastData = 0;
+    for (std::size_t i = 0; i < w.calls.size(); ++i) {
+        if (w.calls[i].kind == Host::Kind::DownloadData) lastData = i;
+    }
+    EXPECT_LT(lastData, firstOf(w, Host::Kind::DownloadEnd));
+    EXPECT_EQ(countOf(w, Host::Kind::DownloadEnd), 1u);
+    EXPECT_TRUE(w.until([&] { return contains(w.screen(), "after"); })) << w.screen();
+    EXPECT_FALSE(contains(w.screen(), AfterglowProto::base64Encode(payload.substr(0, 12)))) << w.screen();
+}
+
+// A refusal lets the program go on, and no data or end of the download
+// comes, also a pass later.
+TEST(MuxAttach, ARefusedDownloadSendsNothing)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::string file = daemon.dir() + "/payload";
+    const std::string payload = payloadIn(file, 64 << 10, 1);
+    ASSERT_TRUE(daemon.newSession(daemon.options(downloads({file}, "refused"), "refuse"))) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "refuse"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    ASSERT_TRUE(w.type("\r"));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::DownloadBegin); }));
+    ASSERT_TRUE(w.send(downloadAnswer(w.pane, Attach::DownloadReply::Refuse)));
+    EXPECT_TRUE(w.until([&] { return contains(w.screen(), "refused"); })) << w.screen();
+    ASSERT_TRUE(w.roundTrip());
+    EXPECT_FALSE(hasCall(w, Host::Kind::DownloadData));
+    EXPECT_FALSE(hasCall(w, Host::Kind::DownloadEnd));
+    EXPECT_FALSE(contains(w.screen(), AfterglowProto::base64Encode(payload.substr(0, 12)))) << w.screen();
+}
+
+// A stop ends only the download whose data streams. The window stops one
+// when a write of its data fails: its rest goes nowhere, no end comes, and
+// the program goes on. A stop that comes late, after the next download
+// asked, stops nothing: that one still gets its answer.
+TEST(MuxAttach, AStopEndsOnlyTheDownloadThatStreams)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::string large = daemon.dir() + "/large";
+    const std::string small = daemon.dir() + "/small";
+    const std::string first = payloadIn(large, 3 << 20, 2);
+    const std::string second = payloadIn(small, 4 << 10, 3);
+    ASSERT_TRUE(daemon.newSession(daemon.options(downloads({large, small}, "after"), "stop"))) << daemon.lastError();
+    Window w;
+    w.streamWindow = std::size_t(64) << 10;
+    ASSERT_EQ(w.attach(daemon, "stop", true, std::size_t(MinEventQueue)), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    ASSERT_TRUE(w.type("\r"));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::DownloadBegin); }));
+    ASSERT_TRUE(w.send(downloadAnswer(w.pane, Attach::DownloadReply::Accept)));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::DownloadData); }, 30s));
+    ASSERT_TRUE(w.send(downloadAnswer(w.pane, Attach::DownloadReply::Stop)));
+    // The second download asks once the program sent the rest of the first.
+    ASSERT_TRUE(w.until([&] { return countOf(w, Host::Kind::DownloadBegin) == 2; }, 30s)) << daemon.errors();
+    std::string received;
+    for (const Host::Call& c : w.calls) {
+        if (c.kind == Host::Kind::DownloadData) received += c.text;
+    }
+    EXPECT_LT(received.size(), first.size());
+    EXPECT_FALSE(hasCall(w, Host::Kind::DownloadEnd));
+    // A stop of the first download that comes after the second asked.
+    const std::size_t asked = w.calls.size();
+    ASSERT_TRUE(w.send(downloadAnswer(w.pane, Attach::DownloadReply::Stop)));
+    ASSERT_TRUE(w.send(downloadAnswer(w.pane, Attach::DownloadReply::Accept)));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::DownloadEnd); }, 30s)) << daemon.errors();
+    received.clear();
+    for (std::size_t i = asked; i < w.calls.size(); ++i) {
+        if (w.calls[i].kind == Host::Kind::DownloadData) received += w.calls[i].text;
+    }
+    EXPECT_EQ(w.calls[firstOf(w, Host::Kind::DownloadEnd)].number, 1);
+    EXPECT_TRUE(received == second) << received.size();
+    EXPECT_TRUE(w.until([&] { return contains(w.screen(), "after"); })) << w.screen();
+}
+
+// A download needs the window that it asked: a window that detaches while
+// the download asks it refuses it, and the data of one that it took goes to
+// no other window.
+TEST(MuxAttach, ADownloadNeedsTheWindowThatItAsked)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::string file = daemon.dir() + "/payload";
+    payloadIn(file, 3 << 20, 4);
+
+    // A window that detaches while the download asks it: refused.
+    ASSERT_TRUE(daemon.newSession(daemon.options(downloads({file}, "after"), "asked"))) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "asked"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    ASSERT_TRUE(w.type("\r"));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::DownloadBegin); }));
+    ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"asked"})) << daemon.lastError();
+    Window next;
+    ASSERT_EQ(next.attach(daemon, "asked"), "");
+    ASSERT_TRUE(next.until([&] { return next.pane != 0 && contains(next.screen(), "after"); }, 30s)) << next.screen();
+    ASSERT_TRUE(next.roundTrip());
+    EXPECT_FALSE(hasCall(next, Host::Kind::DownloadBegin));
+    EXPECT_FALSE(hasCall(next, Host::Kind::DownloadData));
+
+    // A window that another one takes over while the data streams to it:
+    // the rest goes nowhere, and the program goes on.
+    ASSERT_TRUE(daemon.newSession(daemon.options(downloads({file}, "after"), "taken"))) << daemon.lastError();
+    Window first;
+    first.streamWindow = std::size_t(64) << 10;
+    ASSERT_EQ(first.attach(daemon, "taken", true, std::size_t(MinEventQueue)), "");
+    ASSERT_TRUE(first.until([&] { return first.pane != 0; }));
+    ASSERT_TRUE(first.type("\r"));
+    ASSERT_TRUE(first.until([&] { return hasCall(first, Host::Kind::DownloadBegin); }));
+    first.readEvents = false;
+    ASSERT_TRUE(first.send(downloadAnswer(first.pane, Attach::DownloadReply::Accept)));
+    // The data fills what the first window does not read: the program waits.
+    // Only the absence of its next output shows it, as above.
+    EXPECT_FALSE(first.until([&] { return contains(first.screen(), "after"); }, 1s)) << first.screen();
+    Window second;
+    ASSERT_EQ(second.attach(daemon, "taken"), "");
+    ASSERT_TRUE(second.until([&] { return second.pane != 0 && contains(second.screen(), "after"); }, 30s)) << second.screen();
+    ASSERT_TRUE(second.roundTrip());
+    EXPECT_FALSE(hasCall(second, Host::Kind::DownloadData));
+    EXPECT_FALSE(hasCall(second, Host::Kind::DownloadEnd));
+}
+
 // The daemon's terminal answers a query (DA1) after the commands before it:
 // the window writes the answer behind its replies to them.
 TEST(MuxAttach, AReportFollowsTheCommandsBeforeIt)
@@ -1556,8 +1815,9 @@ TEST(MuxAttach, AWindowGetsNoMoreHistoryThanItKeeps)
         << all.replica.primaryScreen().historySize();
 }
 
-// The daemon decodes a PNG (kitty f=100) and an iTerm2 image in a process of
-// its own, and the window's replica gets their pixels.
+// The daemon decodes a PNG (kitty f=100) and iTerm2 images in a process of
+// its own, and the window's replica gets their pixels, and the frames and
+// delays of an animation.
 TEST(MuxAttach, ThePngAndItermImagesOfASessionReachTheWindow)
 {
     TestDaemon daemon;
@@ -1580,11 +1840,13 @@ TEST(MuxAttach, ThePngAndItermImagesOfASessionReachTheWindow)
             << AfterglowProto::base64Encode(AfterglowImage::TestFiles::Jpeg) << '\a';
         out << "\x1b]1337;File=inline=1;size=" << AfterglowImage::TestFiles::Webp.size() << ':'
             << AfterglowProto::base64Encode(AfterglowImage::TestFiles::Webp) << '\a';
+        out << "\x1b]1337;File=inline=1;size=" << AfterglowImage::TestFiles::Gif.size() << ':'
+            << AfterglowProto::base64Encode(AfterglowImage::TestFiles::Gif) << '\a';
     }
     ASSERT_TRUE(w.type("cat '" + images + "'; echo im''ages-shown\n"));
     const AfterglowVt::GraphicsStore& store = w.replica.graphics();
     // The iTerm2 images, sorted by size, the larger first: the JPEG (8 by
-    // 8), then the WebP (2 by 2).
+    // 8), the GIF (4 by 4), then the WebP (2 by 2).
     const auto iterm = [&] {
         std::vector<const AfterglowVt::Image*> found;
         for (const auto& [id, image] : store.images())
@@ -1594,7 +1856,7 @@ TEST(MuxAttach, ThePngAndItermImagesOfASessionReachTheWindow)
         });
         return found;
     };
-    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "images-shown") && store.images().contains(7) && iterm().size() == 2; }))
+    ASSERT_TRUE(w.until([&] { return contains(w.screen(), "images-shown") && store.images().contains(7) && iterm().size() == 3; }))
         << w.screen() << store.images().size();
     EXPECT_FALSE(store.images().contains(8));
     const AfterglowVt::Image& png = store.images().at(7);
@@ -1614,7 +1876,15 @@ TEST(MuxAttach, ThePngAndItermImagesOfASessionReachTheWindow)
         if (rgba[i] <= 240 || rgba[i + 1] >= 16 || rgba[i + 2] >= 16 || rgba[i + 3] != 255) ++notRed;
     }
     EXPECT_EQ(notRed, 0);
-    const AfterglowVt::Image& webp = *iterm()[1];
+    // Two frames of 100 ms: red, then blue.
+    const AfterglowVt::Image& gif = *iterm()[1];
+    ASSERT_EQ(gif.frames.size(), 2u);
+    EXPECT_EQ(gif.gaps, (std::vector<std::uint32_t>{100, 100}));
+    EXPECT_EQ(gif.frames[0]->width, 4u);
+    EXPECT_EQ(gif.frames[1]->height, 4u);
+    EXPECT_TRUE(gif.frames[0]->rgba == AfterglowImage::TestFiles::repeat({255, 0, 0, 255}, 16));
+    EXPECT_TRUE(gif.frames[1]->rgba == AfterglowImage::TestFiles::repeat({0, 0, 255, 255}, 16));
+    const AfterglowVt::Image& webp = *iterm()[2];
     ASSERT_EQ(webp.frames.size(), 1u);
     EXPECT_EQ(webp.frames[0]->width, 2u);
     EXPECT_EQ(webp.frames[0]->height, 2u);
@@ -2195,6 +2465,18 @@ std::uint32_t firstPane(ControlClient& ctl)
     return paneIds(*listed).front();
 }
 
+/// Waits until the screen of pane @p pane, as getText reads it, holds
+/// @p part, up to @p wait.
+bool screenShows(ControlClient& ctl, std::int64_t pane, const std::string& part, std::chrono::milliseconds wait = 5s)
+{
+    return waitFor(
+        [&] {
+            const auto text = ctl.call("getText", Json::Array{pane, "screen"});
+            return text && contains(text->toString(), part);
+        },
+        wait);
+}
+
 } // namespace
 
 TEST(MuxControl, ACallNeedsASelectedSession)
@@ -2687,10 +2969,7 @@ TEST(MuxControl, TheSessionFollowsTheSettingsOfItsWindow)
     const auto later = split->toInteger();
     ASSERT_TRUE(later) << Json::write(*split);
     ASSERT_TRUE(ctl.call("sendText", Json::Array{*later, "echo \"[$UPDATED][${GONE-unset}]\"\n"})) << ctl.error.message;
-    EXPECT_TRUE(waitFor([&] {
-        const auto text = ctl.call("getText", Json::Array{*later, "screen"});
-        return text && contains(text->toString(), "\n[new][unset]");
-    })) << ctl.error.message;
+    EXPECT_TRUE(screenShows(ctl, *later, "\n[new][unset]")) << ctl.error.message;
     Window next;
     ASSERT_EQ(next.attach(daemon, "s"), "");
     ASSERT_TRUE(next.until([&] { return next.pane != 0; }));
@@ -2756,10 +3035,7 @@ TEST(MuxControl, TheDaemonAnswersWithoutAWindow)
     EXPECT_EQ(focused(), std::int64_t(first));
     // Text in, text out. Pane 0 is the focused pane.
     ASSERT_TRUE(ctl.call("sendText", Json::Array{0, "echo hel''lo\n"})) << ctl.error.message;
-    EXPECT_TRUE(waitFor([&] {
-        const auto text = ctl.call("getText", Json::Array{std::int64_t(first), "screen"});
-        return text && text->toString().find("\nhello") != std::string::npos;
-    }));
+    EXPECT_TRUE(screenShows(ctl, std::int64_t(first), "\nhello"));
     // A split takes the focus, and a tab shows.
     const auto split = ctl.call("split", Json::Array{std::int64_t(first), "down", Json::Array{}});
     ASSERT_TRUE(split) << ctl.error.message;
@@ -2818,10 +3094,7 @@ TEST(MuxAttach, TheNextWindowGetsTheBellAndTheNewestNotificationsOfADetachedSess
         if (!ctl.call("sendText", Json::Array{std::int64_t(pane), command + "; echo " + word.substr(0, 1) + "''" + word.substr(1) + "\n"})) {
             return false;
         }
-        return waitFor([&] {
-            const auto text = ctl.call("getText", Json::Array{std::int64_t(pane), "screen"});
-            return text && contains(text->toString(), "\n" + word);
-        });
+        return screenShows(ctl, std::int64_t(pane), "\n" + word);
     };
     // A bell, five OSC 9 notifications, an OSC 99 one with id x, an OSC 777
     // one, a clipboard write, an OSC 99 one that the program then closes,
@@ -2970,6 +3243,505 @@ TEST(MuxControl, WhatOnlyAWindowDoesNeedsOne)
     EXPECT_NE(ctl.error.message.find("launch"), std::string::npos) << ctl.error.message;
     EXPECT_FALSE(ctl.call("noSuchCall", {}));
     EXPECT_EQ(ctl.error.code, IpcErrorCode::NoSuchFn);
+}
+
+// Without a window, the daemon types keys by name in the program's keyboard
+// mode, and `ls` says what a window says of a pane: the user variables, the
+// foreground process and the panes beside it, from the splits of the layout.
+// The daemon also moves the focus to a neighbor. A tab's title and a scroll
+// of the view need the window.
+TEST(MuxControl, TheDaemonTypesKeysAndTellsThePanesFacts)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "k")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("k"), "");
+    const std::uint32_t first = firstPane(ctl);
+    ASSERT_NE(first, 0u);
+    const auto screen = [&](const std::string& word) { return screenShows(ctl, std::int64_t(first), word); };
+    // The quotes keep the word off the command line.
+    ASSERT_TRUE(ctl.call("sendKeys", Json::Array{std::int64_t(first), Json::Array{"e", "c", "h", "o", "space", "k", "'", "'", "e",
+                                                                                    "y", "Return"}}))
+        << ctl.error.message;
+    EXPECT_TRUE(screen("\nkey"));
+    // A name that names no key sends none of the keys: no x before the
+    // command that follows.
+    EXPECT_FALSE(ctl.call("sendKeys", Json::Array{std::int64_t(first), Json::Array{"x", "nope"}}));
+    EXPECT_EQ(ctl.error.message, "no key is named 'nope'");
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{std::int64_t(first), "echo no''ne\n"}));
+    EXPECT_TRUE(screen("\nnone"));
+    EXPECT_FALSE(ctl.call("sendKeys", Json::Array{std::int64_t(first), Json::Array{}}));
+    EXPECT_EQ(ctl.error.message, "sendKeys needs a key");
+    Json::Array many;
+    for (std::size_t i = 0; i <= AfterglowVt::MaxKeysAtOnce; ++i) many.push_back("a");
+    EXPECT_FALSE(ctl.call("sendKeys", Json::Array{std::int64_t(first), many}));
+    EXPECT_EQ(ctl.error.message, "sendKeys sends at most " + std::to_string(AfterglowVt::MaxKeysAtOnce) + " keys at once");
+    // In the program's keyboard mode: Up is ESC O A with application cursor
+    // keys (DECCKM), not ESC [ A.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{std::int64_t(first), "stty raw -echo; printf '\\033[?1hre''ady'; head -c3 | od -An -tx1; "
+                                                                       "printf '\\033[?1l'; stty sane\n"}));
+    ASSERT_TRUE(screen("ready"));
+    ASSERT_TRUE(ctl.call("sendKeys", Json::Array{std::int64_t(first), Json::Array{"Up"}})) << ctl.error.message;
+    EXPECT_TRUE(screen(" 1b 4f 41"));
+    // A user variable, in base64 as iTerm2 sends it.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{std::int64_t(first), "printf '\\033]1337;SetUserVar=mode=%s\\a' djE=; echo s''et\n"}));
+    ASSERT_TRUE(screen("\nset"));
+    // The shell at its prompt (OSC 133 A), as shell integration marks it.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{std::int64_t(first), "printf '\\033]133;A\\a'\n"}));
+    EXPECT_TRUE(waitFor([&] {
+        const auto listed = ctl.call("listPanes", {});
+        return listed && !listed->toArray().empty() && listed->toArray()[0]["at_prompt"].isBool()
+            && listed->toArray()[0]["at_prompt"].toBool();
+    }));
+    const auto split = ctl.call("split", Json::Array{std::int64_t(first), "down", Json::Array{}});
+    ASSERT_TRUE(split) << ctl.error.message;
+    const auto splitId = split->toInteger();
+    ASSERT_TRUE(splitId) << Json::write(*split);
+    const auto listed = ctl.call("listPanes", {});
+    ASSERT_TRUE(listed) << ctl.error.message;
+    ASSERT_EQ(listed->toArray().size(), 2u);
+    const Json::Value& pane = listed->toArray()[0];
+    EXPECT_EQ(Json::write(pane["user_vars"]), R"({"mode":"v1"})");
+    EXPECT_EQ(pane["neighbors"]["down"].toInteger(), *splitId);
+    EXPECT_EQ(pane["neighbors"]["up"].toInteger(), 0);
+    EXPECT_EQ(listed->toArray()[1]["neighbors"]["up"].toInteger(), std::int64_t(first));
+    EXPECT_GT(pane["foreground"]["pid"].toInteger().value_or(0), 0) << Json::write(pane);
+    EXPECT_FALSE(pane["foreground"]["cmdline"].toArray().empty()) << Json::write(pane);
+    // The split has the focus: up goes back to the first pane, and the
+    // first pane has nothing to its left.
+    EXPECT_EQ(ctl.call("focusedPane", {}).value_or(Json::Value()).toInteger(), *splitId);
+    const auto up = ctl.call("focusNeighbor", Json::Array{*splitId, "up"});
+    ASSERT_TRUE(up) << ctl.error.message;
+    EXPECT_EQ(up->toInteger(), std::int64_t(first));
+    EXPECT_EQ(ctl.call("focusedPane", {}).value_or(Json::Value()).toInteger(), std::int64_t(first));
+    EXPECT_FALSE(ctl.call("focusNeighbor", Json::Array{std::int64_t(first), "left"}));
+    EXPECT_EQ(ctl.error.message, "no pane to the left of the pane");
+    EXPECT_FALSE(ctl.call("focusNeighbor", Json::Array{std::int64_t(first), "back"}));
+    EXPECT_EQ(ctl.error.message, "direction must be left, right, up or down");
+    for (const char* fn : {"scroll", "setTabTitle"}) {
+        EXPECT_FALSE(ctl.call(fn, Json::Array{std::int64_t(first), "down"})) << fn;
+        EXPECT_NE(ctl.error.message.find(std::string("only a window can do ") + fn), std::string::npos) << ctl.error.message;
+    }
+}
+
+// it2ul (OSC 1337 RequestUpload) in a session: the window that shows it
+// asks the user. Without a window nobody can choose the files or cancel:
+// the program gets nothing, not the Ctrl+C of a cancel, which only a person
+// sends. Nor does it when the window goes before it answers.
+TEST(MuxAttach, AnUploadRequestGoesToTheWindowOrGetsNothing)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "u")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("u"), "");
+    const std::int64_t pane = firstPane(ctl);
+    ASSERT_NE(pane, 0);
+    // What the program reads after its request, in hexadecimal, within
+    // @p seconds; then "end" (the quotes keep it off the command line). In
+    // raw mode a line feed returns no carriage: "end" can follow spaces.
+    const auto request = [](const std::string& seconds) {
+        return "stty raw -echo; printf '\\033]1337;RequestUpload=format=tgz\\a'; timeout " + seconds
+            + " head -c1 | od -An -tx1; stty sane; echo en''d\n";
+    };
+    // The screen of the last request goes: its text does not count again.
+    const std::string clear = "printf '\\033[H\\033[2J'\n";
+    const auto readNothing = [&] {
+        const auto text = ctl.call("getText", Json::Array{pane, "screen"});
+        return text && !contains(text->toString(), " 03") && !contains(text->toString(), " 78");
+    };
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, request("1")})) << ctl.error.message;
+    ASSERT_TRUE(screenShows(ctl, pane, "end"));
+    EXPECT_TRUE(readNothing());
+
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "u"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    ASSERT_TRUE(w.type(clear + request("30")));
+    ASSERT_TRUE(w.until([&] { return hasCall(w, Host::Kind::UploadRequest); }));
+    // The window answers as typed input; here a byte.
+    ASSERT_TRUE(w.type("x"));
+    EXPECT_TRUE(screenShows(ctl, pane, " 78"));
+    ASSERT_TRUE(screenShows(ctl, pane, "end"));
+
+    // The window goes with the question: the program reads nothing.
+    const auto asked = std::count_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::UploadRequest; });
+    ASSERT_TRUE(w.type(clear + request("2")));
+    ASSERT_TRUE(w.until([&] {
+        return std::count_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::UploadRequest; }) > asked;
+    }));
+    ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"u"})) << daemon.lastError();
+    ASSERT_TRUE(screenShows(ctl, pane, "end"));
+    EXPECT_TRUE(readNothing());
+}
+
+// A window that goes before it answers an upload leaves the question to
+// the next window, while the job that asked still holds the terminal: that
+// window asks again, and its answer reaches the program. Nobody answers
+// meanwhile. An answer leaves nothing to ask.
+TEST(MuxAttach, TheNextWindowAsksForAnUploadThatTheLastOneDidNotAnswer)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "q")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("q"), "");
+    const std::int64_t pane = firstPane(ctl);
+    ASSERT_NE(pane, 0);
+    const auto asks = [](const Window& w) {
+        return std::count_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::UploadRequest; });
+    };
+    auto first = std::make_unique<Window>();
+    ASSERT_EQ(first->attach(daemon, "q"), "");
+    ASSERT_TRUE(first->until([&] { return first->pane != 0; }));
+    // One job asks and reads: the subshell leads its process group. What it
+    // reads shows in hexadecimal, then "end" (the quotes keep it off the
+    // command line). It still holds the terminal after: an answer, not the
+    // end of the job, is why the last window does not ask.
+    ASSERT_TRUE(first->type("stty raw -echo; (printf '\\033]1337;RequestUpload=format=tgz\\a'; head -c1 | od -An -tx1; echo en''d; sleep 60)\n"));
+    ASSERT_TRUE(first->until([&] { return asks(*first) == 1; }));
+    ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"q"})) << daemon.lastError();
+    first.reset();
+
+    Window second;
+    ASSERT_EQ(second.attach(daemon, "q"), "");
+    ASSERT_TRUE(second.until([&] { return asks(second) == 1; }));
+    const auto screen = ctl.call("getText", Json::Array{pane, "screen"});
+    ASSERT_TRUE(screen) << ctl.error.message;
+    EXPECT_FALSE(contains(screen->toString(), "end")) << screen->toString();
+    // The answer as a window sends one.
+    Attach::Input answer;
+    answer.type = Attach::InputType::UploadAnswer;
+    answer.pane = second.pane;
+    answer.bytes = "x";
+    ASSERT_TRUE(second.send(answer));
+    EXPECT_TRUE(screenShows(ctl, pane, " 78"));
+    ASSERT_TRUE(screenShows(ctl, pane, "end"));
+    ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"q"})) << daemon.lastError();
+
+    Window third;
+    ASSERT_EQ(third.attach(daemon, "q"), "");
+    ASSERT_TRUE(third.until([&] { return third.pane != 0; }));
+    // A question would come with the first frames, before the answers of
+    // the reads.
+    ASSERT_TRUE(third.roundTrip());
+    EXPECT_EQ(asks(third), 0);
+}
+
+namespace {
+
+/// The answer to an upload, as a window sends it.
+Attach::Input uploadAnswer(std::uint32_t pane, std::string bytes)
+{
+    Attach::Input answer;
+    answer.type = Attach::InputType::UploadAnswer;
+    answer.pane = pane;
+    answer.bytes = std::move(bytes);
+    return answer;
+}
+
+std::size_t uploadAsks(const Window& w)
+{
+    return std::size_t(std::count_if(w.calls.begin(), w.calls.end(), [](const Host::Call& c) { return c.kind == Host::Kind::UploadRequest; }));
+}
+
+} // namespace
+
+// A reset (RIS) does not end the command that asked for files: the
+// question stays, and the next window asks again. Only the end of the
+// command or of the program ends it.
+TEST(MuxAttach, AResetKeepsTheQuestionOfAnUpload)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "r")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("r"), "");
+    const std::int64_t pane = firstPane(ctl);
+    ASSERT_NE(pane, 0);
+    auto first = std::make_unique<Window>();
+    ASSERT_EQ(first->attach(daemon, "r"), "");
+    ASSERT_TRUE(first->until([&] { return first->pane != 0; }));
+    // The job asks, resets the terminal, then reads a byte and shows it in
+    // hexadecimal, then "end".
+    ASSERT_TRUE(first->type("stty raw -echo; (printf '\\033]1337;RequestUpload=format=tgz\\a\\033c'; head -c1 | od -An -tx1; echo en''d; sleep 60)\n"));
+    ASSERT_TRUE(first->until([&] { return uploadAsks(*first) == 1; }));
+    // The reset reached the terminal: the screen is clear of the command.
+    ASSERT_TRUE(waitFor([&] {
+        const auto text = ctl.call("getText", Json::Array{pane, "screen"});
+        return text && !contains(text->toString(), "RequestUpload");
+    })) << ctl.error.message;
+    ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"r"})) << daemon.lastError();
+    first.reset();
+    Window second;
+    ASSERT_EQ(second.attach(daemon, "r"), "");
+    ASSERT_TRUE(second.until([&] { return uploadAsks(second) == 1; }));
+    ASSERT_TRUE(second.send(uploadAnswer(second.pane, "x")));
+    EXPECT_TRUE(screenShows(ctl, pane, " 78"));
+    ASSERT_TRUE(screenShows(ctl, pane, "end"));
+}
+
+// A window that a takeover replaced may answer the upload that it was asked
+// for before it hears: the program gets only the answer of the window that
+// the daemon asked last, which may show the question already. A second
+// answer would reach the shell.
+TEST(MuxAttach, OnlyTheWindowAskedLastAnswersAnUpload)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "q")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("q"), "");
+    const std::int64_t pane = firstPane(ctl);
+    ASSERT_NE(pane, 0);
+    Window first;
+    ASSERT_EQ(first.attach(daemon, "q"), "");
+    ASSERT_TRUE(first.until([&] { return first.pane != 0; }));
+    // The job reads two bytes and shows them in hexadecimal, then "end".
+    ASSERT_TRUE(first.type("stty raw -echo; (printf '\\033]1337;RequestUpload=format=tgz\\a'; head -c2 | od -An -tx1; echo en''d; sleep 60)\n"));
+    ASSERT_TRUE(first.until([&] { return uploadAsks(first) == 1; }));
+    Window second;
+    ASSERT_EQ(second.attach(daemon, "q"), "");
+    ASSERT_TRUE(second.until([&] { return uploadAsks(second) == 1; }));
+    // The answer of the window that went: two calls of the control target
+    // later, the daemon read it.
+    ASSERT_TRUE(first.send(uploadAnswer(first.pane, "a")));
+    for (int i = 0; i < 2; ++i) ASSERT_TRUE(ctl.call("getText", Json::Array{pane, "screen"})) << ctl.error.message;
+    // The answer of the window that shows the question, then a byte typed.
+    ASSERT_TRUE(second.send(uploadAnswer(second.pane, "b")));
+    ASSERT_TRUE(second.type("c"));
+    EXPECT_TRUE(screenShows(ctl, pane, " 62 63"));
+    ASSERT_TRUE(screenShows(ctl, pane, "end"));
+}
+
+// An answer to an upload that waits for room in a full PTY when its window
+// goes is lost with the rest of that window's input: the program did not
+// get it, and the next window asks again.
+TEST(MuxAttach, TheNextWindowAsksAgainForAnUploadAnswerThatWasLost)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const std::string go = daemon.dir() + "/go";
+    // Asks once the test says, and reads nothing.
+    SessionOptions o = daemon.options({"/bin/sh", "-c",
+                                       "stty raw -echo; while [ ! -e '" + go + "' ]; do sleep 0.05; done; "
+                                       "printf '\\033]1337;RequestUpload=format=tgz\\a'; exec sleep 60"});
+    o.name = "s";
+    ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "s"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    std::ofstream(go).put('x');
+    ASSERT_TRUE(w.until([&] { return uploadAsks(w) == 1; }));
+    // A second pane, whose echo says that the daemon read what came before it.
+    const auto echo = newPane(daemon, "s", launchOf({"/bin/cat"}, daemon));
+    ASSERT_TRUE(echo) << daemon.lastError();
+    ASSERT_TRUE(w.until([&] { return w.others.contains(*echo); }));
+    // Past the 32 MiB that the PTY queues, and below the bound of held
+    // input (Attachment::MaxHeldInput): the daemon holds the rest, and the
+    // answer behind it.
+    const std::string part(60000, 'x');
+    ASSERT_GE(w.fill(part, std::size_t(34) << 20, 200), std::size_t(34) << 20);
+    ASSERT_TRUE(w.send(uploadAnswer(w.pane, "y")));
+    Attach::Input ping;
+    ping.pane = *echo;
+    ping.bytes = "ping\n";
+    ASSERT_TRUE(w.send(ping));
+    const auto echoed = [&] { return w.others.at(*echo)->replica.text(AfterglowVt::Terminal::TextScope::Screen); };
+    ASSERT_TRUE(w.until([&] { return contains(echoed(), "ping"); }, 10s)) << echoed();
+    ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"s"})) << daemon.lastError();
+    ASSERT_TRUE(w.until([&] { return w.got(Attach::EventType::Detached); }));
+    Window again;
+    ASSERT_EQ(again.attach(daemon, "s"), "");
+    EXPECT_TRUE(again.until([&] { return uploadAsks(again) == 1; })) << daemon.errors();
+}
+
+// Without a window no user can answer: the daemon refuses a download, the
+// program goes on, and the next window hears nothing of it.
+TEST(MuxAttach, ADownloadWithoutAWindowIsRefused)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    SessionOptions o = daemon.options({"/bin/sh", "-c", "printf '\\033]1337;File=name=Z290LmJpbg==;size=4:eHl6dw==\\007'; printf al''one; exec cat"},
+                                      "alone");
+    o.control.allowReadText = true;
+    ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("alone"), "");
+    const std::int64_t pane = firstPane(ctl);
+    ASSERT_NE(pane, 0);
+    // The daemon parsed the download before the text after it.
+    ASSERT_TRUE(screenShows(ctl, pane, "alone"));
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "alone"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "alone"); })) << w.screen();
+    ASSERT_TRUE(w.roundTrip());
+    EXPECT_FALSE(hasCall(w, Host::Kind::DownloadBegin));
+    EXPECT_FALSE(contains(w.screen(), "eHl6dw")) << w.screen();
+}
+
+// The colours, user variables and signals of a session's panes are the
+// daemon's: it has their terminals and programs, also without a window. The
+// window's font, opacity and state need a window.
+TEST(MuxControl, TheDaemonSetsColoursVariablesAndSignals)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "c")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("c"), "");
+    const std::int64_t pane = firstPane(ctl);
+    ASSERT_NE(pane, 0);
+    const auto color = [&](const std::string& name) {
+        const auto colors = ctl.call("getColors", Json::Array{pane});
+        return colors ? Json::write((*colors)[name]) : std::string("no answer: ") + ctl.error.message;
+    };
+    const std::string configured = color("color1");
+    ASSERT_TRUE(ctl.call("setColors", Json::Array{pane, Json::Object{{"color1", "#ff0010"}, {"background", "rgb:01/02/03"}}, false}))
+        << ctl.error.message;
+    EXPECT_EQ(color("color1"), "\"#ff0010\"");
+    EXPECT_EQ(color("background"), "\"#010203\"");
+    EXPECT_EQ(color("cursor"), "null");
+    // As a window reads a colour: "#fff" is white as in CSS and kitty, not
+    // f0f0f0 as XParseColor reads it, and blanks around it go.
+    ASSERT_TRUE(ctl.call("setColors", Json::Array{pane, Json::Object{{"color5", " #fff "}, {"color6", "#123456789"}}, false}))
+        << ctl.error.message;
+    EXPECT_EQ(color("color5"), "\"#ffffff\"");
+    EXPECT_EQ(color("color6"), "\"#124578\"");
+    EXPECT_FALSE(ctl.call("setColors", Json::Array{pane, Json::Object{{"color5", "#1e1e2eff"}}, false}));
+    EXPECT_EQ(ctl.error.message, "#1e1e2eff is no color");
+    // A bad colour or name sets none.
+    const std::string color2 = color("color2");
+    EXPECT_FALSE(ctl.call("setColors", Json::Array{pane, Json::Object{{"color2", "#00ff00"}, {"color3", "nope"}}, false}));
+    EXPECT_EQ(ctl.error.message, "nope is no color");
+    EXPECT_FALSE(ctl.call("setColors", Json::Array{pane, Json::Object{{"color2", "#00ff00"}, {"colour4", "#00ff00"}}, false}));
+    EXPECT_EQ(ctl.error.message, "no color is named colour4");
+    EXPECT_FALSE(ctl.call("setColors", Json::Array{pane, Json::Object{{"color2", std::int64_t(255)}}, false}));
+    EXPECT_EQ(ctl.error.message, "the color of color2 is a string");
+    EXPECT_EQ(color("color2"), color2);
+    ASSERT_TRUE(ctl.call("setColors", Json::Array{pane, Json::Object{}, true})) << ctl.error.message;
+    EXPECT_EQ(color("color1"), configured);
+
+    ASSERT_TRUE(ctl.call("setUserVar", Json::Array{pane, "role", "build"})) << ctl.error.message;
+    const auto listed = ctl.call("listPanes", {});
+    ASSERT_TRUE(listed) << ctl.error.message;
+    ASSERT_EQ(listed->toArray().size(), 1u);
+    EXPECT_EQ(Json::write(listed->toArray()[0]["user_vars"]), R"({"role":"build"})");
+    // A name as OSC 1337 SetUserVar takes one: 1 to 128 bytes, no =.
+    for (const std::string& name : {std::string("a=b"), std::string(), std::string(129, 'n')}) {
+        EXPECT_FALSE(ctl.call("setUserVar", Json::Array{pane, name, "c"})) << name;
+        EXPECT_EQ(ctl.error.message, "a user variable's name has 1 to 128 bytes and no =");
+    }
+    EXPECT_TRUE(ctl.call("setUserVar", Json::Array{pane, std::string(128, 'n'), "c"})) << ctl.error.message;
+    // A pane keeps MaxUserVars: then a new name is refused, not dropped
+    // without a word, and a name that it has takes a new value.
+    for (std::size_t i = 2; i < AfterglowVt::ITerminalHost::MaxUserVars; ++i) {
+        ASSERT_TRUE(ctl.call("setUserVar", Json::Array{pane, "v" + std::to_string(i), "x"})) << i << ": " << ctl.error.message;
+    }
+    EXPECT_FALSE(ctl.call("setUserVar", Json::Array{pane, "one-more", "x"}));
+    EXPECT_EQ(ctl.error.message, "pane " + std::to_string(pane) + " has 256 user variables: it takes no new name");
+    EXPECT_TRUE(ctl.call("setUserVar", Json::Array{pane, "role", "test"})) << ctl.error.message;
+
+    // INT ends the sleep in the foreground: the next command runs at once.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "sleep 60\n"}));
+    ASSERT_TRUE(waitFor([&] {
+        const auto listed = ctl.call("listPanes", {});
+        return listed && !listed->toArray().empty() && contains(Json::write(listed->toArray()[0]["foreground"]["cmdline"]), "sleep");
+    }));
+    ASSERT_TRUE(ctl.call("signalProgram", Json::Array{pane, "SIGINT"})) << ctl.error.message;
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "echo af''ter\n"}));
+    EXPECT_TRUE(screenShows(ctl, pane, "\nafter"));
+    EXPECT_FALSE(ctl.call("signalProgram", Json::Array{pane, "SIGNOPE"}));
+    EXPECT_EQ(ctl.error.message, "no signal is named SIGNOPE");
+    // The name first, as a window checks it, also for a pane that is not.
+    EXPECT_FALSE(ctl.call("signalProgram", Json::Array{9999, "SIGNOPE"}));
+    EXPECT_EQ(ctl.error.message, "no signal is named SIGNOPE");
+
+    for (const auto& [fn, call] : std::vector<std::pair<std::string, Json::Array>>{
+             {"setFontSize", Json::Array{pane, "+2"}}, {"setOpacity", Json::Array{pane, 0.5}}, {"setWindowState", Json::Array{pane, "maximized", 0, 0}}}) {
+        EXPECT_FALSE(ctl.call(fn, call)) << fn;
+        EXPECT_NE(ctl.error.message.find("only a window can do " + fn), std::string::npos) << ctl.error.message;
+    }
+}
+
+// A window that shows the pane sees what the daemon sets: the colours in the
+// next frame, and a user variable as the call of the program's terminal.
+TEST(MuxControl, TheWindowSeesTheColoursAndVariablesThatTheDaemonSets)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "w")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "w"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0 && contains(w.screen(), "$ "); })) << w.screen();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("w"), "");
+    ASSERT_TRUE(ctl.call("setColors", Json::Array{std::int64_t(w.pane), Json::Object{{"color1", "#ff0010"}}, false})) << ctl.error.message;
+    const auto color1 = [&w] {
+        for (const auto& color : w.replica.namedColors()) {
+            if (color.name == "color1") return color.rgb;
+        }
+        return std::optional<AfterglowVt::Rgb>();
+    };
+    EXPECT_TRUE(w.until([&] {
+        const auto rgb = color1();
+        return rgb && rgb->r == 0xff && rgb->g == 0x00 && rgb->b == 0x10;
+    }));
+    ASSERT_TRUE(ctl.call("setUserVar", Json::Array{std::int64_t(w.pane), "role", "build"})) << ctl.error.message;
+    EXPECT_TRUE(w.until([&] {
+        return std::any_of(w.calls.begin(), w.calls.end(), [](const Host::Call& c) {
+            return c.kind == Host::Kind::UserVar && c.title == "role" && c.text == "build";
+        });
+    }));
+}
+
+// get-text with the options of kitten @ get-text: the daemon writes its own
+// terminal's text with styles, and finds the first output on its screen.
+// What a window's view knows (the last visited output) is refused without one.
+TEST(MuxControl, TheDaemonWritesTextWithItsStyles)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "t")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("t"), "");
+    const std::int64_t pane = firstPane(ctl);
+    ASSERT_NE(pane, 0);
+    // A command with OSC 133 marks and red output; the quotes keep the word
+    // off the command line.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "printf '\\033]133;A\\a$ \\033]133;B\\acmd\\033]133;C\\a\\n\\033[31mre''d\\033[m\\n\\033]133;D;0\\a'\n"}))
+        << ctl.error.message;
+    ASSERT_TRUE(screenShows(ctl, pane, "\nred"));
+    const auto styled = ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"ansi", true}}});
+    ASSERT_TRUE(styled) << ctl.error.message;
+    EXPECT_TRUE(contains(styled->toString(), "\x1b[0;31mred\x1b[m")) << styled->toString();
+    const auto first = ctl.call("getText", Json::Array{pane, "first-output-on-screen"});
+    ASSERT_TRUE(first) << ctl.error.message;
+    EXPECT_EQ(first->toString(), "\nred\n");
+    // The text of one output ends before the cursor's place: refused as a
+    // window refuses it.
+    for (const char* scope : {"first-output-on-screen", "last-visited-output"}) {
+        EXPECT_FALSE(ctl.call("getText", Json::Array{pane, scope, Json::Object{{"cursor", true}}})) << scope;
+        EXPECT_EQ(ctl.error.message, "cursor is for the screen, scrollback and last-output scopes") << scope;
+    }
+    EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "last-visited-output"}));
+    EXPECT_EQ(ctl.error.message, "only a window that shows session 't' has its last-visited-output");
+    const auto cursor = ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"cursor", true}}});
+    ASSERT_TRUE(cursor) << ctl.error.message;
+    EXPECT_TRUE(contains(cursor->toString(), "\x1b[?25h")) << cursor->toString();
+    // A row that wraps ends with a carriage return with wrap_markers, and
+    // runs on into the next row without.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "printf '%0300d\\n' 0\n"})) << ctl.error.message;
+    ASSERT_TRUE(screenShows(ctl, pane, std::string(300, '0')));
+    const auto wrapped = ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"wrap_markers", true}}});
+    ASSERT_TRUE(wrapped) << ctl.error.message;
+    EXPECT_TRUE(contains(wrapped->toString(), "0\r0")) << wrapped->toString();
+    EXPECT_FALSE(contains(wrapped->toString(), std::string(300, '0'))) << wrapped->toString();
+    EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"bold", true}}}));
+    EXPECT_EQ(ctl.error.message, "unknown getText option bold: the options are ansi, cursor and wrap_markers");
+    EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"ansi", 1}}}));
+    EXPECT_EQ(ctl.error.message, "the getText option ansi is true or false");
 }
 
 // While a window shows the session, the daemon places the panes that it
@@ -3205,6 +3977,61 @@ TEST(MuxControl, OverlaysAndScreenshotsGoToTheWindowWithTheirClient)
     EXPECT_EQ(controls().back()["fn"].toString(), "clientGone");
     EXPECT_EQ(controls().back()["id"].toInteger(), 0);
     EXPECT_EQ(Json::write(controls().back()["args"]), "[" + std::to_string(client) + "]");
+}
+
+// Two answers of a window that each fit a connection, but not together,
+// for a client that reads nothing meanwhile: the first goes, the second
+// becomes an error. The connection stays open: it would close with neither.
+TEST(MuxControl, AWindowsAnswerThatTheConnectionCannotTakeIsAnError)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "s")) << daemon.lastError();
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "s"), "");
+    ASSERT_TRUE(w.until([&] { return w.pane != 0; }));
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("s"), "");
+    // Both calls before any answer, which the client does not read yet.
+    const auto first = ctl.connection.send("control", "screenshot", Json::Array{0, "pane"}, &ctl.error);
+    ASSERT_TRUE(first) << ctl.error.message;
+    const auto second = ctl.connection.send("control", "screenshot", Json::Array{0, "pane"}, &ctl.error);
+    ASSERT_TRUE(second) << ctl.error.message;
+    ASSERT_TRUE(w.until([&] { return w.controls().size() == 2; }));
+    // Each just under Attach::MaxControlReply: two pass the daemon's output
+    // limit by far more than the socket takes.
+    const std::string png(Attach::MaxControlReply - 1024, 'A');
+    for (const Json::Value& call : w.controls()) {
+        const std::string answer = Json::write(Json::Object{{"id", call["id"]}, {"result", Json::Object{{"png", png}}}});
+        for (std::size_t at = 0; at < answer.size(); at += Attach::ControlReplyPartBytes) {
+            Attach::Input part;
+            part.type = at + Attach::ControlReplyPartBytes < answer.size() ? Attach::InputType::ControlReplyPart : Attach::InputType::ControlReply;
+            part.bytes = answer.substr(at, Attach::ControlReplyPartBytes);
+            ASSERT_TRUE(w.until([&] { return w.send(part) || w.ended; }, 10s));
+            ASSERT_FALSE(w.ended);
+        }
+    }
+    // Each channel queues its own frames, and the stream takes turns between
+    // them: a refresh would pass the parts that still wait in the window, and
+    // nothing pumps the window while the client reads. So first all of them
+    // go out. The daemon then reads them before the refreshes behind them,
+    // and passes the answers on in that pass.
+    ASSERT_TRUE(w.until([&] { return !w.stream->wantsWrite(); }, 10s));
+    ASSERT_TRUE(w.roundTrip());
+    Json::Value frame;
+    ASSERT_EQ(ctl.connection.next(frame, 10000), IpcConnection::Read::Frame) << ctl.connection.closeReason();
+    ASSERT_TRUE(IpcConnection::answers(frame, *first));
+    const auto shot = IpcConnection::answer(std::move(frame), &ctl.error);
+    ASSERT_TRUE(shot) << ctl.error.message;
+    EXPECT_EQ((*shot)["png"].toString().size(), png.size());
+    ASSERT_EQ(ctl.connection.next(frame, 10000), IpcConnection::Read::Frame) << ctl.connection.closeReason();
+    ASSERT_TRUE(IpcConnection::answers(frame, *second));
+    EXPECT_FALSE(IpcConnection::answer(frame, &ctl.error));
+    EXPECT_EQ(ctl.error.code, IpcErrorCode::CallFailed);
+    EXPECT_NE(ctl.error.message.find("larger than the connection can take"), std::string::npos) << ctl.error.message;
+    // The connection goes on.
+    EXPECT_TRUE(ctl.call("focusedPane", {})) << ctl.error.message;
+    EXPECT_FALSE(w.ended);
 }
 
 // A screenshot needs Control.allowReadText: refused with the window's code
@@ -4256,6 +5083,12 @@ void commandLines(bool readText)
     ASSERT_TRUE(listed) << ctl.error.message;
     ASSERT_EQ(listed->toArray().size(), 1u) << Json::write(*listed);
     EXPECT_EQ(listed->toArray()[0]["command"].toString(), shown);
+    // Its output follows: no prompt. The command line of the process in the
+    // foreground needs read access too.
+    EXPECT_TRUE(listed->toArray()[0]["at_prompt"].isBool()) << Json::write(*listed);
+    EXPECT_FALSE(listed->toArray()[0]["at_prompt"].toBool());
+    EXPECT_GT(listed->toArray()[0]["foreground"]["pid"].toInteger().value_or(0), 0) << Json::write(*listed);
+    EXPECT_EQ(listed->toArray()[0]["foreground"]["cmdline"].toArray().empty(), !readText) << Json::write(*listed);
     ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "printf '\\033]133;D;3\\007'\n"})) << ctl.error.message;
     const std::string finished = watcher.next();
     EXPECT_TRUE(finished.starts_with("commandFinished [" + id + ",\"" + shown + "\",3,")) << finished;
@@ -4414,10 +5247,7 @@ TEST(MuxControl, TheDaemonRefusesWhatAWindowRefuses)
     ASSERT_TRUE(split->toInteger()) << Json::write(*split);
     // The prompt of the shell (SHELL of the test's sessions is /bin/sh): the
     // first pane's sleep prints nothing.
-    EXPECT_TRUE(waitFor([&] {
-        const auto text = ctl.call("getText", Json::Array{*split->toInteger(), "screen"});
-        return text && contains(text->toString(), "$");
-    })) << ctl.error.message;
+    EXPECT_TRUE(screenShows(ctl, *split->toInteger(), "$")) << ctl.error.message;
 }
 
 // A split or a tab without a launch runs the shell of a shell launch
@@ -5086,7 +5916,7 @@ TEST(MuxControl, TheDaemonChecksTheArgumentsOfItsControlCalls)
     EXPECT_EQ(other["code"].toString(), IpcErrorCode::MalformedRequest) << Json::write(other);
     EXPECT_EQ(other["message"].toString(), "the control target answers calls, not 'event'");
 
-    // The scopes of a pane's text. A selection is a window's: none without one.
+    // The scopes of a pane's text. A selection is a window's: refused without one.
     ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "echo mar''k\n"})) << ctl.error.message;
     EXPECT_TRUE(waitFor([&] {
         const auto text = ctl.call("getText", Json::Array{pane, "scrollback"});
@@ -5095,12 +5925,12 @@ TEST(MuxControl, TheDaemonChecksTheArgumentsOfItsControlCalls)
     const auto last = ctl.call("getText", Json::Array{pane, "last-output"});
     ASSERT_TRUE(last) << ctl.error.message;
     EXPECT_TRUE(last->isString());
-    const auto selection = ctl.call("getText", Json::Array{pane, "selection"});
-    ASSERT_TRUE(selection) << ctl.error.message;
-    EXPECT_EQ(selection->toString(), "");
+    EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "selection"}));
+    EXPECT_EQ(ctl.error.code, IpcErrorCode::CallFailed);
+    EXPECT_EQ(ctl.error.message, "only a window that shows session 's' has its selection");
     EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "everything"}));
     EXPECT_EQ(ctl.error.code, IpcErrorCode::CallFailed);
-    EXPECT_EQ(ctl.error.message, "scope is screen, scrollback, selection or last-output");
+    EXPECT_EQ(ctl.error.message, "scope is screen, scrollback, selection, last-output, first-output-on-screen or last-visited-output");
 
     // A launch that is no launch.
     EXPECT_FALSE(ctl.call("split", Json::Array{pane, "right", Json::Array{}, "sh"}));
@@ -5407,6 +6237,52 @@ bool openedIn(const Window& w, std::uint32_t id)
 
 } // namespace
 
+// A pane that joins another session answers OSC 99's query with that
+// session's capabilities, those of the window that shows it now.
+TEST(MuxAttach, AJoinedPaneAnswersTheNotificationQueryOfItsNewSession)
+{
+    if (!pythonFound()) GTEST_SKIP() << "python3 is not installed";
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    SessionOptions a = daemon.options(Waiting, "a");
+    a.notificationCapabilities = "p=title";
+    SessionOptions b = daemon.options(Waiting, "b");
+    b.notificationCapabilities = "p=body";
+    ASSERT_TRUE(daemon.newSession(a)) << daemon.lastError();
+    ASSERT_TRUE(daemon.newSession(b)) << daemon.lastError();
+    Window wa;
+    Window wb;
+    ASSERT_EQ(wa.attach(daemon, "a"), "");
+    ASSERT_EQ(wb.attach(daemon, "b"), "");
+    ASSERT_TRUE(wa.until([&] { return wa.pane != 0; }));
+    ASSERT_TRUE(wb.until([&] { return wb.pane != 0; }));
+    const std::string answers = daemon.dir() + "/answers";
+    const auto moving = newPane(daemon, "a", launchOf(ask("\\x1b]99;i=n:p=?;\\x1b\\\\\\x1b[c", "c", answers, true), daemon));
+    ASSERT_TRUE(moving) << daemon.lastError();
+    // The program asks once it has a byte, after "go?".
+    const auto asks = [&wa, id = *moving] {
+        const auto other = wa.others.find(id);
+        if (other == wa.others.end()) return false;
+        const AfterglowVt::Screen& screen = other->second->replica.screen();
+        std::string text;
+        for (int y = 0; y < screen.rows(); ++y) {
+            for (const AfterglowVt::Cell& c : screen.row(y).cells) text.push_back(c.codepoint() > 0 && c.codepoint() < 0x80 ? char(c.codepoint()) : ' ');
+        }
+        return contains(text, "go?");
+    };
+    ASSERT_TRUE(wa.until(asks));
+    IpcConnection::Error error;
+    ASSERT_TRUE(joinPane(daemon, "a", *moving, wb.pane, "down", wa.serial, &error)) << error.message;
+    ASSERT_TRUE(wb.until([&] { return openedIn(wb, *moving); }));
+    Attach::Input key;
+    key.pane = *moving;
+    key.bytes = "x";
+    ASSERT_TRUE(wb.send(key));
+    ASSERT_TRUE(wb.until([&] { return exists(answers); })) << daemon.errors();
+    EXPECT_NE(readFile(answers).find("p=body"), std::string::npos) << readFile(answers);
+    EXPECT_EQ(readFile(answers).find("p=title"), std::string::npos) << readFile(answers);
+}
+
 // A pane of the window of one session joins the session that another window
 // shows, beside one of its panes, with its program running: the window that
 // showed it drags it out, and the other one places it, then gets its frames
@@ -5672,10 +6548,7 @@ TEST(MuxAttach, TheCallsThatAWindowDidNotGetGoToTheNextOneInTheirOrder)
                                                      "n=1; while [ $n -le 900 ]; do printf '\\033]9;%04d %s\\a' $n $pad; n=$((n+1)); done; "
                                                      "printf '\\033]99;i=x:p=close;\\033\\\\'; echo do''ne\n"}))
             << ctl.error.message;
-        ASSERT_TRUE(waitFor([&] {
-            const auto text = ctl.call("getText", Json::Array{std::int64_t(pane), "screen"});
-            return text && contains(text->toString(), "\ndone");
-        }, 20s));
+        ASSERT_TRUE(screenShows(ctl, std::int64_t(pane), "\ndone", 20s));
         ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"order"})) << daemon.lastError();
     }
     ASSERT_TRUE(waitFor([&] {
