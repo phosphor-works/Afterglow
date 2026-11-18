@@ -18415,6 +18415,79 @@ TEST_F(NativeWindow, ASessionOfAnotherHostRunsNoProgramHere)
         << (split ? screenOf(split).toStdString() : std::string("the pane closed"));
 }
 
+// A session pane tells the same shell state in its window as in its daemon:
+// the window's replica gets the marks and regions of the daemon's terminal,
+// and the window's shellChanged comes with them.
+TEST_F(NativeWindow, ASessionPaneTellsTheSameShellStateInTheWindowAndTheDaemon)
+{
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    AfterglowMux::SessionOptions options = MuxTest::shellOptions(daemon, "same");
+    options.control.allowReadText = true;
+    ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
+    QString error;
+    QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("same"), &error);
+    ASSERT_NE(shown, nullptr) << error.toStdString();
+    const auto closeFirst = qScopeGuard([&shown] {
+        delete shown;
+    });
+    ASSERT_TRUE(waitFor([&] {
+        return shown && shown->isExposed() && shown->submittedFrames() > 0;
+    }));
+    QPointer<Pane> pane = shown->panes().value(0);
+    ASSERT_NE(pane, nullptr);
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    TestControl test(directory, QStringLiteral("same.conf"), shown);
+    QStringList states;
+    QObject::connect(&test.control, &Control::shellChanged, &test.control, [&](quint32 id, const QString& state) {
+        if (pane && id == pane->id())
+            states.append(state);
+    });
+    const auto windowFacts = [&] {
+        for (const PaneInfo& p : test.control.panes(true))
+            if (pane && p.id == pane->id())
+                return Control::paneMap(p);
+        return QVariantMap();
+    };
+    SessionCtl ctl(daemon, "same");
+    ASSERT_TRUE(ctl.ready()) << ctl.failure().message;
+    const auto daemonFacts = [&] {
+        const auto listed = ctl.call("listPanes", MuxTest::Json::Array{});
+        return listed && !listed->toArray().empty() ? listed->toArray()[0] : MuxTest::Json::Value();
+    };
+    // A prompt, a command that runs a second, its end with code 4 and the
+    // next prompt.
+    ASSERT_TRUE(
+        ctl.call("sendText",
+                 MuxTest::Json::Array{0,
+                                      "printf '\\033]133;A\\007$ \\033]133;B\\007'; printf '\\033]133;C\\007'; "
+                                      "sleep 1; printf '\\033]133;D;4\\007\\033]133;A\\007$ \\033]133;B\\007'\n"}))
+        << ctl.failure().message;
+    ASSERT_TRUE(waitFor(
+        [&] {
+            return states.contains(QStringLiteral("running")) && states.endsWith(QStringLiteral("prompt"))
+                && windowFacts().value(QStringLiteral("last_exit")).toInt() == 4;
+        },
+        8000))
+        << states.join(QLatin1Char(' ')).toStdString();
+    EXPECT_EQ(windowFacts().value(QStringLiteral("shell")).toString(), QStringLiteral("prompt"));
+    EXPECT_EQ(daemonFacts()["shell"].toString(), "prompt");
+    EXPECT_EQ(daemonFacts()["last_exit"].toInteger(), 4);
+    EXPECT_EQ(windowFacts().value(QStringLiteral("input")).toBool(), daemonFacts()["input"].toBool());
+    // The secondary prompt reaches the window too.
+    ASSERT_TRUE(ctl.call("sendText", MuxTest::Json::Array{0, "printf '\\033]133;A;k=s\\007> '\n"}))
+        << ctl.failure().message;
+    ASSERT_TRUE(waitFor(
+        [&] {
+            return windowFacts().value(QStringLiteral("shell")).toString() == QStringLiteral("continuation");
+        },
+        8000))
+        << windowFacts().value(QStringLiteral("shell")).toString().toStdString();
+    EXPECT_EQ(daemonFacts()["shell"].toString(), "continuation");
+    EXPECT_EQ(states.last(), QStringLiteral("continuation"));
+}
+
 // The notifications that a session's program sent while no window showed the
 // session show when a window attaches, also for the pane that has the focus
 // then: no user saw that pane when they came. Notifications.rateLimit counts
@@ -18447,7 +18520,7 @@ TEST_F(NativeWindow, AWindowShowsTheNotificationsOfItsDetachedSession)
     ASSERT_TRUE(waitFor(
         [&] {
             const auto text = ctl.call("getText", MuxTest::Json::Array{0, "screen"});
-            return text && text->toString().find("\nready") != std::string::npos;
+            return text && (*text)["text"].toString().find("\nready") != std::string::npos;
         },
         5000))
         << ctl.failure().message;
@@ -18547,7 +18620,7 @@ TEST_F(NativeWindow, CtlForASessionReachesItsWindow)
     ASSERT_TRUE(pane->hasSelection());
     const auto selection = ctl.call("getText", MuxTest::Json::Array{first, "selection"});
     ASSERT_TRUE(selection) << ctl.failure().message;
-    EXPECT_EQ(QString::fromStdString(selection->toString()), pane->selectedText());
+    EXPECT_EQ(QString::fromStdString((*selection)["text"].toString()), pane->selectedText());
     // A pane that moves to a tab of its own: the answer names it as the
     // daemon does, and the daemon's own list says the same at once.
     const auto moved = ctl.call("movePane", MuxTest::Json::Array{std::int64_t(added), 0, "new-tab"});
@@ -19862,8 +19935,10 @@ TEST_F(NativeWindow, ControlMovesBetweenPanesResizesScrollsAndTypesKeys)
               QString::fromUtf8(cmdline.readAll().split('\0').value(0)));
     EXPECT_FALSE(foreground.value(QStringLiteral("cmdline")).toStringList().isEmpty());
     // No shell integration reported a prompt.
-    ASSERT_TRUE(map(left->id()).contains(QStringLiteral("at_prompt")));
-    EXPECT_FALSE(map(left->id()).value(QStringLiteral("at_prompt")).toBool());
+    EXPECT_EQ(map(left->id()).value(QStringLiteral("shell")).toString(), QStringLiteral("none"));
+    EXPECT_FALSE(map(left->id()).value(QStringLiteral("input")).toBool());
+    ASSERT_TRUE(map(left->id()).contains(QStringLiteral("last_exit")));
+    EXPECT_TRUE(map(left->id()).value(QStringLiteral("last_exit")).isNull());
     // Without read access, the command line goes as the command does.
     EXPECT_TRUE(control.clientPaneMap(map(left->id()))
                     .value(QStringLiteral("foreground"))

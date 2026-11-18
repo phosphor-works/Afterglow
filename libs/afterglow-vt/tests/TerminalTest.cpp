@@ -979,6 +979,183 @@ TEST(Terminal, ReloadKeepsTheProgramsCursorAndColours)
     EXPECT_EQ(t.t.paletteColor(3), (Rgb{0xab, 0xcd, 0xef}));
 }
 
+// The state of the shell follows its marks: A and B a prompt, C a command,
+// D and the next A a prompt again; a secondary prompt while a command goes
+// on; nothing before the first mark and after a reset.
+TEST(Terminal, ShellStateFollowsTheMarks)
+{
+    Term t(30, 6);
+    EXPECT_EQ(t.t.shellState(), ShellState::None);
+    t.feed("plain output\r\n");
+    EXPECT_EQ(t.t.shellState(), ShellState::None);
+    t.feed("\x1b]133;A\x07$ ");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    t.feed("\x1b]133;B\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    EXPECT_FALSE(t.t.lastExitCode());
+    t.feed("sleep 1\r\n\x1b]133;C\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Running);
+    t.feed("\x1b]133;D;3\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Running);
+    EXPECT_EQ(t.t.lastExitCode(), 3);
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    EXPECT_EQ(t.t.lastExitCode(), 3);
+    // An empty line: D with no command, and a new prompt. The last exit
+    // code stays that of the last command.
+    t.feed("\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    EXPECT_EQ(t.t.lastExitCode(), 3);
+    // An open quote: the secondary prompt, until the command runs.
+    t.feed("echo \"\r\n\x1b]133;A;k=s\x07> ");
+    EXPECT_EQ(t.t.shellState(), ShellState::Continuation);
+    t.feed("\"\r\n\x1b]133;C\x07\r\n\x1b]133;D;0\x07");
+    EXPECT_EQ(t.t.lastExitCode(), 0);
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    // A secondary prompt that Ctrl+C ends: the next primary prompt.
+    t.feed("echo \"\r\n\x1b]133;A;k=s\x07> ^C\r\n\x1b]133;A\x07$ \x1b]133;B\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    // A command with no D: the next A ends it with no code.
+    t.feed("true\r\n\x1b]133;C\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    EXPECT_FALSE(t.t.lastExitCode());
+    // DECSTR keeps the marks; RIS forgets them.
+    t.feed("\x1b[!p");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    t.feed(
+        "\x1b"
+        "c");
+    EXPECT_EQ(t.t.shellState(), ShellState::None);
+    EXPECT_FALSE(t.t.lastExitCode());
+    // A full-screen program runs on the alternate screen.
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07vim\r\n\x1b]133;C\x07\x1b[?1049h");
+    EXPECT_EQ(t.t.shellState(), ShellState::Running);
+    t.feed("\x1b[?1049l\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    // A program that exited has no prompt.
+    t.t.programExited();
+    EXPECT_EQ(t.t.shellState(), ShellState::None);
+}
+
+// A command that starts and ends within one feed leaves the state at the
+// prompt: the id of the newest prompt tells that a new one came.
+TEST(Terminal, ANewPromptHasANewId)
+{
+    Term t(30, 6);
+    EXPECT_EQ(t.t.lastPromptId(), 0u);
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07");
+    const std::uint64_t first = t.t.lastPromptId();
+    EXPECT_NE(first, 0u);
+    t.feed("true\r\n\x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    EXPECT_GT(t.t.lastPromptId(), first);
+    // A secondary prompt is no new prompt.
+    const std::uint64_t second = t.t.lastPromptId();
+    t.feed("echo \"\r\n\x1b]133;A;k=s\x07> ");
+    EXPECT_EQ(t.t.lastPromptId(), second);
+}
+
+// Typed text is the text from the input mark to the cursor: not the right
+// prompt or an autosuggestion after the cursor.
+TEST(Terminal, ShellInputIsTheTextBeforeTheCursor)
+{
+    Term t(30, 4);
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07");
+    EXPECT_FALSE(t.t.shellInput());
+    // zsh's right prompt, then the cursor back after the left one.
+    t.feed("\x1b[s\x1b[25G10:00\x1b[u");
+    EXPECT_FALSE(t.t.shellInput());
+    t.feed("make");
+    EXPECT_TRUE(t.t.shellInput());
+    // Erased again: only blanks.
+    t.feed("\b\b\b\b    \b\b\b\b");
+    EXPECT_FALSE(t.t.shellInput());
+    // Typed text that wraps.
+    t.feed(std::string(40, 'x'));
+    EXPECT_TRUE(t.t.shellInput());
+    t.feed("\r\n\x1b]133;C\x07");
+    EXPECT_FALSE(t.t.shellInput());
+    // A shell that marks no input (no B): never typed text.
+    Term noB(30, 4);
+    noB.feed("\x1b]133;A\x07$ make");
+    EXPECT_FALSE(noB.t.shellInput());
+}
+
+// textSince gives the text from a mark to the cursor, also after the mark's
+// row scrolled into the history; from the oldest row kept once the row left
+// it; the screen on the alternate screen and after a clear.
+TEST(Terminal, TextSinceAMark)
+{
+    Term t(20, 4, 5);
+    t.feed("before\r\n$ ");
+    const SemanticPosition mark = t.t.textMark();
+    t.feed("cmd\r\none\r\ntwo\r\nthree");
+    bool truncated = true, trimmed = true;
+    EXPECT_EQ(t.t.textSince(mark, 1024, &truncated, &trimmed, {}), "cmd\none\ntwo\nthree");
+    EXPECT_FALSE(truncated);
+    EXPECT_FALSE(trimmed);
+    // Past the 5 rows of history and 4 of the screen, the mark's row goes.
+    for (int i = 0; i < 12; ++i)
+        t.feed("\r\nline " + std::to_string(i));
+    const std::string all = t.t.textSince(mark, 1024, &truncated, &trimmed, {});
+    EXPECT_TRUE(trimmed);
+    EXPECT_FALSE(truncated);
+    EXPECT_TRUE(all.starts_with("line 3\n")) << all;
+    EXPECT_TRUE(all.ends_with("line 11")) << all;
+    // The alternate screen has no history: its screen.
+    t.feed("\x1b[?1049h\x1b[HFULL");
+    EXPECT_EQ(t.t.textSince(mark, 1024, &truncated, &trimmed, {}), "FULL");
+    EXPECT_FALSE(trimmed);
+    t.feed("\x1b[?1049l");
+    // A clear moves the cursor above a new mark: the screen.
+    t.feed("\r\n\r\n\r\n");
+    const SemanticPosition low = t.t.textMark();
+    t.feed("\x1b[2J\x1b[Hcleared");
+    EXPECT_EQ(t.t.textSince(low, 1024, &truncated, &trimmed, {}), "cleared");
+}
+
+// keepEnd cuts a long text at the start of a row and keeps its end, where
+// the result of a build is; without it the end is cut.
+TEST(Terminal, KeepEndKeepsTheLastRows)
+{
+    Term t(20, 4, 100);
+    const SemanticPosition mark = t.t.textMark();
+    for (int i = 0; i < 30; ++i)
+        t.feed("row " + std::to_string(i) + "\r\n");
+    t.feed("done");
+    TextFormat end;
+    end.keepEnd = true;
+    bool truncated = false, trimmed = false;
+    const std::string kept = t.t.textSince(mark, 40, &truncated, &trimmed, end);
+    EXPECT_TRUE(truncated);
+    EXPECT_LE(kept.size(), 40u);
+    EXPECT_TRUE(kept.ends_with("row 29\ndone")) << kept;
+    EXPECT_TRUE(kept.starts_with("row ")) << kept;
+    const std::string start = t.t.textSince(mark, 40, &truncated, &trimmed, {});
+    EXPECT_TRUE(truncated);
+    EXPECT_TRUE(start.starts_with("row 0\n")) << start;
+    // A text that fits is whole, and not cut.
+    const std::string whole = t.t.textSince(mark, 4096, &truncated, &trimmed, end);
+    EXPECT_FALSE(truncated);
+    EXPECT_TRUE(whole.starts_with("row 0\n")) << whole;
+    // Blank rows before the end that fits are no cut.
+    Term blank(20, 4, 100);
+    const SemanticPosition top = blank.t.textMark();
+    blank.feed("\r\n\r\n\r\n\r\nlast");
+    EXPECT_EQ(blank.t.textSince(top, 4, &truncated, &trimmed, end), "last");
+    EXPECT_FALSE(truncated);
+    // The last output keeps its end too.
+    Term out(20, 4, 100);
+    out.feed("\x1b]133;A\x07$ \x1b]133;B\x07make\r\n\x1b]133;C\x07");
+    for (int i = 0; i < 30; ++i)
+        out.feed("out " + std::to_string(i) + "\r\n");
+    out.feed("\x1b]133;D;2\x07");
+    const std::string last = out.t.text(Terminal::TextScope::LastOutput, 30, &truncated, end);
+    EXPECT_TRUE(truncated);
+    EXPECT_TRUE(last.ends_with("out 29\n") || last.ends_with("out 29")) << last;
+}
+
 // A held pane whose shell exited at its prompt: nothing draws the prompt
 // again, so a resize holds no frame for it and a click moves no cursor.
 TEST(Terminal, AnExitLeavesThePrompt)

@@ -10,6 +10,7 @@
 #include <AfterglowVt/Screen.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -71,7 +72,14 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 27) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 28) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 28 gave the control target the shell's state: shell, input and
+    // last_exit in the pane objects of listPanes in place of at_prompt, the
+    // shellChanged event, the mark and shellRegions calls, the since scope of
+    // getText, its {text, truncated} answer, and the TRY_AGAIN error, which a
+    // window and the daemon both give (AttachTest).
+    EXPECT_EQ(std::string(Error::TryAgain), "TRY_AGAIN");
+    EXPECT_NE(std::find(ControlEvents.begin(), ControlEvents.end(), "shellChanged"), ControlEvents.end());
     // Version 27 streams iTerm2 downloads: DownloadBegin, DownloadData and
     // DownloadEnd host calls in place of Download, and the DownloadAnswer
     // action, for which the pane's output waits (AttachTest). It added the

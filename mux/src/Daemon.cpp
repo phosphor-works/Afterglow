@@ -1074,6 +1074,11 @@ std::string Daemon::failed(const IpcRequest& request, const std::string& message
     return ipcError(request.id, IpcErrorCode::CallFailed, message);
 }
 
+std::string Daemon::decoding(const IpcRequest& request, std::uint32_t pane)
+{
+    return ipcError(request.id, Error::TryAgain, "pane " + std::to_string(pane) + " decodes an image: try again");
+}
+
 bool Daemon::guarded(Attachment& attachment, const std::function<bool()>& work)
 {
     try {

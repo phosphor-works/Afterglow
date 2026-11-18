@@ -403,6 +403,18 @@ public:
     bool signalProgram(int signal);
     /// The cursor is in a shell prompt or its input (OSC 133 A or B, before C).
     bool atShellPrompt() const;
+    /// Terminal::shellState, shellInput and lastExitCode, under one lock.
+    struct ShellFacts
+    {
+        AfterglowVt::ShellState state = AfterglowVt::ShellState::None;
+        bool input = false;
+        std::optional<int> lastExit;
+    };
+    ShellFacts shellFacts() const;
+    /// Terminal::textMark().
+    AfterglowVt::SemanticPosition textMark() const;
+    /// The semantic regions whose id is larger than @p after, oldest first.
+    std::vector<AfterglowVt::SemanticRegion> semanticRegionsAfter(std::uint64_t after) const;
     /// The directory the shell reported last (OSC 7, 9;9, 633, 1337) when it
     /// is local and exists, else the foreground job's directory from /proc.
     /// A session pane's program runs under the daemon, which reads that
@@ -420,7 +432,11 @@ public:
     /// scope are still on their way from the daemon: the text has blank
     /// lines in their place.
     QString text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::TextFormat& format = {},
-                 bool* arriving = nullptr);
+                 bool* arriving = nullptr, bool* truncated = nullptr);
+    /// Terminal::textSince(), at most MaxText bytes, with @p arriving as
+    /// text() has it for the rows from @p from to the cursor.
+    QString textSince(AfterglowVt::SemanticPosition from, const AfterglowVt::TextFormat& format, bool* truncated,
+                      bool* trimmed, bool* arriving);
     static constexpr std::size_t MaxText = 1024 * 1024;
     /// The events of one budget that wait for the GUI thread (queueEvent()).
     static constexpr std::size_t MaxQueuedEvents = 256;
@@ -669,6 +685,10 @@ Q_SIGNALS:
     /// requests below, emitted on the GUI thread (queueEvent).
     void commandBegan(const QString& command);
     void commandEnded(const QString& command, int exitCode, qint64 durationMs);
+    /// What the shell does changed (Terminal::shellState), or the shell
+    /// drew a new prompt. Emitted on the GUI thread, with the output or the
+    /// session frame that changed it.
+    void shellStateChanged(AfterglowVt::ShellState state);
     /// An OSC 99 desktop notification request. @p missed as for
     /// notificationRequested.
     void desktopNotificationRequested(const AfterglowVt::NotificationRequest& request, bool missed);
@@ -1054,6 +1074,13 @@ private:
     QDeadlineTimer m_holdDeadline; ///< when the frame refreshSnapshot holds is drawn anyway
 
     std::atomic<bool> m_notifyPending{false};
+    /// The shell's state and newest prompt region that shellStateChanged
+    /// told last. GUI thread only.
+    AfterglowVt::ShellState m_shellState = AfterglowVt::ShellState::None;
+    std::uint64_t m_promptId = 0;
+    /// Emits shellStateChanged when the terminal's state is another, or the
+    /// shell drew a new prompt.
+    void checkShellState();
     QTimer m_animationTimer;
     bool m_seen = true; ///< setSeen()
     /// The state that setVisible() gave the terminal last, which only it

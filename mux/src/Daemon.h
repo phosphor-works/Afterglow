@@ -395,6 +395,8 @@ private:
     static std::string tooManyPanes(const AfterglowProto::IpcRequest& request, const Session& session);
     /// A CALL_FAILED answer to @p request.
     static std::string failed(const AfterglowProto::IpcRequest& request, const std::string& message);
+    /// The TRY_AGAIN error of a call on @p pane while it decodes an image.
+    static std::string decoding(const AfterglowProto::IpcRequest& request, std::uint32_t pane);
     /// Runs @p work for @p attachment. An exception finishes the attachment,
     /// whose host calls go back to the panes of its session, and returns
     /// false.

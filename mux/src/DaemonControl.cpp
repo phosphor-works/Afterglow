@@ -28,6 +28,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <exception>
+#include <limits>
 #include <optional>
 #include <set>
 #include <string_view>
@@ -91,11 +92,11 @@ bool among(std::string_view fn, std::initializer_list<std::string_view> names)
 /// The calls whose first argument is a pane.
 bool takesPane(std::string_view fn)
 {
-    return among(fn, {"sendText",    "getText",       "split",         "newTab",        "focus",       "close",
-                      "setTitle",    "signal",        "notify",        "runAction",     "movePane",    "detachTab",
-                      "saveProject", "overlay",       "screenshot",    "focusNeighbor", "resizePane",  "sendKeys",
-                      "scroll",      "setTabTitle",   "getColors",     "setColors",     "setFontSize", "setOpacity",
-                      "setUserVar",  "signalProgram", "setWindowState"});
+    return among(fn, {"sendText",    "getText",       "split",          "newTab",        "focus",       "close",
+                      "setTitle",    "signal",        "notify",         "runAction",     "movePane",    "detachTab",
+                      "saveProject", "overlay",       "screenshot",     "focusNeighbor", "resizePane",  "sendKeys",
+                      "scroll",      "setTabTitle",   "getColors",      "setColors",     "setFontSize", "setOpacity",
+                      "setUserVar",  "signalProgram", "setWindowState", "mark",          "shellRegions"});
 }
 
 /// The calls that only a window answers.
@@ -137,6 +138,41 @@ std::optional<std::uint32_t> paneArg(const Json::Value& value)
     if (!id || *id < 0 || *id > 0xffffffffLL)
         return std::nullopt;
     return std::uint32_t(*id);
+}
+
+/// A mark of the mark call: {row, col}, whole numbers that a double holds
+/// exactly. Its keys and no other.
+std::optional<AfterglowVt::SemanticPosition> markFrom(const Json::Value& value)
+{
+    if (!value.isObject() || value.toObject().size() != 2)
+        return std::nullopt;
+    const Json::Value* row = value.find("row");
+    const Json::Value* col = value.find("col");
+    const auto r = row ? row->toInteger() : std::nullopt;
+    const auto c = col ? col->toInteger() : std::nullopt;
+    if (!r || !c || *r < 0 || *r > (1LL << 53) || *c < 0 || *c > std::numeric_limits<int>::max())
+        return std::nullopt;
+    return AfterglowVt::SemanticPosition{std::uint64_t(*r), int(*c)};
+}
+
+Json::Value markJson(const AfterglowVt::SemanticPosition& mark)
+{
+    return Json::Object{{"row", std::int64_t(mark.row)}, {"col", mark.col}};
+}
+
+/// A region of shellRegions: its kind, whether it is still open, its exit
+/// code (an output region that D closed with one), and whether its start
+/// left the scrollback.
+Json::Value regionJson(const AfterglowVt::SemanticRegion& region)
+{
+    return Json::Object{
+        {"id", std::int64_t(region.id)},
+        {"kind", std::string(ShellRegionKinds[std::size_t(region.kind)])},
+        {"open", region.open},
+        {"exit_code", region.exitCode ? Json::Value(*region.exitCode) : Json::Value()},
+        {"start_trimmed", region.startTrimmed},
+        {"available", region.available},
+    };
 }
 
 std::optional<Side> sideOf(const Json::Value& value)
@@ -235,7 +271,9 @@ Json::Value paneMap(const Session& session, const MuxPane& pane, bool readText, 
     };
     if (!listed)
         return map;
-    map.emplace_back("at_prompt", facts.atPrompt);
+    map.emplace_back("shell", std::string(AfterglowVt::shellStateName(facts.shell)));
+    map.emplace_back("input", facts.input);
+    map.emplace_back("last_exit", facts.lastExit ? Json::Value(*facts.lastExit) : Json::Value());
     map.emplace_back("user_vars", userVarsJson(facts.userVars, readText));
     // The arguments only with read access: their read can wait on the
     // memory lock of a stuck process.
@@ -398,7 +436,7 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
             return failed(request, "sendKeys needs a key");
         const auto modes = pane->modes();
         if (!modes)
-            return failed(request, "pane " + std::to_string(pane->id()) + " decodes an image: try again");
+            return decoding(request, pane->id());
         std::string bytes;
         for (const AfterglowVt::NamedKey& key : keys)
             bytes += AfterglowVt::encodeNamedKey(key, *modes);
@@ -414,7 +452,7 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
             return ipcError(request.id, IpcErrorCode::InvalidArg, "getColors takes (pane)");
         const auto colors = pane->colors();
         if (!colors)
-            return failed(request, "pane " + std::to_string(pane->id()) + " decodes an image: try again");
+            return decoding(request, pane->id());
         Json::Object out;
         for (const auto& color : *colors) {
             char hex[8];
@@ -446,7 +484,7 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         case MuxPane::Colors::Applied:
             break;
         case MuxPane::Colors::Decoding:
-            return failed(request, "pane " + std::to_string(pane->id()) + " decodes an image: try again");
+            return decoding(request, pane->id());
         case MuxPane::Colors::NotAColor:
             return failed(request, "pane " + std::to_string(pane->id()) + " took only some of the colors");
         }
@@ -511,24 +549,33 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         }
         const std::string& scope = args[1].toString();
         AfterglowVt::TextFormat format;
+        std::optional<AfterglowVt::SemanticPosition> mark;
         if (args.size() == 3) {
             // As a window reads them (Control::textFormat).
             for (const auto& [key, value] : args[2].toObject()) {
+                if (key == "mark") {
+                    mark = markFrom(value);
+                    if (!mark)
+                        return failed(request, MarkOptionError);
+                    continue;
+                }
                 bool* flag = key == "ansi"  ? &format.ansi
                     : key == "cursor"       ? &format.cursor
                     : key == "wrap_markers" ? &format.wrapMarkers
                                             : nullptr;
                 if (!flag)
-                    return failed(request,
-                                  "unknown getText option " + key + ": the options are ansi, cursor and wrap_markers");
+                    return failed(request, std::string("unknown getText option ") + key + ": " + TextOptionNames);
                 if (!value.isBool())
                     return failed(request, "the getText option " + key + " is true or false");
                 *flag = value.toBool();
             }
         }
+        if ((scope == "since") != mark.has_value())
+            return failed(request, MarkScopeError);
         // The text of one output region ends before the cursor's place, as a
-        // window refuses it.
-        if ((scope == "first-output-on-screen" || scope == "last-visited-output") && format.cursor)
+        // window refuses it. So does the text since a mark on the primary
+        // screen.
+        if ((scope == "first-output-on-screen" || scope == "last-visited-output" || scope == "since") && format.cursor)
             return failed(request, CursorScopeError);
         // A selection is the window's, and so is the output that a prompt
         // jump in it visited last. Without a window there is none to read:
@@ -542,9 +589,14 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         // daemon's, which shows the bottom.
         if (scope == "first-output-on-screen" && window)
             return forward(request, connection, session, args);
-        std::optional<std::string> text;
+        // The end of a command's output and of what came since a mark holds
+        // its result: a cut keeps it.
+        format.keepEnd = scope == "last-output" || scope == "since";
+        std::optional<MuxPane::Text> text;
         if (scope == "first-output-on-screen") {
             text = pane->firstOutputOnScreen(format);
+        } else if (scope == "since") {
+            text = pane->textSince(*mark, format);
         } else {
             std::optional<AfterglowVt::Terminal::TextScope> textScope;
             if (scope == "screen")
@@ -554,13 +606,16 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
             else if (scope == "last-output")
                 textScope = AfterglowVt::Terminal::TextScope::LastOutput;
             if (!textScope) {
-                return failed(request, std::string("scope is ") + TextScopeNames);
+                return failed(request, std::string("scope is ") + GetTextScopeNames);
             }
             text = pane->text(*textScope, format);
         }
         if (!text)
-            return failed(request, "pane " + std::to_string(pane->id()) + " decodes an image: try again");
-        std::string reply = ipcReply(request.id.value_or(0), std::move(*text));
+            return decoding(request, pane->id());
+        Json::Object answer{{"text", std::move(text->text)}, {"truncated", text->truncated}};
+        if (scope == "since")
+            answer.emplace_back("trimmed", text->trimmed);
+        std::string reply = ipcReply(request.id.value_or(0), std::move(answer));
         // A connection takes no more at once, with what still waits on it: it
         // would close with no answer.
         if (reply.size() > IpcServerConnection::MaxWaitingBytes - connection.waitingBytes()) {
@@ -569,6 +624,26 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
                               + " is larger than one answer can hold: read a smaller scope");
         }
         return reply;
+    }
+    if (fn == "mark") {
+        if (args.size() != 1)
+            return ipcError(request.id, IpcErrorCode::InvalidArg, "mark takes (pane)");
+        const auto mark = pane->textMark();
+        if (!mark)
+            return decoding(request, pane->id());
+        return ipcReply(request.id.value_or(0), markJson(*mark));
+    }
+    if (fn == "shellRegions") {
+        const auto after = args.size() == 2 ? args[1].toInteger() : std::optional<std::int64_t>(0);
+        if (args.size() < 1 || args.size() > 2 || !after || *after < 0)
+            return ipcError(request.id, IpcErrorCode::InvalidArg, "shellRegions takes (pane[, after])");
+        const auto regions = pane->semanticRegions(std::uint64_t(*after));
+        if (!regions)
+            return decoding(request, pane->id());
+        Json::Array list;
+        for (const AfterglowVt::SemanticRegion& region : *regions)
+            list.push_back(regionJson(region));
+        return ipcReply(request.id.value_or(0), std::move(list));
     }
     if (fn == "split" || fn == "newTab") {
         const bool split = fn == "split";

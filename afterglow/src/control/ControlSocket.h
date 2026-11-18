@@ -44,11 +44,18 @@ public:
     // that it is a whole number in the range of a pane ID.
     Q_INVOKABLE void sendText(double pane, const QString& text);
     /// @p scope: screen, scrollback, selection, last-output,
-    /// first-output-on-screen or last-visited-output.
-    Q_INVOKABLE QString getText(double pane, const QString& scope);
-    /// getText() with @p options: ansi, cursor and wrap_markers, booleans
-    /// (Control::textFormat).
-    Q_INVOKABLE QString getText(double pane, const QString& scope, const QVariantMap& options);
+    /// first-output-on-screen, last-visited-output or since. Answers
+    /// {text, truncated}, and for since also trimmed.
+    Q_INVOKABLE void getText(double pane, const QString& scope);
+    /// getText() with @p options: ansi, cursor and wrap_markers, booleans,
+    /// and the mark of since (Control::textFormat).
+    Q_INVOKABLE void getText(double pane, const QString& scope, const QVariantMap& options);
+    /// The cursor's place, {row, col}, for getText since.
+    Q_INVOKABLE QVariantMap mark(double pane);
+    /// The semantic regions (OSC 133) of @p pane whose id is larger than
+    /// @p after, oldest first.
+    Q_INVOKABLE QVariantList shellRegions(double pane);
+    Q_INVOKABLE QVariantList shellRegions(double pane, double after);
     /// @p direction: left, right, up or down. Returns the new pane.
     Q_INVOKABLE uint split(double pane, const QString& direction, const QStringList& command);
     Q_INVOKABLE uint newTab(double pane, const QString& workingDirectory, const QStringList& command);
@@ -206,6 +213,8 @@ Q_SIGNALS:
     /// The value is empty unless Control.allowReadText.
     void userVarChanged(uint pane, const QString& name, const QString& value);
     void contextChanged(uint pane, const QString& context);
+    /// What the pane's shell does: none, prompt, continuation or running.
+    void shellChanged(uint pane, const QString& state);
 
 private:
     /// Sends @p error as the call's error reply. True when there is one.

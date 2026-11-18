@@ -222,6 +222,11 @@ void Daemon::watchEvent(std::uint64_t serial, SessionWatch& watch, std::uint32_t
             serial, watch, pane, "commandFinished",
             Json::Array{std::int64_t(pane), std::move(event.text), event.exitCode, std::int64_t(event.milliseconds)});
         break;
+    case Kind::Shell:
+        // At once, as the end of a command: a client waits for the prompt.
+        // The same state again is a new prompt.
+        watchNow(serial, watch, pane, "shellChanged", Json::Array{std::int64_t(pane), std::move(event.name)});
+        break;
     }
 }
 

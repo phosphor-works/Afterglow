@@ -205,6 +205,7 @@ The events of a run arrive before the reply of the run.
 | `INVALID_ARG` | The number or the type of the arguments is wrong. |
 | `INVOCATION_FAILED` | The call could not run. |
 | `MALFORMED_REQUEST` | The line is not a valid request, or a limit is reached. |
+| `TRY_AGAIN` | The pane cannot answer now. Send the call again later. A pane of a mux session in a window gives it while its rows still come from its daemon (`getText`). The daemon gives it while the pane decodes an image (`getText`, `mark`, `shellRegions`, `sendKeys`, `getColors`, `setColors`). |
 | `no_pane`, `busy`, `spawn_failed`, `cancelled` | An `overlay` call failed. See [overlays](#overlays). |
 | `denied`, `busy`, `no_pane`, `not_shown`, `failed`, `cancelled` | A `screenshot` call failed. See [screenshots](#screenshots). |
 | `session_pane` | A `setColors` call names a pane of a mux session. The daemon of the session has its colors. |
@@ -275,7 +276,9 @@ Another number fails with `CALL_FAILED`.
 | `listPanes` | None | A [pane object](#pane-object) for each pane |
 | `focusedPane` | None | The pane that step 3 or 4 of the target order selects |
 | `sendText` | pane, text | None |
-| `getText` | pane, scope, options (optional) | The text, at most 1 MiB. Scopes are `screen`, `scrollback`, `selection`, `last-output`, `first-output-on-screen` and `last-visited-output`. The last two are the outputs of the [command output actions](INPUT.md#command-output), and empty when there is none. For a pane of a mux session whose rows still come from its daemon, `scrollback` and `last-output` fail with `the rows of pane N are still arriving from its session: try again`. See [text options](#text-options). |
+| `getText` | pane, scope, options (optional) | An object: `text`, and `truncated`, which is true when the limit of 1 MiB cut the text. Scopes are `screen`, `scrollback`, `selection`, `last-output`, `first-output-on-screen`, `last-visited-output` and `since`. `first-output-on-screen` and `last-visited-output` are the outputs of the [command output actions](INPUT.md#command-output), and empty when there is none. `since` is the text from a mark of the `mark` call to the cursor, and its answer also has `trimmed` (see [text since a mark](#text-since-a-mark)). A cut text of `last-output` and `since` keeps its end, where the result of a command is. A cut text of the other scopes keeps its start. For a pane of a mux session whose rows still come from its daemon, `scrollback`, `last-output` and `since` fail with `TRY_AGAIN`. See [text options](#text-options). |
+| `mark` | pane | An object: `row` and `col`, the cursor's place. Give it to `getText` with the scope `since`. |
+| `shellRegions` | pane, after (optional) | A list of the shell's regions (shell integration) whose ID is larger than `after`, oldest first. See [shell regions](#shell-regions). |
 | `split` | pane, direction, command, options (optional) | The new pane. Directions are `left`, `right`, `up` and `down`. See [launch options](#launch-options). |
 | `newTab` | pane, working directory, command, options (optional) | The new tab's pane. See [launch options](#launch-options). |
 | `newWindow` | working directory, command, options (optional) | The new window's pane. See [launch options](#launch-options). |
@@ -357,10 +360,45 @@ The options of `getText` are an object, as `kitten @ get-text` has them.
 | `ansi` | boolean | Each change of color or attribute as an SGR sequence, and each link as OSC 8. Each line ends with a reset. Blanks at the end of a line stay when they show a background or a link. |
 | `cursor` | boolean | At the end, the cursor's place on the screen (CUP), its shape (DECSCUSR) and whether it shows (DECTCEM). Only for the `screen`, `scrollback` and `last-output` scopes. |
 | `wrap_markers` | boolean | A carriage return where a row wraps into the next one. |
+| `mark` | object | The answer of the `mark` call. Only for the scope `since`, which needs it. |
 
 Another key, or a value that is not a boolean, fails the call.
 The selection is plain text: `ansi`, `cursor` or `wrap_markers` with the `selection` scope fails the call.
-`cursor` with `first-output-on-screen` or `last-visited-output` also fails the call.
+`cursor` with `first-output-on-screen`, `last-visited-output` or `since` also fails the call.
+
+### Text since a mark
+
+A client that runs a command reads its output with a mark:
+
+1. Call `mark` before the command. The answer is the cursor's place.
+2. Send the command.
+3. Call `getText` with the scope `since` and the option `mark`.
+
+The text goes from the mark to the cursor, and keeps its end when it is cut.
+
+| Case | Text |
+| --- | --- |
+| The mark's row left the scrollback | The text from the oldest row that is kept. `trimmed` is true. |
+| The alternate screen shows (a full-screen program) | The text of the screen. It has no history. |
+| The cursor is above the mark (a program cleared the screen) | The text of the screen |
+
+### Shell regions
+
+With shell integration, the shell marks its prompt, the command line and the output of each command (OSC 133).
+Afterglow keeps the newest 1024 of these regions for each pane.
+`shellRegions` gives an object for each region:
+
+| Field | Content |
+| --- | --- |
+| `id` | The region ID. It grows with each new region, and a reset (RIS) does not start it again. |
+| `kind` | `prompt`, `input` or `output` |
+| `open` | True for the newest region, while it goes on |
+| `exit_code` | The exit code that the shell gave at the end of an output region, else `null` |
+| `start_trimmed` | True when the start of the region left the scrollback |
+| `available` | False when all of the region left the scrollback |
+
+A shell runs each line of a paste of many lines as a command of its own (bash, fish), or the whole paste as one command (zsh).
+So a paste gives one output region for each line, or one for all.
 
 ## Launch options
 
@@ -528,12 +566,26 @@ Thus take screenshots on a connection without subscriptions.
 | `rows` | Rows |
 | `focused` | True for the focused pane of the active window |
 | `context` | Where the shell runs when it is not local as you, such as `root` or `deploy@prod-1`. Empty otherwise. |
-| `at_prompt` | True while the cursor is in a shell prompt or its input (shell integration). False while a command runs, and without shell integration. |
+| `shell` | What the shell does, from its marks (shell integration). See [shell states](#shell-states). |
+| `input` | True when the command line at the prompt has text that the user typed before the cursor. False when the shell does not mark its command line (OSC 133 B). |
+| `last_exit` | The exit code of the last command of the shell, or `null` when it is not known |
 | `user_vars` | An object: the user variables that the program set with OSC 1337 `SetUserVar`, at most 256 |
 | `foreground` | The leader of the foreground process group of the pane: an object with `pid`, `cmdline` (a list of the arguments) and `cwd`. At the prompt it is the shell. `null` when it is not known, for example after the program exited. In a window, a pane of a mux session has `null`. With `afterglow ctl --session`, the daemon gives it. |
 | `neighbors` | An object with `left`, `right`, `up` and `down`. Each is the pane beside the pane on that side in its tab, as `focusNeighbor` finds it. Each is 0 at the edge. |
 
-`at_prompt`, `user_vars`, `foreground` and `neighbors` are only in the objects of `listPanes`.
+`shell`, `input`, `last_exit`, `user_vars`, `foreground` and `neighbors` are only in the objects of `listPanes`.
+
+### Shell states
+
+| State | Meaning |
+| --- | --- |
+| `none` | The shell marked no prompt since the terminal started or reset, or the program exited. The pane has no shell integration, or runs another program. |
+| `prompt` | The shell shows its prompt, and waits for a command |
+| `continuation` | The shell shows its secondary prompt (`PS2`): the command is not complete, for example after an open quote. Ctrl+C gives the primary prompt again. |
+| `running` | A command runs, or the shell has not shown its next prompt yet |
+
+The shell integration of Afterglow marks the secondary prompt in bash and zsh.
+Fish edits an incomplete command in place, and has no secondary prompt.
 
 ## Events
 
@@ -550,6 +602,7 @@ Thus take screenshots on a connection without subscriptions.
 | `focusChanged` | pane |
 | `userVarChanged` | pane, name, value |
 | `contextChanged` | pane, context, such as `root` or `deploy@prod-1`. Sent when the context changes. |
+| `shellChanged` | pane, state (see [shell states](#shell-states)). Sent when the state changes, and when the shell shows a new prompt. A short command can start and end between two reads of the pane's output: then the state is `prompt` before and after, and the new prompt is the only event. |
 
 The states of `statusChanged` are `idle`, `working`, `done`, `blocked` and `error`.
 When a program clears its last status, or the terminal resets, the state is `idle` and the text is empty.
@@ -914,6 +967,8 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | Sessions of remote commands | 16 for each pane, 256 in Afterglow | `openRemoteSocket` fails, and `afterglow ssh` forwards no socket. |
 | Connections to the socket of one ssh session | 64 at the same time | Afterglow closes the new connection before it reads a request, and logs a warning once until a connection closes. `aglow run` fails with exit status 1. |
 | Request line | 1 MiB | The socket closes the connection. `afterglow ctl send-text` sends long text in parts. |
+| `getText` text | 1 MiB of UTF-8 | The text is cut, and `truncated` is true. `last-output` and `since` keep the end of the text, from the start of a row. The other scopes keep its start. `afterglow ctl get-text` writes the text, and a note on stderr. |
+| Shell regions | 1024 for each pane | The oldest region goes when a new one begins. |
 | `afterglow ctl send-text` text | 32 MiB of UTF-8 | `afterglow ctl` exits with status 2 and sends nothing. It checks the text before it connects. |
 | Text that a program has not read | 32 MiB for each pane | `sendText` fails. Parts that `afterglow ctl send-text` sent before stay typed. |
 | Lines that do not parse, one after the other | 16 | The socket closes the connection at the next one. |

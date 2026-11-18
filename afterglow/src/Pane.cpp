@@ -1171,10 +1171,53 @@ bool Pane::setUserVar(const QString& name, const QString& value)
                        std::string_view(v.constData(), std::size_t(v.size())));
 }
 
+void Pane::checkShellState()
+{
+    AfterglowVt::ShellState state;
+    std::uint64_t prompt = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        state = m_terminal.shellState();
+        prompt = m_terminal.lastPromptId();
+    }
+    // A new prompt counts as a change: a short command starts and ends
+    // within one read, and its state is the prompt before and after it.
+    if (state == m_shellState && prompt == m_promptId)
+        return;
+    m_shellState = state;
+    m_promptId = prompt;
+    Q_EMIT shellStateChanged(state);
+}
+
 bool Pane::atShellPrompt() const
 {
     std::lock_guard lock(m_mutex);
     return m_terminal.atShellPrompt();
+}
+
+Pane::ShellFacts Pane::shellFacts() const
+{
+    std::lock_guard lock(m_mutex);
+    return {m_terminal.shellState(), m_terminal.shellInput(), m_terminal.lastExitCode()};
+}
+
+AfterglowVt::SemanticPosition Pane::textMark() const
+{
+    std::lock_guard lock(m_mutex);
+    return m_terminal.textMark();
+}
+
+std::vector<AfterglowVt::SemanticRegion> Pane::semanticRegionsAfter(std::uint64_t after) const
+{
+    std::vector<AfterglowVt::SemanticRegion> regions;
+    {
+        std::lock_guard lock(m_mutex);
+        regions = m_terminal.semanticRegions();
+    }
+    std::erase_if(regions, [after](const AfterglowVt::SemanticRegion& region) {
+        return region.id <= after;
+    });
+    return regions;
 }
 
 void Pane::announceTitle()
@@ -1190,13 +1233,14 @@ void Pane::announceTitle()
     Q_EMIT titleUpdated(shown);
 }
 
-QString Pane::text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::TextFormat& format, bool* arriving)
+QString Pane::text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::TextFormat& format, bool* arriving,
+                   bool* truncated)
 {
     refreshSession();
     std::string text;
     {
         std::lock_guard lock(m_mutex);
-        text = m_terminal.text(scope, MaxText, nullptr, format);
+        text = m_terminal.text(scope, MaxText, truncated, format);
         if (arriving) {
             using Scope = AfterglowVt::Terminal::TextScope;
             *arriving = scope == Scope::LastOutput ? lastOutputArrivingLocked()
@@ -1204,6 +1248,23 @@ QString Pane::text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::Te
         }
     }
     // Converted after the lock: the reader thread waits on it.
+    return QString::fromStdString(text);
+}
+
+QString Pane::textSince(AfterglowVt::SemanticPosition from, const AfterglowVt::TextFormat& format, bool* truncated,
+                        bool* trimmed, bool* arriving)
+{
+    refreshSession();
+    std::string text;
+    {
+        std::lock_guard lock(m_mutex);
+        text = m_terminal.textSince(from, MaxText, truncated, trimmed, format);
+        // As the last output: rows from the mark to the cursor that did not
+        // come yet are blank places in the text.
+        const AfterglowVt::SemanticPosition cursor = m_terminal.textMark();
+        *arriving = m_session && !m_terminal.modes().altScreen && from.row <= cursor.row
+            && !m_stateReader.received(from.row, cursor.row);
+    }
     return QString::fromStdString(text);
 }
 
@@ -1582,6 +1643,7 @@ bool Pane::applySessionFrame(std::string_view frame)
             },
             Qt::QueuedConnection);
     }
+    checkShellState();
     Q_EMIT contentChanged();
     return true;
 }
@@ -2379,6 +2441,7 @@ void Pane::ptyData(std::string_view bytes)
             [this] {
                 m_notifyPending.store(false);
                 advanceAnimations();
+                checkShellState();
                 Q_EMIT contentChanged();
             },
             Qt::QueuedConnection);
@@ -2438,6 +2501,7 @@ void Pane::ptyClosed(int status)
         QMetaObject::invokeMethod(
             this,
             [this] {
+                checkShellState();
                 Q_EMIT contentChanged();
             },
             Qt::QueuedConnection);

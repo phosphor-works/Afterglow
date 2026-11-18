@@ -506,7 +506,7 @@ To turn off only some parts, give the switches of Kitty's `shell_integration`, w
 
 | Switch | Turns off |
 | --- | --- |
-| `no-prompt-mark` | The prompt, command and exit-status marks (OSC 133). In Fish 4, it also turns off the marks of Fish (`--features=no-mark-prompt`). With `no-rc`, Afterglow does not change the Fish command line, and Fish 4 keeps its own marks. |
+| `no-prompt-mark` | The prompt, command and exit-status marks (OSC 133), and the mark of the secondary prompt (`PS2`) in Bash and Zsh. In Fish 4, it also turns off the marks of Fish (`--features=no-mark-prompt`). With `no-rc`, Afterglow does not change the Fish command line, and Fish 4 keeps its own marks. |
 | `no-cwd` | The working directory (OSC 7). Fish 4 sends its own. |
 | `no-cursor` | The bar cursor while you edit the command line, and the configured cursor for the command. The bar blinks when `Terminal.cursorBlink` is on when the shell starts. The vi key bindings of Bash, Zsh and Fish keep their own cursors. |
 | `no-title` | The title: the directory at the prompt, and the command while it runs, after the host name in an ssh login. Fish sets its own titles. |
