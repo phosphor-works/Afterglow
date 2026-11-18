@@ -39,60 +39,77 @@ std::string libraryMessage(std::string_view text)
     return std::string(text);
 }
 
+namespace {
+
+/// A format's probe, colour space (nullptr: its pixels are sRGB) and
+/// decoder: the one place where a format is picked.
+struct Codec
+{
+    Format format;
+    Probe (*probe)(std::string_view, int&, int&);
+    ColorSpace (*colorSpace)(std::string_view);
+    bool (*decode)(std::string_view, const FrameSink&, const Options&, std::string&, std::string&);
+};
+
+constexpr Codec Codecs[] = {
+    {Format::Png, probePng, pngColorSpace, decodePng},
+    {Format::Jpeg, probeJpeg, jpegColorSpace, decodeJpeg},
+    {Format::Gif, probeGif, nullptr, decodeGif},
+    {Format::WebP, probeWebP, webpColorSpace, decodeWebP},
+    {Format::Bmp, probeBmp, nullptr, decodeBmp},
+    {Format::Tiff, probeTiff, tiffColorSpace, decodeTiff},
+    {Format::Pnm, probePnm, nullptr, decodePnm},
+};
+
+const Codec* codecOf(Format format)
+{
+    for (const Codec& codec : Codecs) {
+        if (codec.format == format) return &codec;
+    }
+    return nullptr;
+}
+
+} // namespace
+
 } // namespace detail
 
 Probe probe(std::string_view bytes, int& width, int& height)
 {
     width = height = 0;
-    switch (format(bytes)) {
-    case Format::Png: return detail::probePng(bytes, width, height);
-    case Format::Jpeg: return detail::probeJpeg(bytes, width, height);
-    case Format::Gif: return detail::probeGif(bytes, width, height);
-    case Format::WebP: return detail::probeWebP(bytes, width, height);
-    case Format::Bmp: return detail::probeBmp(bytes, width, height);
-    case Format::Tiff: return detail::probeTiff(bytes, width, height);
-    case Format::Pnm: return detail::probePnm(bytes, width, height);
-    case Format::Unknown: break;
-    }
-    return Probe::Unknown;
+    const detail::Codec* codec = detail::codecOf(format(bytes));
+    return codec ? codec->probe(bytes, width, height) : Probe::Unknown;
 }
 
-bool decode(std::string_view bytes, const FrameSink& sink, std::string& error, std::string& warning)
+bool decode(std::string_view bytes, const FrameSink& sink, std::string& error, std::string& warning, PngFrames pngFrames)
 {
+    const detail::Codec* codec = detail::codecOf(format(bytes));
+    if (!codec) {
+        error = "not an image that this decoder reads";
+        return false;
+    }
+    detail::Options options;
+    options.pngFrames = pngFrames;
+    // The probe first: a file that it refuses goes to its decoder, which
+    // refuses it with the reason, and nothing of such a file (a profile)
+    // goes to Little CMS.
+    int width = 0;
+    int height = 0;
+    if (!codec->colorSpace || codec->probe(bytes, width, height) != Probe::Image) return codec->decode(bytes, sink, options, error, warning);
     // A file with an ICC profile or a cICP chunk converts to sRGB, frame by
-    // frame, as kitty converts the images that it decodes. A PNG then goes
-    // to libpng without its colour chunks, so that no curve applies twice.
-    const Format kind = format(bytes);
-    const detail::SrgbConverter converter(detail::colorSpaceOf(kind, bytes));
-    std::string stripped;
+    // frame, as kitty converts the images that it decodes.
+    const detail::SrgbConverter converter(codec->colorSpace(bytes));
+    options.colorKnown = converter.known();
+    if (!converter.active()) return codec->decode(bytes, sink, options, error, warning);
+    // A copy: the decoder of an animation draws the next frame over the
+    // last one, in the colours of the file.
     std::vector<unsigned char> converted;
-    FrameSink colored;
-    const FrameSink* out = &sink;
-    if (converter.active()) {
-        if (kind == Format::Png) {
-            stripped = detail::withoutColorChunks(bytes);
-            bytes = stripped;
-        }
-        colored = [&](const unsigned char* rgba, int width, int height, int delayMs) {
-            const std::size_t pixels = std::size_t(width) * std::size_t(height);
-            converted.resize(pixels * 4);
-            converter.convert(rgba, converted.data(), pixels);
-            return sink(converted.data(), width, height, delayMs);
-        };
-        out = &colored;
-    }
-    switch (kind) {
-    case Format::Png: return detail::decodePng(bytes, *out, error, warning);
-    case Format::Jpeg: return detail::decodeJpeg(bytes, *out, error);
-    case Format::Gif: return detail::decodeGif(bytes, *out, error, warning);
-    case Format::WebP: return detail::decodeWebP(bytes, *out, error, warning);
-    case Format::Bmp: return detail::decodeBmp(bytes, *out, error);
-    case Format::Tiff: return detail::decodeTiff(bytes, *out, error);
-    case Format::Pnm: return detail::decodePnm(bytes, *out, error);
-    case Format::Unknown: break;
-    }
-    error = "not an image that this decoder reads";
-    return false;
+    const FrameSink colored = [&](const unsigned char* rgba, int frameWidth, int frameHeight, int delayMs) {
+        const std::size_t pixels = std::size_t(frameWidth) * std::size_t(frameHeight);
+        converted.resize(pixels * 4);
+        converter.convert(rgba, converted.data(), pixels);
+        return sink(converted.data(), frameWidth, frameHeight, delayMs);
+    };
+    return codec->decode(bytes, colored, options, error, warning);
 }
 
 } // namespace AfterglowImage

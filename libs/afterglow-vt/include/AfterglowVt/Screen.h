@@ -184,6 +184,11 @@ public:
     /// rows); stable ids from an older epoch no longer refer to the same
     /// content. A change of height keeps the epoch.
     std::uint64_t layoutEpoch() const noexcept { return m_layoutEpoch; }
+    /// Grows each time history rows return to the screen (unscroll(), a
+    /// taller screen without reflow): the first visible row's id goes back,
+    /// and the ids after it name new rows from then on. Every id that
+    /// stays names the same row.
+    std::uint64_t historyRewinds() const noexcept { return m_historyRewinds; }
     /// Absolute index for a stable id, or -1 if that row is gone.
     long long absoluteIndexOf(std::uint64_t stableId) const noexcept
     {
@@ -243,6 +248,7 @@ private:
     std::size_t m_viewportOffset = 0;
     std::uint64_t m_rowsDropped = 0;
     std::uint64_t m_layoutEpoch = 0;
+    std::uint64_t m_historyRewinds = 0;
     StyleTable m_styles;
 };
 

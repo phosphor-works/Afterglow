@@ -166,7 +166,7 @@ def main():
         def run_icat(*arguments):
             return subprocess.run([aglow, "icat", "--use-window-size", window, "--transfer-mode=stream", "--stdin=no",
                                    "--passthrough=none", *arguments], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                  env=environment, timeout=60)
+                                  env=environment, timeout=60, start_new_session=True)
 
         def icat(*arguments):
             result = run_icat(*arguments)

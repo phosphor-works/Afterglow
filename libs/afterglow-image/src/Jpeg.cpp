@@ -7,6 +7,7 @@
 
 #include <turbojpeg.h>
 
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -34,32 +35,51 @@ struct Handle
 Probe probeJpeg(std::string_view bytes, int& width, int& height)
 {
     width = height = 0;
-    // The markers up to the frame header, which holds the size.
-    std::size_t i = 2;
-    while (i + 4 <= bytes.size()) {
-        if (at(bytes, i) != 0xFF) return Probe::Unknown;
-        const std::uint8_t marker = at(bytes, i + 1);
-        if (marker == 0xFF) {
-            ++i; // a fill byte
-            continue;
-        }
-        if (marker == 0xD9 || marker == 0xDA) return Probe::Unknown; // no frame before the image data
-        if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7)) {
-            i += 2;
-            continue;
-        }
-        const std::size_t length = big(bytes, i + 2, 2);
-        if (length < 2 || length > bytes.size() - i - 2) return Probe::Unknown;
-        if (isFrameMarker(marker)) {
-            if (length < 7) return Probe::Unknown;
-            return sized(big(bytes, i + 7, 2), big(bytes, i + 5, 2), width, height);
-        }
-        i += 2 + length;
-    }
-    return Probe::Unknown;
+    // The markers up to the frame header, which holds the size. No frame
+    // before the image data: no size.
+    Probe result = Probe::Unknown;
+    forEachJpegSegment(bytes, [&](std::uint8_t marker, std::string_view segment) {
+        if (!isFrameMarker(marker)) return true;
+        if (segment.size() >= 5) result = sized(big(segment, 3, 2), big(segment, 1, 2), width, height);
+        return false;
+    });
+    return result;
 }
 
-bool decodeJpeg(std::string_view bytes, const FrameSink& sink, std::string& error)
+ColorSpace jpegColorSpace(std::string_view bytes)
+{
+    // APP2 segments "ICC_PROFILE\0", sequence number, count, then a part of
+    // the profile; the parts go together in their order.
+    constexpr std::string_view Tag("ICC_PROFILE\0", 12);
+    std::map<int, std::string_view> parts;
+    int count = 0;
+    bool grey = false;
+    forEachJpegSegment(bytes, [&](std::uint8_t marker, std::string_view segment) {
+        if (isFrameMarker(marker) && segment.size() >= 6) grey = at(segment, 5) == 1; // one component
+        if (marker == 0xE2 && segment.size() > Tag.size() + 2 && segment.substr(0, Tag.size()) == Tag) {
+            const int number = at(segment, Tag.size());
+            const int of = at(segment, Tag.size() + 1);
+            if (number >= 1 && number <= of && (count == 0 || count == of)) {
+                count = of;
+                parts.emplace(number, segment.substr(Tag.size() + 2));
+            }
+        }
+        return true;
+    });
+    ColorSpace space;
+    space.grey = grey;
+    if (count == 0 || int(parts.size()) != count) return space;
+    for (const auto& [number, part] : parts) {
+        if (space.icc.size() + part.size() > MaxIcc) {
+            space.icc.clear();
+            return space;
+        }
+        space.icc.append(part);
+    }
+    return space;
+}
+
+bool decodeJpeg(std::string_view bytes, const FrameSink& sink, const Options&, std::string& error, std::string&)
 {
     int width = 0;
     int height = 0;

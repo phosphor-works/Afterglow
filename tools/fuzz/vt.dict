@@ -36,6 +36,9 @@
 "*y"
 "#P"
 "#Q"
+"+T"
+"221m"
+"222m"
 
 # Kitty graphics (APC G)
 "G"
@@ -83,6 +86,11 @@
 "133;D;0"
 "133;C;cmdline="
 "133;C;cmdline_url="
+";click_events=1"
+";click_events=2"
+";special_key=1"
+";k=s"
+";redraw=0"
 "633;E;"
 "1337;File="
 "1337;MultipartFile="

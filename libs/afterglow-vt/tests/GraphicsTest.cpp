@@ -80,6 +80,15 @@ std::string apc(std::string_view keys, std::string_view payload = {})
     return s;
 }
 
+/// A sixel image of one colour, @p width pixels wide and @p bands six-pixel
+/// bands tall.
+std::string sixel(int width, int bands)
+{
+    std::string s = "\x1bPq#1;2;100;0;0#1";
+    for (int b = 0; b < bands; ++b) s += (b ? "-!" : "!") + std::to_string(width) + "~";
+    return s + "\x1b\\";
+}
+
 struct Term
 {
     RecordingHost host;
@@ -362,6 +371,44 @@ TEST(Graphics, PartialErasesKeepImagesAsTheSpecSays)
     t.t.feed(apc("a=T,f=32,s=25,v=45,i=5", base64Encode(rgba(25, 45, 0, 0, 255))));
     t.t.feed("\x1b[2J");
     EXPECT_TRUE(t.g().placements().empty());
+}
+
+// xterm erases its graphics with the cells of EL, ED 0 and ED 1, and kitty's
+// delete commands cannot reach a sixel or iTerm2 image: those erases drop
+// the ones on the erased cells, where kitty's stay.
+TEST(Graphics, PartialErasesDropSixelImagesOnTheirCells)
+{
+    // 25x48 at 10x20 cells: rows 0 to 2, columns 0 to 2.
+    for (const char* erase : {"\x1b[H\x1b[K", "\x1b[H\x1b[2K", "\x1b[H\x1b[J", "\x1b[4;1H\x1b[1J", "\x1b[2;3H\x1b[K",
+                              "\x1b[3;1H\x1b[1K", "\x1b[3;3H\x1b[J", "\x1b[1;30H\x1b[2K"}) {
+        Term t(40, 10);
+        t.t.feed("\x1b[H" + sixel(25, 8));
+        ASSERT_EQ(t.g().placements().size(), 1u);
+        t.t.feed(erase);
+        EXPECT_TRUE(t.g().placements().empty()) << erase;
+    }
+    // An erase of other rows or of the columns to the right keeps it. So do
+    // selective erases: images are not characters.
+    for (const char* erase : {"\x1b[5;1H\x1b[K", "\x1b[5;1H\x1b[J", "\x1b[2;4H\x1b[K", "\x1b[3;4H\x1b[J", "\x1b[H\x1b[?K",
+                              "\x1b[H\x1b[?J", "\x1b[4;1H\x1b[?1J"}) {
+        Term t(40, 10);
+        t.t.feed("\x1b[H" + sixel(25, 8));
+        t.t.feed(erase);
+        EXPECT_EQ(t.g().placements().size(), 1u) << erase;
+    }
+}
+
+// kitty's page margin rule is for kitty's images: a sixel image that reaches
+// past the bottom margin moves with its text, as the text over it does.
+TEST(Graphics, SixelImagesMoveWithTheirRowsPastAPageMargin)
+{
+    Term t(20, 6);
+    t.t.feed("\x1b[3;1H" + sixel(10, 8)); // 10x48: rows 2 to 4
+    t.t.feed("\x1b[1;4r\x1b[4;1H\n"); // rows 0 to 3 scroll up one
+    const auto vis = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(vis.size(), 1u);
+    EXPECT_EQ(vis[0].y, 20);
+    EXPECT_EQ(vis[0].height, 48);
 }
 
 TEST(Graphics, SixelAllocationAndCoveragePreserveKittyImagesInInternalRange)
@@ -674,6 +721,61 @@ TEST(Graphics, BothColumnsAndRowsKeepTheAspectAndTheOffsetsAddNoCells)
     EXPECT_EQ(vis[0].height, 20);
     EXPECT_EQ(vis[0].x, 17);
     EXPECT_EQ(vis[0].y, 0);
+}
+
+// kitty's unscroll drops the last rows of the screen: an image anchored on
+// them goes, also one that reaches below the screen, and does not come back
+// over the rows that later take their place.
+TEST(Graphics, AnUnscrollDropsTheImagesOfTheRowsThatLeave)
+{
+    Term t(20, 4);
+    for (int i = 0; i < 8; ++i) t.t.feed("line\r\n");
+    t.t.feed("\x1b[4;1H");
+    t.t.feed(apc("a=T,f=32,s=10,v=40,i=1,C=1,q=2", base64Encode(rgba(10, 40, 0, 0, 0)))); // rows 3 and 4
+    ASSERT_EQ(t.g().placements().size(), 1u);
+    t.t.feed("\x1b[1+T");
+    EXPECT_TRUE(t.g().placements().empty());
+    // A sixel image on that row goes too; one above it moves with its row.
+    t.t.feed("\x1b[2;1H" + sixel(10, 3) + "\x1b[4;1H" + sixel(10, 3));
+    ASSERT_EQ(t.g().placements().size(), 2u);
+    t.t.feed("\x1b[1+T");
+    const auto vis = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(vis.size(), 1u);
+    EXPECT_EQ(vis[0].y, 40);
+}
+
+// A cut of a letterboxed image makes it an image of its own size where it
+// shows: its origin moves right by whole cells. A child stays where it was,
+// whether its parent's origin moved or its own did.
+TEST(Graphics, ACutLetterboxKeepsTheColumnsOfTheChildren)
+{
+    Term t(30, 8);
+    // 10x40 in 4x2 cells of 10x20: 10x40, 15 pixels in from the left.
+    const std::string tall = base64Encode(rgba(10, 40, 0, 0, 0));
+    t.t.feed(apc("a=t,f=32,s=10,v=40,i=1,q=2", tall));
+    t.t.feed(apc("a=t,f=32,s=10,v=20,i=2,q=2", base64Encode(rgba(10, 20, 0, 0, 0))));
+    t.t.feed(apc("a=t,f=32,s=10,v=40,i=3,q=2", tall));
+    t.t.feed(apc("a=t,f=32,s=10,v=40,i=4,q=2", tall));
+    t.t.feed("\x1b[1;4r\x1b[1;1H"); // rows 0 to 3
+    t.t.feed(apc("a=p,i=1,p=1,c=4,r=2,C=1,q=2")); // a letterboxed parent, rows 0 and 1
+    t.t.feed(apc("a=p,i=2,p=1,P=1,Q=1,H=2,V=1,q=2")); // its plain child: row 1, column 2
+    t.t.feed(apc("a=p,i=3,p=1,C=1,q=2")); // a plain parent, rows 0 and 1
+    t.t.feed(apc("a=p,i=4,p=1,P=3,Q=1,H=6,c=4,r=2,q=2")); // its letterboxed child: column 6
+    const auto xOf = [&t](std::uint32_t image) -> std::optional<int> {
+        for (const VisiblePlacement& v : t.g().visible(t.t.screen(), 10, 20)) {
+            if (v.imageId == image) return v.x;
+        }
+        return std::nullopt;
+    };
+    ASSERT_EQ(xOf(1), 15);
+    ASSERT_EQ(xOf(2), 20);
+    ASSERT_EQ(xOf(3), 0);
+    ASSERT_EQ(xOf(4), 75);
+    t.t.feed("\x1b[4;1H\n"); // the top row of both parents leaves
+    EXPECT_EQ(xOf(1), 15);
+    EXPECT_EQ(xOf(2), 20);
+    EXPECT_EQ(xOf(3), 0);
+    EXPECT_EQ(xOf(4), 75);
 }
 
 TEST(Graphics, ChildOfAClippedImageMovesWithTheRows)

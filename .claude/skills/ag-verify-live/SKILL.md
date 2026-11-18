@@ -88,14 +88,17 @@ theme did not load", because the widget dialog would test no native dialog.
 
 ### Expected skips in the headless run
 
-The tests that start with `REQUIRE_NATIVE_DND` need real compositor input, which only the acceptance runner below
-gives. Headless, they report Skipped with "Run through native_window_acceptance.py for real compositor input".
+The tests that start with `REQUIRE_NATIVE_DND` or `REQUIRE_NATIVE_KEYS` need real compositor input, which only the
+acceptance runner below gives. Headless, they report Skipped with "Run through native_window_acceptance.py for real
+compositor input".
 
 - `NativeWindow.NativeWaylandFileDrop`
 - `NativeWindow.ASelectionDragsIntoAnotherPaneAndNotIntoItsOwn`
 - The `NativeWindow.Kitty*` and `NativeWindow.Aglow*` client tests: `*DragAndDropClient`, `*RemoteDragDirectory`,
   `*RemoteDragDirectoryMovesBetweenPanes`, `*RemoteDragMoveToWaylandTarget`, `*RemoteDragCopyToWaylandTarget` and
   `*RemoteDragRefusedByAWaylandTargetKeepsTheFiles`
+- `NativeWindow.RealKeysOfOneBatchReportTheModifiersOfEachKey`: the acceptance runner sends the keys that a test
+  writes to the file in `AFTERGLOW_NATIVE_KEYS`, in one batch
 
 `NativeWindow.ANativeGtkSaveDialogKeepsItsNameWhenItsWindowCloses` skips with "runs with --platform-theme gtk3"
 (see Platform themes).

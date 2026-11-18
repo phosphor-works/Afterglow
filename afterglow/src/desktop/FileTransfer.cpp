@@ -591,6 +591,9 @@ struct FileTransfer::Worker {
     // one that came back.
     quint64 fencesSent = 0, fencesPassed = 0;
     std::atomic<qsizetype> deliveryBytes { 0 };
+    // deliver() stopped with packets that wait for the window to take the
+    // replies already posted to it (deliveryWindowFull()).
+    std::atomic<bool> windowFull { false };
     // Incremented on the GUI thread by reset() and abort().
     std::atomic<quint64> resetEpoch { 0 };
     // The reset that the worker has applied. Packets older than a reset are stale.
@@ -693,6 +696,7 @@ struct FileTransfer::Worker {
             });
         // Output that waits for the window waits for a delivery to finish,
         // which wakes the timer. Ticking meanwhile would only spin.
+        windowFull.store(!outgoing.empty() && deliveryBytes.load() >= DeliveryWindow);
         if (outgoing.empty() ? streams.empty() : deliveryBytes.load() >= DeliveryWindow)
             timer->stop();
         else if (!outgoing.empty() && backlogBytes.load() >= MaxInputBacklog)
@@ -716,6 +720,7 @@ struct FileTransfer::Worker {
     {
         outgoing.clear();
         outgoingBytes = 0;
+        windowFull.store(false);
         answer();
     }
     // From any thread: deliver() runs again soon.
@@ -1228,6 +1233,10 @@ void FileTransfer::setDeltaLimit(qint64 bytes)
     QMetaObject::invokeMethod(m_worker->context, [w = m_worker.get(), bytes] { w->deltaLimit = bytes; });
 }
 void FileTransfer::setInputBacklog(std::function<std::size_t()> backlog) { m_worker->backlog = std::move(backlog); }
+bool FileTransfer::deliveryWindowFull() const
+{
+    return m_worker->windowFull.load() && m_worker->deliveryBytes.load() >= DeliveryWindow;
+}
 
 void FileTransfer::Worker::cancel(const QByteArray& id)
 {

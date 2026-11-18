@@ -467,6 +467,18 @@ bool kittyFunctional(Key k, KittyKey& out)
     case Key::IsoLevel5Shift:
         out = {57454, 'u'};
         return true;
+    case Key::LeftHyper:
+        out = {57445, 'u'};
+        return true;
+    case Key::LeftMeta:
+        out = {57446, 'u'};
+        return true;
+    case Key::RightHyper:
+        out = {57451, 'u'};
+        return true;
+    case Key::RightMeta:
+        out = {57452, 'u'};
+        return true;
     default:
         break;
     }
@@ -493,7 +505,7 @@ bool isModifierKey(Key k)
 {
     return (k >= Key::CapsLock && k <= Key::RightSuper && k != Key::PrintScreen && k != Key::Pause && k != Key::Menu
             && k != Key::ScrollLock)
-        || k == Key::IsoLevel3Shift || k == Key::IsoLevel5Shift;
+        || (k >= Key::IsoLevel3Shift && k <= Key::RightMeta);
 }
 
 void appendTextCodepoints(std::string& out, std::string_view utf8)

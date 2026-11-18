@@ -22,7 +22,11 @@
 #include <QString>
 #include <QStringList>
 
+#include <cstdint>
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace PhosphorConfig {
 class JsonBackend;
@@ -57,6 +61,10 @@ struct WindowSettings
     double backgroundOpacity = 1.0; ///< of the default background
     bool blur = false; ///< blur what shows through a translucent background (KWin)
     bool paneTitles = false; ///< label each split with its title
+    int resizeStepCells = 2; ///< cells that the resize actions move a split edge by
+    /// The largest Window.resizeStepCells: as many cells as afterglow ctl
+    /// resize takes (Control::MaxResizeCells).
+    static constexpr int MaxResizeStepCells = 10000;
     enum class PopupCorners { Rounded, Square };
     PopupCorners popupCorners = PopupCorners::Rounded; ///< of a popup overlay's border
     /// Where new tabs, splits and windows start: "inherit" (the focused
@@ -109,14 +117,21 @@ struct MouseSettings
     /// A click on the command line of a shell that marks its prompt
     /// (OSC 133) moves the shell's cursor there. On, as in Kitty.
     bool clickMovesCursor = true;
-    /// Ctrl+Shift+right-click on a command that shell integration marks
-    /// (OSC 133): its output in Terminal.pager, as in Kitty
-    /// (mouse_show_command_output), its output selected
+    /// A right-click with commandOutputModifier on a command that shell
+    /// integration marks (OSC 133): its output in Terminal.pager, as in
+    /// Kitty (mouse_show_command_output), its output selected
     /// (mouse_select_command_output), or a plain right-click.
     enum class CommandOutputClick { Pager, Select, None };
     CommandOutputClick commandOutputClick = CommandOutputClick::Pager;
+    /// The modifiers held, and no others, for commandOutputClick: Ctrl+Shift,
+    /// as in Kitty.
+    Qt::KeyboardModifiers commandOutputModifier = Qt::ControlModifier | Qt::ShiftModifier;
     bool operator==(const MouseSettings&) const = default;
 };
+
+/// @p modifiers as people read them: "Ctrl+Shift", in the order ctrl,
+/// shift, alt, super. Empty for none.
+QString modifierText(Qt::KeyboardModifiers modifiers);
 
 struct LinkSettings
 {
@@ -287,9 +302,13 @@ struct Settings
     qint64 scriptCommandOutputLimit = qint64(16384) << 10;
     int scriptCpuBudget = 250; ///< ms of handler time of one script in each second
     QString pager = QStringLiteral("less -R");
-    std::size_t lastOutputLimit = std::size_t(1024) << 10; ///< bytes of the last output that show_last_output hands the pager
+    /// Terminal.pagerOutputLimit: bytes of a command's output that the pager
+    /// gets (the last output, the first on the screen, the last visited, or
+    /// a clicked command's).
+    std::size_t pagerOutputLimit = std::size_t(1024) << 10;
     /// Terminal.shellIntegration: "enabled" or "disabled", or the switches
-    /// that turn parts off, as Kitty's shell_integration ("no-title no-sudo").
+    /// that turn parts off, as Kitty's shell_integration ("no-title no-sudo"):
+    /// read() leaves it in lowercase, each switch once, apart by one space.
     QString shellIntegration = QStringLiteral("enabled");
     bool sshIntegration = true; ///< integrated shells run ssh through `afterglow ssh`
     QString sshTerminfo = QStringLiteral("install"); ///< TERM=afterglow on a host without its entry: install or fallback
@@ -318,7 +337,7 @@ struct Settings
     int notificationRateWindow = 10; ///< seconds that notificationRateLimit counts over
     /// Milliseconds between two program status notifications of one pane.
     int statusNotificationInterval = 3000;
-    /// Notifications.filter: a notification that one of these matches is not shown.
+    /// Notifications.filters: a notification that one of these matches is not shown.
     std::vector<NotificationFilter> notificationFilters;
     bool confirmUnsafePaste = true; ///< ask before pasting or dropping lines a shell would run
     bool confirmClose = true; ///< ask before closing where a program is running
@@ -354,15 +373,22 @@ struct Settings
     Permission clipboardWrite = Permission::Allow;
     /// Files that programs send with iTerm2's protocol (OSC 1337, it2dl).
     Permission downloads = Permission::Ask;
-    /// Where downloads go: empty for the desktop's download folder.
+    /// Where downloads go: an absolute path (the ~ or ~/... of the config
+    /// expanded to the home directory), or empty for the desktop's download
+    /// directory.
     QString downloadDirectory;
     /// Files that programs ask for with iTerm2's protocol (OSC 1337
-    /// RequestUpload, it2ul): Ask opens a file picker, Deny refuses.
+    /// RequestUpload, it2ul): Ask asks first, then opens a picker for files
+    /// or a folder. Deny refuses.
     Permission uploads = Permission::Ask;
-    /// The largest upload, in MiB of compressed archive: its answer goes to
-    /// the program's input in one piece, which holds 32 MiB.
-    int uploadLimit = 16;
-    static constexpr int MaxUploadLimit = 23; ///< its answer, with base64 and line ends, fits in 32 MiB
+    /// The largest upload, in bytes of compressed archive (the setting is in
+    /// MiB): its answer goes to the program's input in one piece.
+    std::size_t uploadLimit = std::size_t(16) << 20;
+    /// The largest Terminal.uploadLimit, in MiB: the answer of an archive
+    /// that size, in base64 with its line ends, fits in the input queue of
+    /// a PTY (Pty::MaxPendingInput). UploadArchiveTest checks it against
+    /// UploadArchive::answerSize.
+    static const int MaxUploadLimit;
     // Terminal.graphicsFileTransfer, Terminal.allowScreenReadback and
     // Graphics.quota live in terminal, which enforces them.
     /// Each a map of pattern, action and command, checked when read.

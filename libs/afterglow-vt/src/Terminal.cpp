@@ -406,12 +406,24 @@ bool Terminal::oscHead(std::string_view head)
 {
     // An iTerm2 download, File= without inline=1, streams to the host as it
     // comes, as iTerm2 takes it: no buffer of the parser bounds its size. An
-    // inline image stays whole, for its decoder.
-    constexpr std::string_view File = "1337;File=";
-    if (!head.starts_with(File) || !head.ends_with(':')) {
+    // inline image stays whole, for its decoder. The head ends with the ':'
+    // before the data. VT52 mode takes no OSC.
+    if (m_modes.vt52) {
         return false;
     }
-    const std::string_view args = head.substr(File.size(), head.size() - File.size() - 1);
+    // The number as oscDispatch() reads it: 01337 is 1337 too.
+    const std::size_t semi = std::min(head.find(';'), head.size());
+    int number = -1;
+    if (const auto parsed = std::from_chars(head.data(), head.data() + semi, number);
+        parsed.ec != std::errc{} || parsed.ptr != head.data() + semi || number != 1337) {
+        return false;
+    }
+    constexpr std::string_view File = ";File=";
+    const std::string_view rest = head.substr(semi);
+    if (!rest.starts_with(File)) {
+        return false;
+    }
+    const std::string_view args = rest.substr(File.size(), rest.size() - File.size() - 1);
     detail::ITerm2File file;
     detail::parseITerm2Args(args, file);
     if (file.inlineImage) {
@@ -435,6 +447,12 @@ void Terminal::beginDownload(std::string_view nameBase64, std::size_t size, bool
     m_download.active = true;
     m_download.multipart = multipart;
     m_download.size = size > 0 ? std::int64_t(std::min<std::size_t>(size, std::size_t(INT64_MAX))) : -1;
+    if (m_programExited) {
+        // Output that waited behind a download when the program exited: no
+        // program is left to send this one, and the host asks nothing.
+        m_download.refused = true;
+        return;
+    }
     if (m_host.downloadBegin(name ? std::string_view(*name) : std::string_view(), m_download.size)) {
         m_download.waiting = true;
     } else {
@@ -483,7 +501,9 @@ void Terminal::endDownload(bool complete)
     }
     const Download done = std::exchange(m_download, Download{});
     if (done.refused) {
-        // Refused at its begin, or failed: the host heard its end then.
+        // Refused by the host (at its begin, by its answer or by
+        // stopDownload()), or failed, which told the host (failDownload()):
+        // the host knows that it ended.
         return;
     }
     bool ok = complete && !done.waiting;
@@ -704,6 +724,41 @@ void applySgr(Style& s, const Params& p, int from)
     }
 }
 
+/// What SGR codes do to any style. Each code sets fields to values, whatever
+/// they were: so a list of them gives each field a value or leaves it. The
+/// list applied once to two styles that differ in every field tells which:
+/// DECCARA then changes each style of a large rectangle in a few steps, not
+/// in one step per code.
+class SgrChange
+{
+public:
+    SgrChange(const Params& p, int from)
+    {
+        m_high.attrs = 0xFFFF;
+        m_high.underline = UnderlineStyle::Single;
+        m_high.fg = m_high.bg = m_high.underlineColor = Color::rgb(1, 2, 3);
+        m_high.link = 1;
+        applySgr(m_low, p, from);
+        applySgr(m_high, p, from);
+    }
+
+    Style apply(const Style& s) const
+    {
+        Style out = m_low;
+        out.attrs = std::uint16_t((s.attrs & (m_low.attrs ^ m_high.attrs)) | (m_low.attrs & m_high.attrs));
+        if (m_low.underline != m_high.underline) out.underline = s.underline;
+        if (m_low.fg != m_high.fg) out.fg = s.fg;
+        if (m_low.bg != m_high.bg) out.bg = s.bg;
+        if (m_low.underlineColor != m_high.underlineColor) out.underlineColor = s.underlineColor;
+        if (m_low.link != m_high.link) out.link = s.link;
+        return out;
+    }
+
+private:
+    Style m_low;
+    Style m_high;
+};
+
 } // namespace
 
 void Terminal::changeRectAttributes(const Params& p, bool reverse)
@@ -733,6 +788,8 @@ void Terminal::changeRectAttributes(const Params& p, bool reverse)
             }
         }
     }
+    // No Ps is 0. The codes do the same to each style.
+    const std::optional<SgrChange> change = !reverse && p.count > 4 ? std::optional<SgrChange>(std::in_place, p, 4) : std::nullopt;
     StyleTable& styles = m_active->styles();
     // Neighbouring cells mostly share a style: one lookup per run of them,
     // not per cell, since a rectangle can be the whole screen.
@@ -757,11 +814,7 @@ void Terminal::changeRectAttributes(const Params& p, bool reverse)
             // As SGR does it to the pen: the link and DECSCA's protection
             // are no graphic rendition, and no Ps is 0.
             const Style before = st;
-            if (p.count <= 4) {
-                st = Style{};
-            } else {
-                applySgr(st, p, 4);
-            }
+            st = change ? change->apply(st) : Style{};
             st.link = before.link;
             st.attrs = std::uint16_t((st.attrs & ~Attr::Protected) | (before.attrs & Attr::Protected));
         }
@@ -887,7 +940,7 @@ void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
     const auto imageAnchors = anchors.size();
     std::vector<int> columns = m_graphics[0].anchorColumns();
     std::vector<SemanticPosition> positions;
-    for (const auto* mark : {&m_inputStart, &m_outputStart, &m_outputEnd, &m_secondaryPrompt}) {
+    for (const Mark* mark : marks()) {
         positions.push_back({mark->row, mark->col});
     }
     for (const auto& region : m_semanticRegions) {
@@ -927,7 +980,7 @@ void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
     // does, it goes with its end.
     if (m_outputEnd.valid && destroyed[2]) destroyed[1] = true;
     std::size_t index = 0;
-    for (auto* mark : {&m_inputStart, &m_outputStart, &m_outputEnd, &m_secondaryPrompt}) {
+    for (Mark* mark : marks()) {
         const auto i = index++;
         if (destroyed[i]) {
             *mark = {};
@@ -1980,12 +2033,22 @@ void Terminal::eraseDisplay(int mode, bool selective)
         for (int y = cur.y + 1; y < rows(); ++y) {
             eraseWholeRow(scr.row(y), fill, selective);
         }
+        if (!selective) {
+            GraphicsStore& graphics = m_graphics[m_modes.altScreen ? 1 : 0];
+            graphics.eraseInternalCells(cur.y, cur.y, cur.x, cols() - 1, scr, m_cellWidth, m_cellHeight);
+            graphics.eraseInternalCells(cur.y + 1, rows() - 1, 0, cols() - 1, scr, m_cellWidth, m_cellHeight);
+        }
         break;
     case 1:
         for (int y = 0; y < cur.y; ++y) {
             eraseWholeRow(scr.row(y), fill, selective);
         }
         eraseSpan(scr.row(cur.y), 0, cur.x + 1, fill, selective);
+        if (!selective) {
+            GraphicsStore& graphics = m_graphics[m_modes.altScreen ? 1 : 0];
+            graphics.eraseInternalCells(0, cur.y - 1, 0, cols() - 1, scr, m_cellWidth, m_cellHeight);
+            graphics.eraseInternalCells(cur.y, cur.y, 0, cur.x, scr, m_cellWidth, m_cellHeight);
+        }
         break;
     case 2:
         for (int y = 0; y < rows(); ++y) {
@@ -2047,6 +2110,13 @@ void Terminal::eraseLine(int mode, bool selective)
         break;
     default:
         break;
+    }
+    // A selective erase spares more than protected cells: images are not
+    // characters, so DECSEL and DECSED 0 and 1 leave them.
+    if (mode >= 0 && mode <= 2 && !selective) {
+        const int first = mode == 0 ? cur.x : 0;
+        const int last = mode == 1 ? cur.x : cols() - 1;
+        m_graphics[m_modes.altScreen ? 1 : 0].eraseInternalCells(cur.y, cur.y, first, last, scr, m_cellWidth, m_cellHeight);
     }
     releaseFill(fill);
     cur.pendingWrap = false;
@@ -2323,11 +2393,16 @@ void Terminal::scrollRegion(const Region& r, int n, bool up, bool intoHistory)
     scroll.fullWidth = r.left == 0 && r.right == cols() - 1;
     const int count = std::min(n, r.bottom - r.top + 1);
     scroll.delta = up ? -count : count;
-    m_graphics[m_modes.altScreen ? 1 : 0].scrollRegion(scroll, scr, m_cellWidth, m_cellHeight);
+    moveAnchors(scroll, false);
+}
+
+void Terminal::moveAnchors(const RegionScroll& scroll, bool drop)
+{
+    m_graphics[m_modes.altScreen ? 1 : 0].scrollRegion(scroll, *m_active, m_cellWidth, m_cellHeight, drop);
     if (!m_modes.altScreen) {
         // Shell marks are kept for the primary screen only. One whose cell
         // left the region is gone, as its text is.
-        for (Mark* mark : {&m_inputStart, &m_outputStart, &m_outputEnd, &m_secondaryPrompt}) {
+        for (Mark* mark : marks()) {
             if (!mark->valid) {
                 continue;
             }
@@ -2509,6 +2584,8 @@ void Terminal::setAltScreen(bool on, bool saveRestoreCursor, bool clear)
 
 void Terminal::reset()
 {
+    // The rest of a download that waited for its answer is no output.
+    m_heldInput.clear();
     m_parser.reset();
     fullReset();
     touch();
@@ -3173,18 +3250,7 @@ void Terminal::unscroll(int n)
     gone.left = 0;
     gone.right = cols() - 1;
     gone.delta = back;
-    m_graphics[0].scrollRegion(gone, scr, m_cellWidth, m_cellHeight);
-    for (Mark* mark : {&m_inputStart, &m_outputStart, &m_outputEnd, &m_secondaryPrompt}) {
-        if (mark->valid && !gone.map({mark->row, mark->col})) {
-            if (mark == &m_outputEnd) m_outputStart = {};
-            *mark = {};
-        }
-    }
-    std::erase_if(m_semanticRegions, [&](const SemanticRegion& region) {
-        return !gone.map({region.start.row, region.start.col})
-            || (!region.open && !gone.map({region.end.row, region.end.col}));
-    });
-    m_host.regionScrolled(gone);
+    moveAnchors(gone, true);
     scr.unscroll(back);
     // Rows the history did not have come in blank above the others.
     if (n > back) {
@@ -3443,13 +3509,19 @@ void Terminal::saveDecModes(const Params& p)
 
 void Terminal::restoreDecModes(const Params& p)
 {
+    // A set of the size (2048) and visibility (2033) reports answers at once.
+    // A restore that leaves such a mode as it is changes nothing to report.
+    const auto restore = [this](int mode, bool on) {
+        if ((mode == 2033 || mode == 2048) && decModeState(mode) == (on ? 1 : 2)) return;
+        setDecMode(mode, on);
+    };
     if (p.count == 0) {
         if (!m_haveSavedQuietModes) return;
         // The resets first: a mouse mode or format that is set after them
         // stays, though one reset of the same kind would turn it off.
         for (const bool on : {false, true}) {
             for (const auto& [mode, saved] : m_savedQuietModes) {
-                if (saved == on) setDecMode(mode, on);
+                if (saved == on) restore(mode, on);
             }
         }
         m_modes.insert = m_savedInsert;
@@ -3458,7 +3530,7 @@ void Terminal::restoreDecModes(const Params& p)
     }
     for (int i = 0; i < p.count; ++i) {
         if (auto it = m_savedDecModes.find(p.values[i]); it != m_savedDecModes.end()) {
-            setDecMode(it->first, it->second);
+            restore(it->first, it->second);
         }
     }
 }
@@ -3980,10 +4052,12 @@ void Terminal::finishCommand(int exitCode)
 
 namespace {
 
-/// The SGR sequence that sets @p style from the default.
-std::string sgrOf(const Style& style)
+/// The SGR parameters that set @p style from the default, from "0". With
+/// @p colons, extended colours take the colon form (ITU T.416), as DECRQSS
+/// reports them in xterm; else the semicolon form, which more programs read.
+std::string sgrParameters(const Style& style, bool colons)
 {
-    std::string out = "\x1b[0";
+    std::string out = "0";
     const auto add = [&out](std::string_view code) {
         out += ';';
         out += code;
@@ -4005,24 +4079,31 @@ std::string sgrOf(const Style& style)
     if (style.has(Attr::Strikethrough)) add("9");
     if (style.has(Attr::Overline)) add("53");
     // The 16 colors in their short forms, as programs write them.
-    const auto color = [&add](const Color& c, int base, int bright, int extended) {
+    const std::string sep(1, colons ? ':' : ';');
+    const auto color = [&add, &sep, colons](const Color& c, int base, int extended) {
         switch (c.kind()) {
         case Color::Kind::Default: break;
         case Color::Kind::Palette:
             if (base && c.index() < 8) add(std::to_string(base + c.index()));
-            else if (bright && c.index() < 16) add(std::to_string(bright + c.index() - 8));
-            else add(std::to_string(extended) + ";5;" + std::to_string(c.index()));
+            else if (base && c.index() < 16) add(std::to_string(base + 60 + c.index() - 8));
+            else add(std::to_string(extended) + sep + "5" + sep + std::to_string(c.index()));
             break;
         case Color::Kind::Rgb:
-            add(std::to_string(extended) + ";2;" + std::to_string(c.r()) + ";" + std::to_string(c.g()) + ";" + std::to_string(c.b()));
+            add(std::to_string(extended) + sep + "2" + (colons ? "::" : ";") + std::to_string(c.r()) + sep
+                + std::to_string(c.g()) + sep + std::to_string(c.b()));
             break;
         }
     };
-    color(style.fg, 30, 90, 38);
-    color(style.bg, 40, 100, 48);
-    color(style.underlineColor, 0, 0, 58);
-    out += 'm';
+    color(style.fg, 30, 38);
+    color(style.bg, 40, 48);
+    color(style.underlineColor, 0, 58);
     return out;
+}
+
+/// The SGR sequence that sets @p style from the default.
+std::string sgrOf(const Style& style)
+{
+    return "\x1b[" + sgrParameters(style, false) + "m";
 }
 
 /// Writes rows of cells for Terminal::text(): plain, or in a TextFormat.
@@ -4073,14 +4154,16 @@ public:
             line += '\r';
         }
         if (m_out.size() + line.size() > m_maxBytes) {
-            m_out.append(line, 0, cut(line, m_maxBytes > m_out.size() ? m_maxBytes - m_out.size() : 0));
-            m_truncated = true;
+            cutWith(line);
             return false;
         }
         m_out += line;
         if (newline) {
             if (m_out.size() == m_maxBytes) {
+                // The line ended its style and its link: only the line
+                // feed is left out, and what follows it.
                 m_truncated = true;
+                m_onlyLineFeedCut = true;
                 return false;
             }
             m_out += '\n';
@@ -4089,7 +4172,22 @@ public:
     }
 
     bool truncated() const { return m_truncated; }
+    /// The limit left out only a line feed, after a whole line: a text whose
+    /// end is trimmed lost nothing when the rows after it write nothing.
+    bool onlyLineFeedCut() const { return m_onlyLineFeedCut; }
     std::string take() { return std::move(m_out); }
+
+    /// Whether @p row gives an empty line: blanks that its end trims. A row
+    /// that continues keeps its blanks.
+    bool writesNothing(const Row& row, bool continues) const
+    {
+        if (continues) return false;
+        for (int x = 0; x < m_screen.cols(); ++x) {
+            const Cell& c = row.at(x);
+            if (m_format.ansi ? !blank(c) : !c.isEmpty() && c.codepoint() != U' ') return false;
+        }
+        return true;
+    }
 
 private:
     bool blank(const Cell& c) const
@@ -4097,6 +4195,40 @@ private:
         if (!c.isEmpty() && c.codepoint() != U' ') return false;
         const Style& style = m_screen.styles().get(c.styleId());
         return style.bg.isDefault() && !style.has(Attr::Inverse) && style.link == 0;
+    }
+
+    /// Ends the text with the part of @p line that fits. In ANSI, the cut
+    /// text still ends the style and the link that it leaves open, within
+    /// the limit: a reader that shows it does not run them on.
+    void cutWith(const std::string& line)
+    {
+        m_truncated = true;
+        std::string all = std::move(m_out);
+        all += line;
+        std::size_t keep = cut(all, m_maxBytes);
+        std::string close = m_format.ansi ? closing(std::string_view(all).substr(0, keep)) : std::string();
+        while (keep > 0 && keep + close.size() > m_maxBytes) {
+            keep = cut(all, keep - 1);
+            close = closing(std::string_view(all).substr(0, keep));
+        }
+        all.resize(keep);
+        all += close;
+        m_out = std::move(all);
+    }
+
+    /// The sequences that end the style and the link open at the end of
+    /// @p text: its last SGR is not a reset, its last OSC 8 not an end.
+    static std::string closing(std::string_view text)
+    {
+        std::string close;
+        if (const std::size_t sgr = text.rfind("\x1b["); sgr != std::string_view::npos && text.substr(sgr, 3) != "\x1b[m") {
+            close += "\x1b[m";
+        }
+        if (const std::size_t link = text.rfind("\x1b]8;");
+            link != std::string_view::npos && text.substr(link, 7) != "\x1b]8;;\x1b\\") {
+            close += "\x1b]8;;\x1b\\";
+        }
+        return close;
     }
 
     /// The escape sequences that change the style and the link to those of
@@ -4159,6 +4291,7 @@ private:
     std::size_t m_maxBytes;
     std::string m_out;
     bool m_truncated = false;
+    bool m_onlyLineFeedCut = false;
     Style m_style;
     std::uint32_t m_link = 0;
 };
@@ -4170,7 +4303,8 @@ std::string Terminal::textBetween(const Mark& from, const Mark& to, std::size_t 
     return textBetween(from, to, maxBytes, truncated, TextFormat{});
 }
 
-std::string Terminal::textBetween(const Mark& from, const Mark& to, std::size_t maxBytes, bool* truncated, const TextFormat& format) const
+std::string Terminal::textBetween(const Mark& from, const Mark& to, std::size_t maxBytes, bool* truncated, const TextFormat& format,
+                                  bool trimmed) const
 {
     if (truncated) *truncated = false;
     const Screen& scr = *m_primary;
@@ -4182,12 +4316,23 @@ std::string Terminal::textBetween(const Mark& from, const Mark& to, std::size_t 
     const long long start = first < 0 ? 0 : first; // the start scrolled out of history
     const int startCol = first < 0 ? 0 : from.col;
     TextWriter writer(scr, format, maxBytes);
-    for (long long i = start; i <= last; ++i) {
+    long long i = start;
+    for (; i <= last; ++i) {
         const Row& row = scr.absoluteRow(std::size_t(i));
         const bool continues = row.wrapped && i < last;
         if (!writer.row(row, i == start ? startCol : 0, i == last ? to.col : scr.cols(), continues, !continues && i < last)) break;
     }
-    if (truncated) *truncated = writer.truncated();
+    if (truncated) {
+        *truncated = writer.truncated();
+        if (*truncated && trimmed && writer.onlyLineFeedCut()) {
+            bool lost = false;
+            for (long long j = i + 1; j <= last && !lost; ++j) {
+                const Row& row = scr.absoluteRow(std::size_t(j));
+                lost = !writer.writesNothing(row, row.wrapped && j < last);
+            }
+            *truncated = lost;
+        }
+    }
     return writer.take();
 }
 
@@ -4198,17 +4343,21 @@ std::string Terminal::text(TextScope scope, std::size_t maxBytes, bool* truncate
 
 std::string Terminal::text(TextScope scope, std::size_t maxBytes, bool* truncated, const TextFormat& format) const
 {
-    if (truncated) *truncated = false;
+    // The cursor's sequences go after the text, within the limit, or not at all.
+    const std::string cursor = format.cursor ? cursorText() : std::string();
+    const bool cursorFits = cursor.size() <= maxBytes;
+    const std::size_t room = cursorFits ? maxBytes - cursor.size() : maxBytes;
+    bool cut = false;
     std::string out;
     switch (scope) {
     case TextScope::LastOutput:
-        if (m_outputStart.valid) out = textBetween(m_outputStart, m_outputEnd.valid ? m_outputEnd : cursorMark(), maxBytes, truncated, format);
+        if (m_outputStart.valid) out = textBetween(m_outputStart, m_outputEnd.valid ? m_outputEnd : cursorMark(), room, &cut, format);
         break;
     case TextScope::All: {
         const Screen& scr = *m_primary;
         const Mark top{scr.rowsDropped(), 0, true};
         const Mark end{scr.rowsDropped() + scr.historySize() + std::uint64_t(scr.rows() - 1), scr.cols(), true};
-        out = textBetween(top, end, maxBytes, truncated, format);
+        out = textBetween(top, end, room, &cut, format, true);
         while (!out.empty() && out.back() == '\n') {
             out.pop_back();
         }
@@ -4217,13 +4366,21 @@ std::string Terminal::text(TextScope scope, std::size_t maxBytes, bool* truncate
     case TextScope::Screen: {
         // The active screen's visible rows.
         const Screen& scr = *m_active;
-        TextWriter writer(scr, format, maxBytes);
-        for (int y = 0; y < scr.rows(); ++y) {
-            const Row& row = scr.absoluteRow(scr.viewportTop() + std::size_t(y));
-            const bool continues = row.wrapped && y + 1 < scr.rows();
-            if (!writer.row(row, 0, scr.cols(), continues, !continues && y + 1 < scr.rows())) break;
+        TextWriter writer(scr, format, room);
+        const auto rowAt = [&scr](int y) -> const Row& { return scr.absoluteRow(scr.viewportTop() + std::size_t(y)); };
+        int y = 0;
+        for (; y < scr.rows(); ++y) {
+            const bool continues = rowAt(y).wrapped && y + 1 < scr.rows();
+            if (!writer.row(rowAt(y), 0, scr.cols(), continues, !continues && y + 1 < scr.rows())) break;
         }
-        if (truncated) *truncated = writer.truncated();
+        cut = writer.truncated();
+        // Its end is trimmed: blank rows that the limit left out lose nothing.
+        if (cut && writer.onlyLineFeedCut()) {
+            cut = false;
+            for (int k = y + 1; k < scr.rows() && !cut; ++k) {
+                cut = !writer.writesNothing(rowAt(k), rowAt(k).wrapped && k + 1 < scr.rows());
+            }
+        }
         out = writer.take();
         while (!out.empty() && out.back() == '\n') {
             out.pop_back();
@@ -4231,23 +4388,46 @@ std::string Terminal::text(TextScope scope, std::size_t maxBytes, bool* truncate
         break;
     }
     }
-    if (format.cursor) out += cursorText();
+    if (cursorFits) {
+        out += cursor;
+    } else {
+        cut = true;
+    }
+    if (truncated) *truncated = cut;
     return out;
 }
 
 std::string Terminal::cursorText() const
 {
     const Screen& scr = *m_active;
+    return "\x1b[" + std::to_string(scr.cursor.y + 1) + ";" + std::to_string(scr.cursor.x + 1) + "H\x1b["
+        + std::to_string(cursorStyleNumber()) + " q\x1b[?25" + (m_modes.cursorVisible ? "h" : "l");
+}
+
+int Terminal::cursorStyleNumber() const noexcept
+{
     // DECSCUSR: 1 and 2 a block, 3 and 4 an underline, 5 and 6 a bar, the
     // odd ones blinking.
-    const int shape = (m_cursorShape == CursorShape::Block ? 1 : m_cursorShape == CursorShape::Underline ? 3 : 5) + (m_modes.cursorBlink ? 0 : 1);
-    return "\x1b[" + std::to_string(scr.cursor.y + 1) + ";" + std::to_string(scr.cursor.x + 1) + "H\x1b[" + std::to_string(shape) + " q\x1b[?25"
-        + (m_modes.cursorVisible ? "h" : "l");
+    const int base = m_cursorShape == CursorShape::Block ? 1 : m_cursorShape == CursorShape::Underline ? 3 : 5;
+    return base + (m_modes.cursorBlink ? 0 : 1);
 }
 
 void Terminal::programExited()
 {
+    m_programExited = true;
     m_host.terminalProtocol(0, {});
+    // A download that waits for its answer gets none now: the host's
+    // question goes. What the program sent after its head is still parsed,
+    // with its data dropped, and a stream that it never ended ends
+    // incomplete: the end of the pane's exit message must not end it.
+    if (m_download.waiting) {
+        m_download.waiting = false;
+        failDownload();
+    }
+    if (!m_heldInput.empty()) {
+        parse(std::exchange(m_heldInput, {}));
+    }
+    m_parser.cancelStream();
     // No shell draws its prompt again: a held pane reflows the prompt it
     // left as any output, holds no frame for a redraw and moves no cursor
     // for a click.
@@ -4430,7 +4610,11 @@ bool Terminal::applyColorOsc(std::string_view payload)
     static constexpr std::string_view Colors[] = {"4", "10", "11", "12", "17", "19", "104", "110", "111", "112", "117", "119"};
     if (std::find(std::begin(Colors), std::end(Colors), number) == std::end(Colors)) return false;
     if (payload.find('?') != std::string_view::npos) return false;
-    oscDispatch(payload, false);
+    // Not program output: it applies in VT52 mode too, leaves the cell that
+    // the next mark joins, and is new content for the snapshot and the
+    // state stream, which follow generation().
+    oscCommand(payload, false);
+    touch();
     return true;
 }
 
@@ -4478,6 +4662,11 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
     if (m_modes.vt52) {
         return;
     }
+    oscCommand(payload, bel);
+}
+
+void Terminal::oscCommand(std::string_view payload, bool bel)
+{
     const auto semi = payload.find(';');
     const std::string_view numStr = payload.substr(0, semi);
     const std::string_view rest = semi == std::string_view::npos ? std::string_view{} : payload.substr(semi + 1);
@@ -4841,7 +5030,6 @@ std::vector<SemanticRegion> Terminal::semanticRegions() const
 
 std::optional<std::string> Terminal::semanticRegionText(std::uint64_t id, std::size_t maxBytes, bool* truncated) const
 {
-    if (truncated) *truncated = false;
     return semanticRegionText(id, maxBytes, truncated, TextFormat{});
 }
 
@@ -4901,27 +5089,34 @@ std::optional<std::uint64_t> Terminal::firstCommandOutputIn(std::uint64_t top, s
 std::string Terminal::promptClickInput(int col, int row) const
 {
     const Screen& screen = *m_active;
-    if (m_semanticZone == SemanticZone::Output || m_modes.altScreen || screen.viewportOffset() != 0
-        || m_modes.mouseTracking != MouseTracking::None || col < 0 || col >= cols() || row < 0 || row >= rows()) {
+    // As kitty (screen_cursor_at_a_shell_prompt): the cursor shows, on the
+    // main screen.
+    if (m_semanticZone == SemanticZone::Output || m_modes.altScreen || !m_modes.cursorVisible
+        || screen.viewportOffset() != 0 || m_modes.mouseTracking != MouseTracking::None || col < 0 || col >= cols()
+        || row < 0 || row >= rows()) {
         return {};
     }
     const auto& cur = screen.cursor;
     // Only on the prompt's own lines: from where it starts to the bottom.
+    // With no prompt start on the screen at or above the cursor, the cursor
+    // may be in a program that reads its input (cat, ssh) and that a
+    // cursor key would reach: nothing goes, as in kitty.
     int promptRow = cur.y;
-    while (promptRow > 0 && !screen.row(promptRow).promptStart) {
+    while (promptRow >= 0 && !screen.row(promptRow).promptStart) {
         --promptRow;
     }
-    if (row < promptRow) {
+    if (promptRow < 0 || row < promptRow) {
         return {};
     }
     if (m_promptClicks != PromptClicks::Keys) {
         // y relative to the secondary prompt when it starts on or above the
-        // click, else to the primary prompt; 0 is the top line.
+        // click, else to the primary prompt; 0 is the top line. Unsigned:
+        // the mark's row can be any id that a replica got.
         int top = promptRow;
         if (m_promptClicks == PromptClicks::Relative && m_secondaryPrompt.valid) {
-            const long long y = static_cast<long long>(m_secondaryPrompt.row)
-                - static_cast<long long>(screen.rowsDropped() + screen.historySize());
-            if (y >= promptRow && y <= row) top = int(y);
+            const std::uint64_t base = screen.rowsDropped() + screen.historySize();
+            const std::uint64_t mark = m_secondaryPrompt.row;
+            if (mark >= base + std::uint64_t(promptRow) && mark <= base + std::uint64_t(row)) top = int(mark - base);
         }
         const int y = m_promptClicks == PromptClicks::Absolute ? row + 1 : row - top;
         char buf[64];
@@ -5005,13 +5200,17 @@ void Terminal::semanticPrompt(std::string_view args)
             // A command line too long to keep goes alone: the mark still
             // counts, and C falls back to the text typed after B.
             const bool encoded = opt[7] == '_';
-            const std::string_view value = opt.substr(encoded ? 12 : 8);
+            // A quoted command line (bash's %q) can hold a ';' of its own,
+            // as "\;": it runs to the end of the OSC. The shells send it
+            // last. A URL encodes its ';'.
+            const std::string_view value = encoded ? opt.substr(12) : args.substr(pos + 1 + 8);
             commandGiven = true;
             if (value.size() > MaxCommandLine) {
                 m_explicitCommand.reset();
             } else {
                 m_explicitCommand = withoutControls(encoded ? percentDecode(value) : shellUnquote(value));
             }
+            if (!encoded) break;
         }
         pos = next;
     }
@@ -5208,7 +5407,6 @@ void Terminal::iterm2(std::string_view args, bool bel)
             return;
         }
         m_iterm2Args.assign(value);
-        m_iterm2Limit = MaxITerm2Base64;
         return;
     }
     if (key != "File" && key != "FilePart" && value.size() > 65536) return;
@@ -5222,8 +5420,10 @@ void Terminal::iterm2(std::string_view args, bool bel)
             downloadBase64(value);
             m_iterm2PromptSincePart = false;
         } else if (m_iterm2Receiving) {
-            if (m_iterm2Data.size() + value.size() > m_iterm2Limit) {
-                endITerm2Multipart(); // up to 96 MiB: give it back
+            // An image's parts, up to 96 MiB: past that, give it back. A
+            // download whose stream is gone (no arguments kept) ends too.
+            if (m_iterm2Args.empty() || m_iterm2Data.size() + value.size() > MaxITerm2Base64) {
+                endITerm2Multipart();
             } else {
                 m_iterm2Data.append(value);
                 m_iterm2PromptSincePart = false;
@@ -5242,7 +5442,9 @@ void Terminal::iterm2(std::string_view args, bool bel)
     } else if (key == "RequestUpload") {
         // format=tgz;version=BASE64 (the program's tar --version). iTerm2
         // sends tgz alone. Another format, or a host that cannot ask, gets
-        // the answer of a cancel, so that the program does not wait.
+        // no answer: Ctrl+C, iTerm2's answer to a cancel, is a signal to
+        // the foreground job, which output must not be able to send. Only a
+        // person who cancels the host's question sends it (the host).
         std::string_view format = "tgz";
         for (std::size_t at = 0; at <= value.size();) {
             const std::size_t end = std::min(value.find(';', at), value.size());
@@ -5250,10 +5452,10 @@ void Terminal::iterm2(std::string_view args, bool bel)
             if (item.starts_with("format=")) format = item.substr(7);
             at = end + 1;
         }
-        if (format != "tgz" || !m_host.uploadRequested()) reply("\x03");
+        if (format == "tgz") m_host.uploadRequested();
     } else if (key == "SetUserVar") {
         const auto eq2 = value.find('=');
-        if (eq2 != std::string_view::npos && eq2 > 0 && eq2 <= 128) {
+        if (eq2 != std::string_view::npos && eq2 > 0 && eq2 <= ITerminalHost::MaxUserVarName) {
             m_host.userVarChanged(value.substr(0, eq2), base64Decode(value.substr(eq2 + 1)));
         }
     } else if (key == "CurrentDir") {
@@ -5298,7 +5500,6 @@ void Terminal::endITerm2Multipart()
     m_iterm2Receiving = false;
     m_iterm2Args.clear();
     std::string().swap(m_iterm2Data);
-    m_iterm2Limit = 0;
     m_iterm2PromptSincePart = false;
 }
 
@@ -5311,11 +5512,16 @@ void Terminal::iterm2File(std::string_view args, std::string_view base64)
         // arguments passed the head's 4 KiB, which no real file needs.
         return;
     }
-    if (m_cellWidth <= 0 || m_cellHeight <= 0) return;
-    // Each frame of an animation (GIF, WebP, APNG), as iTerm2 and WezTerm play it.
+    // A quota of 0 keeps no image: the decode would be for nothing.
+    if (m_cellWidth <= 0 || m_cellHeight <= 0 || m_options.graphicsQuota == 0) return;
+    // Each frame of an animation (GIF, WebP, APNG), as iTerm2 and WezTerm play
+    // it. The decode is at the natural size, before width= and height= shrink
+    // it: it gets at least the default quota, so that a large photo shown
+    // small still shows with a low quota. The quota bounds what is kept.
     std::vector<ImageFrame> frames;
     std::vector<std::uint32_t> delays;
-    if (!m_host.decodeImageFrames(base64Decode(base64), m_options.graphicsQuota, frames, delays) || frames.empty()
+    const std::size_t decodeBudget = std::max(m_options.graphicsQuota, GraphicsStore::DefaultQuota);
+    if (!m_host.decodeImageFrames(base64Decode(base64), decodeBudget, frames, delays) || frames.empty()
         || delays.size() != frames.size()) {
         return;
     }
@@ -5335,8 +5541,18 @@ void Terminal::iterm2File(std::string_view args, std::string_view base64)
     // Stored at its natural size, shrunk only: an enlargement is drawn by the
     // renderer at the display size, so it costs no quota and stays sharp.
     for (ImageFrame& f : frames) f = detail::scaleFrame(f, std::min(width, f.width), std::min(height, f.height));
-    // A GIF frame of 10 ms or less shows for 100 ms, as browsers and iTerm2
-    // play it: old GIFs count on that. A still image has no time.
+    // An animation stops at the last frame that fits the quota once shrunk.
+    std::size_t kept = 0;
+    std::size_t bytes = 0;
+    while (kept < frames.size() && bytes + frames[kept].byteSize() <= m_options.graphicsQuota) {
+        bytes += frames[kept++].byteSize();
+    }
+    if (kept == 0) return;
+    frames.resize(kept);
+    delays.resize(kept);
+    // A frame of 10 ms or less shows for 100 ms, as browsers and iTerm2 play
+    // an animated GIF, and also a WebP or APNG one: old GIFs count on that.
+    // A still image has no time.
     if (frames.size() > 1) {
         for (std::uint32_t& delay : delays) delay = delay <= 10 ? 100 : delay;
     }
@@ -5738,28 +5954,6 @@ const std::pair<std::string_view, std::string_view>* findCapability(std::string_
     return nullptr;
 }
 
-void appendColor(std::string& out, AfterglowVt::Color c, int base, int extended)
-{
-    using Kind = AfterglowVt::Color::Kind;
-    switch (c.kind()) {
-    case Kind::Default:
-        return;
-    case Kind::Palette:
-        if (base != 0 && c.index() < 8) {
-            out += ';' + std::to_string(base + c.index());
-        } else if (base != 0 && c.index() < 16) {
-            out += ';' + std::to_string(base + 60 + c.index() - 8);
-        } else {
-            out += ';' + std::to_string(extended) + ":5:" + std::to_string(c.index());
-        }
-        return;
-    case Kind::Rgb:
-        out += ';' + std::to_string(extended) + ":2::" + std::to_string(c.r()) + ':' + std::to_string(c.g()) + ':'
-            + std::to_string(c.b());
-        return;
-    }
-}
-
 } // namespace
 
 void Terminal::dcsDispatch(const Params& params, const Intermediates& inter, std::uint8_t final, std::string_view data)
@@ -5817,24 +6011,7 @@ void Terminal::dcsDispatch(const Params& params, const Intermediates& inter, std
         // DECRQSS: report a setting as the sequence that would set it.
         std::string value;
         if (data == "m") {
-            const Style& st = cursor().pen;
-            value = "0";
-            static constexpr std::pair<std::uint16_t, int> Flags[] = {
-                {Attr::Bold, 1}, {Attr::Faint, 2}, {Attr::Italic, 3}, {Attr::Blink, 5},
-                {Attr::Inverse, 7}, {Attr::Invisible, 8}, {Attr::Strikethrough, 9}, {Attr::Overline, 53},
-            };
-            for (const auto& [flag, code] : Flags) {
-                if (st.has(flag)) {
-                    value += ';' + std::to_string(code);
-                }
-            }
-            if (st.underline != UnderlineStyle::None) {
-                value += st.underline == UnderlineStyle::Single ? std::string(";4")
-                                                                : ";4:" + std::to_string(int(st.underline));
-            }
-            appendColor(value, st.fg, 30, 38);
-            appendColor(value, st.bg, 40, 48);
-            appendColor(value, st.underlineColor, 0, 58);
+            value = sgrParameters(cursor().pen, true);
             value += 'm';
         } else if (data == "r") {
             value = std::to_string(m_margins.top + 1) + ';' + std::to_string(m_margins.bottom + 1) + 'r';
@@ -5861,8 +6038,7 @@ void Terminal::dcsDispatch(const Params& params, const Intermediates& inter, std
             const int level = resource == 4 ? m_modes.modifyOtherKeys : resource == 0 ? 0 : 2;
             value = ">" + std::to_string(resource) + ";" + std::to_string(level) + "m";
         } else if (data == " q") {
-            const int base = m_cursorShape == CursorShape::Block ? 1 : m_cursorShape == CursorShape::Underline ? 3 : 5;
-            value = std::to_string(base + (m_modes.cursorBlink ? 0 : 1)) + " q";
+            value = std::to_string(cursorStyleNumber()) + " q";
         }
         reply(value.empty() ? std::string("\x1bP0$r\x1b\\") : "\x1bP1$r" + value + "\x1b\\");
     }

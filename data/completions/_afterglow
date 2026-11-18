@@ -162,8 +162,8 @@ _afterglow_ctl() {
         'resize:move an edge of the pane'
         'send-key:type keys by name'
         'scroll:scroll the pane'
-        'colors:print the pane'"'"'s colours'
-        'set-colors:set colours of the pane'
+        'colors:print the pane'"'"'s colors'
+        'set-colors:set colors of the pane'
         'set-font-size:set the font size'
         'set-opacity:set the window'"'"'s background opacity'
         'set-user-var:set user variables of the pane'
@@ -184,8 +184,11 @@ _afterglow_ctl() {
     # --session NAME comes before the command. afterglow mux ls lists the
     # names, but a completion runs no program but aglow run --complete. With
     # the cursor on the word --session itself, that word is the one being
-    # completed.
+    # completed. In a pane of a session, the commands act on it as with
+    # --session.
+    local session=${AFTERGLOW_SESSION:+1}
     if [[ $words[2] == --session ]] && (( CURRENT > 2 )); then
+        session=1
         if (( CURRENT == 3 )); then
             _message 'session name'
             return
@@ -215,6 +218,10 @@ _afterglow_ctl() {
         '--hold[keep the pane after the program exits]' '--no-focus[keep the focus where it is]')
     local -a reads=('--stdin-text[pane text as standard input]:scope:(screen scrollback selection last-output first-output-on-screen last-visited-output)'
         '--stdin-ansi[with its styles]' )
+    # A pane of a mux session takes only --env: its daemon starts the
+    # program. new-window opens a window of its own.
+    local -a paneLaunch=("${launch[@]}" "${reads[@]}")
+    [[ -n $session ]] && paneLaunch=("${launch[1]}")
     case $words[1] in
     split|new-tab|new-window|overlay)
         # A command to run follows "--", and only options come before it.
@@ -239,11 +246,11 @@ _afterglow_ctl() {
             '--wrap-markers[a CR where a row wraps]' ;;
     screenshot) _arguments $pane '(--tab --window)--tab[the panes of its tab]' '(--tab --window)--window[the whole window]' \
             '1:PNG file (- for standard output):_files' ;;
-    split) _arguments $pane '(--left --right --up --down)'{--left,--right,--up,--down} "${launch[@]}" "${reads[@]}" ;;
+    split) _arguments $pane '(--left --right --up --down)'{--left,--right,--up,--down} "${paneLaunch[@]}" ;;
     move-pane)
         _arguments $pane '1:target pane ID (0 for new-window, and for new-tab in its own window):' \
             '2:placement:(left right up down new-tab new-window)' ;;
-    new-tab) _arguments $pane '--cwd[working directory]:directory:_directories' "${launch[@]}" "${reads[@]}" ;;
+    new-tab) _arguments $pane '--cwd[working directory]:directory:_directories' "${paneLaunch[@]}" ;;
     new-window) _arguments '--cwd[working directory]:directory:_directories' "${launch[@]:0:3}" ;;
     overlay)
         _arguments $pane '--capture[where the result comes from]:capture:(stdout file none)' \
@@ -256,7 +263,9 @@ _afterglow_ctl() {
             "${reads[@]}" ;;
     set-title|set-tab-title) _arguments -S $pane '*:title:' ;;
     colors) _arguments $pane '--json[print JSON]' ;;
-    set-colors) _arguments -S $pane '--all[every pane]' '--reset[the configured colours first]' '*:theme or NAME=COLOR:' ;;
+    # --all sets every pane: no --pane with it.
+    set-colors) _arguments -S '(--all)--pane[the pane]:pane ID:' '(--pane)--all[every pane]' '--reset[the configured colors first]' \
+            '*:theme or NAME=COLOR:' ;;
     set-font-size) _arguments $pane '1:points, or +N or -N:' ;;
     set-opacity) _arguments $pane '1:opacity from 0 to 1:' ;;
     set-user-var) _arguments -S $pane '*:NAME=VALUE:' ;;

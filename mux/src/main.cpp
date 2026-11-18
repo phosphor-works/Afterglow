@@ -9,6 +9,7 @@
 
 #include "Daemon.h"
 #include "ImageDecoder.h"
+#include "ImageServer.h"
 #include "MuxConnect.h"
 #include "MuxProtocol.h"
 #include "Proxy.h"
@@ -120,9 +121,12 @@ int startFailed(int reportFd, const std::string& message, bool held = false)
 
 int main(int argc, char** argv)
 {
-    // The server that decodes the PNG and iTerm2 images of sessions
-    // (ImageDecoder.h).
-    if (argc == 3 && argv[1] == AfterglowMux::DecodeServerArgument) return AfterglowMux::runImageServer(argv[2]);
+    // The server that decodes the PNG and iTerm2 images of sessions and of
+    // a window's panes (ImageDecoder.h). A client of an older version, which
+    // gives no version, hears that it is one.
+    if ((argc == 3 || argc == 4) && argv[1] == AfterglowMux::DecodeServerArgument) {
+        return AfterglowMux::runImageServer(argv[2], argc == 4 ? std::string_view(argv[3]) : std::string_view());
+    }
     // A daemon that a parent started with SIGCHLD ignored would lose the
     // status of its children: the kernel reaps them.
     std::signal(SIGCHLD, SIG_DFL);

@@ -149,12 +149,14 @@ These keep the modifiers on the keys:
 
 - The desktop and other applications. A desktop shortcut takes its key before Afterglow gets it.
 - `QuickTerminal.shortcut`, which is a desktop shortcut.
-- The question before a file transfer, and the save dialog of a download.
+- The questions before a file transfer, a download and an upload.
+- The Save dialog of a download, and the file dialog of an upload.
 - A drag and drop between applications.
 
 A rule that names Kitty's `hyper` or `meta` is an error.
 A Hyper or Meta key gives the modifier that the keyboard layout gives it, if any.
 The remap applies to that modifier, and the key keeps its name.
+In the Kitty keyboard protocol, a Meta key (`Meta_L` or `Meta_R`) reports the Meta key code of Kitty, not Alt.
 
 ## Pane controls
 
@@ -162,8 +164,8 @@ The remap applies to that modifier, and the key keeps its name.
 | --- | --- | --- |
 | `toggle_pane_zoom` | Ctrl+Shift+Return | Shows the focused pane across the tab |
 | `equalize_splits` | Ctrl+Shift+Alt+= | Gives the splits of the tab equal sizes |
-| `resize_left`, `resize_right` | Ctrl+Shift+Alt+Left/Right | Moves a vertical divider by two cells |
-| `resize_up`, `resize_down` | Ctrl+Shift+Alt+Up/Down | Moves a horizontal divider by two cells |
+| `resize_left`, `resize_right` | Ctrl+Shift+Alt+Left/Right | Moves a vertical divider by `Window.resizeStepCells` cells (default 2) |
+| `resize_up`, `resize_down` | Ctrl+Shift+Alt+Up/Down | Moves a horizontal divider by `Window.resizeStepCells` cells (default 2) |
 
 The command palette, `afterglow ctl action` and Luau can also run these actions.
 Zoom keeps the split ratios and pane IDs.
@@ -226,14 +228,17 @@ These actions open the output of a command in a new tab, as in Kitty:
 | --- | --- |
 | `show_last_output` | The last command |
 | `show_first_output_on_screen` | The first command whose output shows in the pane |
-| `show_last_visited_output` | The last command that `jump_prompt_up`, `jump_prompt_down` or a Ctrl+Shift+right-click went to |
+| `show_last_visited_output` | The last command that `jump_prompt_up`, `jump_prompt_down` or `afterglow ctl scroll --prompt` went to. While `Mouse.commandOutputClick` is not `none`, a right-click with `Mouse.commandOutputModifier` (Ctrl+Shift by default) on a command also sets it. |
 
 They have no default keys.
 Press Ctrl+Shift and right-click a prompt, a command or its output to open the output of that command.
+`Mouse.commandOutputModifier` sets the modifiers of this click.
+Write one or more of `ctrl`, `shift`, `alt` and `super`, joined with `+`.
+The click needs these modifiers and no others.
 `Mouse.commandOutputClick` changes this click: `select` selects the output, and `none` makes it a plain right-click.
 
 The actions use `Terminal.pager`, which defaults to `less -R`.
-`Terminal.lastOutputLimit` sets the output limit in KiB, from 1 to 65536. The default is 1024 (1 MiB).
+`Terminal.pagerOutputLimit` sets the output limit in KiB, from 1 to 65536. The default is 1024 (1 MiB).
 A notice identifies truncation.
 The pager reads a temporary file. Afterglow removes the file when the pane closes.
 In the window of a mux session, the pager runs in the session, and can keep running after the window closes.
@@ -322,12 +327,14 @@ Afterglow opens OSC 8 links and plain-text URLs with a click while you hold the 
 | `Mouse.touchScrollMultiplier` | `1` | -10 to 10 |
 | `Mouse.touchSelectHold` | `400` | 100 to 2000 milliseconds |
 | `Mouse.dragSelection` | `false` | `true`, `false` |
+| `Mouse.clickMovesCursor` | `true` | `true`, `false`. See [click on the command line](#click-on-the-command-line). |
+| `Mouse.commandOutputClick` | `pager` | `pager`, `select`, `none`. See [command output](#command-output). |
+| `Mouse.commandOutputModifier` | `ctrl+shift` | One or more of `ctrl`, `shift`, `alt` and `super`, joined with `+`. See [command output](#command-output). |
 
 `copy-or-paste` copies a selection, or pastes when there is no selection.
 `extend` extends the selection to the click.
 
-A selection that you extend past the top or bottom of a pane scrolls one row each `Mouse.autoScrollInterval`
-milliseconds.
+A selection that you extend past the top or bottom of a pane scrolls one row each `Mouse.autoScrollInterval` milliseconds.
 
 When the program in a pane reports the mouse, hold Shift to select. The program does not get a press with Shift.
 
@@ -426,8 +433,7 @@ A change to `QuickTerminal.screen` applies after the quick terminal hides and sh
 
 Afterglow removes control characters from pasted text, in bracketed and plain paste mode.
 It keeps tab, carriage return and line feed. It removes DEL and the C1 controls.
-`Terminal.confirmUnsafePaste` asks before a paste with a line break (carriage return or line feed) into a program
-that does not use bracketed paste.
+`Terminal.confirmUnsafePaste` asks before a paste with a line break (carriage return or line feed) into a program that does not use bracketed paste.
 A paste into a program that does not use paste events (OSC 5522), and each drop of text that pastes, have this limit:
 
 | Item | Limit | At the limit |
@@ -442,10 +448,16 @@ With `ask`, a prompt names the tab of the program. The window stays on the curre
 The prompt starts on Deny, so a Return typed for the shell denies the request.
 An OSC 5522 request with a name and a password also offers **Always allow**.
 An `a` key alone chooses it. A held or modified `a` does not.
-**Always allow** allows the later reads and writes of the pane that use the same password, as the Kitty specification says.
-A request that comes while the pane has too many requests that wait gets `EBUSY`. The program can try again.
-After a paste, the program can read the clipboard with the password of the paste event for
-`Terminal.pasteReadTimeout` seconds (10 by default).
+**Always allow** allows the later requests of the pane of the same kind that use the same password, as the Kitty specification says.
+An answer to a read allows later reads, and an answer to a write allows later writes, as Kitty keeps them apart.
+After a paste, the program can read the clipboard with the password of the paste event for `Terminal.pasteReadTimeout` seconds (10 by default).
+This password allows reads only.
+
+Clipboard requests and notifications of a pane wait for the window in one queue.
+
+| Item | Limit | At the limit |
+| --- | --- | --- |
+| Requests and notifications that wait | 256 items, or 128 MiB of their data | A clipboard request gets `EBUSY`. The program can try again. Afterglow drops a notification. A query of the notifications on screen (OSC 99 `p=alive`) still gets an answer. A warning in the log gives the number of dropped items. |
 
 ## Keyboard protocols
 
@@ -466,14 +478,14 @@ F13 to F35 send the sequences of xterm's terminfo entry, and the Kitty protocol 
 
 Ctrl with a key of a non-Latin layout uses the key of the first Latin layout, as Qt's shortcuts do.
 Ctrl+С on a Russian layout sends Ctrl+C in legacy modes and in the Kitty protocol.
-When a program asks for alternate keys (flag 4), the Kitty protocol sends the key of the active layout and the base layout key, such as `CSI 1089::99;5u`.
+When a program asks for alternate keys (flag 4), the Kitty protocol sends two keys, such as `CSI 1089::99;5u`. These are the key of the active layout and the base layout key.
 The base layout key is the key in the US layout.
 Afterglow sends it when it is not the same as the key.
 
 The Kitty protocol reports AltGr and the fifth level key as ISO_Level3_Shift and ISO_Level5_Shift.
 They set no modifier bit.
 It also reports the media and volume keys, when the desktop does not take them first for its own shortcuts.
-When one of two keys of a modifier is released, such as the left Ctrl key while the right one is down, the event keeps the bit of the modifier.
+When one of two keys of a modifier is released, the event keeps the bit of the modifier. An example is the left Ctrl key while the right one is down.
 
 ## Shell integration
 
@@ -482,22 +494,25 @@ Shell markers identify prompts, commands, exit status and working directories.
 Command navigation and Luau events use these markers.
 
 Bash and Zsh keep user startup files and prompt hooks.
-Fish keeps its native `mark-prompt` behavior.
+Fish 4 marks its prompts itself, and Afterglow keeps that.
 Afterglow does not change user startup files.
 It supports login and interactive flags.
 It does not inject integration into scripts, `-c` commands or explicit startup overrides.
 Examples of startup overrides are `--norc`, `-f` and `--no-config`.
 
 Set `Terminal.shellIntegration` to `"disabled"` to disable automatic injection into new panes.
-To turn off only some parts, give the switches of Kitty's `shell_integration`, apart by spaces, such as `"no-title no-sudo"`:
+`disabled` with other words is reported as a problem of the configuration, and `disabled` applies.
+To turn off only some parts, give the switches of Kitty's `shell_integration`, with spaces between them, such as `"no-title no-sudo"`:
 
 | Switch | Turns off |
 | --- | --- |
-| `no-prompt-mark` | The prompt, command and exit-status marks (OSC 133). Fish 4 sends its own. |
+| `no-prompt-mark` | The prompt, command and exit-status marks (OSC 133). In Fish 4, it also turns off the marks of Fish (`--features=no-mark-prompt`). With `no-rc`, Afterglow does not change the Fish command line, and Fish 4 keeps its own marks. |
 | `no-cwd` | The working directory (OSC 7). Fish 4 sends its own. |
-| `no-cursor` | The bar cursor while you edit the command line, and the configured cursor for the command. The bar blinks when `Terminal.cursorBlink` is on. In Fish, this cursor is used only with the default key bindings. |
+| `no-cursor` | The bar cursor while you edit the command line, and the configured cursor for the command. The bar blinks when `Terminal.cursorBlink` is on when the shell starts. The vi key bindings of Bash, Zsh and Fish keep their own cursors. |
 | `no-title` | The title: the directory at the prompt, and the command while it runs, after the host name in an ssh login. Fish sets its own titles. |
-| `no-sudo` | A `TERM` that every system knows for `sudo` and `run0`. With `Terminal.term` set to `afterglow`, `sudo` and `run0` drop the directory of Afterglow's terminfo entry, so the command gets `TERM=xterm-256color`. This applies only when the system has no entry for `afterglow`. |
+| `no-sudo` | A `TERM` that every system knows for `sudo` and `run0`. With `Terminal.term` set to `afterglow`, `sudo` and `run0` drop the directory of Afterglow's terminfo entry. Thus the integration gives them `TERM=xterm-256color` in their environment, which `env_reset` of `sudo` keeps. This applies only when the system has no entry for `afterglow`. |
+| `no-rc` | Nothing loads the integration. Afterglow sets only its environment, and your own startup files can load the integration. See [load the integration by hand](#load-the-integration-by-hand). |
+| `no-complete` | Nothing. Afterglow accepts it, as Kitty does, and has no completions to turn off. |
 
 A Fish older than 4 gets the prompt marks from Afterglow, with Kitty's special key for a click on the command line.
 
@@ -507,10 +522,41 @@ This does not remove manually configured hooks or native Fish markers.
 Custom shell wrappers require their own integration.
 Zsh integration does not load when `/etc/zsh/zshenv` sets `ZDOTDIR`.
 
+Bash gets the title of a running command from its history.
+A line that the history does not keep gets no title, with one exception.
+With `HISTSIZE=0`, no command gets a title.
+
+The exception is a command that repeats the last command while `HISTCONTROL` has `ignoredups` or `erasedups`.
+The repeat gets its title, unless one of these conditions is true:
+
+- `HISTCONTROL` has `ignorespace`. `ignoreboth` has `ignorespace` and `ignoredups`.
+- `HISTIGNORE` is not empty.
+- The history is off (`set +o history`).
+
+The history then can drop lines that are not repeats, and Afterglow cannot tell the repeat from a dropped line.
+
+### Load the integration by hand
+
+Your own startup file can load the integration.
+Do this with the `no-rc` switch, or for a shell that Afterglow did not start.
+Add the line for your shell to its startup file:
+
+| Shell | Startup file | Line |
+| --- | --- | --- |
+| Bash | `~/.bashrc` | `source /usr/share/afterglow/shell-integration/bash` |
+| Zsh | `~/.zshrc` | `source /usr/share/afterglow/shell-integration/zsh/.zshenv` |
+| Fish | `~/.config/fish/config.fish` | `source /usr/share/afterglow/shell-integration/fish` |
+
+`/usr/share` is the data directory of the install (`CMAKE_INSTALL_FULL_DATADIR`).
+An install with another prefix has the scripts in its own data directory, such as `/usr/local/share`.
+The integration loads one time in a shell.
+When Afterglow loaded it first, the line in your startup file does nothing.
+
 ### Click on the command line
 
 A click on the command line moves the cursor of the shell there, as in Kitty.
-This works in a shell that marks its prompt (OSC 133).
+This works in a shell that marks its prompt (OSC 133 `A`), with no `click_events` needed.
+The prompt mark must be at or above the cursor, and the cursor must show.
 It does not work in the output, in the history, on the alternate screen, or while a program reads the mouse.
 Set `Mouse.clickMovesCursor` to `false` to turn it off.
 

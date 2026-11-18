@@ -4,7 +4,8 @@
 find_package(GTest REQUIRED)
 
 add_executable(afterglow_image_tests DecodeTest.cpp)
-target_link_libraries(afterglow_image_tests PRIVATE Afterglow::Image afterglow_image_test_files GTest::gtest_main)
+# Little CMS writes the sRGB profile of a test.
+target_link_libraries(afterglow_image_tests PRIVATE Afterglow::Image afterglow_image_test_files afterglow_lcms2 GTest::gtest_main)
 set_target_properties(afterglow_image_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 
 include(GoogleTest)

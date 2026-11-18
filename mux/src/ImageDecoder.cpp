@@ -4,8 +4,7 @@
 #include "ImageDecoder.h"
 #include "ImageWire.h"
 
-#include <AfterglowProto/Limits.h>
-#include <AfterglowPty/CloseFrom.h>
+#include <AfterglowProto/DecodeRecord.h>
 
 #include <algorithm>
 #include <array>
@@ -23,10 +22,7 @@
 #include <signal.h>
 #include <spawn.h>
 #include <sys/mman.h>
-#include <sys/prctl.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -35,34 +31,6 @@ namespace AfterglowMux {
 using namespace decoding;
 
 namespace {
-
-enum class Read : std::uint8_t {
-    Done,
-    Ended, ///< the decoding process closed its end, or the read failed
-    Late, ///< the deadline passed
-    Cancelled,
-};
-
-Read readUntil(int fd, void* data, std::size_t size, std::chrono::steady_clock::time_point deadline, int cancel)
-{
-    auto* p = static_cast<char*>(data);
-    while (size > 0) {
-        const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-        if (left.count() <= 0) return Read::Late;
-        std::array<pollfd, 2> ready{{{fd, POLLIN, 0}, {cancel, POLLIN, 0}}};
-        const int polled = ::poll(ready.data(), cancel >= 0 ? 2 : 1, int(left.count()));
-        if (polled < 0 && errno == EINTR) continue;
-        if (polled < 0) return Read::Ended;
-        if (polled == 0) return Read::Late;
-        if (cancel >= 0 && ready[1].revents) return Read::Cancelled;
-        const ssize_t n = ::read(fd, p, size);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) return Read::Ended;
-        p += n;
-        size -= std::size_t(n);
-    }
-    return Read::Done;
-}
 
 /// A descriptor of at least 3: one of 0 to 2, in a daemon that started with
 /// a standard stream closed, would land on a standard stream of the server.
@@ -77,9 +45,14 @@ AfterglowProto::UniqueFd aboveStandard(int fd)
 
 // ---------------------------------------------------------- the daemon ---
 
-ImageDecoder::ImageDecoder(std::string executable, int waitMs, std::string reporter)
+void ImageDecoder::reportOnStandardError(const std::string& line)
+{
+    std::fprintf(stderr, "aglow-mux: %s\n", line.c_str());
+}
+
+ImageDecoder::ImageDecoder(std::string executable, int waitMs, Reporter report)
     : m_executable(std::move(executable))
-    , m_reporter(std::move(reporter))
+    , m_report(std::move(report))
     , m_waitMs(waitMs)
 {
     std::lock_guard lock(m_mutex);
@@ -95,7 +68,7 @@ ImageDecoder::~ImageDecoder()
 void ImageDecoder::reportOnce(std::chrono::steady_clock::time_point& last, const std::string& text)
 {
     std::lock_guard lock(m_reportMutex);
-    report(last, text, m_reporter);
+    if (reportDue(last) && m_report) m_report(text);
 }
 
 bool ImageDecoder::startLocked()
@@ -137,7 +110,8 @@ bool ImageDecoder::startLocked()
     std::string name = "aglow-mux";
     std::string argument(DecodeServerArgument);
     std::string parent = std::to_string(::getpid());
-    char* argv[] = {name.data(), argument.data(), parent.data(), nullptr};
+    std::string version(DecodeWireVersion);
+    char* argv[] = {name.data(), argument.data(), parent.data(), version.data(), nullptr};
     // Only what a sanitizer build reads of the daemon's environment.
     std::vector<std::string> variables;
     for (const char* key : {"ASAN_OPTIONS", "UBSAN_OPTIONS", "LSAN_OPTIONS"}) {
@@ -164,9 +138,18 @@ void ImageDecoder::stopLocked()
     m_owedAnswers = 0;
     if (m_server <= 0) return;
     ::kill(m_server, SIGKILL);
-    while (::waitpid(m_server, nullptr, 0) < 0 && errno == EINTR) {
+    int status = 0;
+    while (::waitpid(m_server, &status, 0) < 0 && errno == EINTR) {
     }
     m_server = -1;
+    // A server that ended by itself said why. Another version reads the
+    // frames otherwise: none starts again. One that does not take the
+    // arguments of this version is another version too.
+    const bool other = WIFEXITED(status) && (WEXITSTATUS(status) == OtherVersionStatus || WEXITSTATUS(status) == UsageStatus);
+    if (other && !m_otherVersion) {
+        m_otherVersion = true;
+        reportOnce(m_lastStartReport, "the image decoder " + m_executable + " is of another version: images do not show until this program starts again");
+    }
 }
 
 namespace {
@@ -206,7 +189,7 @@ void ImageDecoder::serverEndedLocked()
     // end the same way, at each decode: none for a minute.
     if (m_unanswered >= 2) {
         m_failedStart = std::chrono::steady_clock::now();
-        reportOnce(m_lastStartReport, "the image decoder ends before it answers: images of sessions do not show for a minute");
+        reportOnce(m_lastStartReport, "the image decoder ends before it answers: images do not show for a minute");
     }
 }
 
@@ -217,7 +200,7 @@ void ImageDecoder::stuckLocked()
     // a minute.
     if (m_unanswered >= 2) {
         m_failedStart = std::chrono::steady_clock::now();
-        reportOnce(m_lastStartReport, "the image decoder does not answer: images of sessions do not show for a minute");
+        reportOnce(m_lastStartReport, "the image decoder does not answer: images do not show for a minute");
     } else {
         reportOnce(m_lastReport, "the image decoder did not answer in " + std::to_string(m_waitMs) + " ms: it starts again");
     }
@@ -316,14 +299,12 @@ AfterglowProto::UniqueFd ImageDecoder::requestLocked(ImageFormats formats, int i
         return {};
     }
     const auto due = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_waitMs);
-    switch (waitForAnswer(m_socket.get(), std::min(deadline, due), cancel)) {
+    // The caller's deadline began before the request, m_waitMs long: it
+    // comes first. A server that is stuck shows at the next request, which
+    // waits for the answer owed until m_answerDue.
+    switch (waitForAnswer(m_socket.get(), deadline, cancel)) {
     case 0:
-        if (std::chrono::steady_clock::now() >= due) {
-            stuckLocked();
-            return {};
-        }
-        // The caller's deadline came first, as it waited for the lock: the
-        // answer comes to the next request, which ends its process. A
+        // The answer comes to the next request, which ends its process. A
         // healthy server goes on, and so do the decodes of other panes.
         oweLocked(due);
         return {};
@@ -341,7 +322,7 @@ bool ImageDecoder::decode(std::string_view data, ImageFormats formats, std::uint
                           std::vector<std::uint8_t>& rgba, int cancel)
 {
     std::vector<DecodedFrame> frames;
-    // One frame: the process of Png and Common writes no more.
+    // One frame: the process of Png writes no more.
     if (formats == ImageFormats::CommonFrames || !run(data, formats, MaxBytes, frames, cancel)) return false;
     width = frames.front().width;
     height = frames.front().height;
@@ -362,7 +343,7 @@ bool ImageDecoder::run(std::string_view data, ImageFormats formats, std::size_t 
     if (data.empty() || data.size() > MaxBytes || !allowed(data, formats) || readable(cancel)) return false;
     // The image goes in a memory file, which the decoding process maps.
     AfterglowProto::UniqueFd input(::memfd_create("afterglow-image", MFD_CLOEXEC));
-    if (!input.valid() || !writeAll(input.get(), data.data(), data.size())) return false;
+    if (!input.valid() || !AfterglowProto::writeAll(input.get(), data)) return false;
     int fds[2] = {-1, -1};
     if (::pipe2(fds, O_CLOEXEC) != 0) return false;
     AfterglowProto::UniqueFd reader(fds[0]);
@@ -382,11 +363,11 @@ bool ImageDecoder::run(std::string_view data, ImageFormats formats, std::size_t 
             if (!m_socket.valid()) {
                 // The server ended: a crash, the OOM killer, one that got
                 // stuck, or one that did not start. The new one runs the
-                // daemon's own executable (/proc/self/exe), with the
-                // libraries of now. One that did not start waits a minute
-                // before it is tried again.
+                // executable again, with the libraries of now. One that did
+                // not start waits a minute before it is tried again, and one
+                // of another version never is.
                 const auto now = std::chrono::steady_clock::now();
-                if (now >= deadline || (m_failedStart && now - *m_failedStart < std::chrono::minutes(1))) return false;
+                if (m_otherVersion || now >= deadline || (m_failedStart && now - *m_failedStart < std::chrono::minutes(1))) return false;
                 stopLocked();
                 // A start that fails reports why itself: the line of a
                 // restart would hold that back for a minute.
@@ -414,33 +395,49 @@ bool ImageDecoder::run(std::string_view data, ImageFormats formats, std::size_t 
         ~Kill() { pidfdKill(pidfd); }
     } kill{process.get()};
 
-    const auto late = [this, waitMs](Read read) {
-        if (read == Read::Late) reportOnce(m_lastReport, "an image decoder took more than " + std::to_string(waitMs) + " ms: the image does not show");
+    using AfterglowProto::DecodeRead;
+    AfterglowProto::DecodeWait wait;
+    wait.deadline = deadline;
+    wait.cancel = cancel;
+    // The frames that came before still show.
+    const auto late = [this, waitMs, &frames](DecodeRead read) {
+        if (read != DecodeRead::Late) return;
+        reportOnce(m_lastReport, "an image decoder took more than " + std::to_string(waitMs) + " ms: "
+                                     + (frames.empty() ? std::string("the image does not show")
+                                                       : "the frames after the first " + std::to_string(frames.size()) + " do not show"));
     };
     // Frames until the process closes its end: a frame cut short, by its
     // end or the deadline, goes, and those before it stay. Each frame has
-    // the size of the first, and they fit in maxBytes together.
+    // the size of the first, and they fit in maxBytes together. Its pixels
+    // come through a small buffer: a frame of hundreds of megabytes is not
+    // filled with zeros first, on the thread that waits for it.
+    std::vector<std::uint8_t> chunk(std::size_t(1) << 18);
     std::size_t total = 0;
     while (frames.size() < AfterglowProto::GraphicsMaxFrames) {
-        Header header;
-        Read read = readUntil(reader.get(), &header, sizeof header, deadline, cancel);
+        AfterglowProto::DecodeRecord record;
+        DecodeRead read = AfterglowProto::readDecodeRecord(reader.get(), record, wait);
         late(read);
-        if (read != Read::Done || !fits(header.width, header.height)) break;
-        if (!frames.empty() && (header.width != frames.front().width || header.height != frames.front().height)) break;
-        const std::size_t size = std::size_t(header.width) * header.height * 4;
-        if (size > maxBytes - total) break;
+        if (read != DecodeRead::Done || record.kind != AfterglowProto::DecodeRecord::Kind::Frame || !fits(record.width, record.height))
+            break;
+        if (!frames.empty() && (record.width != frames.front().width || record.height != frames.front().height)) break;
+        const std::size_t size = std::size_t(record.width) * record.height * 4;
+        if (record.length != size || size > maxBytes - total) break;
         DecodedFrame frame;
         try {
-            frame.rgba.resize(size);
+            frame.rgba.reserve(size);
         } catch (const std::bad_alloc&) {
             break;
         }
-        read = readUntil(reader.get(), frame.rgba.data(), frame.rgba.size(), deadline, cancel);
+        while (read == DecodeRead::Done && frame.rgba.size() < size) {
+            const std::size_t part = std::min(chunk.size(), size - frame.rgba.size());
+            read = AfterglowProto::readFromDecoder(reader.get(), chunk.data(), part, wait);
+            if (read == DecodeRead::Done) frame.rgba.insert(frame.rgba.end(), chunk.begin(), chunk.begin() + std::ptrdiff_t(part));
+        }
         late(read);
-        if (read != Read::Done) break;
-        frame.width = header.width;
-        frame.height = header.height;
-        frame.delayMs = header.delayMs;
+        if (read != DecodeRead::Done) break;
+        frame.width = record.width;
+        frame.height = record.height;
+        frame.delayMs = std::uint32_t(std::max(0, record.delay));
         total += size;
         frames.push_back(std::move(frame));
     }

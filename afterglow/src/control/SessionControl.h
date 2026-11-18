@@ -25,7 +25,7 @@ struct Settings;
 /// With Control.enabled off, the window refuses every call of a client, as
 /// its control target would. For a session of another host, it refuses
 /// every call that reaches more of this computer than the session's window.
-void answerSessionCall(Control& control, const Settings& settings, TerminalWindow& window, const QString& fn, const QJsonArray& args,
+void answerSessionCall(Control& control, const Settings& settings, TerminalWindow& window, const QString& fn, QJsonArray args,
                        qint64 client, MuxClient::ControlReply reply);
 
 } // namespace Afterglow

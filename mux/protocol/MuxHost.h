@@ -15,8 +15,8 @@
 // The calls that the terminal of a session pane makes to its host
 // (AfterglowVt::ITerminalHost) and that the window of the session answers:
 // bells, flashes, notifications, the clipboard, file transfer, drag and
-// drop, downloads, pointer shapes, user variables, the commands of shell
-// integration, and the reports that the terminal answers queries with. The
+// drop, downloads, uploads, pointer shapes, user variables, the commands of
+// shell integration, and the reports that the terminal answers queries with. The
 // daemon sends each as a Host event of the attach stream (MuxStream.h), and
 // the window makes the same call on its session pane. The pane's answers to
 // the program come back as its input.
@@ -51,8 +51,8 @@ enum class Kind : std::uint8_t {
     CommandStarted = 10, ///< OSC 133: text
     CommandFinished = 11, ///< OSC 133: number is the exit code, value the milliseconds that the command ran
     /// An iTerm2 download begins (OSC 1337 File without inline=1): title is
-    /// the name, value the declared size + 1, or 0. The pane's output waits
-    /// for the window's Attach::InputType::DownloadAnswer.
+    /// the name, value the declared size + 1 (at most 2^63), or 0. The
+    /// pane's output waits for the window's Attach::InputType::DownloadAnswer.
     DownloadBegin = 12,
     /// The answer that the terminal writes to a query (DA1, DSR, colors), in
     /// text: the window writes it after the replies to the commands that the
@@ -103,6 +103,9 @@ inline Call make(Kind kind, std::string title = {}, std::string text = {}, int n
 }
 
 std::string encode(const Call& call);
+/// encode() of a DownloadData call of @p data, with no copy of it into a
+/// Call: a chunk can be large.
+std::string encodeDownloadData(std::string_view data);
 /// nullopt for bytes that are no call of this codec, or a call that the
 /// terminal's parser never makes: text that it would refuse, an id that it
 /// would strip, a value out of its range. The window answers the program
@@ -114,8 +117,10 @@ std::optional<Call> decode(std::string_view bytes);
 /// OSC 52 read, an OSC 5522 read or write) and the start of a transfer or a
 /// drag get a denial, the queries of drag and drop types and of the
 /// notifications on screen get their answers. Empty for the others, which
-/// need none. The daemon answers so, and a window answers so
-/// the calls of a pane that went to another session before it heard.
+/// need none, and for an upload request: only a person cancels one, and the
+/// program waits until its user interrupts it. The daemon answers so, and a
+/// window answers so the calls of a pane that went to another session before
+/// it heard.
 std::string answerWithoutWindow(const Call& call);
 
 } // namespace AfterglowMux::Host

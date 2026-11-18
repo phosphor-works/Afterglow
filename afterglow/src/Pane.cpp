@@ -4,6 +4,7 @@
 #include "Pane.h"
 
 #include "desktop/UploadArchive.h"
+#include "desktop/Download.h"
 #include "desktop/FileTransfer.h"
 #include "desktop/DragDrop.h"
 #include "desktop/Accessibility.h"
@@ -12,39 +13,31 @@
 
 #include <ImageDecoder.h>
 #include "PaneLaunch.h"
-#include "PaneDialog.h"
 #include "PaneOverlay.h"
-#include "ShownText.h"
 #include "mux/MuxClient.h"
 
 #include "MuxHost.h"
 
 #include "app/InstanceSocket.h"
 #include "app/NotificationCenter.h"
+#include "config/Theme.h"
 
 #include <AfterglowVt/Unicode.h>
 
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QFile>
-#include <QFileDialog>
 #include <QFileInfo>
-#include <QSaveFile>
-#include <QStandardPaths>
-#include <QTextBoundaryFinder>
 #include <QSysInfo>
 
 #include <algorithm>
+#include <cerrno>
 #include <climits>
 #include <chrono>
 #include <QLoggingCategory>
 
 #include <utility>
 
-#include <cerrno>
-#include <cstring>
-
-#include <fcntl.h>
 #include <pwd.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
@@ -70,10 +63,6 @@ constexpr qint64 SyncTimeoutMs = 1000;
 constexpr qint64 SyncHoldLimitMs = 2 * SyncTimeoutMs;
 /// How long to keep the last frame while the shell repaints a resized prompt.
 constexpr qint64 PromptRedrawTimeoutMs = 150;
-/// The longest name that a download suggests, in UTF-8 bytes.
-constexpr qsizetype MaxDownloadNameBytes = 200;
-/// The longest extension that a cut name keeps, its dot included, in code points.
-constexpr qsizetype MaxDownloadExtension = 16;
 } // namespace
 
 namespace {
@@ -104,15 +93,29 @@ Pane::~Pane()
         const std::uint64_t one = 1;
         (void)!::write(m_stopDecode.get(), &one, sizeof one);
     }
-    // A reader thread that waits for a download's answer ends its wait.
+    // Stop the pty thread before the terminal it feeds goes away. A thread
+    // that paused its output for a download stops too.
+    if (m_pty) m_pty->stop();
+    // A download that streams loses its part file; the writers of those
+    // that finished end their renames. The pane does not wait for the disk
+    // (DownloadFile::release). Without m_mutex, which a writer takes to
+    // report, and while m_pty is whole: a writer resumes it until then.
+    std::unique_ptr<DownloadFile> open;
+    std::vector<std::pair<quint64, std::unique_ptr<DownloadFile>>> ending;
     {
         std::lock_guard lock(m_mutex);
-        m_closing = true;
-        dropDownload();
+        open = std::move(m_download);
+        ending = std::move(m_endingDownloads);
     }
-    m_downloadWake.notify_all();
-    // Stop the pty thread before the terminal it feeds goes away.
-    if (m_pty) m_pty->stop();
+    // A session pane goes while its program runs on (a detach, another
+    // window that took the session, a break out): nothing else tells the
+    // user that the file was not saved.
+    if (open && m_session) {
+        NotificationCenter::instance().showNotice(nullptr, tr("Download not saved"),
+                                                  tr("%1: the pane left this window before the whole file came.").arg(open->target()));
+    }
+    DownloadFile::release(std::move(open));
+    for (auto& entry : ending) DownloadFile::release(std::move(entry.second));
     m_dragDrop.reset();
     m_fileTransfers.reset();
     m_pty.reset();
@@ -172,7 +175,7 @@ bool Pane::start(AfterglowPty::SpawnOptions opts, const QString& term, int cols,
 
 void Pane::setOptions(const AfterglowVt::TerminalOptions& options)
 {
-    std::lock_guard lock(m_mutex);
+    const auto lock = lockTerminal();
     // A session pane's colors, cursor and modes are the session's, which
     // its frames carry once the daemon applied the options too.
     if (m_session) m_terminal.setViewOptions(options);
@@ -192,17 +195,40 @@ void Pane::resize(int cols, int rows, int cellWidth, int cellHeight)
         m_session->sendResize(m_sessionPane, AfterglowMux::PaneSize{cols, rows, cellWidth, cellHeight});
         return;
     }
-    {
-        std::lock_guard lock(m_mutex);
-        if (cols == m_terminal.cols() && rows == m_terminal.rows() && cellWidth == m_terminal.cellWidth()
-            && cellHeight == m_terminal.cellHeight()) {
-            return;
-        }
-        m_terminal.resize(cols, rows, cellWidth, cellHeight);
+    std::lock_guard lock(m_mutex);
+    const PendingSize size{cols, rows, cellWidth, cellHeight};
+    // The size that the terminal takes: a pending one (applyPendingLocked)
+    // is ahead of it.
+    const bool same = m_pendingSize ? *m_pendingSize == size
+                                    : cols == m_terminal.cols() && rows == m_terminal.rows()
+                                          && cellWidth == m_terminal.cellWidth() && cellHeight == m_terminal.cellHeight();
+    if (same) return;
+    // While the reader thread decodes an image, the terminal is its own: it
+    // takes the size, and the PTY with it, at the end of its feed. The window
+    // draws the pane at the size it has meanwhile, as it does a session pane
+    // until the daemon's frame, and a drag of the window goes on.
+    m_pendingSize = size;
+    if (!m_decoding) applyPendingLocked();
+}
+
+void Pane::setVisible(bool visible)
+{
+    if (visible == m_visible) return;
+    m_visible = visible;
+    std::lock_guard lock(m_mutex);
+    // As a size: the reader thread gives the terminal the state at the end
+    // of its feed, when the program can hear of it (mode 2033).
+    m_pendingVisible = visible;
+    if (!m_decoding) applyPendingLocked();
+}
+
+void Pane::applyPendingLocked()
+{
+    if (const std::optional<PendingSize> size = std::exchange(m_pendingSize, std::nullopt)) {
+        m_terminal.resize(size->cols, size->rows, size->cellWidth, size->cellHeight);
+        if (m_pty) m_pty->resize(size->cols, size->rows, size->cols * size->cellWidth, size->rows * size->cellHeight);
     }
-    if (m_pty) {
-        m_pty->resize(cols, rows, cols * cellWidth, rows * cellHeight);
-    }
+    if (const std::optional<bool> visible = std::exchange(m_pendingVisible, std::nullopt)) m_terminal.setVisible(*visible);
 }
 
 int Pane::cols() const
@@ -336,21 +362,22 @@ AfterglowVt::SelectionPoint Pane::pointAt(int col, int row) const
 
 void Pane::selectAll()
 {
-    AfterglowVt::SelectionPoint first;
-    AfterglowVt::SelectionPoint last;
-    {
-        std::lock_guard lock(m_mutex);
-        const AfterglowVt::Screen& scr = m_terminal.screen();
-        first = {scr.rowsDropped(), 0};
-        last = {scr.rowsDropped() + scr.historySize() + std::size_t(std::max(0, scr.cursor.y)), scr.cols() - 1};
-    }
-    startSelection(first, AfterglowVt::SelectionMode::Normal, true);
-    extendSelection(last);
+    // One lock: the screen that the rows are of is the one the selection
+    // is made on.
+    std::lock_guard lock(m_mutex);
+    const AfterglowVt::Screen& scr = m_terminal.screen();
+    startSelectionLocked({scr.rowsDropped(), 0}, AfterglowVt::SelectionMode::Normal, true);
+    extendSelectionLocked({scr.rowsDropped() + scr.historySize() + std::size_t(std::max(0, scr.cursor.y)), scr.cols() - 1});
 }
 
 void Pane::startSelection(AfterglowVt::SelectionPoint anchor, AfterglowVt::SelectionMode mode, bool activeNow)
 {
     std::lock_guard lock(m_mutex);
+    startSelectionLocked(anchor, mode, activeNow);
+}
+
+void Pane::startSelectionLocked(AfterglowVt::SelectionPoint anchor, AfterglowVt::SelectionMode mode, bool activeNow)
+{
     m_selection.start(anchor, mode, m_terminal.screen().layoutEpoch(), activeNow);
     m_selectionOnAltScreen = m_terminal.modes().altScreen;
     ++m_selectionSerial;
@@ -359,6 +386,11 @@ void Pane::startSelection(AfterglowVt::SelectionPoint anchor, AfterglowVt::Selec
 void Pane::extendSelection(AfterglowVt::SelectionPoint head)
 {
     std::lock_guard lock(m_mutex);
+    extendSelectionLocked(head);
+}
+
+void Pane::extendSelectionLocked(AfterglowVt::SelectionPoint head)
+{
     if (head == m_selection.head && m_selection.active) {
         return;
     }
@@ -495,6 +527,19 @@ void Pane::scrollHistory(double fraction)
     // the row count can fall just short of the live view's top row.
     const long top = std::clamp(std::lround(std::clamp(fraction, 0.0, 1.0) * double(screen.totalRows())), 0L, long(screen.historySize()));
     m_terminal.scrollViewport(long(screen.viewportTop()) - top);
+}
+
+void Pane::scrollViewport(long rows)
+{
+    std::lock_guard lock(m_mutex);
+    m_terminal.scrollViewport(rows);
+}
+
+std::size_t Pane::setViewportOffset(std::size_t rowsBack)
+{
+    std::lock_guard lock(m_mutex);
+    m_terminal.setViewportOffset(rowsBack);
+    return m_terminal.screen().viewportOffset();
 }
 
 namespace {
@@ -751,6 +796,9 @@ void Pane::applyPreedit()
 
 bool Pane::jumpToPrompt(int direction)
 {
+    // The prompts of a session pane that the user could not see are older
+    // until a refresh, as for its other reads.
+    refreshSession();
     std::lock_guard lock(m_mutex);
     const AfterglowVt::Screen& scr = m_terminal.screen();
     const std::size_t top = scr.viewportTop();
@@ -815,8 +863,10 @@ bool Pane::selectOutput(std::uint64_t id)
     refreshSession();
     AfterglowVt::SelectionPoint first;
     AfterglowVt::SelectionPoint last;
+    // One lock for the look and the selection: a switch to the alternate
+    // screen between them would make it there.
+    std::lock_guard lock(m_mutex);
     {
-        std::lock_guard lock(m_mutex);
         if (m_terminal.modes().altScreen) return false;
         const auto regions = m_terminal.semanticRegions();
         const auto region = std::find_if(regions.begin(), regions.end(), [&](const auto& r) { return r.id == id; });
@@ -837,8 +887,8 @@ bool Pane::selectOutput(std::uint64_t id)
         }
         if (last.row < first.row || (last.row == first.row && last.col < first.col)) return false;
     }
-    startSelection(first, AfterglowVt::SelectionMode::Normal, true);
-    extendSelection(last);
+    startSelectionLocked(first, AfterglowVt::SelectionMode::Normal, true);
+    extendSelectionLocked(last);
     return true;
 }
 
@@ -900,9 +950,9 @@ pid_t Pane::programPid() const
     return m_pty ? m_pty->pid() : 0;
 }
 
-std::optional<AfterglowPty::ForegroundProcess> Pane::foreground() const
+std::optional<AfterglowPty::ForegroundProcess> Pane::foreground(bool withCmdline) const
 {
-    return m_pty ? m_pty->foreground() : std::nullopt;
+    return m_pty ? m_pty->foreground(withCmdline) : std::nullopt;
 }
 
 QMap<QString, QString> Pane::userVars() const
@@ -923,11 +973,7 @@ QVariantMap Pane::colors() const
     QVariantMap out;
     for (const auto& color : named) {
         out.insert(QString::fromStdString(color.name),
-                   color.rgb ? QVariant(QStringLiteral("#%1%2%3")
-                                            .arg(color.rgb->r, 2, 16, QLatin1Char('0'))
-                                            .arg(color.rgb->g, 2, 16, QLatin1Char('0'))
-                                            .arg(color.rgb->b, 2, 16, QLatin1Char('0')))
-                             : QVariant::fromValue(nullptr));
+                   color.rgb ? QVariant(Themes::hexName(*color.rgb)) : QVariant::fromValue(nullptr));
     }
     return out;
 }
@@ -935,46 +981,97 @@ QVariantMap Pane::colors() const
 bool Pane::applyColors(const std::vector<std::string>& payloads)
 {
     bool applied = true;
+    std::size_t count = 0;
     {
-        std::lock_guard lock(m_mutex);
+        const auto lock = lockTerminal();
         for (const std::string& payload : payloads) {
             if (!m_terminal.applyColorOsc(payload)) {
                 applied = false;
                 break;
             }
+            ++count;
         }
     }
-    Q_EMIT contentChanged();
+    if (count > 0) Q_EMIT contentChanged();
     return applied;
 }
 
 bool Pane::signalProgram(int signal)
 {
-    return m_pty && m_pty->signalForeground(signal);
+    if (m_pty) return m_pty->signalForeground(signal);
+    errno = 0;
+    return false;
 }
 
 bool Pane::uploadRequested()
 {
     // m_mutex held, on the reader thread or for a session pane the GUI thread.
     if (m_uploadAsked.exchange(true)) return false;
-    QMetaObject::invokeMethod(this, [this] { Q_EMIT uploadAsked(); }, Qt::QueuedConnection);
+    m_uploadOrphaned.store(false);
+    // Without shell integration no command end comes: a change of the
+    // foreground group at the answer says that the command ended.
+    m_uploadGroup.store(ptyForegroundGroup());
+    queueRequest([this] { Q_EMIT uploadAsked(); });
     return true;
+}
+
+void Pane::orphanUploadLocked()
+{
+    if (!m_uploadAsked.load() || m_uploadOrphaned.exchange(true)) return;
+    queueRequest([this] { Q_EMIT uploadCancelled(); });
+}
+
+pid_t Pane::ptyForegroundGroup() const
+{
+    // The child's tpgid: the group that has the terminal also when its
+    // leader exited ("cmd | it2ul" after cmd ended).
+    const pid_t child = m_pty ? m_pty->pid() : -1;
+    const auto stat = child > 0 ? AfterglowPty::processStat(child) : std::nullopt;
+    return stat && stat->foregroundGroup > 0 ? pid_t(stat->foregroundGroup) : -1;
+}
+
+void Pane::refuseUpload()
+{
+    // Under m_mutex: an orphanUploadLocked() comes before or after, and
+    // queues no uploadCancelled for a question that is gone.
+    std::lock_guard lock(m_mutex);
+    m_uploadAsked.store(false);
+    m_uploadOrphaned.store(false);
+    m_uploadGroup.store(-1);
 }
 
 bool Pane::answerUpload(const std::optional<std::string>& answer)
 {
-    m_uploadAsked.store(false);
-    // One write: the answer goes whole, or the program gets the cancel.
-    if (answer && sendInput(*answer, false)) return true;
-    sendInput(UploadArchive::Cancel, false);
+    pid_t group = -1;
+    bool orphaned = false;
+    {
+        // As refuseUpload(): the command that asked ends before the answer,
+        // or after it, and not between its flags.
+        std::lock_guard lock(m_mutex);
+        m_uploadAsked.store(false);
+        group = m_uploadGroup.exchange(-1);
+        orphaned = m_uploadOrphaned.exchange(false);
+    }
+    // The command that asked ended: the shell reads the input now, and would
+    // take each line of the answer for a command.
+    if (orphaned || (group > 0 && ptyForegroundGroup() != group)) return !answer;
+    // One write: the answer goes whole, or the program gets the cancel. The
+    // daemon of a session pane writes it in one piece too. A reply, not
+    // typing: the view stays where it is.
+    const auto send = [this](std::string_view bytes) {
+        if (m_session) return !m_sessionGone && m_session->sendUploadAnswer(m_sessionPane, bytes);
+        return sendReply(bytes);
+    };
+    if (answer && send(*answer)) return true;
+    send(UploadArchive::Cancel);
     return !answer;
 }
 
-void Pane::setUserVar(const QString& name, const QString& value)
+bool Pane::setUserVar(const QString& name, const QString& value)
 {
     const QByteArray n = name.toUtf8(), v = value.toUtf8();
     std::lock_guard lock(m_mutex);
-    userVarChanged(std::string_view(n.constData(), std::size_t(n.size())), std::string_view(v.constData(), std::size_t(v.size())));
+    return keepUserVar(std::string_view(n.constData(), std::size_t(n.size())), std::string_view(v.constData(), std::size_t(v.size())));
 }
 
 bool Pane::atShellPrompt() const
@@ -995,13 +1092,17 @@ void Pane::announceTitle()
     Q_EMIT titleUpdated(shown);
 }
 
-QString Pane::text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::TextFormat& format)
+QString Pane::text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::TextFormat& format, bool* arriving)
 {
     refreshSession();
     std::string text;
     {
         std::lock_guard lock(m_mutex);
         text = m_terminal.text(scope, MaxText, nullptr, format);
+        if (arriving) {
+            using Scope = AfterglowVt::Terminal::TextScope;
+            *arriving = scope == Scope::LastOutput ? lastOutputArrivingLocked() : scope == Scope::All && historyArrivingLocked();
+        }
     }
     // Converted after the lock: the reader thread waits on it.
     return QString::fromStdString(text);
@@ -1016,9 +1117,13 @@ QVariantMap Pane::readText(AfterglowVt::Terminal::TextScope scope, std::size_t l
     {
         std::lock_guard lock(m_mutex);
         text = m_terminal.text(scope, limit, &truncated);
-        available = scope != AfterglowVt::Terminal::TextScope::LastOutput || m_terminal.hasCommandOutput();
-        if (scope == AfterglowVt::Terminal::TextScope::LastOutput && lastOutputArrivingLocked()) {
+        using Scope = AfterglowVt::Terminal::TextScope;
+        available = scope != Scope::LastOutput || m_terminal.hasCommandOutput();
+        // Rows on their way are blank places in the text: it is not the
+        // program's yet.
+        if ((scope == Scope::LastOutput && lastOutputArrivingLocked()) || (scope == Scope::All && historyArrivingLocked())) {
             available = false;
+            truncated = false;
             text.clear();
         }
     }
@@ -1077,6 +1182,9 @@ void Pane::commandFinished(int exitCode)
 
 void Pane::finishCommand(int exitCode, qint64 ms)
 {
+    // The command that asked for files ended: its answer must not go to
+    // the shell.
+    orphanUploadLocked();
     const QString command = std::exchange(m_command, QString());
     // An end alone would end a command that, for the receivers, never ran:
     // its start was dropped, or a session pane's window never got it.
@@ -1207,7 +1315,9 @@ void Pane::writeToPty(std::string_view bytes)
         m_openReports->append(bytes);
         return;
     }
-    if (!hasProgram()) return;
+    // A held pane's program exited: nothing reads a report (a resize's,
+    // mode 2048), and no input failed.
+    if (!hasProgram() || m_held.load()) return;
     if (writeProgram(bytes)) m_inputFailureReported.store(false);
     else reportInputFailure();
 }
@@ -1215,7 +1325,7 @@ void Pane::writeToPty(std::string_view bytes)
 void Pane::writeReports(const std::string& reports)
 {
     m_protocolBytes.fetch_sub(qsizetype(reports.size()));
-    if (hasProgram() && !writeProgram(reports)) reportInputFailure();
+    if (hasProgram() && !m_held.load() && !writeProgram(reports)) reportInputFailure();
 }
 
 bool Pane::sendReply(std::string_view bytes)
@@ -1358,18 +1468,24 @@ void Pane::applySessionHostCall(const AfterglowMux::Host::Call& call)
     case Kind::CommandFinished: finishCommand(call.number, qint64(std::min<std::uint64_t>(call.value, std::numeric_limits<qint64>::max()))); break;
     case Kind::DownloadBegin: downloadBegin(call.title, call.value ? std::int64_t(call.value - 1) : -1); break;
     case Kind::DownloadData:
-        // A write that fails stops the download in the daemon too.
-        if (m_download.fd >= 0 && !downloadData(call.text)) {
-            downloadEnd(false);
-            if (m_session) m_session->answerDownload(m_sessionPane, false);
+        // A write that fails stops the download in the daemon too. The data
+        // waits for the disk on the download's own thread. Past its queue,
+        // the window reads no more of the session's events until the writer
+        // has room (createDownload): the GUI thread does not wait for the
+        // disk, and the daemon holds the rest.
+        if (m_download) {
+            if (!downloadData(call.text)) {
+                downloadEnd(false);
+                if (m_session) m_session->answerDownload(m_sessionPane, AfterglowMux::Attach::DownloadReply::Stop);
+            } else if (m_session) {
+                m_download->pauseIfFull([this] { m_session->holdEvents(m_sessionPane, true); });
+            }
         }
         break;
     case Kind::DownloadEnd: downloadEnd(call.number == 1); break;
-    // The daemon's terminal let the window answer: a request that waits
-    // already is cancelled, as the terminal of a window cancels it.
-    case Kind::UploadRequest:
-        if (!uploadRequested()) writeToPty(UploadArchive::Cancel);
-        break;
+    // The daemon's terminal let the window answer. A request while another
+    // waits is refused as a window's terminal refuses it: with nothing.
+    case Kind::UploadRequest: uploadRequested(); break;
     case Kind::Report: writeToPty(call.text); break;
     case Kind::ProtocolLost:
         loseProtocolCommands(call.number == AfterglowMux::Host::LostPackets ? DragDrop::Lost::Packets
@@ -1604,39 +1720,70 @@ QString localUser()
 } // namespace
 
 // The images that programs send decode in processes of their own
-// (ProgramImages), on this reader thread with m_mutex held, as the Qt decode
-// in this process did: the window draws the pane after the decode. The
-// process's CPU limit and the decoder's wait bound it, and the pane's end
-// stops it at once (m_stopDecode).
+// (ProgramImages), on the reader thread, in the middle of its feed. The
+// process's CPU limit and the decoder's wait bound a decode, and the pane's
+// end stops it at once (m_stopDecode). Meanwhile the window draws the pane
+// as it was: the decode lets m_mutex go (decodeOutsideLock).
+
+std::unique_lock<std::mutex> Pane::lockTerminal() const
+{
+    std::unique_lock lock(m_mutex);
+    m_decodeDone.wait(lock, [this] { return !m_decoding; });
+    return lock;
+}
+
+void Pane::feedLocked(std::unique_lock<std::mutex>& lock, const std::function<void()>& feed)
+{
+    m_feedLock = &lock;
+    struct Unset
+    {
+        std::unique_lock<std::mutex>*& lock;
+        ~Unset() { lock = nullptr; }
+    } unset{m_feedLock};
+    feed();
+    // What the GUI thread changed during a decode of this feed: it saw
+    // m_decoding each time it had the lock, which the feed holds from its
+    // last decode to here.
+    applyPendingLocked();
+}
+
+bool Pane::decodeOutsideLock(const std::function<bool()>& decode)
+{
+    // The terminal stays the reader's, in the middle of a command that the
+    // parse finishes after the decode: the GUI thread reads it meanwhile,
+    // and what changes it waits (lockTerminal). Without a feed of the reader
+    // (one that the GUI thread makes, withTerminal), the decode keeps the lock.
+    if (!m_feedLock) return decode();
+    m_decoding = true;
+    m_feedLock->unlock();
+    struct Relock
+    {
+        Pane& pane;
+        ~Relock()
+        {
+            pane.m_feedLock->lock();
+            pane.m_decoding = false;
+            pane.m_decodeDone.notify_all();
+        }
+    } relock{*this};
+    return decode();
+}
 
 bool Pane::decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
 {
-    AfterglowMux::ImageDecoder* decoder = ProgramImages::decoder();
-    return decoder && decoder->decode(png, AfterglowMux::ImageFormats::Png, width, height, rgba, m_stopDecode.get());
-}
-
-bool Pane::decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
-{
-    // The common formats by their content; an animation shows its first frame.
-    AfterglowMux::ImageDecoder* decoder = ProgramImages::decoder();
-    return decoder && decoder->decode(data, AfterglowMux::ImageFormats::Common, width, height, rgba, m_stopDecode.get());
+    return decodeOutsideLock([&] {
+        AfterglowMux::ImageDecoder* decoder = ProgramImages::decoder();
+        return decoder && decoder->decode(png, AfterglowMux::ImageFormats::Png, width, height, rgba, m_stopDecode.get());
+    });
 }
 
 bool Pane::decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<AfterglowVt::ImageFrame>& frames,
                              std::vector<std::uint32_t>& delays)
 {
-    AfterglowMux::ImageDecoder* decoder = ProgramImages::decoder();
-    std::vector<AfterglowMux::DecodedFrame> decoded;
-    if (!decoder || !decoder->decodeFrames(data, maxBytes, decoded, m_stopDecode.get())) return false;
-    for (AfterglowMux::DecodedFrame& d : decoded) {
-        AfterglowVt::ImageFrame frame;
-        frame.width = d.width;
-        frame.height = d.height;
-        frame.rgba = std::move(d.rgba);
-        frames.push_back(std::move(frame));
-        delays.push_back(d.delayMs);
-    }
-    return true;
+    return decodeOutsideLock([&] {
+        AfterglowMux::ImageDecoder* decoder = ProgramImages::decoder();
+        return decoder && decoder->decodeFrames(data, maxBytes, frames, delays, m_stopDecode.get());
+    });
 }
 
 void Pane::contextChanged()
@@ -1759,17 +1906,22 @@ void Pane::regionScrolled(const AfterglowVt::RegionScroll& scroll)
 
 void Pane::userVarChanged(std::string_view name, std::string_view value)
 {
+    keepUserVar(name, value);
+}
+
+bool Pane::keepUserVar(std::string_view name, std::string_view value)
+{
     const QString n = QString::fromUtf8(name.data(), qsizetype(name.size()));
     const QString v = QString::fromUtf8(value.data(), qsizetype(value.size()));
     if (const auto it = m_userVars.constFind(n); it != m_userVars.constEnd() && *it == v) {
-        return; // shells set the same values at every prompt
+        return true; // shells set the same values at every prompt
     }
     if (std::size_t(m_userVars.size()) >= MaxUserVars && !m_userVars.contains(n)) {
         // Enough: the pane keeps its variables for its whole life. Said once,
         // so a program that wonders where its variable went can find out.
         if (!std::exchange(m_userVarsFull, true))
             qCWarning(lcPane) << "pane" << m_id << "has" << MaxUserVars << "user variables: new ones are ignored";
-        return;
+        return false;
     }
     m_userVars.insert(n, v);
     // Only the newest value of each name reaches the GUI thread, in the order
@@ -1784,6 +1936,7 @@ void Pane::userVarChanged(std::string_view name, std::string_view value)
         }
         for (const auto& [name, value] : changed) Q_EMIT userVarUpdated(name, value);
     });
+    return true;
 }
 
 QString Pane::contextLabel() const
@@ -1821,6 +1974,10 @@ bool Pane::advanceAnimations()
     bool changed = false;
     {
         std::lock_guard lock(m_mutex);
+        // The images are the reader thread's while it decodes one in the
+        // middle of its feed. The timer stays stopped: the call that the
+        // feed's end queues (ptyData) ticks them, and starts it again.
+        if (m_decoding) return false;
         const std::uint64_t before = m_terminal.generation();
         next = m_terminal.advanceAnimations(now);
         changed = m_terminal.generation() != before;
@@ -1933,13 +2090,18 @@ void Pane::ptyData(std::string_view bytes)
 {
     {
         std::unique_lock lock(m_mutex);
-        m_terminal.feed(bytes);
-        // A download's question holds the output: this thread reads no more,
-        // so the program waits, as iTerm2 pauses it, until the answer or the
-        // pane's end. The lock goes meanwhile: the window draws and types.
-        while (m_terminal.holdsInput() && !m_closing) {
-            m_downloadWake.wait(lock, [this] { return !m_terminal.holdsInput() || m_closing; });
-            if (!m_closing) m_terminal.feed({}); // the output that waited, which can ask again
+        // No bytes after a pause: the output that the terminal held, which
+        // can ask again.
+        feedLocked(lock, [&] { m_terminal.feed(bytes); });
+        // A download's question holds the output, and so does a download's
+        // data that waits for the disk: the PTY reads no more of it, so the
+        // program waits, as iTerm2 pauses it, while what the user types still
+        // reaches it. The answer, the end of the question and the download's
+        // writer resume it (resumeOutputLocked), under this lock or after
+        // the pause.
+        if (m_pty) {
+            if (m_terminal.holdsInput()) m_pty->pauseOutput(true);
+            else if (m_download) m_download->pauseIfFull([this] { m_pty->pauseOutput(true); });
         }
         if (m_scrollOnOutput.load(std::memory_order_relaxed)) {
             m_terminal.resetViewport();
@@ -1989,8 +2151,11 @@ void Pane::ptyClosed(int status)
         qCInfo(lcPane) << "shell exited with status" << WEXITSTATUS(status);
     }
     {
-        std::lock_guard lock(m_mutex);
-        m_terminal.programExited();
+        std::unique_lock lock(m_mutex);
+        feedLocked(lock, [this] { m_terminal.programExited(); });
+        // The command that asked for files is gone. A reset (protocol code
+        // 0) is not its end: it still waits for the answer.
+        orphanUploadLocked();
         if (m_hold.load() || (m_holdOnFailure.load() && code > 0)) {
             // What waitpid said: a status that is unknown is not 0, and a
             // signal is not the status 128 + N of a shell's $?.
@@ -2013,7 +2178,7 @@ void Pane::ptyClosed(int status)
 void Pane::holdStartFailure()
 {
     {
-        std::lock_guard lock(m_mutex);
+        const auto lock = lockTerminal();
         m_terminal.feed("\r\n[" + tr("Unable to start a process. Check the project or the configuration. Press any key to close.").toStdString()
                         + "]\r\n");
         m_held.store(true);
@@ -2033,138 +2198,119 @@ TerminalText Pane::accessibleText(bool cursorRow) const
 }
 
 namespace Afterglow {
-namespace {
-/// The file name that a download suggests, as the user sees and keeps it:
-/// its last path part, printable, short enough for NAME_MAX.
-QString cleanDownloadName(std::string_view name)
+void Pane::queueRequest(std::function<void()> emit)
 {
-    QString suggested = QString::fromUtf8(name.data(), qsizetype(name.size()));
-    suggested.replace(QLatin1Char('\\'), QLatin1Char('/'));
-    suggested = suggested.section(QLatin1Char('/'), -1);
-    // By code point: a character outside the BMP is two UTF-16 units, and
-    // neither half of the pair is printable on its own.
-    std::u32string kept;
-    for (const char32_t c : suggested.toUcs4())
-        if (c && QChar::isPrint(c) && QChar::category(c) != QChar::Other_Format) kept += c;
-    QString clean = QString::fromStdU32String(kept);
-    // NAME_MAX is 255 bytes. A long name keeps room for what the user adds,
-    // and keeps its last extension when that is short: the stem is cut at
-    // the end of a whole character (a grapheme, with its combining marks).
-    if (clean.toUtf8().size() > MaxDownloadNameBytes) {
-        const qsizetype dot = clean.lastIndexOf(QLatin1Char('.'));
-        const bool extension = dot > 0 && QStringView(clean).mid(dot).toUcs4().size() <= MaxDownloadExtension;
-        const QString suffix = extension ? clean.mid(dot) : QString();
-        const QString stem = extension ? clean.left(dot) : clean;
-        const qsizetype budget = MaxDownloadNameBytes - suffix.toUtf8().size();
-        QTextBoundaryFinder graphemes(QTextBoundaryFinder::Grapheme, stem);
-        qsizetype end = 0, used = 0;
-        for (qsizetype start = 0, next = graphemes.toNextBoundary(); next > 0; start = next, next = graphemes.toNextBoundary()) {
-            used += QStringView(stem).mid(start, next - start).toUtf8().size();
-            if (used > budget) break;
-            end = next;
-        }
-        // A first character over the budget alone (marks without end) leaves
-        // no stem: the name would be a hidden file.
-        clean = (end > 0 ? stem.left(end) : QStringLiteral("download")) + suffix;
-    }
-    if (clean.isEmpty() || clean == QLatin1String(".") || clean == QLatin1String("..")) clean = QStringLiteral("download.bin");
-    return clean;
+    m_events.push_back(std::move(emit));
+    postEvents();
 }
-} // namespace
+
+std::unique_ptr<DownloadFile> Pane::createDownload(const QString& path, quint64 serial, bool replace, QString& error)
+{
+    // The writer resumes the output that its full queue paused (ptyData).
+    // pauseOutput() is thread-safe; m_pty outlives the calls of each writer
+    // (~Pane, DownloadFile::release).
+    auto room = [this] {
+        if (m_pty) m_pty->pauseOutput(false);
+        // A session pane held its session's events (applySessionHostCall).
+        // Queued: the writer thread; the call goes with the pane.
+        else QMetaObject::invokeMethod(this, [this] { if (m_session) m_session->holdEvents(m_sessionPane, false); }, Qt::QueuedConnection);
+    };
+    // The writer's report, in the order of the program's other events.
+    auto ended = [this, serial](const QString& target, bool ok, const QString& why) {
+        std::lock_guard lock(m_mutex);
+        queueRequest([this, serial, target, ok, why] {
+            reapDownload(serial);
+            Q_EMIT downloadFinished(target, ok, why);
+        });
+    };
+    return DownloadFile::create(path, replace, std::move(room), std::move(ended), error);
+}
+
+void Pane::reapDownload(quint64 serial)
+{
+    std::unique_ptr<DownloadFile> ended;
+    {
+        std::lock_guard lock(m_mutex);
+        const auto it = std::find_if(m_endingDownloads.begin(), m_endingDownloads.end(), [serial](const auto& d) { return d.first == serial; });
+        if (it == m_endingDownloads.end()) return;
+        ended = std::move(it->second);
+        m_endingDownloads.erase(it);
+    }
+    // Its writer has reported, and ends at once: the join takes no time.
+}
+
+void Pane::resumeOutputLocked()
+{
+    if (m_pty) m_pty->pauseOutput(false);
+}
 
 bool Pane::downloadBegin(std::string_view name, std::int64_t size)
 {
     // m_mutex held: the reader thread, or for a session pane the GUI thread.
     // The window asks first, as iTerm2 does; meanwhile the terminal holds the
-    // output, and ptyData() waits.
+    // output, and the reader pauses it (ptyData()).
     m_downloadAsked = true;
-    QMetaObject::invokeMethod(this, [this, clean = cleanDownloadName(name), size] { Q_EMIT downloadRequested(clean, size); },
-                              Qt::QueuedConnection);
+    const quint64 serial = ++m_downloadSerial;
+    queueRequest([this, clean = cleanDownloadName(name), size, serial] { Q_EMIT downloadRequested(clean, size, serial); });
     return true;
 }
 
-void Pane::answerDownload(const QString& path)
+void Pane::answerDownload(const QString& path, quint64 serial, bool replace)
 {
-    // GUI thread. A file only for a download that still waits: one that a
-    // reset or the program ended goes without it.
+    // GUI thread. A file only for the question that still waits: one that a
+    // reset or the program ended goes without it, and so does a question
+    // that a newer one took the place of.
     {
         std::lock_guard lock(m_mutex);
-        if (!std::exchange(m_downloadAsked, false)) return;
-        if (!path.isEmpty()) {
-            // Next to the file, so that the rename at the end stays on one
-            // file system: "name.part", or "name.N.part" when that is taken.
-            const QByteArray target = QFile::encodeName(path);
-            for (int n = 0; n < 100 && m_download.fd < 0; ++n) {
-                const QByteArray part = n == 0 ? target + ".part" : target + '.' + QByteArray::number(n) + ".part";
-                const int fd = ::open(part.constData(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
-                if (fd >= 0) m_download = OpenDownload{fd, part, target, {}};
-                else if (errno != EEXIST) break;
-            }
-            if (m_download.fd < 0) {
-                const QString error = QString::fromLocal8Bit(std::strerror(errno));
-                QMetaObject::invokeMethod(this, [this, path, error] { Q_EMIT downloadFinished(path, false, error); }, Qt::QueuedConnection);
-            }
-        }
-        const bool accept = m_download.fd >= 0;
-        if (m_session) {
-            m_session->answerDownload(m_sessionPane, accept);
-        } else {
-            // The output that waited parses here, on the GUI thread, which
-            // nothing of the download waits for: the reader thread may be
-            // waiting in ptyData(), or the output came from no reader.
-            m_terminal.answerDownload(accept);
-            m_terminal.feed({});
-        }
+        if (!m_downloadAsked || (serial != 0 && serial != m_downloadSerial)) return;
+        serial = m_downloadSerial;
     }
-    m_downloadWake.notify_all();
-    if (!m_session) Q_EMIT contentChanged();
+    // Made without the lock: an open waits as long as its file system does.
+    std::unique_ptr<DownloadFile> file;
+    if (!path.isEmpty()) {
+        QString error;
+        file = createDownload(path, serial, replace, error);
+        if (!file) QMetaObject::invokeMethod(this, [this, path, error] { Q_EMIT downloadFinished(path, false, error); }, Qt::QueuedConnection);
+    }
+    // Declared after the file: a file that the question no longer wants goes
+    // after the lock.
+    const auto lock = lockTerminal();
+    if (!m_downloadAsked || serial != m_downloadSerial) return;
+    m_downloadAsked = false;
+    const bool accept = file != nullptr;
+    m_download = std::move(file);
+    if (m_session) {
+        m_session->answerDownload(m_sessionPane, accept ? AfterglowMux::Attach::DownloadReply::Accept : AfterglowMux::Attach::DownloadReply::Refuse);
+        return;
+    }
+    m_terminal.answerDownload(accept);
+    // The reader parses the output that waited, on its own thread: nothing
+    // of the download waits for the GUI thread. A pane without a PTY (a
+    // test's feed) has no reader.
+    if (m_pty) resumeOutputLocked();
+    else m_terminal.feed({});
 }
 
 bool Pane::downloadData(std::string_view bytes)
 {
-    // m_mutex held.
-    if (m_download.fd < 0) return false;
-    while (!bytes.empty()) {
-        const ssize_t n = ::write(m_download.fd, bytes.data(), bytes.size());
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) {
-            m_download.error = QString::fromLocal8Bit(std::strerror(n < 0 ? errno : ENOSPC));
-            return false;
-        }
-        bytes.remove_prefix(std::size_t(n));
-    }
-    return true;
+    // m_mutex held. The download's writer takes the bytes.
+    return m_download && m_download->write(bytes);
 }
 
 void Pane::downloadEnd(bool complete)
 {
-    // m_mutex held. Before an answer: the window's question goes.
+    // m_mutex held. Before an answer: the window's question goes, and the
+    // output that it paused goes on (a reset ended it on the GUI thread).
     if (std::exchange(m_downloadAsked, false)) {
-        QMetaObject::invokeMethod(this, [this] { Q_EMIT downloadCancelled(); }, Qt::QueuedConnection);
+        queueRequest([this] { Q_EMIT downloadCancelled(); });
+        resumeOutputLocked();
         return;
     }
-    if (m_download.fd < 0) return;
-    const OpenDownload done = std::exchange(m_download, OpenDownload{});
-    bool ok = complete && ::close(done.fd) == 0;
-    if (!complete) ::close(done.fd);
-    if (ok && ::rename(done.part.constData(), done.target.constData()) != 0) ok = false;
-    QString error = done.error;
-    if (!ok) {
-        if (error.isEmpty()) error = complete ? QString::fromLocal8Bit(std::strerror(errno)) : tr("The program did not send the whole file.");
-        ::unlink(done.part.constData());
-    }
-    QMetaObject::invokeMethod(this, [this, path = QFile::decodeName(done.target), ok, error] { Q_EMIT downloadFinished(path, ok, error); },
-                              Qt::QueuedConnection);
-}
-
-void Pane::dropDownload()
-{
-    // m_mutex held: the pane closes, or its session pane goes.
-    m_downloadAsked = false;
-    if (m_download.fd < 0) return;
-    const OpenDownload done = std::exchange(m_download, OpenDownload{});
-    ::close(done.fd);
-    ::unlink(done.part.constData());
+    if (!m_download) return;
+    // The writer renames or removes the file once its queue is written, and
+    // reports downloadFinished().
+    m_download->finish(complete, tr("The program did not send the whole file."));
+    m_endingDownloads.emplace_back(m_downloadSerial, std::move(m_download));
 }
 }
 

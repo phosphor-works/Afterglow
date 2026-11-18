@@ -18,6 +18,7 @@
 #include <sstream>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <unordered_set>
 #include <utility>
 
@@ -236,12 +237,21 @@ std::optional<std::string> directoryOf(pid_t pid)
     return path;
 }
 
-// Whether PID belongs to SESSION. The foreground group's leader may have
-// exited, and its PID may now be another process's.
-bool inSession(pid_t pid, pid_t session)
+// Whether the process group GROUP has a member in SESSION. The leader is
+// asked first; it may have exited while the group runs on ("cmd | less" after
+// cmd ended), so then any member answers. A group number that the terminal
+// still names after its group ended may be another session's group now.
+bool groupInSession(pid_t group, pid_t session)
 {
-    const auto stat = processStat(pid);
-    return stat && stat->session == session;
+    if (const auto leader = processStat(group); leader && leader->group == group) return leader->session == session;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it("/proc", ec), end; !ec && it != end; it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        pid_t pid = 0;
+        if (std::from_chars(name.data(), name.data() + name.size(), pid).ec != std::errc{}) continue;
+        if (const auto member = processStat(pid); member && member->group == group) return member->session == session;
+    }
+    return false;
 }
 
 } // namespace
@@ -613,7 +623,7 @@ std::string Pty::currentWorkingDirectory() const
     // spawn() makes the child a session leader: its PID is the session ID.
     const pid_t child = m_pid.load();
     if (child <= 0) return {};
-    if (const pid_t group = tcgetpgrp(m_master); group > 0 && group != child && inSession(group, child)) {
+    if (const pid_t group = foregroundGroup(); group > 0 && group != child) {
         if (auto directory = directoryOf(group)) return *directory;
     }
     return directoryOf(child).value_or(std::string());
@@ -621,56 +631,102 @@ std::string Pty::currentWorkingDirectory() const
 
 std::optional<int> signalNumber(std::string_view name)
 {
-    if (!name.empty() && std::all_of(name.begin(), name.end(), [](char c) { return c >= '0' && c <= '9'; })) {
-        int number = 0;
-        if (name.size() > 2 || std::from_chars(name.data(), name.data() + name.size(), number).ec != std::errc{}) return std::nullopt;
-        return number >= 1 && number <= SIGRTMAX ? std::optional(number) : std::nullopt;
-    }
+    // glibc keeps the signals below SIGRTMIN (32 and 33) for its threads.
+    const auto valid = [](int number) {
+        return (number >= 1 && number < 32) || (number >= SIGRTMIN && number <= SIGRTMAX) ? std::optional(number) : std::nullopt;
+    };
+    const auto number = [](std::string_view digits) -> std::optional<int> {
+        int value = 0;
+        if (digits.empty() || digits.size() > 3 || !std::all_of(digits.begin(), digits.end(), [](char c) { return c >= '0' && c <= '9'; })
+            || std::from_chars(digits.data(), digits.data() + digits.size(), value).ec != std::errc{}) {
+            return std::nullopt;
+        }
+        return value;
+    };
+    if (const auto n = number(name)) return valid(*n);
     std::string upper;
     for (const char c : name) upper += (c >= 'a' && c <= 'z') ? char(c - 'a' + 'A') : c;
     if (upper.starts_with("SIG")) upper.erase(0, 3);
+    // As kill -l names them: RTMIN, RTMIN+3, RTMAX-1, RTMAX.
+    for (const auto& [base, sign, value] : {std::tuple{std::string_view("RTMIN"), '+', SIGRTMIN},
+                                            std::tuple{std::string_view("RTMAX"), '-', SIGRTMAX}}) {
+        if (!std::string_view(upper).starts_with(base)) continue;
+        const std::string_view rest = std::string_view(upper).substr(base.size());
+        if (rest.empty()) return value;
+        if (rest.front() != sign) return std::nullopt;
+        const auto offset = number(rest.substr(1));
+        if (!offset) return std::nullopt;
+        const int signal = sign == '+' ? value + *offset : value - *offset;
+        return signal >= SIGRTMIN && signal <= SIGRTMAX ? std::optional(signal) : std::nullopt;
+    }
     static constexpr std::pair<std::string_view, int> Names[] = {
         {"HUP", SIGHUP},   {"INT", SIGINT},     {"QUIT", SIGQUIT}, {"ILL", SIGILL},   {"TRAP", SIGTRAP}, {"ABRT", SIGABRT},
-        {"BUS", SIGBUS},   {"FPE", SIGFPE},     {"KILL", SIGKILL}, {"USR1", SIGUSR1}, {"SEGV", SIGSEGV}, {"USR2", SIGUSR2},
-        {"PIPE", SIGPIPE}, {"ALRM", SIGALRM},   {"TERM", SIGTERM}, {"CHLD", SIGCHLD}, {"CONT", SIGCONT}, {"STOP", SIGSTOP},
-        {"TSTP", SIGTSTP}, {"TTIN", SIGTTIN},   {"TTOU", SIGTTOU}, {"URG", SIGURG},   {"XCPU", SIGXCPU}, {"XFSZ", SIGXFSZ},
-        {"VTALRM", SIGVTALRM}, {"PROF", SIGPROF}, {"WINCH", SIGWINCH}, {"IO", SIGIO}, {"PWR", SIGPWR}, {"SYS", SIGSYS},
+        {"IOT", SIGIOT},   {"BUS", SIGBUS},     {"FPE", SIGFPE},   {"KILL", SIGKILL}, {"USR1", SIGUSR1}, {"SEGV", SIGSEGV},
+        {"USR2", SIGUSR2}, {"PIPE", SIGPIPE},   {"ALRM", SIGALRM}, {"TERM", SIGTERM},
+#ifdef SIGSTKFLT
+        {"STKFLT", SIGSTKFLT},
+#endif
+        {"CHLD", SIGCHLD}, {"CLD", SIGCHLD},    {"CONT", SIGCONT}, {"STOP", SIGSTOP}, {"TSTP", SIGTSTP}, {"TTIN", SIGTTIN},
+        {"TTOU", SIGTTOU}, {"URG", SIGURG},     {"XCPU", SIGXCPU}, {"XFSZ", SIGXFSZ}, {"VTALRM", SIGVTALRM}, {"PROF", SIGPROF},
+        {"WINCH", SIGWINCH}, {"IO", SIGIO},     {"POLL", SIGPOLL}, {"PWR", SIGPWR},   {"SYS", SIGSYS},
     };
-    for (const auto& [n, number] : Names) {
-        if (upper == n) return number;
+    for (const auto& [n, value] : Names) {
+        if (upper == n) return value;
     }
     return std::nullopt;
 }
 
-bool Pty::signalForeground(int signal) const
+pid_t Pty::foregroundGroup() const
 {
     const pid_t child = m_pid.load();
-    if (child <= 0) return false;
+    if (child <= 0) return -1;
     const pid_t group = tcgetpgrp(m_master);
     // Only a group of the pane's session: a stale number could name another.
-    if (group <= 0 || (group != child && !inSession(group, child))) return false;
+    if (group <= 0 || (group != child && !groupInSession(group, child))) return -1;
+    return group;
+}
+
+bool Pty::signalForeground(int signal) const
+{
+    const pid_t group = foregroundGroup();
+    if (group <= 0) {
+        // tcgetpgrp() or /proc may have set it: only kill() speaks for the
+        // signal.
+        errno = 0;
+        return false;
+    }
     return ::kill(-group, signal) == 0;
 }
 
-std::optional<ForegroundProcess> Pty::foreground() const
+std::optional<ForegroundProcess> Pty::foreground(bool withCmdline) const
 {
     const pid_t child = m_pid.load();
-    if (child <= 0) return std::nullopt;
-    const pid_t group = tcgetpgrp(m_master);
-    if (group <= 0 || (group != child && !inSession(group, child))) return std::nullopt;
+    const pid_t group = child > 0 ? tcgetpgrp(m_master) : -1;
+    if (group <= 0) return std::nullopt;
+    // The leader itself: not once it exited, a zombie or gone, while its
+    // group runs on. Asked alone, of the pane's session as foregroundGroup()
+    // checks: without a leader no other member answers, and none of /proc
+    // is read for one.
+    const auto leader = processStat(group);
+    if (!leader || leader->group != group || leader->state == 'Z' || (group != child && leader->session != child)) return std::nullopt;
     ForegroundProcess out;
     out.pid = group;
-    std::ifstream file("/proc/" + std::to_string(group) + "/cmdline", std::ios::binary);
-    // The arguments end with a NUL each. A process can rewrite them, so the
-    // last one may not end. A list of every pane must fit in one answer.
-    std::string bytes(ForegroundProcess::MaxCmdlineBytes, '\0');
-    file.read(bytes.data(), std::streamsize(bytes.size()));
-    bytes.resize(std::size_t(file.gcount()));
-    std::size_t at = 0;
-    while (at < bytes.size()) {
-        const std::size_t end = std::min(bytes.find('\0', at), bytes.size());
-        out.cmdline.push_back(bytes.substr(at, end - at));
-        at = end + 1;
+    if (withCmdline) {
+        std::ifstream file("/proc/" + std::to_string(group) + "/cmdline", std::ios::binary);
+        // The arguments end with a NUL each. A process can rewrite them, so the
+        // last one may not end. A list of every pane must fit in one answer.
+        std::string bytes(ForegroundProcess::MaxCmdlineBytes, '\0');
+        file.read(bytes.data(), std::streamsize(bytes.size()));
+        bytes.resize(std::size_t(file.gcount()));
+        // A process that rewrote its arguments pads them with NULs (postgres,
+        // setproctitle): they are no arguments.
+        bytes.erase(bytes.find_last_not_of('\0') + 1);
+        std::size_t at = 0;
+        while (at < bytes.size()) {
+            const std::size_t end = std::min(bytes.find('\0', at), bytes.size());
+            out.cmdline.push_back(bytes.substr(at, end - at));
+            at = end + 1;
+        }
     }
     out.cwd = directoryOf(group).value_or(std::string());
     return out;
@@ -678,7 +734,7 @@ std::optional<ForegroundProcess> Pty::foreground() const
 
 std::string Pty::foregroundProcess() const
 {
-    const pid_t group = tcgetpgrp(m_master);
+    const pid_t group = foregroundGroup();
     if (group <= 0 || group == m_pid.load()) {
         return {};
     }
@@ -686,6 +742,16 @@ std::string Pty::foregroundProcess() const
     std::string name;
     std::getline(comm, name);
     return name.empty() ? std::string("a program") : name;
+}
+
+void Pty::pauseOutput(bool paused)
+{
+    if (paused) {
+        m_paused.store(true);
+    } else if (m_paused.exchange(false)) {
+        m_resumed.store(true);
+    }
+    wake();
 }
 
 void Pty::wake()
@@ -819,10 +885,13 @@ void Pty::run()
     };
 
     while (!m_stop.load()) {
+        // While output is paused, the terminal is in the set only to write
+        // input: a hung-up terminal would report POLLHUP at once.
+        const bool paused = m_paused.load();
         pollfd fds[6] = {
             // A hung-up fd reports POLLHUP even with no events requested, so
             // drop it from the set once closed instead of spinning on it.
-            {closed ? -1 : m_master, short(POLLIN | (wantWrite ? POLLOUT : 0)), 0},
+            {closed || (paused && !wantWrite) ? -1 : m_master, short((paused ? 0 : POLLIN) | (wantWrite ? POLLOUT : 0)), 0},
             {m_wakeFd, POLLIN, 0},
             {exited ? -1 : m_pidFd, POLLIN, 0},
             {m_execFd, POLLIN, 0},
@@ -876,7 +945,17 @@ void Pty::run()
             exited = true;
         }
 
-        if (!closed) {
+        // The listener goes on with what it holds before new output comes.
+        if (!closed && !m_paused.load() && m_resumed.exchange(false)) m_listener.ptyData({});
+        // Paused at the poll, or by the listener since (a feed of another
+        // fd, the GUI thread): a hangup then is no exit to report before the
+        // output that the listener holds. One that resumed since was not
+        // polled for its output: the next pass reads it.
+        if (!closed && (paused || m_paused.load())) {
+            // Input only: what the child writes waits in the terminal, and
+            // its exit is reported after that output, once output resumes.
+            if (fds[0].revents & (POLLOUT | POLLHUP | POLLERR)) wantWrite = flushPending();
+        } else if (!closed) {
             if (fds[0].revents & POLLOUT) {
                 wantWrite = flushPending();
             }
@@ -885,7 +964,7 @@ void Pty::run()
             // output is not waited for.
             if (fds[0].revents & POLLIN || exited) {
                 // A finite batch prevents continuous output starving stop().
-                for (int reads = 0; reads < 16 && !m_stop.load(); ++reads) {
+                for (int reads = 0; reads < 16 && !m_stop.load() && !m_paused.load(); ++reads) {
                     const ssize_t n = ::read(m_master, buf.data(), buf.size());
                     if (n > 0) {
                         m_listener.ptyData(std::string_view(buf.data(), std::size_t(n)));
@@ -903,7 +982,8 @@ void Pty::run()
             } else if (fds[0].revents & (POLLHUP | POLLERR | POLLNVAL)) {
                 closed = true;
             }
-            if (exited) closed = true;
+            // A listener that paused output gets the rest of it first.
+            if (exited && !m_paused.load()) closed = true;
         }
 
         if (closed) {

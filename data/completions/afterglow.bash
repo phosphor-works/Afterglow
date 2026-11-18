@@ -103,10 +103,11 @@ _afterglow_ctl()
     # names, but a completion runs no program but aglow run --complete, so
     # none is offered. With the cursor on the word --session itself, that
     # word is the one being completed.
-    local first=2
+    # In a pane of a session, the commands act on it as with --session.
+    local first=2 session=${AFTERGLOW_SESSION:+1}
     if [[ ${words[2]} == --session ]] && ((cword > 2)); then
         ((cword == 3)) && return
-        first=4
+        first=4 session=1
     fi
     local command=${words[first]} start=$((first + 1)) i j positional=0 text=""
     if ((cword == first)); then
@@ -258,13 +259,20 @@ _afterglow_ctl()
         ;;
     screenshot) _afterglow_unused $pane "--tab|--window" ;;
     split)
-        # --env and --var can come again.
-        _afterglow_unused $pane "--left|--right|--up|--down" --hold --no-focus --stdin-text --stdin-ansi
-        _afterglow_matching --env --var
+        # --env and --var can come again. A pane of a mux session takes
+        # only --env: its daemon starts the program.
+        if [[ $session ]]; then
+            _afterglow_unused $pane "--left|--right|--up|--down"
+            _afterglow_matching --env
+        else
+            _afterglow_unused $pane "--left|--right|--up|--down" --hold --no-focus --stdin-text --stdin-ansi
+            _afterglow_matching --env --var
+        fi
         ;;
     focus) _afterglow_unused $pane --direction ;;
     colors) _afterglow_unused $pane --json ;;
-    set-colors) _afterglow_unused $pane --all --reset ;;
+    # --all sets every pane: no --pane with it.
+    set-colors) _afterglow_unused "${pane:+$pane|}--all" --reset ;;
     window) _afterglow_unused $pane "--fullscreen|--maximized|--normal" --size ;;
     resize) _afterglow_unused $pane --direction --cells ;;
     scroll)
@@ -276,8 +284,13 @@ _afterglow_ctl()
         fi
         ;;
     new-tab)
-        _afterglow_unused $pane --cwd --hold --no-focus --stdin-text --stdin-ansi
-        _afterglow_matching --env --var
+        if [[ $session ]]; then
+            _afterglow_unused $pane --cwd
+            _afterglow_matching --env
+        else
+            _afterglow_unused $pane --cwd --hold --no-focus --stdin-text --stdin-ansi
+            _afterglow_matching --env --var
+        fi
         ;;
     new-window)
         _afterglow_unused --cwd --hold

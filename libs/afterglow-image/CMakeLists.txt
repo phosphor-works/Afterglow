@@ -2,15 +2,15 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 # The image decoders of aglow and aglow-mux (no Qt): libpng, libjpeg-turbo
-# (the TurboJPEG 3 API) and libwebp, and GIF and BMP readers of its own, with
-# Little CMS for the colour conversion to sRGB. The libraries are built from
-# the archives that
-# cmake/AfterglowDependencies.cmake pins, as static libraries, and not taken
-# from the system: a static aglow then runs on a remote host whatever image
-# libraries that host has, and both programs decode with the same code on
-# every distribution. A security fix of a codec arrives with a new pin. Each
-# codec is one target with hidden symbols (afterglow_third_party_target), and
-# tools/fuzz instruments them.
+# (the TurboJPEG 3 API) and libwebp, GIF, BMP, TIFF and netPBM readers of its
+# own, and Little CMS for the colour conversion to sRGB. The four libraries
+# are built from the archives that cmake/AfterglowDependencies.cmake pins, as
+# static libraries, and not taken from the system: a static aglow then runs
+# on a remote host whatever image libraries that host has, and both programs
+# decode with the same code on every distribution. A security fix of a
+# library arrives with a new pin. libpng, libwebp and Little CMS are each one
+# target with hidden symbols (afterglow_third_party_target), libjpeg-turbo
+# builds apart, and tools/fuzz instruments all four.
 set(AFTERGLOW_X86_64 "^(x86_64|AMD64|amd64)$")
 
 # libpng from its own sources, as its CMakeLists.txt lists them: that build
@@ -99,6 +99,12 @@ set(AFTERGLOW_CODEC_BUILD_JOBS 2 CACHE STRING "Parallel jobs of the build of lib
 # "${" does not pass: the arguments go into a CMake script as they are.
 # turbojpeg.h is copied out, so that an include path does not show the other
 # headers of libjpeg-turbo.
+# The build installs nothing (INSTALL_COMMAND ""), so the install prefix that
+# CMP0225 gives the external project changes nothing. Setting it keeps
+# CMake 4.x from warning at each configure.
+if(POLICY CMP0225)
+    cmake_policy(SET CMP0225 NEW)
+endif()
 function(afterglow_add_libjpeg_turbo)
     afterglow_fetch_dependency(libjpeg-turbo)
     set(build "${AFTERGLOW_DEPS_BUILD_DIR}/libjpeg-turbo-build")
@@ -203,8 +209,9 @@ function(afterglow_add_libjpeg_turbo)
 endfunction()
 
 # Little CMS from its own sources (src/*.c): the colour conversion of images
-# with an ICC profile or a cICP chunk to sRGB. Its plugins are not built. No
-# threads of its own: it converts in the decoding process, one image at a time.
+# with an ICC profile or a cICP chunk to sRGB. Its plugins are not built.
+# Without pthreads it takes no locks: the decoding process converts one
+# image at a time, from one thread.
 function(afterglow_add_lcms2)
     afterglow_fetch_dependency(lcms2)
     file(GLOB sources "${lcms2_SOURCE_DIR}/src/*.c")
@@ -265,8 +272,9 @@ target_link_libraries(AfterglowImage PRIVATE afterglow_png afterglow_turbojpeg a
 # compiler that makes no PIE by default. aglow-mux links it too.
 set_target_properties(AfterglowImage PROPERTIES POSITION_INDEPENDENT_CODE ON AUTOMOC OFF AUTOUIC OFF)
 
-# The image files of the tests, which the tests of aglow-mux and the
-# seeds of the image fuzz target use too.
+# The image files of the tests, which the tests of aglow-mux, the image
+# decoding and pane tests of the application (afterglow/tests) and the seeds
+# of the image fuzz target use too.
 add_library(afterglow_image_test_files INTERFACE)
 target_include_directories(afterglow_image_test_files INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 

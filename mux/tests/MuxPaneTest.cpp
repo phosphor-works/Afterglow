@@ -18,6 +18,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -264,6 +265,61 @@ TEST(MuxPane, VisibilityWaitsForADecode)
     EXPECT_LT(at(bell, true), at(report, false));
 }
 
+// A download right after an image, in the same read, while a bell waits for
+// the window: the daemon's frame waited for the decode, so the download's
+// question goes only with the next frame, and the pane wakes the daemon for
+// it before it waits for the answer. The change that waited for the decode
+// comes first, and those of the wait after it.
+TEST(MuxPane, ADownloadAfterADecodeWakesTheDaemonAndKeepsTheOrder)
+{
+    StuckDecode stuck(30000, "printf do''ne; exec /bin/sleep 60", "read -r _; printf '\\a'; ",
+                      "\x1b]1337;File=name=eA==;size=1:eA==\a");
+    SKIP_WITHOUT_SERVER(stuck);
+    ASSERT_TRUE(stuck.pane);
+    stuck.pane->setWindow(1, std::size_t(1) << 20);
+    ASSERT_EQ(stuck.pane->input("\n"), MuxPane::Input::Written);
+    ASSERT_TRUE(stuck.decoding());
+    stuck.pane->resize(PaneSize{100, 30, 10, 20});
+    const int before = stuck.wakes;
+    stuck.release();
+    ASSERT_TRUE(stuck.wokeAfter(before));
+    // As the daemon does, a frame before the calls: the bell, then the
+    // question.
+    std::vector<std::string> calls;
+    const auto deadline = Clock::now() + std::chrono::seconds(10);
+    const auto asked = [&calls] {
+        return std::any_of(calls.begin(), calls.end(), [](const std::string& call) {
+            return !call.empty() && AfterglowMux::Host::Kind(std::uint8_t(call.front())) == AfterglowMux::Host::Kind::DownloadBegin;
+        });
+    };
+    while (!asked() && Clock::now() < deadline) {
+        (void)stuck.pane->frame(stuck.writer, std::size_t(1) << 20);
+        for (std::string& call : stuck.pane->takeHostCalls(1, std::size_t(1) << 20)) calls.push_back(std::move(call));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(asked());
+    // The resize of the wait comes after the one that waited for the decode.
+    stuck.pane->resize(PaneSize{90, 25, 10, 20});
+    // Another window's answer counts for nothing, and a refusal lets the
+    // program go on with no data.
+    stuck.pane->answerDownload(AfterglowMux::Attach::DownloadReply::Accept, 2);
+    stuck.pane->answerDownload(AfterglowMux::Attach::DownloadReply::Refuse, 1);
+    // The feed that the answer let go ends once the text after it shows.
+    const auto end = Clock::now() + std::chrono::seconds(10);
+    const auto shown = [&stuck] {
+        const auto text = stuck.pane->text(AfterglowVt::Terminal::TextScope::Screen);
+        return text && text->find("done") != std::string::npos;
+    };
+    while (Clock::now() < end && !shown()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    ASSERT_TRUE(shown());
+    EXPECT_EQ(stuck.pane->facts().size.cols, 90);
+    EXPECT_EQ(stuck.pane->facts().size.rows, 25);
+    (void)stuck.pane->frame(stuck.writer, std::size_t(1) << 20);
+    for (const std::string& call : stuck.pane->takeHostCalls(1, std::size_t(1) << 20)) {
+        EXPECT_NE(AfterglowMux::Host::Kind(std::uint8_t(call.front())), AfterglowMux::Host::Kind::DownloadData);
+    }
+}
+
 TEST(MuxPane, InputWaitsInThePaneBehindAChangeThatWaitsForADecode)
 {
     // The program marks a prompt, prints its image, reads a line, then
@@ -391,6 +447,19 @@ TEST(MuxPane, FactsGiveTheCheckedDirectoryOfTheShell)
     ASSERT_TRUE(MuxTest::waitFor([&] { return shell.pane->facts().title == "done"; }, std::chrono::seconds(10)))
         << shell.pane->facts().title;
     EXPECT_EQ(shell.pane->facts().directory, here);
+}
+
+// Whether the shell is at its prompt follows the daemon's own changes too:
+// a reset leaves the prompt, with no output after it.
+TEST(MuxPane, AResetLeavesThePrompt)
+{
+    TempDir home;
+    ASSERT_FALSE(home.path.empty());
+    ShellPane shell("printf '\\033]133;A\\007$ '; exec sleep 60", {}, home.path.string());
+    ASSERT_TRUE(shell.pane);
+    ASSERT_TRUE(MuxTest::waitFor([&] { return shell.pane->facts().atPrompt; }, std::chrono::seconds(10)));
+    shell.pane->reset();
+    EXPECT_FALSE(shell.pane->facts().atPrompt);
 }
 
 // Past the limit of a watch's events, the newest title still takes the

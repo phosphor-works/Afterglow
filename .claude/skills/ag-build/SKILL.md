@@ -49,7 +49,7 @@ So do the native session tests
 `AnSshSessionInASessionPaneRunsRemoteCommandsThroughTheDaemon`.
 `aglow` builds next to `afterglow` (`build/afterglow/aglow`), and building `afterglow` builds it too.
 
-`libs/afterglow-image` builds libpng, libjpeg-turbo and libwebp from their pinned archives into `aglow` and
+`libs/afterglow-image` builds libpng, libjpeg-turbo, libwebp and Little CMS from their pinned archives into `aglow` and
 `aglow-mux`, also with `-DAFTERGLOW_BUILD_AGLOW=OFF`. No image library of the system is used. libjpeg-turbo
 builds with its own CMake during the build, in `build/_afterglow_deps/libjpeg-turbo-build`. When that step fails,
 its output is in the logs under `build/_afterglow_deps/libjpeg-turbo-steps`. It uses NASM when NASM is installed.
@@ -99,7 +99,7 @@ that names a checkout fails or changes for no reason in this repository, check t
   change goes through a phosphor-libs branch and pull request. Tell the user what Phosphor needs.
 - The renderer uses Qt private APIs. After a Qt update, rebuild everything in the capped scope:
   `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build --clean-first -j6`.
-- The pinned archives (phosphor-libs, zlib-ng, xxHash, libpng, libjpeg-turbo and libwebp from
+- The pinned archives (phosphor-libs, zlib-ng, xxHash, libpng, libjpeg-turbo, libwebp and Little CMS from
   `cmake/AfterglowDependencies.cmake`, and Luau and valijson from `cmake/PhosphorDependencies.cmake` in the pinned
   phosphor-libs tree) download into the CPM cache, `.cache/cpm` in this repository. A configure without network
   works once that cache holds them, or with `-DAFTERGLOW_DEPS_ARCHIVES` naming a directory that

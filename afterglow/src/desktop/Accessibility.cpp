@@ -20,34 +20,6 @@ TerminalWindow* owner(Pane* pane)
     for (auto* w : TerminalWindow::windows()) if (w->panes().contains(pane)) return w;
     return nullptr;
 }
-// The palette's actions that read or change one pane, or start from it (a
-// split, tab or window opens in its directory). The others act the same from
-// every pane: switching, moving, detaching and closing tabs, closing the
-// window, fonts, fullscreen, equalize and rotate, the overview, shaders,
-// projects, the configuration and the palette itself. The tab bar and the
-// palette reach those, and on each pane they would bury its own. End Script
-// Key Mode is the chord that frees the keys, not a pane action.
-bool paneAction(Action action)
-{
-    switch (action) {
-    case Action::Copy: case Action::Paste: case Action::SelectAll: case Action::Search:
-    case Action::ClearScreen: case Action::ResetTerminal: case Action::RenamePane: case Action::NotifyOnFinish:
-    case Action::CopyMode: case Action::ShowHints: case Action::ShowLastOutput: case Action::ShowFirstOutputOnScreen:
-    case Action::ShowLastVisitedOutput: case Action::UrlsOpen:
-    case Action::UrlsCopy: case Action::UnicodeInput:
-    case Action::ScrollPageUp: case Action::ScrollPageDown: case Action::ScrollTop: case Action::ScrollBottom:
-    case Action::JumpPromptUp: case Action::JumpPromptDown:
-    case Action::SplitRight: case Action::SplitDown: case Action::SplitLeft: case Action::SplitUp:
-    case Action::ClosePane: case Action::TogglePaneZoom:
-    case Action::ResizeLeft: case Action::ResizeRight: case Action::ResizeUp: case Action::ResizeDown:
-    case Action::SwapLeft: case Action::SwapRight: case Action::SwapUp: case Action::SwapDown:
-    case Action::FocusLeft: case Action::FocusRight: case Action::FocusUp: case Action::FocusDown:
-    case Action::MovePaneToTab: case Action::MovePaneToWindow: case Action::NewTab: case Action::NewWindow:
-        return true;
-    default:
-        return false;
-    }
-}
 // An action's name is its palette title: Qt's AT-SPI bridge gives the name,
 // not the localized name, to a screen reader, as with its own "Show Menu".
 // A client asks for every action's keys at once: the lookup is built once.
@@ -60,7 +32,9 @@ const PaneActions& paneActions()
     static const PaneActions actions = [] {
         PaneActions result;
         for (Action a : Keybinds::allActions()) {
-            if (!paneAction(a)) continue;
+            // The others act the same from every pane: the tab bar and the
+            // palette reach those, and on each pane they would bury its own.
+            if (!Keybinds::isPaneAction(a)) continue;
             result.titles.append(Keybinds::title(a));
             result.byTitle.insert(Keybinds::title(a), a);
         }

@@ -59,8 +59,8 @@ const Cli::Command command {
     "  aglow clipboard --get-clipboard picture.png notes.txt\n"
     "  aglow clipboard --get-clipboard --mime . /dev/stdout\n"
     "\n"
-    "A PNG that the clipboard does not hold is made from another image on it (JPEG, GIF, WebP, BMP, TIFF or "
-    "netPBM), as kitten clipboard makes it: its first frame.\n"
+    "When a PNG is asked for and the clipboard holds none, aglow makes one from the first frame of another image "
+    "on it (TIFF, BMP, APNG, GIF, netPBM, WebP or JPEG), as kitten clipboard does.\n"
     "\n"
     "The terminal can ask for permission before a program reads the clipboard. A terminal without OSC 5522 gets "
     "OSC 52, which carries plain text only.",
@@ -340,10 +340,12 @@ struct Output
     bool toPng = false; ///< remote is another image type, which aglow converts
 };
 
-// The image types that aglow can make a PNG of, the lossless ones first.
+// The image types that aglow can make a PNG of: the lossless ones first,
+// then WebP, which can be lossy, and JPEG, which is.
 constexpr std::string_view ConvertibleImages[] = {
-    "image/tiff", "image/bmp", "image/x-bmp", "image/x-ms-bmp", "image/webp", "image/apng", "image/gif",
-    "image/x-portable-anymap", "image/x-portable-pixmap", "image/x-portable-graymap", "image/x-portable-bitmap", "image/jpeg",
+    "image/tiff", "image/bmp", "image/x-bmp", "image/x-ms-bmp", "image/apng", "image/gif", "image/x-portable-anymap",
+    "image/x-portable-pixmap", "image/x-portable-graymap", "image/x-portable-bitmap", "image/x-portable-arbitrarymap",
+    "image/webp", "image/jpeg",
 };
 
 // A PNG of the first frame of @p data, an image that aglow decodes in a

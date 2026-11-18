@@ -43,6 +43,15 @@ inline constexpr std::array<std::string_view, 11> ControlEvents{
     "paneCreated", "paneMoved",    "paneClosed",   "titleChanged",   "bell",          "commandStarted",
     "commandFinished", "statusChanged", "focusChanged", "userVarChanged", "contextChanged"};
 
+/// The text scopes of the getText call of the control target, as the error
+/// for another scope names them: a window and the daemon say the same.
+inline constexpr const char* TextScopeNames =
+    "screen, scrollback, selection, last-output, first-output-on-screen or last-visited-output";
+/// The error of getText for the cursor option with a scope of one output
+/// region (first-output-on-screen, last-visited-output), whose text ends
+/// before the cursor's place: a window and the daemon say the same.
+inline constexpr const char* CursorScopeError = "cursor is for the screen, scrollback and last-output scopes";
+
 namespace Fn {
 inline constexpr const char* Version = "version"; ///< () -> {version, protocol}
 inline constexpr const char* NewSession = "newSession"; ///< (protocol, options) -> {name, pane}: pane is its first pane's ID

@@ -6,6 +6,8 @@
 
 #include <gtest/gtest.h>
 
+#include <utility>
+
 using namespace AfterglowVt;
 
 namespace {
@@ -113,6 +115,29 @@ TEST(Input, MouseSgr)
     m.mouseTracking = MouseTracking::Any;
     e.button = MouseButton::None;
     EXPECT_EQ(encodeMouse(e, m), "\x1b[<35;5;3M");
+}
+
+// kitty's mouse leave: in the SGR pixel format only, in any tracking mode
+// and also with none, as kitty sends it: bit 8 and the motion bit, with the
+// modifiers, at the pixel position from 1.
+TEST(Input, MouseLeaveGoesInTheSgrPixelFormatOnly)
+{
+    MouseEvent e = mouse(MouseButton::None, MouseAction::Leave, 4, 2, std::uint8_t(Mod::Shift | Mod::Ctrl));
+    e.pixelX = 41;
+    e.pixelY = 22;
+    Modes m;
+    for (const MouseFormat format : {MouseFormat::X10, MouseFormat::Utf8, MouseFormat::Sgr, MouseFormat::Urxvt}) {
+        m.mouseFormat = format;
+        m.mouseTracking = MouseTracking::Any;
+        EXPECT_EQ(encodeMouse(e, m), "") << int(format);
+    }
+    m.mouseFormat = MouseFormat::SgrPixels;
+    for (const MouseTracking tracking : {MouseTracking::None, MouseTracking::X10, MouseTracking::Normal, MouseTracking::Any}) {
+        m.mouseTracking = tracking;
+        EXPECT_EQ(encodeMouse(e, m), "\x1b[<308;42;23M") << int(tracking);
+    }
+    e.mods = Mod::Alt;
+    EXPECT_EQ(encodeMouse(e, m), "\x1b[<296;42;23M");
 }
 
 TEST(Input, MouseLegacyFormats)
@@ -243,8 +268,14 @@ TEST(Input, KittyBaseLayoutKeyAndTheLatinCtrlKey)
     ctrlEs.base = U'c';
     Modes m;
     // Without alternate keys Ctrl+С is Ctrl+C, so that a program that sets
-    // only flag 1 sees it; legacy and modifyOtherKeys send ^C too.
+    // only flag 1 sees it. The legacy encoding and modifyOtherKeys level 1
+    // send ^C too; level 2 sends Ctrl+C as its own form.
     EXPECT_EQ(encodeKey(ctrlEs, m), "\x03");
+    m.modifyOtherKeys = 1;
+    EXPECT_EQ(encodeKey(ctrlEs, m), "\x03");
+    m.modifyOtherKeys = 2;
+    EXPECT_EQ(encodeKey(ctrlEs, m), "\x1b[27;5;99~");
+    m.modifyOtherKeys = 0;
     m.kittyKeyboard = KittyFlag::Disambiguate;
     EXPECT_EQ(encodeKey(ctrlEs, m), "\x1b[99;5u");
     // The spec's example: CSI 1089::99;5u, and the shifted key with Shift.
@@ -281,6 +312,23 @@ TEST(Input, KittyLevelShiftAndMediaKeys)
     m.kittyKeyboard = KittyFlag::Disambiguate | KittyFlag::ReportAllKeys;
     EXPECT_EQ(encodeKey(key(Key::IsoLevel3Shift), m), "\x1b[57453u");
     EXPECT_EQ(encodeKey(key(Key::IsoLevel5Shift), m), "\x1b[57454u");
+}
+
+TEST(Input, KittyHyperAndMetaKeys)
+{
+    // Modifier keys with kitty's own codes: nothing without "report all
+    // keys", as for Shift or Super, and a Meta key is no Alt key.
+    const std::pair<Key, const char*> keys[] = {{Key::LeftHyper, "\x1b[57445u"},
+                                                {Key::LeftMeta, "\x1b[57446u"},
+                                                {Key::RightHyper, "\x1b[57451u"},
+                                                {Key::RightMeta, "\x1b[57452u"}};
+    Modes m;
+    for (const auto& [k, sent] : keys) EXPECT_EQ(encodeKey(key(k), m), "") << int(k);
+    // A key that is no modifier gets a code here (KittyLevelShiftAndMediaKeys).
+    m.kittyKeyboard = KittyFlag::Disambiguate;
+    for (const auto& [k, sent] : keys) EXPECT_EQ(encodeKey(key(k), m), "") << int(k);
+    m.kittyKeyboard = KittyFlag::Disambiguate | KittyFlag::ReportAllKeys;
+    for (const auto& [k, sent] : keys) EXPECT_EQ(encodeKey(key(k), m), sent) << int(k);
 }
 
 TEST(Input, KittyEventTypes)

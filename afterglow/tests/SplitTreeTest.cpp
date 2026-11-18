@@ -56,16 +56,16 @@ TEST(SplitTree, DragDividerRespectsMinimum)
     EXPECT_FALSE(t.dividerAt(QPoint(20, 50), 3).has_value());
 }
 
-TEST(SplitTree, NeighbourAndEqualize)
+TEST(SplitTree, NeighborAndEqualize)
 {
     SplitTree t(fake(1));
     t.split(fake(1), fake(2), SplitTree::Direction::Right);
     t.split(fake(2), fake(3), SplitTree::Direction::Down);
     t.split(fake(1), fake(4), SplitTree::Direction::Right);
     t.layout(QRect(0, 0, 300, 100), 0);
-    EXPECT_EQ(t.neighbour(fake(1), SplitTree::Neighbour::Right), fake(4));
-    EXPECT_EQ(t.neighbour(fake(3), SplitTree::Neighbour::Up), fake(2));
-    EXPECT_EQ(t.neighbour(fake(1), SplitTree::Neighbour::Left), nullptr);
+    EXPECT_EQ(t.neighbor(fake(1), SplitTree::Neighbor::Right), fake(4));
+    EXPECT_EQ(t.neighbor(fake(3), SplitTree::Neighbor::Up), fake(2));
+    EXPECT_EQ(t.neighbor(fake(1), SplitTree::Neighbor::Left), nullptr);
 
     // Three columns side by side get a third of the width each.
     t.equalize();
@@ -97,18 +97,18 @@ TEST(SplitTree, ZoomPreservesTopologyRatiosAndNavigation)
     t.split(fake(1), fake(2), SplitTree::Direction::Right);
     t.split(fake(2), fake(3), SplitTree::Direction::Down);
     t.layout(QRect(0, 0, 401, 201), 1);
-    ASSERT_TRUE(t.resizePane(fake(1), SplitTree::Neighbour::Right, 40, 1, QSize(40, 20)));
+    ASSERT_TRUE(t.resizePane(fake(1), SplitTree::Neighbor::Right, 40, 1, QSize(40, 20)));
     t.layout(QRect(0, 0, 401, 201), 1);
     const QRect original = t.rectOf(fake(1));
-    Pane* neighbour = t.neighbour(fake(1), SplitTree::Neighbour::Right);
+    Pane* neighbor = t.neighbor(fake(1), SplitTree::Neighbor::Right);
     t.setZoomedPane(fake(1));
     EXPECT_EQ(t.paneCount(), 3);
     EXPECT_EQ(t.rectOf(fake(1)), QRect(0, 0, 401, 201));
     EXPECT_TRUE(t.rectOf(fake(2)).isEmpty());
     EXPECT_EQ(t.paneAt(QPoint(350, 150)), fake(1));
     EXPECT_TRUE(t.dividers().empty());
-    EXPECT_EQ(t.neighbour(fake(1), SplitTree::Neighbour::Right), neighbour);
-    EXPECT_FALSE(t.resizePane(fake(1), SplitTree::Neighbour::Right, 20, 1, QSize(40, 20)));
+    EXPECT_EQ(t.neighbor(fake(1), SplitTree::Neighbor::Right), neighbor);
+    EXPECT_FALSE(t.resizePane(fake(1), SplitTree::Neighbor::Right, 20, 1, QSize(40, 20)));
     t.setZoomedPane(nullptr);
     t.layout(QRect(0, 0, 401, 201), 1);
     EXPECT_EQ(t.rectOf(fake(1)), original);
@@ -130,20 +130,20 @@ TEST(SplitTree, KeyboardResizeClampsNestedMinimumSizes)
     t.split(fake(1), fake(2), SplitTree::Direction::Right);
     t.split(fake(2), fake(3), SplitTree::Direction::Right);
     t.layout(QRect(0, 0, 401, 201), 1);
-    EXPECT_TRUE(t.resizePane(fake(1), SplitTree::Neighbour::Right, 1000, 1, QSize(40, 20)));
+    EXPECT_TRUE(t.resizePane(fake(1), SplitTree::Neighbor::Right, 1000, 1, QSize(40, 20)));
     t.layout(QRect(0, 0, 401, 201), 1);
     EXPECT_GE(t.rectOf(fake(2)).width(), 40);
     EXPECT_GE(t.rectOf(fake(3)).width(), 40);
-    EXPECT_FALSE(t.resizePane(fake(1), SplitTree::Neighbour::Right, 1000, 1, QSize(40, 20)));
-    EXPECT_TRUE(t.resizePane(fake(1), SplitTree::Neighbour::Left, 1000, 1, QSize(40, 20)));
+    EXPECT_FALSE(t.resizePane(fake(1), SplitTree::Neighbor::Right, 1000, 1, QSize(40, 20)));
+    EXPECT_TRUE(t.resizePane(fake(1), SplitTree::Neighbor::Left, 1000, 1, QSize(40, 20)));
     t.layout(QRect(0, 0, 401, 201), 1);
     EXPECT_EQ(t.rectOf(fake(1)).width(), 40);
     t.split(fake(1), fake(4), SplitTree::Direction::Down);
     t.layout(QRect(0, 0, 401, 201), 1);
-    EXPECT_TRUE(t.resizePane(fake(4), SplitTree::Neighbour::Up, 30, 1, QSize(40, 20)));
+    EXPECT_TRUE(t.resizePane(fake(4), SplitTree::Neighbor::Up, 30, 1, QSize(40, 20)));
     t.layout(QRect(0, 0, 401, 201), 1);
     EXPECT_EQ(t.rectOf(fake(4)).height(), 130);
-    EXPECT_TRUE(t.resizePane(fake(1), SplitTree::Neighbour::Down, 1000, 1, QSize(40, 20)));
+    EXPECT_TRUE(t.resizePane(fake(1), SplitTree::Neighbor::Down, 1000, 1, QSize(40, 20)));
     t.layout(QRect(0, 0, 401, 201), 1);
     EXPECT_EQ(t.rectOf(fake(4)).height(), 20);
 }
@@ -198,7 +198,7 @@ TEST(SplitTree, LayoutRoundTripRetainsNestedRatios)
     original.split(fake(1), fake(2), SplitTree::Direction::Right);
     original.split(fake(2), fake(3), SplitTree::Direction::Down);
     original.layout(QRect(0, 0, 1200, 800), 2);
-    ASSERT_TRUE(original.resizePane(fake(1), SplitTree::Neighbour::Right, 100, 2, QSize(40, 20)));
+    ASSERT_TRUE(original.resizePane(fake(1), SplitTree::Neighbor::Right, 100, 2, QSize(40, 20)));
     original.layout(QRect(0, 0, 1200, 800), 2);
     const auto encode = [](Pane* p) {
         return QJsonObject{{QStringLiteral("id"), QString::number(reinterpret_cast<quintptr>(p))}};
@@ -222,7 +222,7 @@ TEST(SplitTree, NullIsNeverAPane)
     // Inner nodes hold no pane: null must not match the root split.
     EXPECT_FALSE(t.contains(nullptr));
     EXPECT_TRUE(t.rectOf(nullptr).isNull());
-    EXPECT_FALSE(t.resizePane(nullptr, SplitTree::Neighbour::Right, 10, 1, QSize(10, 10)));
+    EXPECT_FALSE(t.resizePane(nullptr, SplitTree::Neighbor::Right, 10, 1, QSize(10, 10)));
     t.split(nullptr, fake(3), SplitTree::Direction::Down);
     EXPECT_EQ(t.paneCount(), 2);
 }

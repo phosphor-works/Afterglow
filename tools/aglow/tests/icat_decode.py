@@ -13,26 +13,31 @@ do not all fit in the 320 MiB budget of an image and its warning (and frames
 that fit exactly), --loop 0, which decodes one frame, the delays of frames as
 kitty takes them, a frame far larger than its canvas, a frame partly off the
 canvas, interlaced frames, the least code size, LZW without a leading clear
-code, a GIF damaged after its frames, a WebP and its animation, BMP gaps and
-top-down rows, invalid PNG depths, a valid PNG sent as it is and a damaged one
-that is not, the longest side, the EXIF orientation of a JPEG, a PNG and a
-WebP, a JPEG without Huffman tables (as Motion JPEG), and a corrupt file,
-which the decoder child must turn into an error and not a crash of aglow. It
-also checks that a subdirectory that cannot be read leaves out only itself,
-that a named pipe in a directory is no image, that aglow stops when its
-output closes, and that a signal to aglow ends a decode that does not end,
-and the decoder child with it.
+code, a GIF damaged after its frames, a WebP and its animation, TIFF (raw,
+PackBits, and a compression that aglow refuses), netPBM (binary and plain),
+an APNG and the times of its frames, BMP gaps and top-down rows, invalid PNG
+depths, a valid PNG sent as it is and a damaged one that is not, ICC profiles
+that convert to sRGB, the longest side, the orientation of a JPEG, a PNG, a
+WebP and a TIFF, a JPEG without Huffman tables (as Motion JPEG), and a
+corrupt file, which the decoder child must turn into an error and not a
+crash of aglow. It also checks file URIs, that a subdirectory that cannot be
+read leaves out only itself, that a named pipe in a directory is no image,
+that aglow stops when its output closes, and that a signal to aglow ends a
+decode that does not end, and the decoder child with it, which runs under a
+filter of its system calls.
 
 It exits with 77 (skipped) after the other cases when it runs as a user that
 reads a directory of mode 0, such as root: the subdirectory case cannot run.
 
 aglow runs with --passthrough=none and without TMUX, so that it never changes
-the settings of a tmux that runs the test.
+the settings of a tmux that runs the test, and in a session of its own, with
+no controlling terminal: it never reaches the terminal that runs the test.
 """
 import base64
 import os
 import re
 import signal
+import socket
 import struct
 import subprocess
 import sys
@@ -46,6 +51,11 @@ def check(condition, *detail):
     """Raises AssertionError when condition is false. Not assert: python -O must not turn the checks off."""
     if not condition:
         raise AssertionError(*detail)
+
+
+def near(px, want, tolerance=1):
+    """Whether each channel of PX is within TOLERANCE of WANT."""
+    return all(abs(a - b) <= tolerance for a, b in zip(px, want))
 
 
 # Images.
@@ -158,13 +168,22 @@ def png(width, height, depth, colour, raw, extra=b""):
             + extra + png_chunk(b"IDAT", zlib.compress(raw)) + png_chunk(b"IEND", b""))
 
 
-def tiff(width, height, kind, samples, data, compression=1):
-    """A little-endian TIFF of one strip: KIND is its photometric interpretation, of 8-bit SAMPLES."""
+def png_rgba(width, height, rgba):
+    """An 8-bit RGBA PNG of one colour, RGBA."""
+    return png(width, height, 8, 6, b"".join(b"\0" + bytes(rgba) * width for _ in range(height)))
+
+
+def tiff(width, height, kind, samples, data, compression=1, orientation=None):
+    """A little-endian TIFF of one strip: KIND is its photometric interpretation, of 8-bit SAMPLES, with an
+    Orientation tag when ORIENTATION is given."""
     if compression == 32773:
         # PackBits: literal runs of up to 128 bytes.
         data = b"".join(bytes([len(data[at:at + 128]) - 1]) + data[at:at + 128] for at in range(0, len(data), 128))
     entries = [(256, 4, [width]), (257, 4, [height]), (258, 3, [8] * samples), (259, 3, [compression]),
                (262, 3, [kind]), (273, 4, [0]), (277, 3, [samples]), (278, 4, [height]), (279, 4, [len(data)])]
+    if orientation is not None:
+        # The tags go in their order: Orientation (274) after StripOffsets (273).
+        entries.insert(6, (274, 3, [orientation]))
     start = 8 + 2 + 12 * len(entries) + 4
     extra = b""
     fields = b""
@@ -359,13 +378,30 @@ def alive(pid):
 # What aglow sends.
 
 ENVIRONMENT = {key: value for key, value in os.environ.items() if key != "TMUX"}
+# aglow icat with its output in escape codes, as pixels where it decodes, in a window that it does not ask for.
+ICAT = ["icat", "--transfer-mode=stream", "--stdin=no", "--fit=none", "--passthrough=none", "--use-window-size=80,24,800,480"]
 
 
-def run(aglow, path, *options):
-    result = subprocess.run([aglow, "icat", "--transfer-mode=stream", "--stdin=no", "--fit=none", "--passthrough=none",
-                             "--use-window-size=80,24,800,480", *options, str(path)],
-                            capture_output=True, env=ENVIRONMENT, timeout=60)
+def run(aglow, path, *options, env=None, cwd=None, timeout=60):
+    """aglow icat on PATH: its exit code, standard output and standard error. A session of its own: aglow has no
+    controlling terminal, and never opens the terminal of the test."""
+    result = subprocess.run([aglow, *ICAT, *options, str(path)], capture_output=True, env=env or ENVIRONMENT, cwd=cwd,
+                            timeout=timeout, start_new_session=True)
     return result.returncode, result.stdout, result.stderr.decode(errors="replace")
+
+
+# The processors whose system calls the decoder child's filter knows (AfterglowProto/DecodeFilter.h). On another,
+# the child decodes with its limits alone.
+FILTERED = os.uname().machine in ("x86_64", "aarch64", "riscv64", "ppc64le")
+
+
+def seccomp(pid):
+    """The Seccomp and NoNewPrivs lines of /proc/PID/status, or None when PID is gone."""
+    try:
+        lines = Path(f"/proc/{pid}/status").read_text().splitlines()
+    except OSError:
+        return None
+    return {line.split(":")[0]: line.split(":")[1].strip() for line in lines if line.startswith(("Seccomp:", "NoNewPrivs:"))}
 
 
 def gaps(output):
@@ -562,11 +598,13 @@ def main():
         check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [(16, 16, 16, 255), (240, 240, 240, 255)], err)
         code, sent, err = show("plain.ppm", b"P3\n# red, then blue\n2 1\n15\n15 0 0 0 0 15\n")
         check(code == 0 and len(sent) == 1 and pixels(sent[0]) == [red, blue], err)
-        code, sent, err = show("animated.png", apng([(255, 0, 0, 255, 100), (0, 0, 255, 255, 200)]))
+        code, out, err = show_raw("animated.png", apng([(255, 0, 0, 255, 100), (0, 0, 255, 255, 200)]))
+        sent = transmissions(out)
         check(code == 0 and len(sent) == 2 and sent[0]["keys"]["a"] == "T" and sent[0]["keys"].get("f") != "100"
               and sent[1]["keys"]["a"] == "f", err, len(sent), sent and sent[0]["keys"])
-        check(pixels(sent[0]) == [red] and pixels(sent[1]) == [blue] and sent[1]["keys"].get("z") == "200",
-              pixels(sent[0]), pixels(sent[1]), sent[1]["keys"])
+        # The first frame gets its 100 ms from a=a, the second its 200 ms from a=f.
+        check(pixels(sent[0]) == [red] and pixels(sent[1]) == [blue] and gaps(out) == [100]
+              and sent[1]["keys"].get("z") == "200", pixels(sent[0]), pixels(sent[1]), gaps(out), sent[1]["keys"])
         print("TIFF, netPBM and APNG: passed", flush=True)
 
         # A frame of 65535 pixels a side on a canvas of one, with data that spells strings of 4090
@@ -638,8 +676,6 @@ def main():
 
         # Colour: a JPEG and a WebP with an ICC profile convert to sRGB; so does a PNG that aglow decodes
         # (mirrored). One that goes as it is keeps its profile, for the terminal (Pillow's rounding: within 1).
-        def near(px, want):
-            return all(abs(a - b) <= 1 for a, b in zip(px, want))
         for name, data, size, want in (("adobe.jpg", JPEG_ADOBE, 64, (66, 151, 202, 255)),
                                        ("adobe.webp", WEBP_ADOBE, 16, (66, 151, 203, 255))):
             code, sent, err = show(name, data)
@@ -653,6 +689,9 @@ def main():
         code, sent, err = show("adobe-mirrored.png", adobe_png, "--mirror=horizontal")
         check(code == 0 and len(sent) == 1 and sent[0]["keys"].get("f") != "100", err)
         got = pixels(sent[0])
+        # Mirrored, its first pixel is the file's second: (10, 200, 30) in Adobe RGB, a green outside sRGB
+        # that clips to (0, 201, 0). Its second is (100, 150, 200), the colour of the JPEG and the WebP. The
+        # values are those of Pillow's ImageCms.profileToProfile from ADOBE_ICC to its sRGB profile.
         check(near(got[0], (0, 201, 0, 255)) and near(got[1], (66, 151, 203, 255)), got)
         print("ICC profiles convert to sRGB: passed", flush=True)
 
@@ -688,7 +727,11 @@ def main():
             keys = sent[0]["keys"]
             check(keys.get("f") != "100" and keys.get("s") == "1" and keys.get("v") == "2", name, keys)
             check(pixels(sent[0]) == [red, blue], name, pixels(sent[0]))
-        print("PNG and WebP EXIF orientation: passed", flush=True)
+        # The Orientation tag of a TIFF, the same turn.
+        code, sent, err = show("turned.tif", tiff(2, 1, 2, 3, bytes([255, 0, 0, 0, 0, 255]), orientation=6))
+        check(code == 0 and len(sent) == 1 and sent[0]["keys"].get("s") == "1" and sent[0]["keys"].get("v") == "2"
+              and pixels(sent[0]) == [red, blue], code, err, sent and sent[0]["keys"], sent and pixels(sent[0]))
+        print("PNG, WebP and TIFF orientation: passed", flush=True)
 
         # A JPEG without DHT: libjpeg-turbo takes the Huffman tables of Annex K for it.
         code, sent, err = show("motion.jpg", jpeg_without_tables())
@@ -699,12 +742,27 @@ def main():
         # Corrupt data is an error from the decoder, and aglow goes on to the next image.
         corrupt = root / "corrupt.png"
         corrupt.write_bytes(valid[:41] + b"\xff" * 64)
-        result = subprocess.run([aglow, "icat", "--transfer-mode=stream", "--stdin=no", "--fit=none", "--passthrough=none",
-                                 "--use-window-size=80,24,800,480", "--mirror=horizontal", str(corrupt),
-                                 str(root / "good.png")], capture_output=True, env=ENVIRONMENT, timeout=60)
+        result = subprocess.run([aglow, *ICAT, "--mirror=horizontal", str(corrupt), str(root / "good.png")],
+                                capture_output=True, env=ENVIRONMENT, timeout=60, start_new_session=True)
         check(result.returncode == 1 and len(transmissions(result.stdout)) == 1, result.returncode, result.stderr)
         check(not_crashed(result.stderr.decode(errors="replace")), result.stderr)
         print("corrupt data: passed", flush=True)
+
+        # File URIs: a scheme of any case, and no host, localhost or the name of this computer, of any case.
+        # A name that starts with "file:" and no slash is a relative path. A URI of another host is refused.
+        good = str(root / "good.png")
+        uris = ["FILE:" + good, "file://localhost" + good, "file://LocalHost" + good]
+        if socket.gethostname():
+            uris.append("file://" + socket.gethostname().upper() + good)
+        for uri in uris:
+            code, out, err = run(aglow, uri)
+            check(code == 0 and len(transmissions(out)) == 1, uri, code, err)
+        (root / "file:relative.png").write_bytes(valid)
+        code, out, err = run(aglow, "file:relative.png", cwd=root)
+        check(code == 0 and len(transmissions(out)) == 1, code, err)
+        code, out, err = run(aglow, "file://elsewhere.invalid" + good)
+        check(code == 1 and not transmissions(out) and "not a file of this computer" in err, code, err)
+        print("file URIs: passed", flush=True)
 
         # A named pipe with an image name in a directory is no image file: aglow does not wait for a writer.
         pipes = root / "pipes"
@@ -723,9 +781,8 @@ def main():
         reader, writer = os.pipe()
         os.close(reader)
         try:
-            result = subprocess.run([aglow, "icat", "--transfer-mode=stream", "--stdin=no", "--fit=none", "--passthrough=none",
-                                     "--use-window-size=80,24,800,480", str(closed)], stdout=writer, stderr=subprocess.PIPE,
-                                    env=ENVIRONMENT, timeout=60)
+            result = subprocess.run([aglow, *ICAT, str(closed)], stdout=writer, stderr=subprocess.PIPE, env=ENVIRONMENT,
+                                    timeout=60, start_new_session=True)
         finally:
             os.close(writer)
         failures = result.stderr.decode(errors="replace").count("cannot write to the terminal")
@@ -754,24 +811,27 @@ def main():
         width = height = 8000
         (root / "big.png").write_bytes(png_of_rows(width, height, b"\0" * (1 + width * 3)))
         for stop in (signal.SIGTERM, signal.SIGKILL):
-            process = subprocess.Popen([aglow, "icat", "--transfer-mode=stream", "--stdin=no", "--fit=none",
-                                        "--passthrough=none", "--use-window-size=80,24,800,480", "--mirror=horizontal",
-                                        str(root / "big.png")], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                                       env=ENVIRONMENT)
+            process = subprocess.Popen([aglow, *ICAT, "--mirror=horizontal", str(root / "big.png")],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=ENVIRONMENT,
+                                       start_new_session=True)
             decoder = None
             try:
-                # The child sets its limits after PR_SET_PDEATHSIG. Stopped before that, it would not go
-                # with a killed aglow: wait until its limits differ from those of aglow.
+                # The child sets its limits after PR_SET_PDEATHSIG, and its filter of system calls last.
+                # Stopped before that, it would not go with a killed aglow: wait until its limits differ
+                # from those of aglow and its filter is on.
                 deadline = time.monotonic() + 30
                 while decoder is None and process.poll() is None and time.monotonic() < deadline:
                     found = children(process.pid)
                     if found:
                         own = limits(found[0])
-                        if own is not None and own != limits(process.pid):
+                        filtered = not FILTERED or (seccomp(found[0]) or {}).get("Seccomp") == "2"
+                        if own is not None and own != limits(process.pid) and filtered:
                             decoder = found[0]
                     if decoder is None:
                         time.sleep(0.005)
                 check(decoder is not None, "no decoder child that passed its setup")
+                # The filter, with no way to gain privileges.
+                check(not FILTERED or seccomp(decoder) == {"NoNewPrivs": "1", "Seccomp": "2"}, seccomp(decoder))
                 os.kill(decoder, signal.SIGSTOP)
                 process.send_signal(stop)
                 code = process.wait(timeout=10)

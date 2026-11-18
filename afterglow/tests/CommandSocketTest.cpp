@@ -4,10 +4,11 @@
 // The "commands" socket target, the plain C++ run client of afterglow-proto
 // against the real phosphor-ipc router, and `aglow run` itself, also as
 // `afterglow run` runs it, the command lines of `afterglow ctl` and
-// `afterglow --help`, `afterglow ctl overlay` and `afterglow ctl screenshot`
-// against a target of the test's own, and the lines of a command client in
-// a session pane as the window of the session passes them on
-// (MuxCommands::forWindow). Every test listens on a socket of its own, in a
+// `afterglow --help`, the calls of `afterglow ctl` (overlay, screenshot,
+// get-text, split, new-tab, new-window, set-colors, colors, focus, resize,
+// send-key, scroll and the others) against a target of the test's own, and
+// the lines of a command client in a session pane as the window of the
+// session passes them on (MuxCommands::forWindow). Every test listens on a socket of its own, in a
 // runtime directory of its own, or points AFTERGLOW_SOCKET where nothing
 // listens: the session that runs the tests may run inside an afterglow pane,
 // whose AFTERGLOW_SOCKET these tests must never reach.
@@ -19,6 +20,7 @@
 #include "control/CommandSocket.h"
 #include "control/Control.h"
 #include "mux/MuxCommands.h"
+#include "MuxProtocol.h"
 #include "scripting/ScriptControl.h"
 #include "scripting/ScriptHost.h"
 #include "shell/Aglow.h"
@@ -29,6 +31,7 @@
 #include <AfterglowProto/Json.h>
 #include <AfterglowProto/Remote.h>
 #include <AfterglowProto/Run.h>
+#include <AfterglowVt/KeyNames.h>
 
 #include <PhosphorIpc/IpcProtocol.h>
 
@@ -52,8 +55,11 @@
 #include <atomic>
 #include <cerrno>
 #include <functional>
+#include <initializer_list>
 #include <limits>
 #include <optional>
+#include <string>
+#include <utility>
 #include <thread>
 #include <sys/stat.h>
 
@@ -187,6 +193,11 @@ QProcessEnvironment isolatedEnvironment(const QString& runtime)
     env.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime);
     env.insert(QStringLiteral("XDG_STATE_HOME"), runtime + QStringLiteral("/state"));
     env.insert(QStringLiteral("HOME"), runtime + QStringLiteral("/home"));
+    // The user's config, data and cache stay out: a session's split reads
+    // the default config file.
+    env.insert(QStringLiteral("XDG_CONFIG_HOME"), runtime + QStringLiteral("/config"));
+    env.insert(QStringLiteral("XDG_DATA_HOME"), runtime + QStringLiteral("/data"));
+    env.insert(QStringLiteral("XDG_CACHE_HOME"), runtime + QStringLiteral("/cache"));
     for (const QString& name : {QStringLiteral("AFTERGLOW_PANE_ID"), QStringLiteral("AFTERGLOW_SESSION"), QStringLiteral("TMUX"),
                                 QStringLiteral("TMUX_PANE"), QStringLiteral("WAYLAND_DISPLAY"), QStringLiteral("DISPLAY")})
         env.remove(name);
@@ -392,6 +403,16 @@ protected:
     std::unique_ptr<CommandSocket> m_commands;
     qint64 m_id = 0;
 };
+
+// Scripts and afterglow ctl name an action by its token.
+TEST(ControlActions, AStructuralActionIsFoundByItsName)
+{
+    EXPECT_TRUE(Control::isStructuralAction(QStringLiteral("split_right")));
+    EXPECT_TRUE(Control::isStructuralAction(QStringLiteral("switch_project")));
+    EXPECT_FALSE(Control::isStructuralAction(QStringLiteral("copy")));
+    EXPECT_FALSE(Control::isStructuralAction(QStringLiteral("no_such_action")));
+    EXPECT_FALSE(Control::isStructuralAction(QString()));
+}
 
 TEST_F(CommandSocketTest, ListsTheCommandsAndEachInTheSchema)
 {
@@ -1581,82 +1602,98 @@ TEST(CtlBinaryTest, ARepeatedFlagOrAChannelPastTheLastIsAUsageError)
     }
 }
 
+/// The words of `afterglow ctl LINE`, split at each space.
+QStringList ctlWords(const char* line)
+{
+    return QStringList{QStringLiteral("ctl")} + QString::fromUtf8(line).split(QLatin1Char(' '));
+}
+
+/// Each command line of @p cases is a usage error before any connection:
+/// status 2, its message then the usage on standard error, and nothing on
+/// standard output.
+void expectUsageErrors(std::initializer_list<std::pair<const char*, QString>> cases)
+{
+    for (const auto& [line, message] : cases) {
+        const Isolated r = isolate(QStringLiteral(AFTERGLOW_BINARY), ctlWords(line));
+        EXPECT_EQ(r.status, 2) << line << ": " << qPrintable(r.err);
+        EXPECT_TRUE(r.err.startsWith(QStringLiteral("afterglow ctl: %1\n\nUsage: afterglow ctl").arg(message))) << line << ": " << qPrintable(r.err);
+        EXPECT_TRUE(r.out.isEmpty()) << line << ": " << qPrintable(r.out);
+    }
+}
+
 // The commands of kitten @ that ctl has: their usage errors come before any
 // connection.
 TEST(CtlBinaryTest, NavigationCommandsCheckTheirArguments)
 {
-    const QString ctl = QStringLiteral("ctl");
-    const auto words = [&ctl](const char* line) {
-        return QStringList{ctl} + QString::fromUtf8(line).split(QLatin1Char(' '));
-    };
-    for (const auto& [args, message] :
-         {std::pair{words("focus --direction"), QStringLiteral("--direction needs a value")},
-          std::pair{words("focus --direction sideways"), QStringLiteral("--direction is left, right, up or down")},
-          std::pair{words("resize"), QStringLiteral("resize needs --direction left, right, up or down")},
-          std::pair{words("resize --direction up --cells 0"), QStringLiteral("--cells takes a number from 1 to 10000")},
-          std::pair{words("resize --direction up --cells 10001"), QStringLiteral("--cells takes a number from 1 to 10000")},
-          std::pair{words("send-key"), QStringLiteral("send-key needs a key")},
-          std::pair{words("send-key ctrl+c hyper+x"), QStringLiteral("no key is named 'hyper+x'")},
-          std::pair{words("scroll"), QStringLiteral("scroll takes one of LINES, --pages N, --prompt N, --top and --bottom")},
-          std::pair{words("scroll 3 --top"), QStringLiteral("scroll takes one of LINES, --pages N, --prompt N, --top and --bottom")},
-          std::pair{words("scroll --pages x"), QStringLiteral("a count is a whole number from -1000000000 to 1000000000, not x")},
-          std::pair{words("scroll 1000000001"), QStringLiteral("a count is a whole number from -1000000000 to 1000000000, not 1000000001")},
-          std::pair{words("scroll 1 2"), QStringLiteral("unexpected argument 2")}}) {
-        const Isolated r = isolate(QStringLiteral(AFTERGLOW_BINARY), args);
-        EXPECT_EQ(r.status, 2) << qPrintable(args.join(QLatin1Char(' '))) << qPrintable(r.err);
-        EXPECT_TRUE(r.err.startsWith(QStringLiteral("afterglow ctl: %1\n").arg(message))) << qPrintable(r.err);
-    }
+    expectUsageErrors({
+        {"focus --direction", QStringLiteral("--direction needs a value")},
+        {"focus --direction sideways", QStringLiteral("--direction is left, right, up or down")},
+        {"resize", QStringLiteral("resize needs --direction left, right, up or down")},
+        {"resize --direction up --cells 0", QStringLiteral("--cells takes a number from 1 to 10000")},
+        {"resize --direction up --cells 10001", QStringLiteral("--cells takes a number from 1 to 10000")},
+        {"send-key", QStringLiteral("send-key needs a key")},
+        {"send-key ctrl+c hyper+x", QStringLiteral("no key is named 'hyper+x'")},
+        {"scroll", QStringLiteral("scroll takes one of LINES, --pages N, --prompt N, --top and --bottom")},
+        {"scroll 3 --top", QStringLiteral("scroll takes one of LINES, --pages N, --prompt N, --top and --bottom")},
+        {"scroll --pages x", QStringLiteral("a count is a whole number from -1000000000 to 1000000000, not x")},
+        {"scroll 1000000001", QStringLiteral("a count is a whole number from -1000000000 to 1000000000, not 1000000001")},
+        {"scroll 1 2", QStringLiteral("unexpected argument 2")},
+    });
+    // One key past the most that a call takes.
+    std::string keys = "send-key";
+    for (std::size_t i = 0; i <= AfterglowVt::MaxKeysAtOnce; ++i) keys += " a";
+    expectUsageErrors({{keys.c_str(), QStringLiteral("send-key sends at most %1 keys at once").arg(AfterglowVt::MaxKeysAtOnce)}});
 }
 
 // The options of get-text and of a launch, as kitten @ get-text and launch
 // have them: their usage errors come before any connection.
 TEST(CtlBinaryTest, TextAndLaunchOptionsCheckTheirArguments)
 {
-    const QString ctl = QStringLiteral("ctl");
-    const auto words = [&ctl](const char* line) {
-        return QStringList{ctl} + QString::fromUtf8(line).split(QLatin1Char(' '));
-    };
-    for (const auto& [args, message] :
-         {std::pair{words("get-text --screen --first-output-on-screen"), QStringLiteral("get-text takes one scope")},
-          std::pair{words("split --env =x"), QStringLiteral("--env takes NAME=VALUE, or NAME to remove it")},
-          std::pair{words("split --var x"), QStringLiteral("--var takes NAME=VALUE, with a name of 1 to 128 bytes")},
-          std::pair{words("new-tab --stdin-ansi"), QStringLiteral("--stdin-ansi needs --stdin-text")},
-          std::pair{words("new-tab --stdin-text all"), QStringLiteral("--stdin-text takes a scope of get-text: all")},
-          std::pair{words("new-window --stdin-text screen"), QStringLiteral("unknown option --stdin-text")},
-          std::pair{words("new-window --no-focus"), QStringLiteral("unknown option --no-focus")},
-          std::pair{words("overlay -n --stdin-text screen -- cat"), QStringLiteral("--stdin-text and -n exclude each other")}}) {
-        const Isolated r = isolate(QStringLiteral(AFTERGLOW_BINARY), args);
-        EXPECT_EQ(r.status, 2) << qPrintable(args.join(QLatin1Char(' '))) << qPrintable(r.err);
-        EXPECT_TRUE(r.err.startsWith(QStringLiteral("afterglow ctl: %1\n").arg(message))) << qPrintable(r.err);
-    }
+    const QString scopes = Afterglow::Control::TextScopeNames;
+    expectUsageErrors({
+        {"get-text --screen --first-output-on-screen", QStringLiteral("get-text takes one scope")},
+        {"split --left --up", QStringLiteral("split takes one direction")},
+        {"split --env =x", QStringLiteral("--env takes NAME=VALUE, or NAME to remove it")},
+        {"split --var x", QStringLiteral("--var takes NAME=VALUE, with a name of 1 to 128 bytes")},
+        {"new-tab --stdin-ansi", QStringLiteral("--stdin-ansi needs --stdin-text")},
+        {"new-tab --stdin-text all -- cat", QStringLiteral("--stdin-text takes %1, not all").arg(scopes)},
+        {"overlay --stdin-text all -- cat", QStringLiteral("--stdin-text takes %1, not all").arg(scopes)},
+        // The shell would run the pane's text as its commands.
+        {"split --stdin-text screen", QStringLiteral("--stdin-text needs a command after --: the shell would run the text")},
+        {"new-tab --stdin-text screen", QStringLiteral("--stdin-text needs a command after --: the shell would run the text")},
+        {"new-window --stdin-text screen", QStringLiteral("unknown option --stdin-text")},
+        {"new-window --no-focus", QStringLiteral("unknown option --no-focus")},
+        {"overlay -n --stdin-text screen -- cat", QStringLiteral("--stdin-text and -n exclude each other")},
+    });
 }
 
-// The commands of kitten @ for colours, fonts, the window and the program:
+// The commands of kitten @ for colors, fonts, the window and the program:
 // their usage errors come before any connection.
 TEST(CtlBinaryTest, WindowAndProgramCommandsCheckTheirArguments)
 {
-    const QString ctl = QStringLiteral("ctl");
-    const auto words = [&ctl](const char* line) {
-        return QStringList{ctl} + QString::fromUtf8(line).split(QLatin1Char(' '));
-    };
-    for (const auto& [args, message] :
-         {std::pair{words("set-colors"), QStringLiteral("set-colors needs NAME=COLOR, a theme or --reset")},
-          std::pair{words("set-colors color1=nope"), QStringLiteral("nope is no colour")},
-          std::pair{words("set-colors colour1=#fff"), QStringLiteral("no colour is named colour1")},
-          std::pair{words("set-colors a b"), QStringLiteral("set-colors takes one theme")},
-          std::pair{words("set-font-size big"), QStringLiteral("set-font-size takes a size in points, or +N or -N")},
-          std::pair{words("set-opacity 1.5"), QStringLiteral("set-opacity takes a number from 0 to 1")},
-          std::pair{words("set-user-var x"), QStringLiteral("set-user-var takes NAME=VALUE, with a name of 1 to 128 bytes")},
-          std::pair{words("signal-program SIGNOPE"), QStringLiteral("signal-program takes a signal: a name such as INT or TERM, or a number")},
-          std::pair{words("signal-program 0"), QStringLiteral("signal-program takes a signal: a name such as INT or TERM, or a number")},
-          std::pair{words("window"), QStringLiteral("window needs --fullscreen, --maximized, --normal or --size")},
-          std::pair{words("window --normal --maximized"), QStringLiteral("window takes one of --fullscreen, --maximized and --normal")},
-          std::pair{words("window --size 80"), QStringLiteral("--size takes COLSxROWS, each from 1 to 10000")},
-          std::pair{words("window --size 0x24"), QStringLiteral("--size takes COLSxROWS, each from 1 to 10000")}}) {
-        const Isolated r = isolate(QStringLiteral(AFTERGLOW_BINARY), args);
-        EXPECT_EQ(r.status, 2) << qPrintable(args.join(QLatin1Char(' '))) << qPrintable(r.err);
-        EXPECT_TRUE(r.err.startsWith(QStringLiteral("afterglow ctl: %1\n").arg(message))) << qPrintable(r.err);
-    }
+    expectUsageErrors({
+        {"set-colors", QStringLiteral("set-colors needs NAME=COLOR, a theme or --reset")},
+        {"set-colors color1=nope", QStringLiteral("nope is no color")},
+        {"set-colors colour1=#fff", QStringLiteral("no color is named colour1")},
+        {"set-colors a b", QStringLiteral("set-colors takes one theme")},
+        {"set-colors --all --pane 3 --reset", QStringLiteral("set-colors --all takes no --pane")},
+        {"set-font-size big", QStringLiteral("set-font-size takes a size in points, or +N or -N")},
+        {"set-opacity 1.5", QStringLiteral("set-opacity takes a number from 0 to 1")},
+        {"set-opacity -0.1", QStringLiteral("set-opacity takes a number from 0 to 1")},
+        {"set-user-var", QStringLiteral("set-user-var needs NAME=VALUE")},
+        {"set-user-var x", QStringLiteral("set-user-var takes NAME=VALUE, with a name of 1 to 128 bytes")},
+        {"set-user-var =v", QStringLiteral("set-user-var takes NAME=VALUE, with a name of 1 to 128 bytes")},
+        {"signal-program SIGNOPE", QStringLiteral("signal-program takes a signal: a name such as INT or TERM, or a number")},
+        {"signal-program 0", QStringLiteral("signal-program takes a signal: a name such as INT or TERM, or a number")},
+        {"window", QStringLiteral("window needs --fullscreen, --maximized, --normal or --size")},
+        {"window --normal --maximized", QStringLiteral("window takes one of --fullscreen, --maximized and --normal")},
+        {"window --size 80", QStringLiteral("--size takes COLSxROWS, each from 1 to 10000")},
+        {"window --size 0x24", QStringLiteral("--size takes COLSxROWS, each from 1 to 10000")},
+        {"window --size 10001x24", QStringLiteral("--size takes COLSxROWS, each from 1 to 10000")},
+    });
+    // A name of one byte past the most.
+    const std::string longName = "set-user-var " + std::string(Afterglow::Control::MaxUserVarName + 1, 'n') + "=v";
+    expectUsageErrors({{longName.c_str(), QStringLiteral("set-user-var takes NAME=VALUE, with a name of 1 to 128 bytes")}});
 }
 
 // With standard input closed, Qt's first descriptor would be number 0, and a
@@ -1732,6 +1769,7 @@ TEST(CtlBinaryTest, SaysThatNoAfterglowListens)
 /// reply. @p input goes to standard input, else @p inputFd is it.
 /// @p started gets ctl's process ID once it runs. @p command is the ctl
 /// command that @p args follow. @p outputFd, if given, is standard output.
+/// @p environment: NAME=VALUE pairs over the isolated environment.
 struct AgainstTarget
 {
     Isolated outcome;
@@ -1740,9 +1778,12 @@ struct AgainstTarget
     qsizetype longestLine = 0;
 };
 
-AgainstTarget ctlAgainst(const QJsonObject& reply, const QStringList& args, const QByteArray& input = {}, int inputFd = -1,
+/// The answer of the target to each call.
+using Responder = std::function<QJsonObject(const QJsonObject& call)>;
+
+AgainstTarget ctlAgainst(const Responder& respond, const QStringList& args, const QByteArray& input = {}, int inputFd = -1,
                          const std::function<void(qint64)>& started = {}, const QString& command = QStringLiteral("overlay"),
-                         int outputFd = -1)
+                         int outputFd = -1, const QStringList& environment = {})
 {
     AgainstTarget done;
     // Under /tmp: TMPDIR can be too long for a socket path.
@@ -1757,15 +1798,15 @@ AgainstTarget ctlAgainst(const QJsonObject& reply, const QStringList& args, cons
         ADD_FAILURE() << "cannot listen on " << qPrintable(path);
         return done;
     }
-    QObject::connect(&server, &QLocalServer::newConnection, &server, [&server, &done, reply] {
+    QObject::connect(&server, &QLocalServer::newConnection, &server, [&server, &done, respond] {
         QLocalSocket* peer = server.nextPendingConnection();
-        QObject::connect(peer, &QLocalSocket::readyRead, peer, [peer, &done, reply] {
+        QObject::connect(peer, &QLocalSocket::readyRead, peer, [peer, &done, respond] {
             while (peer->canReadLine()) {
                 const QByteArray line = peer->readLine();
                 done.longestLine = std::max(done.longestLine, line.size());
                 const QJsonObject call = QJsonDocument::fromJson(line).object();
                 done.calls.append(call);
-                QJsonObject answer = reply;
+                QJsonObject answer = respond(call);
                 answer.insert(QStringLiteral("id"), call.value(QStringLiteral("id")));
                 peer->write(QJsonDocument(answer).toJson(QJsonDocument::Compact) + '\n');
             }
@@ -1773,6 +1814,7 @@ AgainstTarget ctlAgainst(const QJsonObject& reply, const QStringList& args, cons
     });
     QProcessEnvironment env = isolatedEnvironment(runtime.path());
     env.insert(QStringLiteral("AFTERGLOW_SOCKET"), path);
+    for (const QString& pair : environment) env.insert(pair.section(QLatin1Char('='), 0, 0), pair.section(QLatin1Char('='), 1));
     QProcess process;
     process.setProcessEnvironment(env);
     process.setWorkingDirectory(runtime.path());
@@ -1799,6 +1841,34 @@ AgainstTarget ctlAgainst(const QJsonObject& reply, const QStringList& args, cons
     done.outcome = {process.exitStatus() == QProcess::NormalExit ? process.exitCode() : -1,
                     QString::fromUtf8(process.readAllStandardOutput()), QString::fromUtf8(process.readAllStandardError())};
     return done;
+}
+
+/// The same answer to every call.
+AgainstTarget ctlAgainst(const QJsonObject& reply, const QStringList& args, const QByteArray& input = {}, int inputFd = -1,
+                         const std::function<void(qint64)>& started = {}, const QString& command = QStringLiteral("overlay"),
+                         int outputFd = -1, const QStringList& environment = {})
+{
+    return ctlAgainst(Responder([reply](const QJsonObject&) { return reply; }), args, input, inputFd, started, command, outputFd,
+                      environment);
+}
+
+/// The last call that the target got, empty when it got none.
+QJsonObject lastCall(const AgainstTarget& r)
+{
+    return r.calls.isEmpty() ? QJsonObject() : r.calls.last();
+}
+
+QJsonArray lastArgs(const AgainstTarget& r)
+{
+    return lastCall(r).value(QStringLiteral("args")).toArray();
+}
+
+/// The names of the calls that the target got, in order.
+QStringList callNames(const AgainstTarget& r)
+{
+    QStringList names;
+    for (const QJsonObject& call : r.calls) names << call.value(QStringLiteral("fn")).toString();
+    return names;
 }
 
 QJsonObject overlayResult(const QJsonObject& result)
@@ -1861,11 +1931,11 @@ TEST(CtlBinaryTest, TextAndLaunchOptionsGoInTheirCalls)
 {
     const QJsonObject text{{QStringLiteral("type"), QStringLiteral("reply")}, {QStringLiteral("result"), QStringLiteral("t")}};
     const QJsonObject pane{{QStringLiteral("type"), QStringLiteral("reply")}, {QStringLiteral("result"), 9}};
-    const auto args = [](const AgainstTarget& r) {
-        return r.calls.isEmpty() ? QJsonArray() : r.calls.last().value(QStringLiteral("args")).toArray();
-    };
+    const auto args = lastArgs;
     const QStringList three{QStringLiteral("--pane"), QStringLiteral("3")};
     AgainstTarget r = ctlAgainst(text, three, {}, -1, {}, QStringLiteral("get-text"));
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(r.outcome.out, QStringLiteral("t\n"));
     EXPECT_EQ(args(r), (QJsonArray{3, QStringLiteral("screen")}));
     r = ctlAgainst(text, three + QStringList{QStringLiteral("--last-visited-output"), QStringLiteral("--ansi"), QStringLiteral("--cursor"),
                                              QStringLiteral("--wrap-markers")},
@@ -1873,6 +1943,9 @@ TEST(CtlBinaryTest, TextAndLaunchOptionsGoInTheirCalls)
     EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
     EXPECT_EQ(args(r), (QJsonArray{3, QStringLiteral("last-visited-output"),
                                    QJsonObject{{QStringLiteral("ansi"), true}, {QStringLiteral("cursor"), true}, {QStringLiteral("wrap_markers"), true}}}));
+    // No line feed after the cursor's sequences: it would move the cursor
+    // that they put back.
+    EXPECT_EQ(r.outcome.out, QStringLiteral("t"));
     r = ctlAgainst(pane, three + QStringList{QStringLiteral("--env"), QStringLiteral("A=1"), QStringLiteral("--env"), QStringLiteral("B"),
                                              QStringLiteral("--var"), QStringLiteral("k=v=w"), QStringLiteral("--hold"), QStringLiteral("--no-focus"),
                                              QStringLiteral("--stdin-text"), QStringLiteral("last-output"), QStringLiteral("--stdin-ansi"),
@@ -1894,28 +1967,28 @@ TEST(CtlBinaryTest, TextAndLaunchOptionsGoInTheirCalls)
     ASSERT_GE(r.calls.size(), 1);
     EXPECT_EQ(r.calls.first().value(QStringLiteral("fn")).toString(), QStringLiteral("getText"));
     EXPECT_EQ(r.calls.first().value(QStringLiteral("args")).toArray(), (QJsonArray{3, QStringLiteral("scrollback")}));
+    EXPECT_EQ(overlayInput(r.calls), std::optional<QString>(QStringLiteral("t")));
 }
 
-// Colours go as #rrggbb, those of NAME=COLOR over a theme's; get-colors
-// prints the named colours first, and none that follows another.
+// Colors go as #rrggbb, those of NAME=COLOR over a theme's. colors prints
+// the named colors first, and none that follows another.
 TEST(CtlBinaryTest, WindowAndProgramCommandsSendTheirCalls)
 {
     const QJsonObject done{{QStringLiteral("type"), QStringLiteral("reply")}, {QStringLiteral("result"), QJsonValue::Null}};
-    const auto args = [](const AgainstTarget& r) {
-        return r.calls.isEmpty() ? QJsonArray() : r.calls.last().value(QStringLiteral("args")).toArray();
-    };
+    const auto args = lastArgs;
     const QStringList three{QStringLiteral("--pane"), QStringLiteral("3")};
-    // A kitty theme file, then a colour by name over it.
+    // A kitty theme file, then a color by name over it. A path with a / is
+    // a theme, also with an = in its name.
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
-    QFile theme(dir.filePath(QStringLiteral("t.conf")));
+    QFile theme(dir.filePath(QStringLiteral("t=1.conf")));
     ASSERT_TRUE(theme.open(QIODevice::WriteOnly));
     theme.write("foreground #101010\nbackground #202020\ncolor1 #300000\n");
     theme.close();
     AgainstTarget r = ctlAgainst(done, three + QStringList{QStringLiteral("--reset"), theme.fileName(), QStringLiteral("color1=red")}, {}, -1, {},
                                  QStringLiteral("set-colors"));
     EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
-    EXPECT_EQ(r.calls.last().value(QStringLiteral("fn")).toString(), QStringLiteral("setColors"));
+    EXPECT_EQ(lastCall(r).value(QStringLiteral("fn")).toString(), QStringLiteral("setColors"));
     EXPECT_EQ(args(r), (QJsonArray{3,
                                    QJsonObject{{QStringLiteral("foreground"), QStringLiteral("#101010")},
                                                {QStringLiteral("background"), QStringLiteral("#202020")},
@@ -1927,11 +2000,15 @@ TEST(CtlBinaryTest, WindowAndProgramCommandsSendTheirCalls)
                                                                     {QStringLiteral("foreground"), QStringLiteral("#d8d8d8")}}}};
     r = ctlAgainst(colors, three, {}, -1, {}, QStringLiteral("colors"));
     EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(callNames(r), QStringList{QStringLiteral("getColors")});
+    EXPECT_EQ(args(r), (QJsonArray{3}));
     EXPECT_EQ(r.outcome.out, QStringLiteral("foreground            #d8d8d8\ncolor0                #000000\n"));
     for (const auto& [command, words, fn, expected] :
          {std::tuple{QStringLiteral("set-font-size"), QStringList{QStringLiteral("-2")}, QStringLiteral("setFontSize"),
                      QJsonArray{3, QStringLiteral("-2")}},
           std::tuple{QStringLiteral("set-opacity"), QStringList{QStringLiteral("0.75")}, QStringLiteral("setOpacity"), QJsonArray{3, 0.75}},
+          std::tuple{QStringLiteral("set-opacity"), QStringList{QStringLiteral("0")}, QStringLiteral("setOpacity"), QJsonArray{3, 0}},
+          std::tuple{QStringLiteral("set-opacity"), QStringList{QStringLiteral("1")}, QStringLiteral("setOpacity"), QJsonArray{3, 1}},
           std::tuple{QStringLiteral("signal-program"), QStringList{QStringLiteral("TERM")}, QStringLiteral("signalProgram"),
                      QJsonArray{3, QStringLiteral("TERM")}},
           std::tuple{QStringLiteral("set-user-var"), QStringList{QStringLiteral("k=a=b")}, QStringLiteral("setUserVar"),
@@ -1940,32 +2017,63 @@ TEST(CtlBinaryTest, WindowAndProgramCommandsSendTheirCalls)
                      QStringLiteral("setWindowState"), QJsonArray{3, QStringLiteral("normal"), 80, 24}}}) {
         r = ctlAgainst(done, three + words, {}, -1, {}, command);
         EXPECT_EQ(r.outcome.status, 0) << qPrintable(command) << qPrintable(r.outcome.err);
-        EXPECT_EQ(r.calls.isEmpty() ? QString() : r.calls.last().value(QStringLiteral("fn")).toString(), fn);
+        EXPECT_EQ(lastCall(r).value(QStringLiteral("fn")).toString(), fn);
         EXPECT_EQ(args(r), expected) << qPrintable(command);
     }
+    // --all sets each pane that listPanes gives, and looks up no focused
+    // pane: no window needs to be active.
+    const QJsonObject listed{{QStringLiteral("type"), QStringLiteral("reply")},
+                             {QStringLiteral("result"), QJsonArray{QJsonObject{{QStringLiteral("id"), 4}}, QJsonObject{{QStringLiteral("id"), 6}}}}};
+    r = ctlAgainst(listed, {QStringLiteral("--all"), QStringLiteral("color2=blue")}, {}, -1, {}, QStringLiteral("set-colors"));
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(callNames(r), (QStringList{QStringLiteral("listPanes"), QStringLiteral("setColors"), QStringLiteral("setColors")}));
+    const QJsonObject blue{{QStringLiteral("color2"), QStringLiteral("#0000ff")}};
+    ASSERT_EQ(r.calls.size(), 3);
+    EXPECT_EQ(r.calls.at(1).value(QStringLiteral("args")).toArray(), (QJsonArray{4, blue, false}));
+    EXPECT_EQ(r.calls.at(2).value(QStringLiteral("args")).toArray(), (QJsonArray{6, blue, false}));
+    // A pane of a mux session, which the window refuses by its error code,
+    // is counted and passed over. Another error fails the command.
+    const auto refusing = [&listed](const QString& code, const QString& message) {
+        return Responder([&listed, code, message](const QJsonObject& call) {
+            if (call.value(QStringLiteral("fn")).toString() == QLatin1String("listPanes")) return listed;
+            if (call.value(QStringLiteral("args")).toArray().at(0).toInt() != 4) {
+                return QJsonObject{{QStringLiteral("type"), QStringLiteral("reply")}, {QStringLiteral("result"), QJsonValue::Null}};
+            }
+            return QJsonObject{{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("code"), code},
+                               {QStringLiteral("message"), message}};
+        });
+    };
+    r = ctlAgainst(refusing(QLatin1String(Control::SessionPaneCode), QStringLiteral("other words")),
+                   {QStringLiteral("--all"), QStringLiteral("color2=blue")}, {}, -1, {}, QStringLiteral("set-colors"));
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(callNames(r), (QStringList{QStringLiteral("listPanes"), QStringLiteral("setColors"), QStringLiteral("setColors")}));
+    EXPECT_TRUE(r.outcome.err.contains(QStringLiteral("1 pane of mux sessions kept their colors"))) << qPrintable(r.outcome.err);
+    r = ctlAgainst(refusing(QStringLiteral("CALL_FAILED"), Control::SessionPaneColors),
+                   {QStringLiteral("--all"), QStringLiteral("color2=blue")}, {}, -1, {}, QStringLiteral("set-colors"));
+    EXPECT_EQ(r.outcome.status, 1) << qPrintable(r.outcome.err);
+    EXPECT_EQ(callNames(r), (QStringList{QStringLiteral("listPanes"), QStringLiteral("setColors"), QStringLiteral("setColors")}));
+    EXPECT_FALSE(r.outcome.err.contains(QStringLiteral("kept their colors"))) << qPrintable(r.outcome.err);
 }
 
 // Each command is one call, with its arguments in their JSON types.
 TEST(CtlBinaryTest, NavigationCommandsSendTheirCalls)
 {
     const QJsonObject done{{QStringLiteral("type"), QStringLiteral("reply")}, {QStringLiteral("result"), QJsonValue::Null}};
-    const auto call = [](const AgainstTarget& r) {
-        return r.calls.isEmpty() ? QJsonObject() : r.calls.last();
-    };
+    const auto call = lastCall;
     const QStringList pane{QStringLiteral("--pane"), QStringLiteral("3")};
     // focus --direction prints the pane that has the focus now.
     AgainstTarget r = ctlAgainst({{QStringLiteral("type"), QStringLiteral("reply")}, {QStringLiteral("result"), 5}},
                                  pane + QStringList{QStringLiteral("--direction"), QStringLiteral("left")}, {}, -1, {}, QStringLiteral("focus"));
     EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
     EXPECT_EQ(r.outcome.out, QStringLiteral("5\n"));
-    EXPECT_EQ(call(r).value(QStringLiteral("fn")).toString(), QStringLiteral("focusNeighbour"));
+    EXPECT_EQ(call(r).value(QStringLiteral("fn")).toString(), QStringLiteral("focusNeighbor"));
     EXPECT_EQ(call(r).value(QStringLiteral("args")).toArray(), (QJsonArray{3, QStringLiteral("left")}));
     // At the edge: the error of the call, and status 1.
     r = ctlAgainst({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("code"), QStringLiteral("CALL_FAILED")},
-                    {QStringLiteral("message"), QStringLiteral("no pane to the left of pane 3")}},
+                    {QStringLiteral("message"), QStringLiteral("no pane to the left of the pane")}},
                    pane + QStringList{QStringLiteral("--direction"), QStringLiteral("left")}, {}, -1, {}, QStringLiteral("focus"));
     EXPECT_EQ(r.outcome.status, 1);
-    EXPECT_EQ(r.outcome.err, QStringLiteral("afterglow ctl: no pane to the left of pane 3\n"));
+    EXPECT_EQ(r.outcome.err, QStringLiteral("afterglow ctl: no pane to the left of the pane\n"));
     // resize takes 2 cells by default, as the resize actions.
     r = ctlAgainst(done, pane + QStringList{QStringLiteral("--direction"), QStringLiteral("up")}, {}, -1, {}, QStringLiteral("resize"));
     EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
@@ -1997,6 +2105,41 @@ TEST(CtlBinaryTest, NavigationCommandsSendTheirCalls)
                    QStringLiteral("set-tab-title"));
     EXPECT_EQ(call(r).value(QStringLiteral("fn")).toString(), QStringLiteral("setTabTitle"));
     EXPECT_EQ(call(r).value(QStringLiteral("args")).toArray(), (QJsonArray{3, QStringLiteral("--build logs")}));
+}
+
+// In a pane of a mux session, the socket is the daemon's: split and new-tab
+// refuse the flags that only a window's pane takes, before any call of
+// theirs, and send the launch that the daemon starts. The test's target
+// stands in for the daemon.
+TEST(CtlBinaryTest, ASessionPaneTakesOnlyTheEnvironmentOfALaunch)
+{
+    const QJsonObject pane{{QStringLiteral("type"), QStringLiteral("reply")}, {QStringLiteral("result"), 9}};
+    const QStringList session{QStringLiteral("AFTERGLOW_SESSION=work"), QStringLiteral("AFTERGLOW_PANE_ID=3")};
+    for (const auto& [command, words, flag] :
+         {std::tuple{QStringLiteral("split"), QStringList{QStringLiteral("--hold")}, QStringLiteral("--hold")},
+          std::tuple{QStringLiteral("split"), QStringList{QStringLiteral("--no-focus")}, QStringLiteral("--no-focus")},
+          std::tuple{QStringLiteral("new-tab"), QStringList{QStringLiteral("--var"), QStringLiteral("k=v")}, QStringLiteral("--var")},
+          std::tuple{QStringLiteral("new-tab"), QStringList{QStringLiteral("--stdin-text"), QStringLiteral("screen")}, QStringLiteral("--stdin-text")}}) {
+        const AgainstTarget r = ctlAgainst(pane, words + QStringList{QStringLiteral("--"), QStringLiteral("cat")}, {}, -1, {}, command, -1, session);
+        EXPECT_EQ(r.outcome.status, 2) << qPrintable(command) << qPrintable(r.outcome.err);
+        EXPECT_TRUE(r.outcome.err.startsWith(QStringLiteral("afterglow ctl: %1 is not for a pane of a mux session\n").arg(flag)))
+            << qPrintable(r.outcome.err);
+        EXPECT_TRUE(r.outcome.out.isEmpty()) << qPrintable(r.outcome.out);
+        // Only the selection of the pane.
+        EXPECT_EQ(callNames(r), QStringList{QLatin1String(AfterglowMux::Fn::SelectPane)}) << qPrintable(command);
+    }
+    const AgainstTarget r = ctlAgainst(pane, {QStringLiteral("--env"), QStringLiteral("A=1"), QStringLiteral("--"), QStringLiteral("cat")}, {}, -1, {},
+                                       QStringLiteral("split"), -1, session);
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(r.outcome.out, QStringLiteral("9\n"));
+    ASSERT_EQ(callNames(r), (QStringList{QLatin1String(AfterglowMux::Fn::SelectPane), QStringLiteral("split")}));
+    // The launch of the daemon, not the options of a window.
+    const QJsonArray args = lastArgs(r);
+    ASSERT_EQ(args.size(), 4);
+    EXPECT_EQ(args.at(1).toString(), QStringLiteral("right"));
+    const QJsonObject launch = args.at(3).toObject();
+    EXPECT_TRUE(launch.contains(QStringLiteral("argv")) && launch.contains(QStringLiteral("environment")));
+    EXPECT_FALSE(launch.contains(QStringLiteral("env")));
 }
 
 TEST(CtlOverlayTest, PrintsTheResultAndExitsWithTheProgramsStatus)

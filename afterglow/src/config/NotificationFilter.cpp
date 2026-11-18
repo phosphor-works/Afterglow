@@ -5,6 +5,7 @@
 
 #include <QRegularExpression>
 
+#include <algorithm>
 #include <vector>
 
 namespace Afterglow {
@@ -24,6 +25,8 @@ namespace {
 using Node = NotificationFilter::Node;
 
 // Parentheses deeper than this are a mistake, and would use the stack up.
+// Nothing else nests: a chain of and or or is one node, and a chain of not
+// one at most.
 constexpr int MaxDepth = 32;
 
 struct Token
@@ -77,9 +80,14 @@ private:
         while (m_at < m_text.size() && !m_text.at(m_at).isSpace() && m_text.at(m_at) != QLatin1Char(':')
                && m_text.at(m_at) != QLatin1Char('(') && m_text.at(m_at) != QLatin1Char(')'))
             ++m_at;
-        const QString word = m_text.mid(start, m_at - start);
+        // Keywords and fields in any case, as kitty reads them.
+        const QString word = m_text.mid(start, m_at - start).toLower();
         if (m_at >= m_text.size() || m_text.at(m_at) != QLatin1Char(':')) return {Token::Kind::Word, word, {}};
         ++m_at; // the colon
+        // kitty takes a quoted value after white space too: title: "a b".
+        qsizetype quote = m_at;
+        while (quote < m_text.size() && m_text.at(quote).isSpace()) ++quote;
+        if (quote > m_at && quote < m_text.size() && m_text.at(quote) == QLatin1Char('"')) m_at = quote;
         return {Token::Kind::Term, word, value()};
     }
 
@@ -112,11 +120,14 @@ private:
         return out;
     }
 
-    std::shared_ptr<const Node> join(Node::Kind kind, std::shared_ptr<const Node> left, std::shared_ptr<const Node> right)
+    /// One node for a whole chain of @p kind, so that a long rule neither
+    /// nests nor recurses.
+    static std::shared_ptr<const Node> join(Node::Kind kind, std::vector<std::shared_ptr<const Node>> children)
     {
+        if (children.size() == 1) return std::move(children.front());
         auto node = std::make_shared<Node>();
         node->kind = kind;
-        node->children = {std::move(left), std::move(right)};
+        node->children = std::move(children);
         return node;
     }
 
@@ -127,42 +138,42 @@ private:
 
     std::shared_ptr<const Node> orExpression(int depth)
     {
-        auto left = andExpression(depth);
-        while (left && isWord("or")) {
+        std::vector<std::shared_ptr<const Node>> terms;
+        terms.push_back(andExpression(depth));
+        while (terms.back() && isWord("or")) {
             m_token = next();
-            auto right = andExpression(depth);
-            if (!right) return nullptr;
-            left = join(Node::Kind::Or, left, right);
+            terms.push_back(andExpression(depth));
         }
-        return left;
+        return terms.back() ? join(Node::Kind::Or, std::move(terms)) : nullptr;
     }
 
     std::shared_ptr<const Node> andExpression(int depth)
     {
-        auto left = notExpression(depth);
-        while (left) {
+        std::vector<std::shared_ptr<const Node>> terms;
+        terms.push_back(notExpression(depth));
+        while (terms.back()) {
             // Terms side by side join with and, as in kitty's queries.
             if (isWord("and")) m_token = next();
             else if (m_token.kind == Token::Kind::End || m_token.kind == Token::Kind::Close || isWord("or")) break;
-            auto right = notExpression(depth);
-            if (!right) return nullptr;
-            left = join(Node::Kind::And, left, right);
+            terms.push_back(notExpression(depth));
         }
-        return left;
+        return terms.back() ? join(Node::Kind::And, std::move(terms)) : nullptr;
     }
 
     std::shared_ptr<const Node> notExpression(int depth)
     {
-        if (isWord("not")) {
+        // A chain of not, read in a loop: two cancel out.
+        bool negated = false;
+        while (isWord("not")) {
             m_token = next();
-            auto operand = notExpression(depth + 1);
-            if (!operand) return nullptr;
-            auto node = std::make_shared<Node>();
-            node->kind = Node::Kind::Not;
-            node->children = {std::move(operand)};
-            return node;
+            negated = !negated;
         }
-        return primary(depth);
+        auto operand = primary(depth);
+        if (!operand || !negated) return operand;
+        auto node = std::make_shared<Node>();
+        node->kind = Node::Kind::Not;
+        node->children = {std::move(operand)};
+        return node;
     }
 
     std::shared_ptr<const Node> primary(int depth)
@@ -206,7 +217,8 @@ private:
                 fail(QStringLiteral("%1: has no pattern").arg(field));
                 return nullptr;
             }
-            node->pattern = QRegularExpression(m_token.value);
+            // \w, \d and \b of all scripts, as in kitty's Python re.
+            node->pattern = QRegularExpression(m_token.value, QRegularExpression::UseUnicodePropertiesOption);
             if (!node->pattern.isValid()) {
                 fail(QStringLiteral("%1 is not a regular expression: %2").arg(m_token.value, node->pattern.errorString()));
                 return nullptr;
@@ -238,9 +250,9 @@ bool evaluate(const Node& node, const NotificationFilter::Fields& fields)
     case Node::Kind::Not:
         return !evaluate(*node.children[0], fields);
     case Node::Kind::And:
-        return evaluate(*node.children[0], fields) && evaluate(*node.children[1], fields);
+        return std::all_of(node.children.begin(), node.children.end(), [&](const auto& child) { return evaluate(*child, fields); });
     case Node::Kind::Or:
-        return evaluate(*node.children[0], fields) || evaluate(*node.children[1], fields);
+        return std::any_of(node.children.begin(), node.children.end(), [&](const auto& child) { return evaluate(*child, fields); });
     case Node::Kind::Term:
         break;
     }

@@ -165,6 +165,21 @@ int cellOffset(int offset, int cell)
     return cell > 0 ? std::clamp(offset, 0, cell - 1) : std::clamp(offset, 0, 1 << 28);
 }
 
+/// @p srcW x @p srcH scaled to fit @p w x @p h with its aspect kept,
+/// centred: kitty's letterbox or pillarbox, for c and r together and for
+/// the grid of Unicode placeholder cells. The caller passes sides above 0.
+DisplaySize aspectFit(std::int64_t srcW, std::int64_t srcH, std::int64_t w, std::int64_t h)
+{
+    // A grid of placeholder cells can be wider than an int holds.
+    constexpr auto limit = std::int64_t(1) << 28;
+    w = std::min(w, limit);
+    h = std::min(h, limit);
+    const double scale = std::min(double(w) / double(srcW), double(h) / double(srcH));
+    const auto fw = std::clamp(std::int64_t(std::lround(double(srcW) * scale)), std::int64_t(1), w);
+    const auto fh = std::clamp(std::int64_t(std::lround(double(srcH) * scale)), std::int64_t(1), h);
+    return {int(fw), int(fh), int((w - fw) / 2), int((h - fh) / 2)};
+}
+
 DisplaySize displaySize(const Placement& pl, const Image& img, int cw, int ch)
 {
     const SourceRect src = sourceRect(pl, img);
@@ -182,10 +197,7 @@ DisplaySize displaySize(const Placement& pl, const Image& img, int cw, int ch)
         // Both c and r: the image keeps its aspect in those cells, centred,
         // as kitty's spec says ("letterboxed/pillarboxed to prevent
         // distortion"). An explicit display size (iTerm2, a cut) keeps its own.
-        const double scale = std::min(double(w) / double(srcW), double(h) / double(srcH));
-        const auto fw = std::clamp(std::int64_t(std::lround(double(srcW) * scale)), std::int64_t(1), w);
-        const auto fh = std::clamp(std::int64_t(std::lround(double(srcH) * scale)), std::int64_t(1), h);
-        return {int(fw), int(fh), int((w - fw) / 2), int((h - fh) / 2)};
+        if (w > 0 && h > 0) return aspectFit(srcW, srcH, w, h);
     }
     return {int(w), int(h)};
 }
@@ -1234,6 +1246,14 @@ void GraphicsStore::addInternalImage(std::vector<ImageFrame> frames, std::vector
     if (cellWidth <= 0 || cellHeight <= 0 || frames.empty() || gaps.size() != frames.size()) {
         return;
     }
+    // What a host's decoder gave, in the limits of a kitty animation: its
+    // frames, and gaps that a command could give (an int), as a replica
+    // takes them.
+    if (frames.size() > MaxFrames) {
+        frames.resize(MaxFrames);
+        gaps.resize(MaxFrames);
+    }
+    for (std::uint32_t& gap : gaps) gap = std::min<std::uint32_t>(gap, INT_MAX);
     // Kept, it would evict every other image and still not fit.
     std::size_t bytes = 0;
     for (const ImageFrame& f : frames) {
@@ -1856,17 +1876,19 @@ std::optional<VisiblePlacement> GraphicsStore::placeholderSlice(std::uint32_t im
     if (row < 0 || col < 0 || row >= rows || col >= cols) {
         return std::nullopt;
     }
-    // The image fits the grid with its aspect ratio kept, centred.
-    const double gridW = double(cols) * cw;
-    const double gridH = double(rows) * ch;
-    const double scale = (imgW * gridH > imgH * gridW) ? gridW / imgW : gridH / imgH;
-    const double offX = (gridW - imgW * scale) / 2;
-    const double offY = (gridH - imgH * scale) / 2;
+    // The image fits the grid with its aspect ratio kept, centred, as a
+    // placement with c and r draws it.
+    const DisplaySize fit = aspectFit(std::int64_t(imgW), std::int64_t(imgH), std::int64_t(cols) * cw,
+                                      std::int64_t(rows) * ch);
+    const double offX = fit.insetX;
+    const double offY = fit.insetY;
+    const double scaleX = double(fit.width) / imgW;
+    const double scaleY = double(fit.height) / imgH;
     // This cell's part of the grid, clipped to the image.
     const double gx0 = std::max(double(col) * cw, offX);
     const double gy0 = std::max(double(row) * ch, offY);
-    const double gx1 = std::min((double(col) + 1) * cw, offX + imgW * scale);
-    const double gy1 = std::min((double(row) + 1) * ch, offY + imgH * scale);
+    const double gx1 = std::min((double(col) + 1) * cw, offX + fit.width);
+    const double gy1 = std::min((double(row) + 1) * ch, offY + fit.height);
     if (gx1 <= gx0 || gy1 <= gy0) {
         return std::nullopt;
     }
@@ -1877,10 +1899,10 @@ std::optional<VisiblePlacement> GraphicsStore::placeholderSlice(std::uint32_t im
     v.y = cellY + int(std::lround(gy0 - double(row) * ch));
     v.width = int(std::lround(gx1 - gx0));
     v.height = int(std::lround(gy1 - gy0));
-    v.srcX = int(std::lround((gx0 - offX) / scale));
-    v.srcY = int(std::lround((gy0 - offY) / scale));
-    v.srcW = std::max(1, int(std::lround((gx1 - gx0) / scale)));
-    v.srcH = std::max(1, int(std::lround((gy1 - gy0) / scale)));
+    v.srcX = int(std::lround((gx0 - offX) / scaleX));
+    v.srcY = int(std::lround((gy0 - offY) / scaleY));
+    v.srcW = std::max(1, int(std::lround((gx1 - gx0) / scaleX)));
+    v.srcH = std::max(1, int(std::lround((gy1 - gy0) / scaleY)));
     v.z = -1; // under the text and the cursor, as kitty draws placeholder images
     return v;
 }
@@ -1945,6 +1967,31 @@ void GraphicsStore::clearPlacements(const Screen& screen, int cellWidth, int cel
     settle();
 }
 
+void GraphicsStore::eraseInternalCells(int firstRow, int lastRow, int firstCol, int lastCol, const Screen& screen, int cellWidth,
+                                       int cellHeight)
+{
+    if (firstRow > lastRow || firstCol > lastCol) return;
+    // The erased screen rows, as buffer rows: the top of the screen is the
+    // first row after the history. Internal images are never parents.
+    const long long history = static_cast<long long>(screen.historySize());
+    const long long eraseTop = history + firstRow;
+    const long long eraseBottom = history + lastRow;
+    const auto before = m_placements.size();
+    std::erase_if(m_placements, [&](const Placement& p) {
+        if (p.parentImage || p.isVirtual) return false;
+        const auto img = m_images.find(p.imageId);
+        if (img == m_images.end() || !img->second.isSixel) return false;
+        const auto [cols, rows] = cellWidth > 0 && cellHeight > 0
+            ? cellSpan(p, displaySize(p, img->second, cellWidth, cellHeight), cellWidth, cellHeight)
+            : std::pair<long long, long long>(1, 1);
+        const long long top = anchorIndex(p, screen);
+        const long long left = p.col;
+        return top <= eraseBottom && top + rows > eraseTop && left <= lastCol && left + cols > firstCol;
+    });
+    // Most erases meet no image: they change nothing that a replica copies.
+    if (m_placements.size() != before) settle();
+}
+
 std::vector<std::size_t> GraphicsStore::anchorRows(const Screen& screen) const
 {
     std::vector<std::size_t> out;
@@ -1993,21 +2040,25 @@ void GraphicsStore::retarget(const Screen& screen, const std::vector<std::size_t
     settle();
 }
 
-void GraphicsStore::scrollRegion(const RegionScroll& scroll, const Screen& screen, int cw, int ch)
+void GraphicsStore::scrollRegion(const RegionScroll& scroll, const Screen& screen, int cw, int ch, bool drop)
 {
     const std::uint64_t lastRow =
         screen.rowsDropped() + screen.historySize() + std::uint64_t(std::max(0, screen.rows() - 1));
     const bool cutBelow = scroll.delta > 0 || scroll.bottom < lastRow;
     // A region smaller than the screen: page margins. A scroll of the whole
     // screen moves every image, also one that reaches below the last row.
-    const bool margins = !scroll.fullWidth || scroll.bottom < lastRow
-        || scroll.top > screen.rowsDropped() + screen.historySize();
+    // Rows that leave the screen take every image anchored on them.
+    const bool margins = !drop
+        && (!scroll.fullWidth || scroll.bottom < lastRow || scroll.top > screen.rowsDropped() + screen.historySize());
     const long long regionRows = static_cast<long long>(scroll.bottom - scroll.top) + 1;
     const long long regionPixels = regionRows * ch;
-    // Cuts @p p, whose top-left cell is @p rel rows below the region's top
-    // after the move, to the rows still inside the region. Returns the row
-    // that cell moves to, or nullopt when nothing of @p p remains.
-    auto clip = [&](Placement& p, long long rel) -> std::optional<long long> {
+    // The columns that a cut letterbox moved each placement's origin right by.
+    std::vector<int> colShift(m_placements.size(), 0);
+    // Cuts placement @p i, whose top-left cell is @p rel rows below the
+    // region's top after the move, to the rows still inside the region.
+    // Returns the row that cell moves to, or nullopt when nothing remains.
+    auto clip = [&](std::size_t i, long long rel) -> std::optional<long long> {
+        Placement& p = m_placements[i];
         const auto img = m_images.find(p.imageId);
         const DisplaySize size = img != m_images.end() && cw > 0 && ch > 0 ? displaySize(p, img->second, cw, ch)
                                                                            : DisplaySize{0, 0};
@@ -2027,7 +2078,9 @@ void GraphicsStore::scrollRegion(const RegionScroll& scroll, const Screen& scree
             // own size where it shows, which the cut below then measures.
             const long long x = cellOffset(p.offsetX, cw) + size.insetX;
             const long long y = cellOffset(p.offsetY, ch) + size.insetY;
-            p.col += int(x / cw);
+            // A relative child places by relativeX, which the caller moves.
+            colShift[i] = int(x / cw);
+            if (!p.parentImage) p.col += colShift[i];
             p.offsetX = int(x % cw);
             rel += y / ch;
             p.offsetY = int(y % ch);
@@ -2081,8 +2134,9 @@ void GraphicsStore::scrollRegion(const RegionScroll& scroll, const Screen& scree
         if (margins) {
             // kitty's spec: with page margins, "only images that are entirely
             // within the page area" scroll. One that reaches past a margin stays.
+            // Sixel and iTerm2 images are not kitty's: they move and are cut.
             const auto img = m_images.find(p.imageId);
-            if (img != m_images.end() && cw > 0 && ch > 0) {
+            if (img != m_images.end() && !img->second.isSixel && cw > 0 && ch > 0) {
                 const auto [cols, rows] = cellSpan(p, displaySize(p, img->second, cw, ch), cw, ch);
                 if (p.row + std::uint64_t(rows) - 1 > scroll.bottom
                     || (!scroll.fullWidth && p.col + cols - 1 > scroll.right)) {
@@ -2093,7 +2147,7 @@ void GraphicsStore::scrollRegion(const RegionScroll& scroll, const Screen& scree
         }
         changed = true;
         movedRow[i] = static_cast<long long>(p.row - scroll.top) + scroll.delta;
-        const auto kept = clip(p, movedRow[i]);
+        const auto kept = clip(i, movedRow[i]);
         if (!kept) {
             state[i] = State::Gone;
             continue;
@@ -2121,13 +2175,17 @@ void GraphicsStore::scrollRegion(const RegionScroll& scroll, const Screen& scree
                 return state[i];
             }
             movedRow[i] = movedRow[*parent] + p.relativeY;
-            const auto kept = clip(p, movedRow[i]);
+            const auto kept = clip(i, movedRow[i]);
             if (!kept) {
                 state[i] = State::Gone;
                 return state[i];
             }
             keptRow[i] = *kept;
             p.relativeY = int(std::clamp<long long>(*kept - keptRow[*parent], INT_MIN, INT_MAX));
+            // Its columns stay where they were, also when a cut moved its
+            // parent's origin or its own.
+            p.relativeX = int(std::clamp<long long>(
+                static_cast<long long>(p.relativeX) + colShift[i] - colShift[*parent], INT_MIN, INT_MAX));
             state[i] = State::Moved;
             return state[i];
         };

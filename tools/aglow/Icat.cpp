@@ -5,7 +5,9 @@
 // afterglow-proto. A PNG that needs no change goes as it is. Other formats,
 // and images that must be scaled, mirrored or flattened, go as pixels: RGB
 // when they are opaque, else RGBA, and with zlib when they go in the escape
-// codes. An animated GIF or WebP goes as animation frames.
+// codes. An animated GIF, WebP or APNG goes as animation frames. The formats
+// that aglow does not read go through ImageMagick, and images at URLs come
+// through curl, when they are installed (External.h).
 
 #include "Cli.h"
 #include "Commands.h"
@@ -26,6 +28,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cerrno>
 #include <charconv>
 #include <climits>
@@ -39,14 +42,11 @@
 #include <optional>
 #include <poll.h>
 #include <set>
-#include <spawn.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <utility>
-
-extern char** environ;
 
 namespace Aglow {
 
@@ -65,10 +65,12 @@ constexpr std::size_t WriteSlice = 64 * 1024;
 
 const Cli::Command command {
     "icat",
-    "image_file_or_directory ...",
+    "image_file_url_or_directory ...",
     "Show images in the terminal, with kitty's graphics protocol.",
-    "Shows PNG, JPEG, GIF, WebP and BMP images. A directory shows every image in it. Image data on standard input "
-    "is shown too. An animated GIF or WebP plays in the terminal.",
+    "Shows PNG, JPEG, GIF, WebP, BMP, TIFF and netPBM images. With ImageMagick (magick) installed, it also shows "
+    "AVIF, HEIC, JPEG XL, QOI, SVG, TGA, ICO and CUR images (see --engine). A directory shows every image in it. "
+    "An http, https or ftp URL is downloaded with curl, and a file URL names a file of this computer. Image data "
+    "on standard input is shown too. An animated GIF, WebP or PNG (APNG) plays in the terminal.",
     {
         { "--align", Cli::Option::Kind::Choice, "center", { "center", "left", "right" },
           "Horizontal alignment of the image." },
@@ -127,8 +129,10 @@ const Cli::Command command {
           0, 4294967295.0 },
         { "--engine", Cli::Option::Kind::Choice, "auto", { "auto", "builtin", "magick" },
           "The engine that decodes images. aglow decodes PNG, JPEG, GIF, WebP, BMP, TIFF and netPBM itself with any "
-          "engine. auto and magick read AVIF, HEIC, JPEG XL, QOI, SVG, TGA, ICO and compressed BMP images with "
-          "ImageMagick (magick) when it is installed. builtin never runs ImageMagick." },
+          "engine. auto reads AVIF, HEIC, JPEG XL, QOI, SVG, TGA, ICO and CUR images with ImageMagick (magick) when it "
+          "is installed. It also reads BMP images with JPEG or PNG data, or with a run-length encoding at a depth that "
+          "aglow does not read, that way. magick is the same as auto. kitten icat has it, and aglow "
+          "takes it too. builtin never runs ImageMagick." },
         { "--silent", Cli::Option::Kind::Flag, "", {}, "Not used. kitten icat keeps it for compatibility, and so does aglow." },
         { "--no-trailing-newline -n", Cli::Option::Kind::Flag, "", {},
           "Leave the cursor after the image, not on the next line. Has no effect with --place." },
@@ -479,10 +483,10 @@ public:
     {
     }
 
-    // Shows one image; an error message on failure. @p warning tells what
-    // did not show, for an image that did.
-    /// Shows @p bytes, the image file @p name (empty for standard input).
-    std::string show(std::string_view bytes, std::string_view name, std::uint32_t id, std::string& warning);
+    /// Shows @p bytes, the image file or URL path @p name (empty for standard
+    /// input), which tells only a TGA without a signature. An error message
+    /// on failure. @p warning tells what did not show, for an image that did.
+    std::string show(std::string bytes, std::string_view name, std::uint32_t id, std::string& warning);
     bool interrupted() const { return m_interrupted; }
     /// Whether a write to the terminal failed: no later image can reach it.
     bool cutOff() const { return m_cutOff; }
@@ -575,24 +579,24 @@ bool Icat::transmit(GraphicsCommand command, std::string_view data, std::string&
     return true;
 }
 
-std::string Icat::show(std::string_view bytes, std::string_view name, std::uint32_t id, std::string& warning)
+std::string Icat::show(std::string bytes, std::string_view name, std::uint32_t id, std::string& warning)
 {
     int width = 0;
     int height = 0;
     std::string error;
     // A format that aglow does not read goes through ImageMagick, and its PNG
     // through aglow's own decoder and checks.
-    std::string converted;
     if (const std::string coder = magickCoder(bytes, name);
         !coder.empty() && (coder == "BMP" || AfterglowImage::format(bytes) == AfterglowImage::Format::Unknown)) {
         if (m_s.engine == "builtin") {
             return "aglow reads " + std::string(magickFormat(coder)) + " images only with ImageMagick, which --engine builtin turns off";
         }
+        std::string converted;
         if (!magickToPng(bytes, coder, converted, error, m_stop)) {
             m_interrupted = error == "interrupted";
             return error;
         }
-        bytes = converted;
+        bytes = std::move(converted);
     }
     if (!imageSize(bytes, width, height, error)) {
         return error;
@@ -666,6 +670,8 @@ std::string Icat::show(std::string_view bytes, std::string_view name, std::uint3
             return "cannot decode the image: " + error;
         }
         warning = image->warning();
+        // The file is not sent: its pixels are.
+        std::string().swap(bytes);
     }
     int frames = !image ? 1 : m_s.loops == 0 ? 1 : image->frameCount();
     // The terminal keeps every frame at the size it is shown: an animation
@@ -675,23 +681,20 @@ std::string Icat::show(std::string_view bytes, std::string_view name, std::uint3
         warning = "the animation is too large for the image memory of the terminal at this size, so only its first frame shows";
     }
     const Resizer resize(image ? image->width : width, image ? image->height : height, outWidth, outHeight);
-    // Each frame is changed and sent on its own: one copy at a time.
+    // Each frame is sent once: it moves out of the image and changes in
+    // place, and only a scaled one is a copy.
     auto prepare = [&](int index) {
-        const std::string& source = image->frame(index);
-        if (!m_s.mirrorH && !m_s.mirrorV && !m_s.background) {
-            return resize(source);
-        }
-        std::string rgba = source;
+        std::string rgba = image->takeFrame(index);
         if (m_s.mirrorH || m_s.mirrorV) {
             mirrorFrame(rgba, image->width, image->height, m_s.mirrorH, m_s.mirrorV);
         }
         if (m_s.background) {
             flattenFrame(rgba, (*m_s.background)[0], (*m_s.background)[1], (*m_s.background)[2]);
         }
-        if (resize.identity()) {
-            return rgba;
+        if (!resize.identity()) {
+            rgba = resize(rgba);
         }
-        return resize(rgba);
+        return rgba;
     };
     const int extra = outWidth % cellWidth;
     int pixelOffset = 0;
@@ -793,7 +796,7 @@ std::string Icat::show(std::string_view bytes, std::string_view name, std::uint3
             // An opaque frame goes as RGB: a quarter fewer bytes.
             const bool opaque = frameOpaque(data);
             if (opaque) {
-                data = dropAlpha(data);
+                dropAlpha(data);
             }
             GraphicsCommand command = n == 0 ? first : GraphicsCommand {};
             if (n > 0) {
@@ -1001,24 +1004,43 @@ void removeUnread(Tty& tty, long long timeoutMs, Medium medium, const std::vecto
     }
 }
 
-bool allowTmuxPassthrough()
+// @p arg as a file URI that parseDndUriList() reads, when it is one: a
+// scheme of any case ("FILE:"), then an absolute path, with no host,
+// "localhost" or this computer's name. A name such as "file:a.png" is a
+// relative path. A URI with another host gives "file://HOST/...", which
+// names no file of this computer.
+std::optional<std::string> fileUri(std::string_view arg)
 {
-    const char* argv[] = { "tmux", "set", "-p", "allow-passthrough", "on", nullptr };
-    pid_t pid = 0;
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
-    posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
-    const int result = ::posix_spawnp(&pid, "tmux", &actions, nullptr, const_cast<char**>(argv), environ);
-    posix_spawn_file_actions_destroy(&actions);
-    if (result != 0) {
-        return false;
+    constexpr std::string_view Scheme = "file:";
+    if (arg.size() <= Scheme.size() || arg[Scheme.size()] != '/'
+        || !std::equal(Scheme.begin(), Scheme.end(), arg.begin(),
+                       [](char a, char b) { return a == char(std::tolower(std::uint8_t(b))); })) {
+        return std::nullopt;
     }
-    int status = 0;
-    pid_t waited = -1;
-    while ((waited = ::waitpid(pid, &status, 0)) < 0 && errno == EINTR) {
+    std::string_view rest = arg.substr(Scheme.size());
+    if (rest.starts_with("//")) {
+        const std::size_t slash = rest.find('/', 2);
+        const std::string_view host = rest.substr(2, slash == std::string_view::npos ? std::string_view::npos : slash - 2);
+        // Host names have no case: "LOCALHOST" as well.
+        const auto sameName = [&host](std::string_view name) {
+            return host.size() == name.size()
+                && std::equal(host.begin(), host.end(), name.begin(),
+                              [](char a, char b) { return std::tolower(std::uint8_t(a)) == std::tolower(std::uint8_t(b)); });
+        };
+        char own[HOST_NAME_MAX + 2] = {};
+        if (!host.empty() && (sameName("localhost") || (::gethostname(own, sizeof own - 1) == 0 && sameName(own)))) {
+            rest = slash == std::string_view::npos ? std::string_view() : rest.substr(slash);
+        }
     }
-    return waited == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    return std::string(Scheme) + std::string(rest);
+}
+
+// tmux waits for its server, which may not answer: it gets until
+// @p deadline (nowMs()).
+bool allowTmuxPassthrough(long long deadline)
+{
+    const TmuxRun run = runTmux({ "set", "-p", "allow-passthrough", "on" }, deadline);
+    return run.started && !run.late && WIFEXITED(run.status) && WEXITSTATUS(run.status) == 0;
 }
 
 // A key that the user pressed, not a reply of the terminal: replies to
@@ -1181,8 +1203,8 @@ int runIcat(int argc, char** argv)
             continue;
         }
         std::string path = arg;
-        if (path.starts_with("file:")) {
-            const auto uris = AfterglowProto::parseDndUriList(arg);
+        if (const auto uri = fileUri(arg)) {
+            const auto uris = AfterglowProto::parseDndUriList(*uri);
             if (uris.size() != 1 || uris[0].kind != AfterglowProto::DndUri::Kind::File) {
                 report("icat", "Cannot read " + printable(arg) + ". It is not a file of this computer.");
                 return 1;
@@ -1284,7 +1306,7 @@ int runIcat(int argc, char** argv)
             report("icat", "Inside tmux, images go in escape codes, not through --transfer-mode=" + mode);
         }
         settings.medium = Medium::Stream;
-        if (!allowTmuxPassthrough()) {
+        if (!allowTmuxPassthrough(nowMs() + timeoutMs)) {
             report("icat", "Could not turn on tmux passthrough (tmux set -p allow-passthrough on)");
         }
     }
@@ -1359,7 +1381,9 @@ int runIcat(int argc, char** argv)
             }
         }
         std::string warning;
-        const auto failure = icat.show(source.bytes, source.url ? std::string_view() : std::string_view(source.path), id, warning);
+        // A URL's file name tells a TGA too.
+        const std::string fileName = source.url ? urlFileName(source.path) : source.path;
+        const auto failure = icat.show(std::move(source.bytes), fileName, id, warning);
         // One image at a time in memory.
         std::string().swap(source.bytes);
         if (!warning.empty()) {

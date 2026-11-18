@@ -23,12 +23,9 @@
 
 #include <fcntl.h>
 #include <poll.h>
-#include <spawn.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
-
-extern char** environ;
 
 namespace Aglow {
 
@@ -54,45 +51,10 @@ constexpr long long MinQueryMs = 200;
 /// not answer.
 Passthrough passthrough(long long deadline)
 {
-    int out[2];
-    if (::pipe2(out, O_CLOEXEC | O_NONBLOCK) != 0) return Passthrough::Unknown;
-    const char* argv[] = {"tmux", "display-message", "-p", "#{allow-passthrough}", nullptr};
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    posix_spawn_file_actions_adddup2(&actions, out[1], STDOUT_FILENO);
-    posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
-    posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
-    pid_t pid = 0;
-    const int spawned = ::posix_spawnp(&pid, "tmux", &actions, nullptr, const_cast<char**>(argv), environ);
-    posix_spawn_file_actions_destroy(&actions);
-    ::close(out[1]);
-    std::string text;
-    // The end of tmux's output: tmux exits there.
-    bool ended = false;
-    while (spawned == 0 && !ended) {
-        pollfd ready{out[0], POLLIN, 0};
-        const int polled = ::poll(&ready, 1, int(std::max(0LL, deadline - nowMs())));
-        if (polled < 0 && errno == EINTR) continue;
-        if (polled <= 0) break;
-        char bytes[256];
-        const ssize_t n = ::read(out[0], bytes, sizeof bytes);
-        if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
-        if (n <= 0) {
-            ended = true;
-        } else {
-            text.append(bytes, std::size_t(n));
-        }
-    }
-    ::close(out[0]);
-    if (spawned != 0) return Passthrough::Unknown;
-    // A tmux that did not answer in time ends now, so that the wait for it
-    // is short.
-    if (!ended) ::kill(pid, SIGKILL);
-    int status = 0;
-    while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
-    }
-    if (!ended) return Passthrough::Late;
-    return WIFEXITED(status) && WEXITSTATUS(status) == 0 && text == "off\n" ? Passthrough::Off : Passthrough::Unknown;
+    const TmuxRun run = runTmux({"display-message", "-p", "#{allow-passthrough}"}, deadline);
+    if (!run.started) return Passthrough::Unknown;
+    if (run.late) return Passthrough::Late;
+    return WIFEXITED(run.status) && WEXITSTATUS(run.status) == 0 && run.output == "off\n" ? Passthrough::Off : Passthrough::Unknown;
 }
 
 /// Whether the client may ask its terminal: standard output is the

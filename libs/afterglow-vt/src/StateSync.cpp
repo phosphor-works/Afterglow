@@ -50,6 +50,16 @@ enum Tag : std::uint8_t {
     ImagesResetTag = 21, ///< the images start over: the first frame of a writer
 };
 
+// The largest stable row id that a reader takes: far past any count of
+// rows, and far below the top of the signed integers that row arithmetic
+// (image anchors, marks, region scrolls) uses.
+constexpr std::uint64_t MaxRowId = std::uint64_t(INT64_MAX) / 65536;
+
+// The click byte of the shell marks: Terminal::PromptClicks in the low bits,
+// and kitty's special key.
+constexpr std::uint8_t ClickModeMask = 3;
+constexpr std::uint8_t ClickSpecialKey = 4;
+
 // The flags of a semantic region: its kind in the low bits.
 constexpr std::uint8_t RegionOpen = 4;
 constexpr std::uint8_t RegionExitCode = 8;
@@ -737,10 +747,10 @@ std::string StateWriter::write(const Terminal& t, std::size_t maxBytes, const Re
             o.byte(std::uint8_t(t.m_semanticZone));
             // How a click on the command line reaches the shell, with bit 2
             // for kitty's special key.
-            o.byte(std::uint8_t(std::uint8_t(t.m_promptClicks) | (t.m_promptSpecialKey ? 4 : 0)));
+            o.byte(std::uint8_t(std::uint8_t(t.m_promptClicks) | (t.m_promptSpecialKey ? ClickSpecialKey : 0)));
             o.byte(t.m_commandRunning ? 1 : 0);
             o.byte(t.m_promptRedrawPending ? 1 : 0);
-            for (const Terminal::Mark* m : {&t.m_inputStart, &t.m_outputStart, &t.m_outputEnd, &t.m_secondaryPrompt}) {
+            for (const Terminal::Mark* m : t.marks()) {
                 o.byte(m->valid ? 1 : 0);
                 if (!m->valid) continue;
                 o.varint(m->row);
@@ -892,14 +902,21 @@ bool StateWriter::writeRows(std::string& out, const Terminal& t, int which, Scre
     bool reset = false;
     const Screen& s = which == 0 ? *t.m_primary : *t.m_alternate;
     const std::uint64_t total = s.rowsDropped() + s.historySize();
-    if (!st.synced || st.cols != s.cols() || st.rows != s.rows() || st.epoch != s.layoutEpoch() || total < st.to) {
-        // A new size or layout rebuilt the rows: the replica starts over,
-        // with the history from the newest row back.
+    // History rows that came back to the screen (an unscroll, a taller
+    // screen) took ids that the replica may have as history rows, or as
+    // the next ones that it waits for, and the rows that scroll in after
+    // them may take those ids again with new text.
+    const bool rewound = st.rewinds != s.historyRewinds() || total < st.to || total < st.totalSent;
+    if (!st.synced || st.cols != s.cols() || st.rows != s.rows() || st.epoch != s.layoutEpoch() || rewound) {
+        // A new size or layout rebuilt the rows, or the history went back:
+        // the replica starts over, with the history from the newest row
+        // back. A rewind keeps the ids of the rows that stay.
         st = ScreenState();
         st.synced = true;
         st.cols = s.cols();
         st.rows = s.rows();
         st.epoch = s.layoutEpoch();
+        st.rewinds = s.historyRewinds();
         st.from = st.to = total;
         st.rowHashes.assign(std::size_t(s.rows()), 0);
         std::string payload;
@@ -1498,6 +1515,21 @@ void StateWriter::writeRecords(std::string& out, const Terminal& t, Budget& budg
 
 // ---------------------------------------------------------------- reader ---
 
+void StateReader::keepView(Screen& s, ScreenState& st)
+{
+    if (!st.keepView) return;
+    const std::uint64_t bottom = s.m_rowsDropped + s.historySize();
+    if (st.viewTop >= bottom) {
+        // The top row is on the screen now: the view is at the bottom.
+        st.keepView = false;
+        return;
+    }
+    const bool held = st.viewTop >= s.m_rowsDropped;
+    s.m_viewportOffset = held ? std::size_t(bottom - st.viewTop) : s.historySize();
+    st.viewOffset = s.m_viewportOffset;
+    if (held) st.keepView = false;
+}
+
 bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
 {
     const auto fail = [error](std::string text) {
@@ -1613,6 +1645,13 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
         s.releaseRow(row);
     };
 
+    // A view that the window moved since the last frame stays where the
+    // window put it.
+    for (int which = 0; which < 2; ++which) {
+        ScreenState& st = m_screens[which];
+        if (st.keepView && screenOf(std::uint8_t(which))->m_viewportOffset != st.viewOffset) st.keepView = false;
+    }
+
     bool cursorsSeen = false;
     std::string cursors;
     // What the replica's host hears of once the whole frame applied.
@@ -1701,7 +1740,7 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             Screen* s = screenOf(p.byte());
             const std::uint64_t cols = p.bounded(std::uint64_t(Screen::MaxColumns));
             const std::uint64_t rows = p.bounded(Screen::MaxCells);
-            const std::uint64_t next = p.varint();
+            const std::uint64_t next = p.bounded(MaxRowId);
             const std::uint64_t epoch = p.varint();
             if (!s || !p.ok() || !p.done() || cols < 2 || rows < 1 || cols * rows > Screen::MaxCells) {
                 return fail("the state frame has a bad screen reset");
@@ -1709,7 +1748,13 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             const int which = s == t.m_primary.get() ? 0 : 1;
             ScreenState& st = m_screens[which];
             const std::uint64_t layout = s->m_layoutEpoch;
-            const std::uint64_t before = st.next;
+            const std::size_t viewOffset = s->m_viewportOffset;
+            // A view that waits for its top row from an earlier reset still
+            // waits for it: where it shows now is only as far as the history
+            // came, or the bottom when none came yet.
+            const bool waiting = st.keepView;
+            const std::uint64_t viewTop =
+                waiting ? st.viewTop : s->m_rowsDropped + s->historySize() - viewOffset;
             s->clearHistory();
             for (int y = 0; y < s->rows(); ++y) {
                 discard(*s, s->row(y));
@@ -1722,16 +1767,28 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             }
             // A new layout of the writer numbers its rows anew, and so does
             // the replica: what the window keeps by row id (a selection, a
-            // search) lets go. Ids that go back to an earlier number name
-            // other rows too. The same layout in a new size (a height
-            // change) keeps them, as a resize of the window's own does.
+            // search) lets go. The same layout keeps them, as a terminal of
+            // the window's own does: in a new size (a height change), and
+            // after history rows came back (an unscroll), whose ids name the
+            // same rows. The rows that such a rewind dropped went with a
+            // region scroll, which the host heard of.
             Epoch& known = m_epochs[which];
-            if ((!known.known || known.epoch != epoch || next < before) && s->m_layoutEpoch == layout) ++s->m_layoutEpoch;
+            const bool sameLayout = known.known && known.epoch == epoch;
+            if (!sameLayout && s->m_layoutEpoch == layout) ++s->m_layoutEpoch;
             known = Epoch{true, epoch};
             st = ScreenState();
             st.next = st.hole = st.from = next;
             s->m_rowsDropped = next;
             s->m_viewportOffset = 0;
+            // In the same layout the ids name the same rows: a view scrolled
+            // back goes back to its top row as the history comes again,
+            // where a terminal of the window's own keeps it.
+            if (sameLayout && (waiting || viewOffset > 0)) {
+                st.keepView = true;
+                st.viewTop = viewTop;
+                st.viewOffset = 0;
+                keepView(*s, st);
+            }
             m_screenChanged = true;
             break;
         }
@@ -1787,8 +1844,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             Screen* s = screenOf(which);
             if (!s) return fail("the state frame names no screen");
             ScreenState& st = m_screens[which];
-            const std::uint64_t oldest = p.varint();
-            const std::uint64_t total = p.varint();
+            const std::uint64_t oldest = p.bounded(MaxRowId);
+            const std::uint64_t total = p.bounded(MaxRowId);
             const std::uint64_t count = p.bounded(payload.size());
             if (!p.ok() || total < st.next || oldest > total) return fail("the state frame has bad history");
             // A view scrolled back into the history stays on its rows, as it
@@ -1849,6 +1906,7 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 ++s->m_rowsDropped;
             }
             s->m_viewportOffset = viewport ? std::min(viewport + added, s->historySize()) : 0;
+            keepView(*s, st);
             break;
         }
         case PrependTag: {
@@ -1880,6 +1938,7 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 s->m_rowsDropped = id;
             }
             if (!p.ok() || !p.done()) return fail("the state frame has bad older history");
+            keepView(*s, st);
             break;
         }
         case CursorTag:
@@ -1892,8 +1951,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             for (std::uint64_t i = 0; i < count && p.ok(); ++i) {
                 const std::uint8_t alt = p.byte();
                 RegionScroll scroll;
-                scroll.top = p.varint();
-                scroll.bottom = p.varint();
+                scroll.top = p.bounded(MaxRowId);
+                scroll.bottom = p.bounded(MaxRowId);
                 scroll.left = int(p.bounded(std::uint64_t(Screen::MaxColumns - 1)));
                 scroll.right = int(p.bounded(std::uint64_t(Screen::MaxColumns - 1)));
                 const std::uint8_t full = p.byte();
@@ -1914,8 +1973,8 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                     if (any > 1) return fail("the state frame has bad region scrolls");
                     if (!any) continue;
                     RegionScroll all;
-                    all.top = p.varint();
-                    all.bottom = p.varint();
+                    all.top = p.bounded(MaxRowId);
+                    all.bottom = p.bounded(MaxRowId);
                     if (!p.ok() || all.top > all.bottom || all.bottom - all.top >= std::uint64_t(INT_MAX)) {
                         return fail("the state frame has bad region scrolls");
                     }
@@ -1932,12 +1991,12 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             const std::uint8_t clicks = p.byte();
             const std::uint8_t running = p.byte();
             const std::uint8_t redraw = p.byte();
-            Terminal::Mark marks[4];
+            Terminal::Mark marks[std::tuple_size_v<decltype(t.marks())>];
             for (Terminal::Mark& m : marks) {
                 const std::uint8_t valid = p.byte();
                 if (valid > 1) return fail("the state frame has a bad shell mark");
                 if (!valid) continue;
-                m.row = p.varint();
+                m.row = p.bounded(MaxRowId);
                 // A mark after a pending wrap is one past the last column.
                 m.col = int(p.bounded(std::uint64_t(Screen::MaxColumns)));
                 m.valid = true;
@@ -1950,9 +2009,9 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 SemanticRegion r;
                 r.id = p.varint();
                 const std::uint8_t flags = p.byte();
-                r.start.row = p.varint();
+                r.start.row = p.bounded(MaxRowId);
                 r.start.col = int(p.bounded(std::uint64_t(Screen::MaxColumns)));
-                r.end.row = p.varint();
+                r.end.row = p.bounded(MaxRowId);
                 r.end.col = int(p.bounded(std::uint64_t(Screen::MaxColumns)));
                 const std::uint8_t kind = flags & 3;
                 if (!p.ok() || kind > std::uint8_t(SemanticZoneKind::Output) || (flags & ~(3 | RegionOpen | RegionExitCode))
@@ -1965,20 +2024,20 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 lastRow = std::max({lastRow, r.start.row, r.end.row});
                 regions.push_back(r);
             }
-            if (!p.ok() || !p.done() || zone > std::uint8_t(Terminal::SemanticZone::Input) || clicks > 6 || (clicks & 3) > 2 || running > 1 || redraw > 1) {
+            if (!p.ok() || !p.done() || zone > std::uint8_t(Terminal::SemanticZone::Input)
+                || (clicks & ~(ClickModeMask | ClickSpecialKey))
+                || (clicks & ClickModeMask) > std::uint8_t(Terminal::PromptClicks::Relative) || running > 1 || redraw > 1) {
                 return fail("the state frame has bad shell marks");
             }
             t.m_semanticZone = Terminal::SemanticZone(zone);
-            t.m_promptClicks = Terminal::PromptClicks(clicks & 3);
-            t.m_promptSpecialKey = clicks & 4;
+            t.m_promptClicks = Terminal::PromptClicks(clicks & ClickModeMask);
+            t.m_promptSpecialKey = clicks & ClickSpecialKey;
             t.m_commandRunning = running;
             // The window holds its frames while the shell draws its prompt
             // after a resize, as for a program of its own.
             t.m_promptRedrawPending = redraw;
-            t.m_inputStart = marks[0];
-            t.m_outputStart = marks[1];
-            t.m_outputEnd = marks[2];
-            t.m_secondaryPrompt = marks[3];
+            const auto targets = t.marks();
+            for (std::size_t i = 0; i < targets.size(); ++i) *targets[i] = marks[i];
             t.m_nextSemanticId = nextId;
             t.m_semanticRegions = std::move(regions);
             t.m_semanticRegionsLastRow = lastRow;
@@ -2267,7 +2326,7 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 pl.placementId = std::uint32_t(p.bounded(0xffffffffu));
                 // A stable row id, which a placement multiplies by the cell
                 // height: past this, the arithmetic of a row overflows.
-                pl.row = p.bounded(std::uint64_t(INT64_MAX) / 65536);
+                pl.row = p.bounded(MaxRowId);
                 for (int* v : {&pl.col, &pl.offsetX, &pl.offsetY, &pl.srcX, &pl.srcY, &pl.srcW, &pl.srcH, &pl.cols, &pl.rows}) *v = value();
                 pl.z = std::int32_t(value());
                 pl.parentImage = std::uint32_t(p.bounded(0xffffffffu));

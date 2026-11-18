@@ -121,10 +121,13 @@ function __afterglow_ctl
     set -l cur (commandline -ct)
     set -l options -h\t'Show the usage' --help\t'Show the usage' --session\t'Act on a mux session'
     # --session NAME comes before the command. afterglow mux ls lists the
-    # names, but a completion runs no program but aglow run --complete.
+    # names, but a completion runs no program but aglow run --complete. In a
+    # pane of a session, the commands act on it as with --session.
+    set -l session (set -q AFTERGLOW_SESSION; and test -n "$AFTERGLOW_SESSION"; and echo 1)
     if test "$argv[1]" = --session
         set -q argv[2]; or return
         set -e argv[1..2]
+        set session 1
         # The usage only comes first: a command follows.
         set options
     end
@@ -138,7 +141,7 @@ function __afterglow_ctl
                 focus\t'Focus the pane' close\t'Close the pane' set-title\t"Set the pane's title" \
                 set-tab-title\t"Set the title of the pane's tab" resize\t'Move an edge of the pane' \
                 send-key\t'Type keys by name' scroll\t'Scroll the pane' \
-                colors\t"Print the pane's colours" set-colors\t'Set colours of the pane' \
+                colors\t"Print the pane's colors" set-colors\t'Set colors of the pane' \
                 set-font-size\t'Set the font size' set-opacity\t"Set the window's background opacity" \
                 set-user-var\t'Set user variables of the pane' \
                 signal-program\t'Send a signal to the program in the foreground' window\t"Change the pane's window" \
@@ -238,8 +241,10 @@ function __afterglow_ctl
         end
     end
     set -l offer
+    # set-colors --all sets every pane: no --pane with it.
     if not contains -- $command ls watch scripts projects open-directory open-project new-window
-        contains -- --pane $argv; or set -a offer --pane\t'The pane'
+        contains -- --pane $argv; or begin; test $command = set-colors; and contains -- --all $argv; end
+        or set -a offer --pane\t'The pane'
     end
     switch $command
         case ls
@@ -267,18 +272,22 @@ function __afterglow_ctl
             string match -q -r -- '^--(left|right|up|down)$' $argv
             or set -a offer --left --right --up --down
             set -a offer (__afterglow_launch_offer $argv)
+            # A pane of a mux session takes only --env: its daemon starts the program.
+            test -n "$session"; and set offer (string match -v -r -- '^--(var|hold|no-focus|stdin-text|stdin-ansi)' $offer)
         case new-tab new-window
             contains -- --cwd $argv; or set -a offer --cwd\t'Working directory'
             set -a offer (__afterglow_launch_offer $argv)
             # new-window reads no pane, and takes the focus.
             test $command = new-window; and set offer (string match -v -r -- '^--(no-focus|stdin-text|stdin-ansi)' $offer)
+            test $command = new-tab; and test -n "$session"
+            and set offer (string match -v -r -- '^--(var|hold|no-focus|stdin-text|stdin-ansi)' $offer)
         case focus
             contains -- --direction $argv; or set -a offer --direction\t'Focus the pane on that side'
         case colors
             contains -- --json $argv; or set -a offer --json\t'Print JSON'
         case set-colors
-            contains -- --all $argv; or set -a offer --all\t'Every pane'
-            contains -- --reset $argv; or set -a offer --reset\t'The configured colours first'
+            contains -- --all $argv; or contains -- --pane $argv; or set -a offer --all\t'Every pane'
+            contains -- --reset $argv; or set -a offer --reset\t'The configured colors first'
         case window
             string match -q -r -- '^--(fullscreen|maximized|normal)$' $argv
             or set -a offer --fullscreen --maximized --normal

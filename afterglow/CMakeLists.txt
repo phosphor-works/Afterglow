@@ -45,6 +45,8 @@ qt_add_library(afterglow_app STATIC
     src/TerminalWindowScript.cpp
     src/TerminalWindowOverlay.cpp
     src/TerminalWindowDock.cpp
+    src/TerminalWindowControl.cpp
+    src/TerminalWindowTransfer.cpp
     src/TerminalWindow.cpp
     src/TerminalWindow.h
     src/KeyMapping.cpp
@@ -71,7 +73,12 @@ qt_add_library(afterglow_app STATIC
     src/desktop/ProtoBytes.h
     src/desktop/UploadArchive.cpp
     src/desktop/UploadArchive.h
+    src/desktop/Download.cpp
+    src/desktop/Download.h
     src/control/Capture.h
+    src/control/ControlCapture.cpp
+    src/control/ControlLaunch.cpp
+    src/control/ControlPane.cpp
     src/control/ControlProject.cpp
     src/control/Control.cpp
     src/control/Control.h
@@ -99,7 +106,8 @@ qt_add_executable(afterglow src/main.cpp src/control/Ctl.cpp src/control/Ctl.h s
     src/shell/Aglow.cpp src/shell/Aglow.h)
 # afterglow_app brings afterglow_mux_protocol, which Mux.cpp uses too.
 target_link_libraries(afterglow PRIVATE afterglow_app)
-# afterglow mux runs the aglow-mux of its own directory.
+# afterglow mux runs the aglow-mux of its own directory, and so do the panes,
+# which decode the images that programs send with it (ProgramImages.cpp).
 add_dependencies(afterglow aglow-mux)
 # Without aglow, afterglow run, transfer, dnd, icat and clipboard say that it is not built.
 if(AFTERGLOW_BUILD_AGLOW)
@@ -133,15 +141,17 @@ qt_add_library(afterglow_config STATIC
     src/config/KeyModes.cpp
     src/config/KeyModes.h
     src/config/ModifierRemap.cpp
-    src/config/NotificationFilter.cpp
     src/config/ModifierRemap.h
+    src/config/NotificationFilter.cpp
+    src/config/NotificationFilter.h
     src/config/Settings.cpp
     src/config/Settings.h
     src/config/Theme.cpp
     src/config/Theme.h
     src/XkbKeyboard.cpp
     src/XkbKeyboard.h)
-target_include_directories(afterglow_config PUBLIC src)
+# Settings.h bounds Terminal.uploadLimit by the input queue of a PTY.
+target_include_directories(afterglow_config PUBLIC src $<TARGET_PROPERTY:AfterglowPty,INTERFACE_INCLUDE_DIRECTORIES>)
 target_compile_definitions(afterglow_config PRIVATE QT_NO_CAST_FROM_ASCII
     AFTERGLOW_BUILD_DIR="${CMAKE_BINARY_DIR}"
     AFTERGLOW_SOURCE_THEME_DIR="${PROJECT_SOURCE_DIR}/data/themes"
@@ -177,14 +187,6 @@ qt_add_library(afterglow_overlayspec STATIC src/scripting/OverlaySpec.cpp src/sc
 target_include_directories(afterglow_overlayspec PUBLIC src)
 target_compile_definitions(afterglow_overlayspec PRIVATE QT_NO_CAST_FROM_ASCII)
 target_link_libraries(afterglow_overlayspec PUBLIC Qt6::Core)
-
-# The bounded decoder of the images that programs send: the panes decode
-# with it, and afterglow_renderpng decodes as they do.
-qt_add_library(afterglow_imagedecode STATIC src/ImageDecode.cpp src/ImageDecode.h)
-target_include_directories(afterglow_imagedecode PUBLIC src)
-target_compile_definitions(afterglow_imagedecode PRIVATE QT_NO_CAST_FROM_ASCII)
-# Its header holds only standard types: the libraries it decodes with stay inside.
-target_link_libraries(afterglow_imagedecode PUBLIC Afterglow::Vt PRIVATE Qt6::Gui Afterglow::Proto)
 
 # The script host, shared with its tests. The Control binding lives in the app.
 qt_add_library(afterglow_scripting STATIC src/scripting/ScriptHost.cpp src/scripting/ScriptHost.h
@@ -234,15 +236,13 @@ if(BUILD_TESTING)
     target_link_libraries(afterglow_native_tests PRIVATE afterglow_app GTest::gtest)
     # The mux tests run a daemon of their own (mux/tests/TestDaemon.h).
     target_include_directories(afterglow_native_tests PRIVATE ${PROJECT_SOURCE_DIR}/mux/tests)
-    target_compile_definitions(afterglow_native_tests PRIVATE AFTERGLOW_MUX="$<TARGET_FILE:aglow-mux>"
-                                                              AFTERGLOW_BINARY="$<TARGET_FILE:afterglow>"
-                                                              AFTERGLOW_FAKE_SSH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fake-ssh.sh")
-    add_dependencies(afterglow_native_tests aglow-mux afterglow)
+    afterglow_test_runs(afterglow_native_tests AFTERGLOW_MUX aglow-mux)
+    afterglow_test_runs(afterglow_native_tests AFTERGLOW_BINARY afterglow)
+    target_compile_definitions(afterglow_native_tests PRIVATE AFTERGLOW_FAKE_SSH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fake-ssh.sh")
     # The aglow dnd twins of the kitten dnd tests and the aglow run tests of
     # session panes run the aglow of this build.
     if(AFTERGLOW_BUILD_AGLOW)
-        target_compile_definitions(afterglow_native_tests PRIVATE AFTERGLOW_AGLOW="$<TARGET_FILE:aglow>")
-        add_dependencies(afterglow_native_tests aglow)
+        afterglow_test_runs(afterglow_native_tests AFTERGLOW_AGLOW aglow)
     endif()
     afterglow_add_chrome(afterglow_native_tests)
 endif()
@@ -268,7 +268,7 @@ foreach(windows afterglow_native_tests afterglow_native_bench)
     endif()
 endforeach()
 target_include_directories(afterglow_app PUBLIC src)
-target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afterglow_shaders afterglow_scripting afterglow_audio afterglow_mux_image Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
+target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afterglow_shaders afterglow_scripting afterglow_audio Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
     Qt6::Concurrent Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::CorePrivate Qt6::GuiPrivate Qt6::QuickPrivate
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
     PhosphorDBus::PhosphorDBus PhosphorIpc::PhosphorIpc PhosphorScripting::PhosphorScripting
@@ -280,6 +280,9 @@ target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afte
     # its headers: a pane can show a pane of a mux session. MuxClient.h also
     # includes the stream of phosphor-channel, which carries that pane.
     afterglow_mux_protocol PhosphorChannel::PhosphorChannel)
+# The client of the image decoder of aglow-mux, which the panes use. Only
+# Pane.cpp and ProgramImages.cpp include its header.
+target_link_libraries(afterglow_app PRIVATE afterglow_mux_image)
 
 install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 # Private libraries: afterglow's own and the phosphor ones it was built with.
@@ -301,10 +304,11 @@ list(TRANSFORM AFTERGLOW_LICENSE_TEXTS PREPEND "${PROJECT_SOURCE_DIR}/LICENSES/"
 list(TRANSFORM AFTERGLOW_LICENSE_TEXTS APPEND ".txt")
 install(FILES ${AFTERGLOW_LICENSE_TEXTS} DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow)
 # The notices of the code and data built into the binaries go with them:
-# zlib-ng and xxHash, the image codecs of aglow-mux and aglow, and the Unicode
-# tables of the terminal core (cmake/AfterglowDependencies.cmake). So do the
-# notices of Luau, which is statically linked into PhosphorScripting, and of
-# valijson; the phosphor rules that install them are skipped with the others
+# zlib-ng and xxHash, the image codecs and Little CMS of aglow-mux and aglow,
+# and the Unicode tables of the terminal core
+# (cmake/AfterglowDependencies.cmake). So do the notices of Luau, which is
+# statically linked into PhosphorScripting, and of valijson; the phosphor
+# rules that install them are skipped with the others
 # (cmake/AfterglowPhosphor.cmake).
 afterglow_install_bundled_notices(${CMAKE_INSTALL_DATADIR}/licenses/afterglow)
 # A system Luau (PHOSPHOR_SYSTEM_LUAU) is a separate package with its own

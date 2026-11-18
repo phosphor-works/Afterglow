@@ -21,7 +21,8 @@
 // event (TakenOver, Detached or SessionEnded). The window writes on channel
 // 0 its input, its layout, its settings and its answers to Control events
 // (ControlReply and ControlReplyPart); on ActionChannel what is not for a
-// program (its Kill, ClosePane, Visible and Refresh); and on CommandsChannel
+// program (its Kill, ClosePane, Visible, Refresh, PaneForgotten and
+// DownloadAnswer); and on CommandsChannel
 // the bytes of the command clients that the daemon passes it. The ids of
 // each direction are apart, so a pane's state channel and the action
 // channel can both be 1. Integers are LEB128 varints in their shortest form.
@@ -35,9 +36,9 @@ namespace AfterglowMux::Attach {
 /// The channel of the events (from the daemon) and of the input (from the
 /// window). The state channels of panes start at 1.
 inline constexpr std::uint32_t ControlChannel = 0;
-/// The window's channel for Kill, ClosePane, Visible and Refresh: the daemon
-/// reads it also while input waits for a full PTY and the control channel
-/// gets no credit.
+/// The window's channel for Kill, ClosePane, Visible, Refresh, PaneForgotten
+/// and DownloadAnswer: the daemon reads it also while input waits for a full
+/// PTY and the control channel gets no credit.
 inline constexpr std::uint32_t ActionChannel = 1;
 inline constexpr const char* ActionCodec = "afterglow.mux.actions.v1";
 /// The window's channel for the bytes of its command connections
@@ -150,14 +151,36 @@ enum class InputType : std::uint8_t {
     /// Until then the daemon moves that pane back into this session for no
     /// one (ActionChannel only).
     PaneForgotten = 13,
-    /// The answer to a DownloadBegin host call (MuxHost.h), in `accept`:
-    /// the pane's output goes on. false while the data comes stops the
-    /// download (a write failed): the rest of its data goes nowhere.
+    /// The answer to a DownloadBegin host call (MuxHost.h), or the stop of
+    /// a download whose data comes, in `download` (ActionChannel only). Not
+    /// with the input: the pane's output pauses for the answer, so the
+    /// program may block in a write and read no input meanwhile, and its
+    /// input that waits can hold the control channel.
     DownloadAnswer = 14,
+    /// A part of the answer to an UploadRequest host call (MuxHost.h) for
+    /// the program of `pane`: the parts, then the UploadAnswer with the
+    /// rest, make the answer, which goes to the program in one write, or not
+    /// at all when the window goes before its end. No other input of the
+    /// pane comes between them. Only the answer of the window that the
+    /// daemon asked last goes, and only while the program still waits: the
+    /// next window asks again for an answer that the program did not get.
+    UploadAnswerPart = 15,
+    UploadAnswer = 16,
+};
+
+/// What a DownloadAnswer says. A download of the pane that it does not fit
+/// takes nothing from it: a late Stop is not the refusal of the next
+/// download.
+enum class DownloadReply : std::uint8_t {
+    Refuse = 0, ///< the user refused the download that asks: the pane's output goes on
+    Accept = 1, ///< the user took the download that asks: its data comes as DownloadData calls
+    /// The window cannot take the data of the download that streams (a
+    /// write failed): the rest of it goes nowhere, and no DownloadEnd comes.
+    Stop = 2,
 };
 
 /// The bytes of a ControlReply in each ControlReplyPart, when the reply does
-/// not fit one frame.
+/// not fit one frame, and of an upload's answer in each UploadAnswerPart.
 inline constexpr std::size_t ControlReplyPartBytes = std::size_t(1) << 20;
 /// The most bytes of one ControlReply with its parts: the daemon ends the
 /// link of a window that sends more. Under the output that waits for one
@@ -170,17 +193,18 @@ struct Input
     std::uint32_t pane = 0;
     /// Bytes: for the program. Layout, Settings and ControlReply: their
     /// JSON. ControlReplyPart: a part of the JSON of a ControlReply.
+    /// UploadAnswerPart and UploadAnswer: a part of the answer to an upload.
     std::string bytes;
     PaneSize size;
     bool visible = false;
-    bool accept = false; ///< DownloadAnswer
+    DownloadReply download = DownloadReply::Refuse; ///< DownloadAnswer
 };
 
 /// The inputs that come on ActionChannel, and never on the control channel.
 constexpr bool isAction(InputType type)
 {
     return type == InputType::Kill || type == InputType::ClosePane || type == InputType::Visible || type == InputType::Refresh
-        || type == InputType::PaneForgotten;
+        || type == InputType::PaneForgotten || type == InputType::DownloadAnswer;
 }
 
 std::string encode(const Input& input);

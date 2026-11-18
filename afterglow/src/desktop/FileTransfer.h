@@ -78,6 +78,13 @@ Q_SIGNALS:
     void permissionRequested(const QString& token, bool writing, const QStringList& paths, int total, bool othersRefused);
 
 private:
+    friend struct FileTransferTestPeer; ///< PaneProtocolTest reads deliveryWindowFull()
+
+    /// True while outgoing packets wait because the GUI thread has not yet
+    /// taken the replies posted to it: the worker reads no more of a file
+    /// until it does. From any thread, for a test that runs no events.
+    bool deliveryWindowFull() const;
+
     struct Worker;
     std::unique_ptr<Worker> m_worker;
 };

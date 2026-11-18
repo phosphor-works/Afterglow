@@ -45,8 +45,9 @@ TEST(DndUri, OnlyFilesOfThisComputerAreFiles)
                                         "\r\n"
                                         "  file:///h/../i  \r\n"
                                         "file:///j?x\r\n"
-                                        "file:///k#y\r\n");
-    ASSERT_EQ(parsed.size(), 9u);
+                                        "file:///k#y\r\n"
+                                        "file://LocalHost/l\r\n");
+    ASSERT_EQ(parsed.size(), 10u);
     EXPECT_EQ(parsed[0].kind, DndUri::Kind::File);
     EXPECT_EQ(parsed[0].path, "/a");
     EXPECT_EQ(parsed[1].kind, DndUri::Kind::File);
@@ -62,6 +63,9 @@ TEST(DndUri, OnlyFilesOfThisComputerAreFiles)
     // A name with a '?' or '#' that the source did not escape: /j and /k are other files.
     EXPECT_EQ(parsed[7].kind, DndUri::Kind::Other);
     EXPECT_EQ(parsed[8].kind, DndUri::Kind::Other);
+    // Host names have no case.
+    EXPECT_EQ(parsed[9].kind, DndUri::Kind::File);
+    EXPECT_EQ(parsed[9].path, "/l");
 }
 
 TEST(DndUri, DataUris)

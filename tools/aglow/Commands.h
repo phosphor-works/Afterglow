@@ -6,6 +6,7 @@
 #include <AfterglowProto/Fd.h>
 
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <string_view>
 
@@ -33,5 +34,18 @@ void report(std::string_view command, std::string_view message);
 std::string humanSize(std::uint64_t bytes);
 /// Reads all of @p fd; false on a read error.
 bool readAll(int fd, std::string& out);
+
+/// What a tmux command that aglow ran gave.
+struct TmuxRun
+{
+    bool started = false;
+    bool late = false; ///< no end of its output by the deadline: it was killed
+    int status = 0; ///< its wait status
+    std::string output;
+};
+/// Runs tmux with @p args, standard input and error on /dev/null, and reads
+/// its output until @p deadline (nowMs()): tmux waits for its server, which
+/// may not answer.
+TmuxRun runTmux(std::initializer_list<const char*> args, long long deadline);
 
 } // namespace Aglow

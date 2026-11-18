@@ -313,9 +313,9 @@ endfunction()
 #
 # Installs into <directory> the notices of the third-party code and data that
 # the binaries hold: zlib-ng and xxHash (libs/afterglow-proto), the image
-# codecs and Little CMS (AFTERGLOW_IMAGE_NOTICES of libs/afterglow-image), and the license of
-# the Unicode Character Database, from which libs/afterglow-vt has its
-# generated tables (UnicodeTables.inc). Its callers are the license
+# codecs and Little CMS (AFTERGLOW_IMAGE_NOTICES of libs/afterglow-image), and
+# the license of the Unicode Character Database, from which libs/afterglow-vt
+# has its generated tables (UnicodeTables.inc). Its callers are the license
 # directory of the application in a whole build (afterglow/CMakeLists.txt),
 # and those of aglow (tools/aglow/CMakeLists.txt) and aglow-mux
 # (mux/CMakeLists.txt) in a build of the two alone. aglow holds no Unicode

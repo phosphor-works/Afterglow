@@ -161,4 +161,15 @@ inline bool parseColorSpec(std::string_view spec, std::uint8_t& r, std::uint8_t&
     return ok;
 }
 
+/// Reads a colour as settings, themes and the control calls take it (in
+/// the window, and in the mux daemon for its sessions): blanks around it
+/// go, and "#rgb", "#rrggbb", "#rrrgggbbb" and "#rrrrggggbbbb" read as CSS
+/// and kitty read them, so that "#fff" is white, where XParseColor, which
+/// the escape codes follow, reads f0f0f0. Each component widens to 16 bits
+/// and back to 8 as QColor does. Eight digits, Qt's #AARRGGBB, are no
+/// colour: these colours have no alpha. The rest as parseColorSpec(): X11
+/// names, rgb:, rgbi:, OKLCH and LAB. On failure @p r, @p g and @p b are
+/// left as they were.
+bool parseSettingColor(std::string_view spec, std::uint8_t& r, std::uint8_t& g, std::uint8_t& b);
+
 } // namespace AfterglowProto

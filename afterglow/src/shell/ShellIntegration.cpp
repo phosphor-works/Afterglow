@@ -34,24 +34,22 @@ std::string defaultShell(const AfterglowPty::SpawnOptions& o, const InheritedEnv
     if (auto shell = env(o, "SHELL", inherited)) child.environment.emplace_back("SHELL", std::move(*shell));
     return AfterglowPty::Pty::defaultShell(child);
 }
-void put(AfterglowPty::SpawnOptions& o, const std::string& name, const std::string& value)
-{
-    std::erase_if(o.environment, [&](const auto& e) { return e.first == name; });
-    o.environment.emplace_back(name, value);
-}
 void save(AfterglowPty::SpawnOptions& o, const std::string& name, const InheritedEnvironment* inherited)
 {
     const auto value = env(o, name, inherited);
-    put(o, "AFTERGLOW_ORIGINAL_" + name + "_SET", value ? "1" : "0");
-    put(o, "AFTERGLOW_ORIGINAL_" + name, value.value_or(""));
+    AfterglowPty::setVariable(o, "AFTERGLOW_ORIGINAL_" + name + "_SET", value ? "1" : "0");
+    AfterglowPty::setVariable(o, "AFTERGLOW_ORIGINAL_" + name, value.value_or(""));
 }
 }
-bool prepare(AfterglowPty::SpawnOptions& o, const QString& switches, const QString& root, const InheritedEnvironment* inherited,
-             bool promptCursorBlinks)
+bool prepare(AfterglowPty::SpawnOptions& o, const Options& integration)
 {
-    QStringList features = switches.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    const InheritedEnvironment* const inherited = integration.inherited;
+    QStringList features = integration.switches.split(QLatin1Char(' '), Qt::SkipEmptyParts);
     if (features.contains(QLatin1String("disabled")) || env(o, "AFTERGLOW_SHELL_INTEGRATION", inherited) == "0") return false;
     features.removeAll(QStringLiteral("enabled"));
+    // As Kitty's no-rc: the environment of the integration, and nothing
+    // that loads it. The user's own startup files do.
+    const bool injects = !features.contains(QLatin1String("no-rc"));
     auto args = o.argv;
     if (args.empty()) args.push_back(defaultShell(o, inherited));
     const QString shell = QFileInfo(QString::fromStdString(args.front())).fileName();
@@ -62,7 +60,13 @@ bool prepare(AfterglowPty::SpawnOptions& o, const QString& switches, const QStri
         if (a == "--login" || a == "--interactive") continue;
         if (a.size() < 2 || a[0] != '-' || a.find_first_not_of("il", 1) != std::string::npos) return false;
     }
-    QString directory = root;
+    const auto environment = [&] {
+        AfterglowPty::setVariable(o, "AFTERGLOW_SHELL_FEATURES", features.join(QLatin1Char(' ')).toStdString());
+        AfterglowPty::setVariable(o, "AFTERGLOW_PROMPT_CURSOR", integration.promptCursorBlinks ? "5" : "6");
+        return true;
+    };
+    if (!injects) return environment();
+    QString directory = integration.root;
     if (directory.isEmpty()) {
         directory = runningFromBuildTree() ? QStringLiteral(AFTERGLOW_SOURCE_SHELL_DIR)
                                            : QStringLiteral(AFTERGLOW_INSTALLED_SHELL_DIR);
@@ -70,22 +74,25 @@ bool prepare(AfterglowPty::SpawnOptions& o, const QString& switches, const QStri
     const QString entry = directory + (shell == QLatin1String("zsh") ? QStringLiteral("/zsh/.zshenv") : QLatin1Char('/') + shell);
     if (!QFileInfo(entry).isReadable()) return false;
     if (shell == QLatin1String("bash")) {
+        // Bash expands parameters and runs command substitutions in ENV.
+        if (entry.contains(QLatin1Char('$')) || entry.contains(QLatin1Char('`')) || entry.contains(QLatin1Char('\\'))) return false;
         save(o, "ENV", inherited);
-        put(o, "ENV", entry.toStdString());
-        put(o, "AFTERGLOW_BASH_INJECT", "1");
+        AfterglowPty::setVariable(o, "ENV", entry.toStdString());
+        AfterglowPty::setVariable(o, "AFTERGLOW_BASH_INJECT", "1");
         args.insert(args.begin() + 1, "--posix");
     } else if (shell == QLatin1String("zsh")) {
         save(o, "ZDOTDIR", inherited);
-        put(o, "ZDOTDIR", (directory + QStringLiteral("/zsh")).toStdString());
+        AfterglowPty::setVariable(o, "ZDOTDIR", (directory + QStringLiteral("/zsh")).toStdString());
     } else {
         QString quoted = entry;
         quoted.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
         quoted.replace(QLatin1Char('\''), QStringLiteral("\\'"));
         args.insert(args.begin() + 1, {"--init-command", (QStringLiteral("source '") + quoted + QLatin1Char('\'')).toStdString()});
+        // Fish 4 marks its prompts itself: no-prompt-mark turns that off too.
+        // An older Fish ignores a feature that it does not know.
+        if (features.contains(QLatin1String("no-prompt-mark"))) args.insert(args.begin() + 1, "--features=no-mark-prompt");
     }
     o.argv = std::move(args);
-    put(o, "AFTERGLOW_SHELL_FEATURES", features.join(QLatin1Char(' ')).toStdString());
-    put(o, "AFTERGLOW_PROMPT_CURSOR", promptCursorBlinks ? "5" : "6");
-    return true;
+    return environment();
 }
 }

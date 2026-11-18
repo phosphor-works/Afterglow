@@ -40,9 +40,11 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/stat.h>
@@ -63,7 +65,8 @@ and pane IDs are those of the mux daemon. In a pane of a session, they act
 on that session. While no window shows the session, only ls, send-text,
 get-text, send-key, colors, set-colors, set-user-var, signal-program, split,
 new-tab, move-pane, detach-tab, close, watch and focus without --direction
-work.
+work. get-text then reads no --selection or --last-visited-output: the
+window has them.
 For a session, split and new-tab prepare the program with the settings of
 the default config file, not the --config or -o of a running Afterglow.
 
@@ -100,13 +103,13 @@ the default config file, not the --config or -o of a running Afterglow.
                                         to the Nth prompt below (above when negative), or to an end
   set-title TITLE...                    set the pane's title ("" to clear)
   set-tab-title TITLE...                set the title of the pane's tab ("" to clear)
-  colors [--json]                       print the pane's colours: foreground, background,
+  colors [--json]                       print the pane's colors: foreground, background,
                                         cursor, selection_foreground, selection_background,
                                         color0 to color255
   set-colors [--all] [--reset] [THEME] [NAME=COLOR...]
-                                        set colours of the pane (of every pane with --all) as
+                                        set colors of the pane (of every pane with --all) as
                                         its program would: those of a theme name or file, then
-                                        NAME=COLOR; --reset first gives back the configured ones
+                                        NAME=COLOR. --reset first gives back the configured ones
   set-font-size [+|-]N                  set the font size in points, or N points more or fewer
   set-opacity N                         set the window's background opacity (0 to 1) until
                                         Window.backgroundOpacity changes
@@ -140,17 +143,19 @@ the default config file, not the --config or -o of a running Afterglow.
   watch                                 print events as JSON lines until interrupted
 
 LAUNCH options of split and new-tab, as kitten @ launch has them:
-  --env NAME=VALUE   set a variable for CMD (NAME alone removes it); again for more
-  --var NAME=VALUE   set a user variable of the pane, as OSC 1337 SetUserVar; again for more
+  --env NAME=VALUE   set a variable for CMD (NAME alone removes it), again for more
+  --var NAME=VALUE   set a user variable of the pane, as OSC 1337 SetUserVar, again for more
   --hold             keep the pane open after CMD exits
   --no-focus         keep the focus where it is
   --stdin-text SCOPE [--stdin-ansi]
-                     the pane's text of a get-text scope (with its styles) as CMD's
-                     standard input (needs Control.allowReadText); overlay takes it too
+                     the pane's text of a get-text scope as the standard input of CMD,
+                     which must be given, with its styles with --stdin-ansi (not for
+                     the scope selection). It needs Control.allowReadText. overlay takes it too
 A pane of a mux session takes only --env.
 
 Put text or a command that starts with -- after a "--": send-text -- --stdin.
-Give a FILE or PATH that starts with -- as ./--FILE or ./--PATH.
+Give a FILE or PATH that starts with -- as ./--FILE or ./--PATH, and a THEME
+file with = in its name as ./NAME.
 )";
 
 // The events that `watch` subscribes to: the signals of ControlApi.
@@ -172,6 +177,10 @@ constexpr int ReplyTimeoutMs = AfterglowProto::Run::ReplyTimeoutMs;
 // A screenshot waits for a frame (at most 2 seconds), then for the encode of
 // its PNG, which grows with the window and with the noise of its packs.
 constexpr int ScreenshotTimeoutMs = 3 * ReplyTimeoutMs;
+// resize without --cells. Not Window.resizeStepCells: ctl reads no settings.
+// Its own default, which the usage names, the same as that setting's.
+constexpr int DefaultResizeCells = 2;
+static_assert(Control::MaxResizeCells == WindowSettings::MaxResizeStepCells);
 
 int fail(const QString& message, int status = 1)
 {
@@ -196,10 +205,17 @@ public:
     /// @p timeoutMs: -1 waits as long as the call takes (an overlay waits for the user).
     std::optional<QJsonValue> call(const QString& fn, const QJsonArray& args, int timeoutMs = ReplyTimeoutMs)
     {
+        return call(fn, args, nullptr, timeoutMs);
+    }
+
+    /// call() that reports no error that @p expected takes.
+    std::optional<QJsonValue> call(const QString& fn, const QJsonArray& args, const std::function<bool(const IpcClient::Error&)>& expected,
+                                   int timeoutMs = ReplyTimeoutMs)
+    {
         if (!connected()) return std::nullopt;
         IpcClient::Error error;
         auto result = m_client.call(QLatin1String(ControlSocket::Target), fn, args, timeoutMs, &error);
-        if (!result) report(error, timeoutMs);
+        if (!result && !(expected && expected(error))) report(error, timeoutMs);
         return result;
     }
 
@@ -606,13 +622,21 @@ std::optional<QString> absolute(const QString& path)
     return QDir::cleanPath(here + QLatin1Char('/') + path);
 }
 
-/// A colour as the calls take it.
-QString hexColor(AfterglowVt::Rgb rgb)
+/// NAME=VALUE of a user variable, with a name as OSC 1337 SetUserVar takes
+/// one, or nothing.
+std::optional<std::pair<QString, QString>> userVar(const QString& word)
 {
-    return QStringLiteral("#%1%2%3").arg(rgb.r, 2, 16, QLatin1Char('0')).arg(rgb.g, 2, 16, QLatin1Char('0')).arg(rgb.b, 2, 16, QLatin1Char('0'));
+    const qsizetype eq = word.indexOf(QLatin1Char('='));
+    if (eq <= 0 || !Control::userVarName(word.left(eq)).isEmpty()) return std::nullopt;
+    return std::pair{word.left(eq), word.mid(eq + 1)};
 }
 
-const QStringList Directions = {QStringLiteral("left"), QStringLiteral("right"), QStringLiteral("up"), QStringLiteral("down")};
+/// Why @p scope is not a scope of get-text for --stdin-text.
+std::optional<QString> stdinScopeError(const QString& scope)
+{
+    if (Control::scopeFromName(scope)) return std::nullopt;
+    return QStringLiteral("--stdin-text takes %1, not %2").arg(Control::TextScopeNames, scope);
+}
 
 const QString NoCurrentDirectory = QStringLiteral("the current directory was removed, so give an absolute directory");
 
@@ -759,6 +783,19 @@ int runCtl(int argc, char** argv)
         }
         return values;
     };
+    // At most one of @p flags: the one given, without its --, else
+    // @p fallback. Nothing when more than one is given.
+    auto takeOneOf = [&takeFlag](std::initializer_list<const char*> flags, const QString& fallback) -> std::optional<QString> {
+        std::optional<QString> chosen;
+        bool many = false;
+        for (const char* flag : flags) {
+            if (!takeFlag(QLatin1String(flag))) continue;
+            many = many || chosen.has_value();
+            chosen = QLatin1String(flag + 2);
+        }
+        if (many) return std::nullopt;
+        return chosen.value_or(fallback);
+    };
     // The options of a launch as kitten @ launch has them: --env NAME=VALUE
     // (NAME alone removes it), --var NAME=VALUE (a user variable), --hold,
     // --no-focus, and --stdin-text SCOPE [--stdin-ansi], the pane's text as
@@ -781,10 +818,9 @@ int runCtl(int argc, char** argv)
             out.environment.insert(name, eq < 0 ? QVariant(false) : QVariant(entry.mid(eq + 1)));
         }
         for (const QString& entry : takeValues(QStringLiteral("--var"))) {
-            const qsizetype eq = entry.indexOf(QLatin1Char('='));
-            if (eq <= 0 || entry.left(eq).toUtf8().size() > Control::MaxUserVarName)
-                return QStringLiteral("--var takes NAME=VALUE, with a name of 1 to %1 bytes").arg(Control::MaxUserVarName);
-            vars.insert(entry.left(eq), entry.mid(eq + 1));
+            const auto var = userVar(entry);
+            if (!var) return QStringLiteral("--var takes NAME=VALUE, with a name of 1 to %1 bytes").arg(Control::MaxUserVarName);
+            vars.insert(var->first, var->second);
         }
         if (!env.isEmpty()) out.options.insert(QStringLiteral("env"), env);
         if (!vars.isEmpty()) {
@@ -801,7 +837,10 @@ int runCtl(int argc, char** argv)
         }
         if (reads) {
             if (const auto scope = takeValue(QStringLiteral("--stdin-text"))) {
-                if (!Control::scopeFromName(*scope)) return QStringLiteral("--stdin-text takes a scope of get-text: %1").arg(*scope);
+                if (const auto error = stdinScopeError(*scope)) return error;
+                // A shell reads its standard input as commands: each line
+                // of the pane's text would run.
+                if (trailing.isEmpty()) return QStringLiteral("--stdin-text needs a command after --: the shell would run the text");
                 out.options.insert(QStringLiteral("stdin_text"), *scope);
                 out.windowOnly = QStringLiteral("--stdin-text");
             }
@@ -857,6 +896,19 @@ int runCtl(int argc, char** argv)
         return result->toInteger();
     };
     auto run = [&client](const QString& fn, const QJsonArray& callArgs) { return client.call(fn, callArgs) ? 0 : 1; };
+    // The last argument of a split or a new tab in @p directory: for a
+    // session, the launch that its daemon starts, which this command
+    // prepares, else the options of the window. An error for a flag that a
+    // session's pane does not take.
+    auto launchArgument = [&](QJsonArray& callArgs, const QString& directory, const LaunchFlags& launch) -> std::optional<QString> {
+        if (client.toDaemon()) {
+            if (!launch.windowOnly.isEmpty()) return QStringLiteral("%1 is not for a pane of a mux session").arg(launch.windowOnly);
+            callArgs.append(sessionLaunch(directory, trailing, client.sessionEnvironment(), launch.environment));
+        } else if (!launch.options.isEmpty()) {
+            callArgs.append(launch.options);
+        }
+        return std::nullopt;
+    };
     auto printPane = [&client](const QString& fn, const QJsonArray& callArgs) {
         const auto result = client.call(fn, callArgs);
         if (!result) return 1;
@@ -976,6 +1028,8 @@ int runCtl(int argc, char** argv)
     // or refused input never waits for a connection, nor fails as one. Each
     // leaves what it does with the pane in act.
     std::function<int(qint64 pane)> act;
+    // act takes no pane, and none is looked up.
+    bool paneless = false;
     const bool scriptAction = command == QLatin1String("action") && Keybinds::isScriptTarget(args.value(0));
     if (command == QLatin1String("save-project")) {
         const bool overwrite = takeFlag(QStringLiteral("--overwrite"));
@@ -1071,22 +1125,17 @@ int runCtl(int argc, char** argv)
             return 0;
         };
     } else if (command == QLatin1String("get-text")) {
-        QString scope = QStringLiteral("screen");
-        int scopes = 0;
-        for (const char* s : {"scrollback", "selection", "last-output", "screen", "first-output-on-screen", "last-visited-output"}) {
-            if (takeFlag(QStringLiteral("--") + QLatin1String(s))) {
-                scope = QLatin1String(s);
-                ++scopes;
-            }
-        }
+        const std::optional<QString> scope = takeOneOf({"--screen", "--scrollback", "--selection", "--last-output",
+                                                        "--first-output-on-screen", "--last-visited-output"},
+                                                       QStringLiteral("screen"));
         // As kitten @ get-text --ansi, --add-cursor and --add-wrap-markers.
         QJsonObject options;
-        for (const auto& [flag, key] : {std::pair{"--ansi", "ansi"}, std::pair{"--cursor", "cursor"}, std::pair{"--wrap-markers", "wrap_markers"}}) {
-            if (takeFlag(QLatin1String(flag))) options.insert(QLatin1String(key), true);
-        }
-        if (scopes > 1) return usage(QStringLiteral("get-text takes one scope"));
+        if (takeFlag(QStringLiteral("--ansi"))) options.insert(QStringLiteral("ansi"), true);
+        if (takeFlag(QStringLiteral("--cursor"))) options.insert(QStringLiteral("cursor"), true);
+        if (takeFlag(QStringLiteral("--wrap-markers"))) options.insert(QStringLiteral("wrap_markers"), true);
+        if (!scope) return usage(QStringLiteral("get-text takes one scope"));
         if (const auto error = extra(0)) return usage(*error);
-        act = [&client, scope, options](qint64 pane) {
+        act = [&client, scope = *scope, options](qint64 pane) {
             // The options only when they ask for something: (pane, scope) is
             // the call of plain text.
             QJsonArray callArgs{pane, scope};
@@ -1095,33 +1144,22 @@ int runCtl(int argc, char** argv)
             if (!result) return 1;
             const QByteArray text = result->toString().toUtf8();
             std::fwrite(text.constData(), 1, std::size_t(text.size()), stdout);
-            if (!text.endsWith('\n')) {
+            // A line feed after the cursor's sequences would move the
+            // cursor that they put back.
+            if (!text.endsWith('\n') && !options.contains(QLatin1String("cursor"))) {
                 std::fputc('\n', stdout);
             }
             return 0;
         };
     } else if (command == QLatin1String("split")) {
-        QString dir = QStringLiteral("right");
-        int directions = 0;
-        for (const char* direction : {"left", "right", "up", "down"}) {
-            if (takeFlag(QStringLiteral("--") + QLatin1String(direction))) {
-                dir = QLatin1String(direction);
-                ++directions;
-            }
-        }
-        if (directions > 1) return usage(QStringLiteral("split takes one direction"));
+        const std::optional<QString> dir = takeOneOf({"--left", "--right", "--up", "--down"}, QStringLiteral("right"));
+        if (!dir) return usage(QStringLiteral("split takes one direction"));
         LaunchFlags launch;
         if (const auto error = takeLaunch(true, true, launch)) return usage(*error);
         if (const auto error = extra(0)) return usage(*error);
-        act = [&, dir, launch](qint64 pane) {
+        act = [&, dir = *dir, launch](qint64 pane) {
             QJsonArray callArgs{pane, dir, QJsonArray::fromStringList(trailing)};
-            // The daemon starts the program that this command prepares.
-            if (client.toDaemon()) {
-                if (!launch.windowOnly.isEmpty()) return usage(QStringLiteral("%1 is not for a pane of a mux session").arg(launch.windowOnly));
-                callArgs.append(sessionLaunch({}, trailing, client.sessionEnvironment(), launch.environment));
-            } else if (!launch.options.isEmpty()) {
-                callArgs.append(launch.options);
-            }
+            if (const auto error = launchArgument(callArgs, {}, launch)) return usage(*error);
             return printPane(QStringLiteral("split"), callArgs);
         };
     } else if (command == QLatin1String("new-tab")) {
@@ -1134,14 +1172,8 @@ int runCtl(int argc, char** argv)
         act = [&, dir = *dir, launch](qint64 pane) {
             // The daemon starts the program in the directory as it comes: a
             // ~ is this command's to expand, as a window expands it.
-            const bool daemon = client.toDaemon();
-            QJsonArray callArgs{pane, daemon ? expandHome(dir) : dir, QJsonArray::fromStringList(trailing)};
-            if (daemon) {
-                if (!launch.windowOnly.isEmpty()) return usage(QStringLiteral("%1 is not for a pane of a mux session").arg(launch.windowOnly));
-                callArgs.append(sessionLaunch(dir, trailing, client.sessionEnvironment(), launch.environment));
-            } else if (!launch.options.isEmpty()) {
-                callArgs.append(launch.options);
-            }
+            QJsonArray callArgs{pane, client.toDaemon() ? expandHome(dir) : dir, QJsonArray::fromStringList(trailing)};
+            if (const auto error = launchArgument(callArgs, dir, launch)) return usage(*error);
             return printPane(QStringLiteral("newTab"), callArgs);
         };
     } else if (command == QLatin1String("move-pane")) {
@@ -1154,15 +1186,14 @@ int runCtl(int argc, char** argv)
     } else if (command == QLatin1String("focus") && indexOfOption(QStringLiteral("--direction")) >= 0) {
         const std::optional<QString> direction = takeValue(QStringLiteral("--direction"));
         if (const auto error = extra(0)) return usage(*error);
-        if (!direction || !Directions.contains(*direction)) return usage(QStringLiteral("--direction is left, right, up or down"));
-        act = [&, direction = *direction](qint64 pane) { return printPane(QStringLiteral("focusNeighbour"), {pane, direction}); };
+        if (!direction || !Control::splitDirection(*direction)) return usage(QStringLiteral("--direction is left, right, up or down"));
+        act = [&, direction = *direction](qint64 pane) { return printPane(QStringLiteral("focusNeighbor"), {pane, direction}); };
     } else if (command == QLatin1String("resize")) {
         const std::optional<QString> direction = takeValue(QStringLiteral("--direction"));
         const std::optional<QString> cellsText = takeValue(QStringLiteral("--cells"));
         if (const auto error = extra(0)) return usage(*error);
-        if (!direction || !Directions.contains(*direction)) return usage(QStringLiteral("resize needs --direction left, right, up or down"));
-        // The step of the resize actions.
-        const std::optional<quint32> cells = cellsText ? decimal(*cellsText) : std::optional<quint32>(2);
+        if (!direction || !Control::splitDirection(*direction)) return usage(QStringLiteral("resize needs --direction left, right, up or down"));
+        const std::optional<quint32> cells = cellsText ? decimal(*cellsText) : std::optional<quint32>(DefaultResizeCells);
         if (!cells || *cells < 1 || *cells > quint32(Control::MaxResizeCells))
             return usage(QStringLiteral("--cells takes a number from 1 to %1").arg(Control::MaxResizeCells));
         act = [&, direction = *direction, cells = qint64(*cells)](qint64 pane) {
@@ -1232,15 +1263,17 @@ int runCtl(int argc, char** argv)
         QStringList themes;
         QJsonObject given;
         for (const QString& word : std::as_const(args)) {
+            // No color name has a /: a word with one before its = is a
+            // theme file, as ./a=b.conf.
             const qsizetype eq = word.indexOf(QLatin1Char('='));
-            if (eq < 0) {
+            if (eq < 0 || word.left(eq).contains(QLatin1Char('/'))) {
                 themes << word;
                 continue;
             }
             const auto rgb = Themes::rgbFromName(word.mid(eq + 1));
-            if (!rgb) return usage(QStringLiteral("%1 is no colour").arg(word.mid(eq + 1)));
-            if (!AfterglowVt::Terminal::colorOscOf(word.left(eq).toStdString(), *rgb)) return usage(QStringLiteral("no colour is named %1").arg(word.left(eq)));
-            given.insert(word.left(eq), hexColor(*rgb));
+            if (!rgb) return usage(QStringLiteral("%1 is no color").arg(word.mid(eq + 1)));
+            if (!AfterglowVt::Terminal::colorOscOf(word.left(eq).toStdString(), *rgb)) return usage(QStringLiteral("no color is named %1").arg(word.left(eq)));
+            given.insert(word.left(eq), Themes::hexName(*rgb));
         }
         if (themes.size() > 1) return usage(QStringLiteral("set-colors takes one theme"));
         if (!themes.isEmpty()) {
@@ -1252,7 +1285,7 @@ int runCtl(int argc, char** argv)
             const auto theme = Themes::parse(file.readAll(), &error);
             if (!theme) return fail(QStringLiteral("%1: %2").arg(path, error));
             const auto put = [&colors](const char* name, const std::optional<AfterglowVt::Rgb>& rgb) {
-                if (rgb) colors.insert(QLatin1String(name), hexColor(*rgb));
+                if (rgb) colors.insert(QLatin1String(name), Themes::hexName(*rgb));
             };
             put("foreground", theme->foreground);
             put("background", theme->background);
@@ -1260,19 +1293,36 @@ int runCtl(int argc, char** argv)
             put("selection_foreground", theme->selectionForeground);
             put("selection_background", theme->selectionBackground);
             for (std::size_t i = 0; i < theme->palette.size(); ++i) {
-                if (theme->palette[i]) colors.insert(QStringLiteral("color%1").arg(i), hexColor(*theme->palette[i]));
+                if (theme->palette[i]) colors.insert(QStringLiteral("color%1").arg(i), Themes::hexName(*theme->palette[i]));
             }
         }
         for (auto it = given.constBegin(); it != given.constEnd(); ++it) colors.insert(it.key(), it.value());
         if (colors.isEmpty() && !reset) return usage(QStringLiteral("set-colors needs NAME=COLOR, a theme or --reset"));
+        // Every pane: none is looked up, and none is named.
+        if (all && paneArg) return usage(QStringLiteral("set-colors --all takes no --pane"));
+        paneless = all;
         act = [&client, colors, reset, all](qint64 pane) {
             if (!all) return client.call(QStringLiteral("setColors"), {pane, colors, reset}) ? 0 : 1;
             // Each pane of the windows, or of the session.
             const auto listed = client.call(QStringLiteral("listPanes"), {});
             if (!listed) return 1;
             int status = 0;
+            // The panes of mux sessions in the windows: their daemons have
+            // their colors, which --session sets.
+            int sessionPanes = 0;
+            const auto sessionPane = [&sessionPanes](const IpcClient::Error& error) {
+                if (error.code != QLatin1String(Control::SessionPaneCode)) return false;
+                ++sessionPanes;
+                return true;
+            };
             for (const QJsonValue& each : listed->toArray()) {
-                if (!client.call(QStringLiteral("setColors"), {each.toObject().value(QLatin1String("id")).toInteger(), colors, reset})) status = 1;
+                const qint64 id = each.toObject().value(QLatin1String("id")).toInteger();
+                const int before = sessionPanes;
+                if (!client.call(QStringLiteral("setColors"), {id, colors, reset}, sessionPane) && sessionPanes == before) status = 1;
+            }
+            if (sessionPanes) {
+                std::fprintf(stderr, "afterglow ctl: %d %s of mux sessions kept their colors: set them with --session NAME set-colors --all\n",
+                             sessionPanes, sessionPanes == 1 ? "pane" : "panes");
             }
             return status;
         };
@@ -1293,10 +1343,9 @@ int runCtl(int argc, char** argv)
         if (args.isEmpty()) return usage(QStringLiteral("set-user-var needs NAME=VALUE"));
         std::vector<std::pair<QString, QString>> vars;
         for (const QString& word : std::as_const(args)) {
-            const qsizetype eq = word.indexOf(QLatin1Char('='));
-            if (eq <= 0 || word.left(eq).toUtf8().size() > Control::MaxUserVarName)
-                return usage(QStringLiteral("set-user-var takes NAME=VALUE, with a name of 1 to %1 bytes").arg(Control::MaxUserVarName));
-            vars.emplace_back(word.left(eq), word.mid(eq + 1));
+            const auto var = userVar(word);
+            if (!var) return usage(QStringLiteral("set-user-var takes NAME=VALUE, with a name of 1 to %1 bytes").arg(Control::MaxUserVarName));
+            vars.push_back(*var);
         }
         act = [&, vars](qint64 pane) {
             for (const auto& [name, value] : vars) {
@@ -1310,17 +1359,10 @@ int runCtl(int argc, char** argv)
             return usage(QStringLiteral("signal-program takes a signal: a name such as INT or TERM, or a number"));
         act = [&, signal = args.first()](qint64 pane) { return run(QStringLiteral("signalProgram"), {pane, signal}); };
     } else if (command == QLatin1String("window")) {
-        QString state;
-        int states = 0;
-        for (const char* s : {"fullscreen", "maximized", "normal"}) {
-            if (takeFlag(QStringLiteral("--") + QLatin1String(s))) {
-                state = QLatin1String(s);
-                ++states;
-            }
-        }
+        const std::optional<QString> state = takeOneOf({"--fullscreen", "--maximized", "--normal"}, QString());
         const std::optional<QString> size = takeValue(QStringLiteral("--size"));
         if (const auto error = extra(0)) return usage(*error);
-        if (states > 1) return usage(QStringLiteral("window takes one of --fullscreen, --maximized and --normal"));
+        if (!state) return usage(QStringLiteral("window takes one of --fullscreen, --maximized and --normal"));
         qint64 cols = 0, rows = 0;
         if (size) {
             const QStringList parts = size->split(QLatin1Char('x'));
@@ -1331,8 +1373,8 @@ int runCtl(int argc, char** argv)
             cols = *c;
             rows = *r;
         }
-        if (!states && !size) return usage(QStringLiteral("window needs --fullscreen, --maximized, --normal or --size"));
-        act = [&, state, cols, rows](qint64 pane) { return run(QStringLiteral("setWindowState"), {pane, state, cols, rows}); };
+        if (state->isEmpty() && !size) return usage(QStringLiteral("window needs --fullscreen, --maximized, --normal or --size"));
+        act = [&, state = *state, cols, rows](qint64 pane) { return run(QStringLiteral("setWindowState"), {pane, state, cols, rows}); };
     } else if (command == QLatin1String("set-tab-title")) {
         if (const auto error = extra(-1)) return usage(*error);
         act = [&, title = (args + trailing).join(QLatin1Char(' '))](qint64 pane) {
@@ -1384,7 +1426,7 @@ int runCtl(int argc, char** argv)
         const auto stdinText = takeValue(QStringLiteral("--stdin-text"));
         const bool stdinAnsi = takeFlag(QStringLiteral("--stdin-ansi"));
         if (const auto error = extra(0, true)) return usage(*error);
-        if (stdinText && !Control::scopeFromName(*stdinText)) return usage(QStringLiteral("--stdin-text takes a scope of get-text: %1").arg(*stdinText));
+        if (const auto error = stdinText ? stdinScopeError(*stdinText) : std::nullopt) return usage(*error);
         if (stdinAnsi && !stdinText) return usage(QStringLiteral("--stdin-ansi needs --stdin-text"));
         if (stdinText && noInput) return usage(QStringLiteral("--stdin-text and -n exclude each other"));
         if (trailing.isEmpty()) return usage(QStringLiteral("overlay needs a command after --"));
@@ -1469,6 +1511,7 @@ int runCtl(int argc, char** argv)
         std::fputs(Usage, stderr);
         return 2;
     }
+    if (paneless) return act(0);
     const std::optional<qint64> pane = targetPane(!scriptAction);
     if (!pane) {
         return 1;

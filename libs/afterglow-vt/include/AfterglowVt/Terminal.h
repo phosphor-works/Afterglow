@@ -65,7 +65,9 @@ struct TextFormat
 {
     /// Each change of style as an SGR sequence (colors, attributes,
     /// underline style and color) and each link as OSC 8, reset at the end
-    /// of each line. Trailing blanks with a background or a link stay.
+    /// of each line. Trailing blanks with a background, in inverse video or
+    /// with a link stay. A text that its limit cuts still ends the style and
+    /// the link that it leaves open, within the limit.
     bool ansi = false;
     /// A carriage return where a row wraps into the next one.
     bool wrapMarkers = false;
@@ -137,10 +139,10 @@ struct Modes
 
 /// Callbacks out of the terminal. Invoked synchronously, while the caller
 /// holds its terminal lock, from Terminal::feed() and also from reset(),
-/// programExited(), resize(), setOptions() and setVisible(), and from
-/// StateReader::apply() on a replica: on whatever thread calls those. A
-/// host whose callbacks emit signals must not let a receiver on the calling
-/// thread take that lock again.
+/// programExited(), resize(), setOptions(), setVisible() and
+/// applyColorOsc(), and from StateReader::apply() on a replica: on whatever
+/// thread calls those. A host whose callbacks emit signals must not let a
+/// receiver on the calling thread take that lock again.
 class ITerminalHost
 {
 public:
@@ -192,12 +194,19 @@ public:
     /// iTerm2's RequestUpload (OSC 1337, it2ul): the program asks for files,
     /// as a tar archive compressed with gzip. True when the host asks the
     /// user and answers on the program's input later: "ok", then the
-    /// archive in base64 lines, then an empty line. False refuses at once:
-    /// the terminal sends Ctrl+C, as iTerm2 does for a cancel.
+    /// archive in base64 lines, then an empty line, or Ctrl+C (iTerm2's
+    /// answer) when the person cancels. False refuses: nothing goes to the
+    /// program, which waits until its user interrupts it. Neither the
+    /// terminal nor a host sends Ctrl+C without a person's cancel, because
+    /// the program's output must not signal the foreground job. A request
+    /// in another format than tgz does not come here, and gets no answer.
     virtual bool uploadRequested() { return false; }
     /// The most user variables that a host keeps for a terminal: it ignores
     /// new names after them.
     static constexpr std::size_t MaxUserVars = 256;
+    /// The longest name of a user variable, in bytes, that OSC 1337
+    /// SetUserVar takes. Hosts that set one for a user hold to it too.
+    static constexpr std::size_t MaxUserVarName = 128;
     /// A kitty clipboard request (OSC 5522): a read to answer (with a prompt)
     /// or a complete write. OSC 52 reads come here too (ClipboardRequest::osc52). Replies go through ClipboardAssembler's encoders.
     /// Returning false means the host has no such clipboard support.
@@ -212,15 +221,18 @@ public:
     /// A scroll moved cells of the active screen to other rows: SU, SD, IL
     /// and DL; the cursor going down past the bottom margin (LF, VT, FF,
     /// IND, NEL, an autowrap, a sixel, kitty or iTerm2 image that moves the
-    /// cursor); the cursor going up past the top margin (RI, VT52 ESC I); and
-    /// a text sizing block (OSC 66) that scrolls to fit. A scroll of the
-    /// whole screen into the history keeps every row's id and is not
-    /// reported. The terminal has moved its own images and shell marks; a
-    /// host that keeps positions on that screen by stable row id (a
-    /// selection: Selection::followScroll) moves them too. A replica's host
-    /// hears of the scrolls of a frame once the frame applied (StateReader),
-    /// with the screen that scrolled active: its rows, marks and modes are
-    /// then those of the frame's end, not of the moment of the scroll.
+    /// cursor); the cursor going up past the top margin (RI, VT52 ESC I); a
+    /// text sizing block (OSC 66) that scrolls to fit; and kitty's unscroll
+    /// (CSI + T), whose history rows come back above the others: the rows
+    /// that it drops at the bottom go as a region of those rows that moves
+    /// down out of the screen. A scroll of the whole screen into the history
+    /// keeps every row's id and is not reported. The terminal has moved its
+    /// own images and shell marks; a host that keeps positions on that
+    /// screen by stable row id (a selection: Selection::followScroll) moves
+    /// them too. A replica's host hears of the scrolls of a frame once the
+    /// frame applied (StateReader), with the screen that scrolled active:
+    /// its rows, marks and modes are then those of the frame's end, not of
+    /// the moment of the scroll.
     virtual void regionScrolled(const RegionScroll& scroll) {}
     /// A program asks for a new size in cells (DECCOLM, DECSCPP, DECSLPP,
     /// DECSNLS, XTWINOPS 4 and 8, and RIS after DECCOLM). Return true to let
@@ -261,9 +273,11 @@ public:
     /// Decodes an iTerm2 inline image with each frame of an animation (GIF,
     /// WebP), as iTerm2 and WezTerm show it: every frame of the image's
     /// size, in @p frames, and the milliseconds that each shows, in
-    /// @p delays. All the frames together hold at most @p maxBytes of RGBA8:
-    /// an animation stops at the last frame that fits. Defaults to the first
-    /// frame (decodeImage()).
+    /// @p delays. All the frames together hold at most @p maxBytes of RGBA8,
+    /// and there are at most GraphicsStore::MaxFrames of them: an animation
+    /// stops at the last frame that fits. The terminal keeps no more frames
+    /// than that, and no delay above INT_MAX. Defaults to the first frame
+    /// (decodeImage()).
     virtual bool decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<ImageFrame>& frames,
                                    std::vector<std::uint32_t>& delays)
     {
@@ -415,7 +429,8 @@ public:
     /// id of the primary screen: the command whose prompt, input or output
     /// holds the row. A command runs from its prompt to the next prompt, or
     /// to the next output where a shell marks no prompts. nullopt when no
-    /// command holds the row, or the command has no output.
+    /// command holds the row, or the command has no output region (no C
+    /// mark). A command whose output is empty still has its region.
     std::optional<std::uint64_t> commandOutputAt(std::uint64_t row) const;
     /// The id of the first output region that has a row from @p top to
     /// @p bottom (stable row ids of the primary screen), as kitty's
@@ -440,7 +455,8 @@ public:
     /// characters between the cursor and the click (kitty's special key
     /// CSI 1 u with special_key=1). Empty when the click is not on the
     /// command line: output, the alternate screen, history in view, mouse
-    /// tracking on, or above the prompt.
+    /// tracking on, a hidden cursor, no prompt start (OSC 133 A) on the
+    /// screen at or above the cursor, or above the prompt, as kitty does.
     std::string promptClickInput(int col, int row) const;
     const ShellContexts& contexts() const noexcept { return m_contexts; }
 
@@ -531,7 +547,10 @@ public:
     /// Plain text; soft-wrapped rows join, trailing blanks are trimmed.
     std::string text(TextScope scope, std::size_t maxBytes = 1024 * 1024, bool* truncated = nullptr) const;
     /// text() written in @p format, as kitty's get-text --ansi,
-    /// --add-wrap-markers and --add-cursor write it.
+    /// --add-wrap-markers and --add-cursor write it. The text with the
+    /// cursor's sequences stays within @p maxBytes: the cursor's go only
+    /// whole. @p truncated: the limit left out a part of the text, not only
+    /// the blank rows and line feeds that the end of the text trims.
     std::string text(TextScope scope, std::size_t maxBytes, bool* truncated, const TextFormat& format) const;
     bool hasCommandOutput() const noexcept { return m_outputStart.valid; }
     /// The stable ids of the first and the last row of the primary screen
@@ -594,6 +613,8 @@ private:
     void escDispatch(const Intermediates& inter, std::uint8_t final);
     void csiDispatch(const Params& params, const Intermediates& inter, std::uint8_t final);
     void oscDispatch(std::string_view payload, bool belTerminated);
+    /// oscDispatch() past its gates: also for the host's applyColorOsc().
+    void oscCommand(std::string_view payload, bool belTerminated);
     void dcsDispatch(const Params& params, const Intermediates& inter, std::uint8_t final, std::string_view data);
     void apcDispatch(std::string_view payload);
     // The streamed OSC 1337 File= of a download (Parser's optional calls).
@@ -649,6 +670,10 @@ private:
     /// Scrolls the active screen's region @p r by @p n rows (up when @p up),
     /// and moves what is anchored to the rows that moved with them.
     void scrollRegion(const Region& r, int n, bool up, bool intoHistory = false);
+    /// Moves the images, shell marks and command regions of the active
+    /// screen that @p scroll moved, drops those that left it, and tells the
+    /// host. @p drop: the rows leave the screen (unscroll), with their images.
+    void moveAnchors(const RegionScroll& scroll, bool drop);
     void repeatLast(int n);
     void repeatInserting(char32_t cp, int n);
     void setTopBottomMargins(int top, int bottom);
@@ -788,9 +813,14 @@ private:
     bool m_commandRunning = false;
     Mark cursorMark() const;
     std::string textBetween(const Mark& from, const Mark& to, std::size_t maxBytes = 1024 * 1024, bool* truncated = nullptr) const;
-    std::string textBetween(const Mark& from, const Mark& to, std::size_t maxBytes, bool* truncated, const TextFormat& format) const;
+    /// @p trimmed: the caller trims the line feeds at the end, so blank rows
+    /// that the limit left out do not count as cut.
+    std::string textBetween(const Mark& from, const Mark& to, std::size_t maxBytes, bool* truncated, const TextFormat& format,
+                            bool trimmed = false) const;
     /// The escape sequences of TextFormat::cursor.
     std::string cursorText() const;
+    /// The DECSCUSR number of the cursor's shape and blink.
+    int cursorStyleNumber() const noexcept;
     void finishCommand(int exitCode);
     int m_reportedDark = -1; ///< the theme mode last reported (mode 2031)
     bool m_hasCursorColor = false;
@@ -835,16 +865,21 @@ private:
     /// Where the secondary (PS2) prompt started (OSC 133 A;k=s), for the y of
     /// click_events=2. Invalid until a shell sends one after its prompt.
     Mark m_secondaryPrompt;
+    /// The marks that move with their rows, in a fixed order.
+    std::array<Mark*, 4> marks() noexcept { return {&m_inputStart, &m_outputStart, &m_outputEnd, &m_secondaryPrompt}; }
+    std::array<const Mark*, 4> marks() const noexcept
+    {
+        return {&m_inputStart, &m_outputStart, &m_outputEnd, &m_secondaryPrompt};
+    }
     std::uint64_t m_synchronizedOutputSerial = 0;
     /// The command line a shell reported (133 cmdline, 633 E) for the next C.
     std::optional<std::string> m_explicitCommand;
     ShellContexts m_contexts;
-    /// An iTerm2 MultipartFile under way: its arguments, its data so far,
-    /// and the base64 bytes it may reach (less for a download than an image).
+    /// An iTerm2 MultipartFile under way: for an image, its arguments and
+    /// its data so far. A download streams to the host (m_download).
     bool m_iterm2Receiving = false;
     std::string m_iterm2Args;
     std::string m_iterm2Data;
-    std::size_t m_iterm2Limit = 0;
     /// A new prompt (133 A or N, 633 A, after a C) came with no FilePart
     /// since: a second one ends the file.
     bool m_iterm2PromptSincePart = false;
@@ -860,6 +895,8 @@ private:
         std::string base64; ///< characters of an unfinished group of four
     };
     Download m_download;
+    /// programExited() came: a download head after it asks the host nothing.
+    bool m_programExited = false;
     /// Input that came while the terminal held it.
     std::string m_heldInput;
     /// A command started (C) since the last prompt mark: the next one is a

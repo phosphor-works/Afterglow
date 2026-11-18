@@ -16,6 +16,7 @@
 #include <QFile>
 #include <QGuiApplication>
 #include <QImage>
+#include <QScopeGuard>
 #include <QTemporaryDir>
 
 #include <QMatrix4x4>
@@ -1071,8 +1072,78 @@ TEST_F(Render, KittyImageIsTopDown)
     EXPECT_PIXEL_NEAR(img, quarter(0, 1), qRgb(0, 0, 255), 40);
     EXPECT_PIXEL_NEAR(img, quarter(1, 1), qRgb(255, 255, 255), 40);
     EXPECT_PIXEL(img, cellCenter(0, 0), rgb(snapshot.defaultBg));
-    // The cells' rows above and below the square stay empty.
-    if (2 * ch > side) EXPECT_PIXEL(img, QPoint(left + side / 4, ch + 1), rgb(snapshot.defaultBg));
+    // The cells' rows above and below the square, and their columns left and
+    // right of it, stay empty: sampled only where the inset leaves a pixel.
+    if (top > ch) EXPECT_PIXEL(img, QPoint(left + side / 4, ch), rgb(snapshot.defaultBg));
+    if (top + side < 3 * ch) EXPECT_PIXEL(img, QPoint(left + side / 4, 3 * ch - 1), rgb(snapshot.defaultBg));
+    if (left > cw) EXPECT_PIXEL(img, QPoint(cw, top + side / 4), rgb(snapshot.defaultBg));
+    if (left + side < 3 * cw) EXPECT_PIXEL(img, QPoint(3 * cw - 1, top + side / 4), rgb(snapshot.defaultBg));
+}
+
+TEST_F(Render, KittyImagePillarboxedInItsCells)
+{
+    // A square over four cells of one row, which are wider than tall: kept
+    // square, centred, with empty columns at both sides.
+    if (4 * cw - ch < 4) GTEST_SKIP() << "the cells of this font leave no columns at the sides";
+    const QImage img = render("\x1b[?25l\x1b_Ga=T,f=32,s=1,v=1,c=4,r=1,q=2;/wAA/w==\x1b\\");
+    const int left = (4 * cw - ch) / 2;
+    EXPECT_PIXEL(img, QPoint(left / 2, ch / 2), rgb(snapshot.defaultBg));
+    EXPECT_PIXEL_NEAR(img, QPoint(2 * cw, ch / 2), qRgb(255, 0, 0), 40);
+    EXPECT_PIXEL(img, QPoint(4 * cw - 1 - left / 2, ch / 2), rgb(snapshot.defaultBg));
+    EXPECT_PIXEL(img, cellCenter(4, 0), rgb(snapshot.defaultBg));
+}
+
+TEST_F(Render, ALetterboxedKittyImageCutByAScrollRegionKeepsWhatShows)
+{
+    // A square over one column and two rows, letterboxed, at the top of a
+    // scroll region of rows 1 to 3. SU 1 moves it up a row: its top part
+    // leaves the region, and the part that stays is drawn where it was,
+    // one row higher, from the region's top.
+    const int inset = (2 * ch - cw) / 2;
+    if (inset < 2 || inset + cw - ch < 4) GTEST_SKIP() << "the cells of this font leave no letterbox to cut";
+    const QImage img = render("\x1b[?25l\x1b[1;1H\x1b_Ga=T,f=32,s=1,v=1,c=1,r=2,C=1,q=2;/wAA/w==\x1b\\\x1b[1;3r\x1b[S");
+    // Before the move the square was at inset .. inset + cw: now ch higher.
+    const int bottom = inset + cw - ch;
+    EXPECT_PIXEL_NEAR(img, QPoint(cw / 2, bottom / 2), qRgb(255, 0, 0), 40);
+    EXPECT_PIXEL(img, QPoint(cw / 2, bottom + 2), rgb(snapshot.defaultBg));
+    EXPECT_PIXEL(img, QPoint(cw + cw / 2, bottom / 2), rgb(snapshot.defaultBg));
+}
+
+TEST_F(Render, AKittyAnimationDrawsItsNextFrame)
+{
+    // One red pixel over a cell, then a green frame 100 ms later, running.
+    terminal->feed("\x1b[?25l\x1b_Ga=T,f=32,s=1,v=1,c=1,r=1,i=10,C=1,q=2;/wAA/w==\x1b\\"
+                   "\x1b_Ga=f,f=32,s=1,v=1,i=10,z=100,q=2;AP8A/w==\x1b\\"
+                   "\x1b_Ga=a,i=10,r=1,z=40,q=2\x1b\\\x1b_Ga=a,i=10,s=3,v=1,q=2\x1b\\");
+    terminal->advanceAnimations(1000); // starts the clock on frame 0
+    snapshot.capture(*terminal);
+    EXPECT_PIXEL_NEAR(draw(), cellCenter(0, 0), qRgb(255, 0, 0), 40);
+    terminal->advanceAnimations(1041);
+    snapshot.capture(*terminal);
+    EXPECT_PIXEL_NEAR(draw(), cellCenter(0, 0), qRgb(0, 255, 0), 40);
+    terminal->advanceAnimations(1141);
+    snapshot.capture(*terminal);
+    EXPECT_PIXEL_NEAR(draw(), cellCenter(0, 0), qRgb(255, 0, 0), 40);
+}
+
+TEST_F(Render, SizedTextKeepsItsBlockWhenCharactersAreInsertedOrDeleted)
+{
+    // OSC 66 w=2: one cell of text over two columns, in one row. ICH and DCH
+    // move it along the row: the snapshot keeps it a block at its new place.
+    auto blockAt = [&](int x) {
+        snapshot.capture(*terminal);
+        const SnapshotCell& head = snapshot.at(x, 0);
+        return head.mcScale == 1 && head.mcWidth == 2 && head.mcDx == 0 && snapshot.at(x + 1, 0).mcScale == 1
+            && snapshot.at(x + 1, 0).mcDx == 1;
+    };
+    terminal->feed("\x1b[?25l\x1b]66;w=2;A\x07");
+    ASSERT_TRUE(blockAt(0));
+    terminal->feed("\x1b[1;1H\x1b[3@");
+    EXPECT_TRUE(blockAt(3));
+    EXPECT_EQ(snapshot.at(0, 0).mcScale, 0);
+    terminal->feed("\x1b[1;1H\x1b[2P");
+    EXPECT_TRUE(blockAt(1));
+    EXPECT_EQ(snapshot.at(3, 0).mcScale, 0);
 }
 
 TEST_F(Render, IndexedImagesTakeTheColoursOfThePane)
@@ -1995,6 +2066,8 @@ TEST_F(Render, LayerShadersSeeOnlyTheirLayer)
 
 TEST_F(Render, AudioSpectrumIsSharedAcrossPanesAndClearsOnStop)
 {
+    // The device is shared: a failed assertion leaves no spectrum to the next test.
+    const auto clearSpectrum = qScopeGuard([] { s_device->setAudioSpectrum({}); });
     ShaderProgramSource source;
     source.id = QStringLiteral("audio");
     source.code = R"(
@@ -3977,8 +4050,9 @@ TEST_F(Render, FramesWithoutWholeRgbaAreNotUploaded)
 
 TEST_F(Render, KittyImagesFarBelowGoUnderCellBackgrounds)
 {
-    // A red pixel over two cells at z below INT32_MIN/2: the first cell has
-    // its own green background, which covers the image; the second does not.
+    // A red pixel over two cells, a square centred in them, at z below
+    // INT32_MIN/2: the first cell has its own green background, which covers
+    // its part of the image; the second does not.
     const QImage img = render("\x1b[?25l\x1b[2;2H\x1b[42m \x1b[0m\x1b[2;2H"
                               "\x1b_Ga=T,f=32,s=1,v=1,c=2,r=1,z=-1073741825,q=2;/wAA/w==\x1b\\");
     EXPECT_PIXEL(img, cellCenter(1, 1), rgb(packRgba(AfterglowVt::TerminalOptions{}.basePalette[2])));

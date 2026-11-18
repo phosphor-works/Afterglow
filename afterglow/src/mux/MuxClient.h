@@ -274,6 +274,11 @@ public:
     /// False when the link ended, or the input of pane @p id that waits
     /// would pass MaxWaitingInput.
     bool sendInput(std::uint32_t id, std::string_view bytes);
+    /// The answer to pane @p id's UploadRequest call, which the daemon
+    /// writes to the program in one piece (Attach::InputType::UploadAnswer
+    /// and UploadAnswerPart), in order with the pane's input. False as for
+    /// sendInput().
+    bool sendUploadAnswer(std::uint32_t id, std::string_view bytes);
     /// A new size replaces one that still waits: the program gets the
     /// newest, not each size of a drag. The size that the pane has in the
     /// daemon already (the last one sent, or the one of newPane) does not go.
@@ -282,9 +287,25 @@ public:
     /// the session's terminal.
     void sendReset(std::uint32_t id);
     void sendClear(std::uint32_t id);
-    /// The answer to a pane's DownloadBegin call, or false to stop its
-    /// download (Attach::InputType::DownloadAnswer).
-    void answerDownload(std::uint32_t id, bool accept);
+    /// The answer to a pane's DownloadBegin call, or the stop of the
+    /// download whose data comes (Attach::InputType::DownloadAnswer). It
+    /// goes on the action channel, past the input that waits for a program.
+    void answerDownload(std::uint32_t id, AfterglowMux::Attach::DownloadReply reply);
+    /// While pane @p id holds them, the window reads no more of the
+    /// session's events: the download of a pane whose disk is slower than
+    /// its program. The daemon then holds them, and past Mux.eventQueue it
+    /// pauses the pane's output (MuxPane::downloadData). The frames of the
+    /// panes that the window has still come. A pane that the window lets
+    /// go holds none.
+    /// The hold is of every event, of every pane: the events come in one
+    /// stream, in their order, which the window keeps. Meanwhile the host
+    /// calls of the other panes wait, and so do a pane that the session
+    /// opens (a new split gets no frames until then), the end of a pane or
+    /// of the session, the answers to Refresh, the control calls of the
+    /// session and the command connections of `aglow run` in it. The
+    /// writer of the download ends the hold once half its queue is on the
+    /// disk.
+    void holdEvents(std::uint32_t id, bool hold);
     /// Whether the user can see pane @p id: its terminal in the daemon
     /// reports a change to the program (mode 2033), and the daemon holds the
     /// screens of a pane that the user cannot see (StateWriter::updateHeld)
@@ -551,6 +572,8 @@ private:
     /// Those of m_released that went to another session (breakOutLater): their
     /// calls that reach this window get answerMoved().
     std::set<std::uint32_t> m_movedOut;
+    /// The panes that hold the session's events (holdEvents).
+    std::set<std::uint32_t> m_eventsHeld;
     /// The size that each pane has in the daemon: the last that went, or the
     /// one that newPane started it with.
     std::map<std::uint32_t, AfterglowMux::PaneSize> m_sentSizes;

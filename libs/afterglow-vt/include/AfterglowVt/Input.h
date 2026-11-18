@@ -95,6 +95,12 @@ enum class Key : std::uint8_t {
     // modifier keys that set no modifier bit.
     IsoLevel3Shift,
     IsoLevel5Shift,
+    // Hyper and Meta keys, where the layout has them: modifier keys that
+    // only the kitty protocol reports, by their own codes.
+    LeftHyper,
+    LeftMeta,
+    RightHyper,
+    RightMeta,
     // Media and volume keys: only the kitty protocol reports them.
     MediaPlay,
     MediaPause,

@@ -126,11 +126,18 @@ Key modifierKeyFromKeysym(std::uint32_t keysym)
     case XKB_KEY_Control_R:
         return Key::RightControl;
     case XKB_KEY_Alt_L:
-    case XKB_KEY_Meta_L:
         return Key::LeftAlt;
     case XKB_KEY_Alt_R:
-    case XKB_KEY_Meta_R:
         return Key::RightAlt;
+    // kitty's own codes: a Meta key is no Alt key.
+    case XKB_KEY_Meta_L:
+        return Key::LeftMeta;
+    case XKB_KEY_Meta_R:
+        return Key::RightMeta;
+    case XKB_KEY_Hyper_L:
+        return Key::LeftHyper;
+    case XKB_KEY_Hyper_R:
+        return Key::RightHyper;
     case XKB_KEY_ISO_Level3_Shift: // AltGr
         return Key::IsoLevel3Shift;
     case XKB_KEY_ISO_Level5_Shift:
@@ -205,10 +212,19 @@ bool qtKeyMatches(Key key, int qtKey)
         return qtKey == Qt::Key_Control;
     case Key::LeftAlt:
     case Key::RightAlt:
-        return qtKey == Qt::Key_Alt || qtKey == Qt::Key_AltGr || qtKey == Qt::Key_Meta;
+        return qtKey == Qt::Key_Alt || qtKey == Qt::Key_Meta;
+    case Key::IsoLevel3Shift:
+        return qtKey == Qt::Key_AltGr;
     case Key::LeftSuper:
     case Key::RightSuper:
         return qtKey == Qt::Key_Super_L || qtKey == Qt::Key_Super_R || qtKey == Qt::Key_Meta;
+    case Key::LeftHyper:
+        return qtKey == Qt::Key_Hyper_L;
+    case Key::RightHyper:
+        return qtKey == Qt::Key_Hyper_R;
+    case Key::LeftMeta:
+    case Key::RightMeta:
+        return qtKey == Qt::Key_Meta;
     case Key::CapsLock:
         return qtKey == Qt::Key_CapsLock;
     case Key::NumLock:
@@ -236,12 +252,18 @@ char32_t firstCodepoint(const QString& s)
     return cp < 0x20 || cp == 0x7F ? 0 : cp;
 }
 
+/// The key event as XkbKeyboard recorded it from the compositor.
+XkbKeyboard::Event xkbEventOf(const QKeyEvent* e)
+{
+    return {std::uint32_t(e->timestamp()), e->nativeScanCode(), e->type() != QEvent::KeyRelease};
+}
+
 } // namespace
 
 char32_t bindingBaseKey(const QKeyEvent* event)
 {
     const XkbKeyboard& xkb = XkbKeyboard::instance();
-    char32_t base = xkb.unshiftedCodepoint(event->nativeScanCode());
+    char32_t base = xkb.unshiftedCodepoint(xkbEventOf(event));
     // "H" in a binding means the key that types h on the first Latin layout.
     if (base < 0x20 || base >= 0x7F) base = xkb.latinCodepoints(event->nativeScanCode()).first;
     return base;
@@ -256,21 +278,28 @@ AfterglowVt::KeyEvent mapKeyEvent(const QKeyEvent* e, QByteArray& textStorage)
     } else if (e->isAutoRepeat()) {
         out.action = AfterglowVt::KeyAction::Repeat;
     }
+    // The layout and the locks as they were at this key, not as later keys
+    // of the same read of the compositor's events left them.
     const XkbKeyboard& xkb = XkbKeyboard::instance();
-    if (xkb.capsLock()) {
+    const XkbKeyboard::Event event = xkbEventOf(e);
+    if (xkb.capsLock(event)) {
         out.mods |= AfterglowVt::Mod::CapsLock;
     }
-    if (xkb.numLock()) {
+    if (xkb.numLock(event)) {
         out.mods |= AfterglowVt::Mod::NumLock;
     }
     const int k = e->key();
 
     // The layout decides what a key is: a keycode table would call a Caps
     // Lock remapped to Escape Caps Lock, and send nothing for it.
-    const std::uint32_t keysym = xkb.keysym(e->nativeScanCode());
+    const std::uint32_t keysym = xkb.keysym(event);
+    // Without a keymap, the right Alt key is AltGr when Qt says so, as the
+    // keymap would say (ISO_Level3_Shift).
+    Key byKeycode = modifierKeyFromKeycode(e->nativeScanCode());
+    if (byKeycode == Key::RightAlt && k == Qt::Key_AltGr) byKeycode = Key::IsoLevel3Shift;
     const Key mk = keysym != XKB_KEY_NoSymbol ? modifierKeyFromKeysym(keysym)
-        : qtKeyMatches(modifierKeyFromKeycode(e->nativeScanCode()), k) ? modifierKeyFromKeycode(e->nativeScanCode())
-                                                                        : Key::Text;
+        : qtKeyMatches(byKeycode, k)          ? byKeycode
+                                              : Key::Text;
     if (mk != Key::Text) {
         out.key = mk;
         return out;
@@ -387,8 +416,8 @@ AfterglowVt::KeyEvent mapKeyEvent(const QKeyEvent* e, QByteArray& textStorage)
             out.key = Key::Text;
             // The layout's unshifted character; Qt's key() is the shifted
             // symbol for punctuation (Shift+1 reports '!').
-            out.unshifted = xkb.unshiftedCodepoint(e->nativeScanCode());
-            char32_t shifted = xkb.shiftedCodepoint(e->nativeScanCode());
+            out.unshifted = xkb.unshiftedCodepoint(event);
+            char32_t shifted = xkb.shiftedCodepoint(event);
             // Ctrl+C under a Cyrillic or Greek layout is still ^C: control
             // characters come from the Latin layout, as Qt's shortcuts do.
             // kitty's alternate keys report the layout's own characters.

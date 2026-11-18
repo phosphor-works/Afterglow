@@ -1,134 +1,21 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-// The colour space of an image file, and its conversion to sRGB with Little
-// CMS. The files are read by the formats' own rules, apart from the decoders:
-// PNG chunks, JPEG APP2 segments and WebP RIFF chunks.
+// The conversion of an image's colour space to sRGB, with Little CMS. Each
+// format reads the colour space that its files declare (Formats.h).
 
 #include "Color.h"
-#include "Formats.h"
 
 #include <lcms2.h>
-#include <zlib.h>
 
 #include <algorithm>
-#include <array>
 #include <cmath>
-#include <map>
+#include <cstdlib>
 #include <vector>
 
 namespace AfterglowImage::detail {
 
 namespace {
-
-/// The largest ICC profile that a file may hold. Real ones are a few
-/// kilobytes; a profile with large lookup tables can reach a megabyte.
-constexpr std::size_t MaxIcc = std::size_t(4) << 20;
-
-/// An iCCP chunk's profile: its name, a NUL, the compression method (0) and
-/// the profile deflated with zlib.
-std::string inflateIcc(std::string_view chunk)
-{
-    const std::size_t nul = chunk.find('\0');
-    if (nul == std::string_view::npos || nul == 0 || nul > 79 || nul + 2 > chunk.size() || chunk[nul + 1] != 0) return {};
-    const std::string_view deflated = chunk.substr(nul + 2);
-    z_stream stream{};
-    if (inflateInit(&stream) != Z_OK) return {};
-    std::string out;
-    stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(deflated.data()));
-    stream.avail_in = uInt(deflated.size());
-    std::array<char, 16384> buffer{};
-    int result = Z_OK;
-    while (result == Z_OK) {
-        stream.next_out = reinterpret_cast<Bytef*>(buffer.data());
-        stream.avail_out = uInt(buffer.size());
-        result = inflate(&stream, Z_NO_FLUSH);
-        out.append(buffer.data(), buffer.size() - stream.avail_out);
-        if (out.size() > MaxIcc) result = Z_MEM_ERROR;
-    }
-    inflateEnd(&stream);
-    return result == Z_STREAM_END ? out : std::string();
-}
-
-ColorSpace pngSpace(std::string_view bytes)
-{
-    ColorSpace space;
-    // The chunks before the image data: the colour chunks come before IDAT.
-    for (std::size_t pos = 8; pos + 12 <= bytes.size();) {
-        const std::size_t length = big(bytes, pos, 4);
-        if (length > bytes.size() - pos - 12) break;
-        const std::string_view type = bytes.substr(pos + 4, 4);
-        const std::string_view data = bytes.substr(pos + 8, length);
-        if (type == "IDAT") break;
-        if (type == "cICP" && length == 4) {
-            space.cicp = true;
-            space.primaries = at(data, 0);
-            space.transfer = at(data, 1);
-            space.matrix = at(data, 2);
-            space.fullRange = at(data, 3) == 1;
-        } else if (type == "iCCP" && space.icc.empty()) {
-            space.icc = inflateIcc(data);
-        }
-        pos += 12 + length;
-    }
-    return space;
-}
-
-ColorSpace jpegSpace(std::string_view bytes)
-{
-    // APP2 segments "ICC_PROFILE\0", sequence number, count, then a part of
-    // the profile; the parts go together in their order.
-    constexpr std::string_view Tag("ICC_PROFILE\0", 12);
-    std::map<int, std::string_view> parts;
-    int count = 0;
-    std::size_t pos = 2;
-    while (pos + 4 <= bytes.size() && std::uint8_t(bytes[pos]) == 0xFF) {
-        const std::uint8_t marker = at(bytes, pos + 1);
-        if (marker == 0xFF) {
-            ++pos; // a fill byte
-            continue;
-        }
-        if (marker == 0xDA || marker == 0xD9) break; // the scan, or the end
-        if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7)) {
-            pos += 2;
-            continue;
-        }
-        const std::size_t length = big(bytes, pos + 2, 2);
-        if (length < 2 || pos + 2 + length > bytes.size()) break;
-        const std::string_view segment = bytes.substr(pos + 4, length - 2);
-        if (marker == 0xE2 && segment.size() > Tag.size() + 2 && segment.substr(0, Tag.size()) == Tag) {
-            const int number = at(segment, Tag.size());
-            const int of = at(segment, Tag.size() + 1);
-            if (number >= 1 && number <= of && (count == 0 || count == of)) {
-                count = of;
-                parts.emplace(number, segment.substr(Tag.size() + 2));
-            }
-        }
-        pos += 2 + length;
-    }
-    ColorSpace space;
-    if (count == 0 || int(parts.size()) != count) return space;
-    for (const auto& [number, part] : parts) {
-        if (space.icc.size() + part.size() > MaxIcc) return {};
-        space.icc.append(part);
-    }
-    return space;
-}
-
-ColorSpace webpSpace(std::string_view bytes)
-{
-    ColorSpace space;
-    for (std::size_t pos = 12; pos + 8 <= bytes.size();) {
-        const std::size_t length = little(bytes, pos + 4, 4);
-        if (length > bytes.size() - pos - 8) break;
-        if (bytes.substr(pos, 4) == "ICCP") {
-            if (length <= MaxIcc) space.icc.assign(bytes.substr(pos + 8, length));
-            break;
-        }
-        pos += 8 + length + (length & 1);
-    }
-    return space;
-}
 
 // H.273 transfer characteristics: the curve from a code value to light.
 double pq(double v)
@@ -142,7 +29,7 @@ double pq(double v)
 
 double hlg(double v)
 {
-    // BT.2100 inverse OETF, then the display's gamma of 1.2 pos a peak of
+    // BT.2100 inverse OETF, then the display's gamma of 1.2 for a peak of
     // 1000 cd/m², per colour channel.
     constexpr double a = 0.17883277, b = 1 - 4 * a;
     const double c = 0.5 - a * std::log(4 * a);
@@ -179,7 +66,6 @@ cmsHPROFILE cicpProfile(const ColorSpace& s)
     case 13: {
         // IEC 61966-2-1, as ICC parametric curve type 4.
         const cmsFloat64Number sRGB[5] = {2.4, 1 / 1.055, 0.055 / 1.055, 1 / 12.92, 0.04045};
-        if (s.primaries == 1) return nullptr; // sRGB already
         curve = cmsBuildParametricToneCurve(nullptr, 4, sRGB);
         break;
     }
@@ -210,56 +96,62 @@ cmsHPROFILE iccProfile(const std::string& icc)
     return profile;
 }
 
+/// A transform that moves no sample of 16 levels of each channel by more
+/// than 1: the profile is sRGB, as many files embed it, and the pixels stay
+/// as they are, without the time and the rounding of a conversion.
+bool keepsSrgb(cmsHTRANSFORM transform)
+{
+    constexpr int Levels = 16;
+    std::vector<unsigned char> in(std::size_t(Levels * Levels * Levels) * 4);
+    for (std::size_t i = 0; i < in.size() / 4; ++i) {
+        in[i * 4] = static_cast<unsigned char>(i % Levels * 17);
+        in[i * 4 + 1] = static_cast<unsigned char>(i / Levels % Levels * 17);
+        in[i * 4 + 2] = static_cast<unsigned char>(i / (Levels * Levels) * 17);
+        in[i * 4 + 3] = 255;
+    }
+    std::vector<unsigned char> out(in.size());
+    cmsDoTransform(transform, in.data(), out.data(), cmsUInt32Number(in.size() / 4));
+    for (std::size_t i = 0; i < in.size(); ++i) {
+        if (std::abs(int(in[i]) - int(out[i])) > 1) return false;
+    }
+    return true;
+}
+
 } // namespace
-
-ColorSpace colorSpaceOf(Format format, std::string_view bytes)
-{
-    switch (format) {
-    case Format::Png: return pngSpace(bytes);
-    case Format::Jpeg: return jpegSpace(bytes);
-    case Format::WebP: return webpSpace(bytes);
-    case Format::Tiff: {
-        ColorSpace space;
-        space.icc = tiffIcc(bytes);
-        if (space.icc.size() > MaxIcc) space.icc.clear();
-        return space;
-    }
-    case Format::Gif:
-    case Format::Bmp:
-    case Format::Pnm:
-    case Format::Unknown: break;
-    }
-    return {};
-}
-
-std::string withoutColorChunks(std::string_view png)
-{
-    std::string out(png.substr(0, std::min<std::size_t>(8, png.size())));
-    std::size_t pos = 8;
-    while (pos + 12 <= png.size()) {
-        const std::size_t length = big(png, pos, 4);
-        if (length > png.size() - pos - 12) break;
-        const std::string_view type = png.substr(pos + 4, 4);
-        if (type != "gAMA" && type != "cHRM" && type != "sRGB" && type != "iCCP" && type != "cICP") {
-            out.append(png.substr(pos, 12 + length));
-        }
-        pos += 12 + length;
-    }
-    // What does not make whole chunks goes as it is: libpng judges it.
-    out.append(png.substr(std::min(pos, png.size())));
-    return out;
-}
 
 SrgbConverter::SrgbConverter(const ColorSpace& space)
 {
-    cmsHPROFILE in = space.cicp ? cicpProfile(space) : !space.icc.empty() ? iccProfile(space.icc) : nullptr;
-    if (!in) return;
-    cmsHPROFILE out = cmsCreate_sRGBProfile();
-    if (out) {
-        m_transform = cmsCreateTransform(in, TYPE_RGBA_8, out, TYPE_RGBA_8, INTENT_PERCEPTUAL, cmsFLAGS_COPY_ALPHA);
-        cmsCloseProfile(out);
+    // sRGB in cICP needs no conversion. A cICP that has no profile here
+    // leaves the ICC profile, as a decoder that does not know the chunk
+    // reads the file.
+    if (space.cicp) {
+        if (space.primaries == 1 && space.transfer == 13 && space.matrix == 0 && space.fullRange) {
+            m_known = true;
+            return;
+        }
+        if (cmsHPROFILE profile = cicpProfile(space)) use(profile);
+        if (m_known) return;
     }
-    cmsCloseProfile(in);
+    // An RGB profile on grey samples is an error of the file: libpng drops
+    // it from a grey PNG, and so does this for each format.
+    if (!space.icc.empty() && !space.grey) {
+        if (cmsHPROFILE profile = iccProfile(space.icc)) use(profile);
+    }
+}
+
+void SrgbConverter::use(void* profile)
+{
+    cmsHPROFILE out = cmsCreate_sRGBProfile();
+    cmsHTRANSFORM transform = out ? cmsCreateTransform(profile, TYPE_RGBA_8, out, TYPE_RGBA_8, INTENT_PERCEPTUAL, cmsFLAGS_COPY_ALPHA) : nullptr;
+    if (out) cmsCloseProfile(out);
+    cmsCloseProfile(profile);
+    if (!transform) return;
+    m_known = true;
+    if (keepsSrgb(transform)) {
+        cmsDeleteTransform(transform);
+    } else {
+        m_transform = transform;
+    }
 }
 
 SrgbConverter::~SrgbConverter()
@@ -269,8 +161,6 @@ SrgbConverter::~SrgbConverter()
 
 void SrgbConverter::convert(const unsigned char* in, unsigned char* out, std::size_t pixels) const
 {
-    // Little CMS takes the same buffer for both when the formats have one
-    // size, as these do.
     cmsDoTransform(static_cast<cmsHTRANSFORM>(m_transform), in, out, cmsUInt32Number(pixels));
 }
 

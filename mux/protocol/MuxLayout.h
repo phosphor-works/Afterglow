@@ -5,6 +5,7 @@
 
 #include <AfterglowProto/Json.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -185,10 +186,16 @@ struct Layout
     /// holds it.
     bool focus(std::uint32_t pane);
     /// The pane beside @p pane on @p side in its tab, as a window finds it
-    /// (SplitTree::neighbour) with the ratios of the splits: the nearest,
-    /// then the one most in line with it. 0 at the edge, and when no tab
-    /// holds @p pane.
-    std::uint32_t neighbour(std::uint32_t pane, Side side) const;
+    /// (SplitTree::neighbor) with the ratios of the splits: of the panes
+    /// on that side, the one with the lowest sum of four times its distance
+    /// along the side and the distance of its centre across it. 0 at the
+    /// edge, and when no tab holds @p pane. A window measures the distances
+    /// in pixels: @p width and @p height are the size of @p pane in the
+    /// same units (its cells times their pixels), and the tab scales to it.
+    /// 0 for either measures the tab as a square.
+    std::uint32_t neighbor(std::uint32_t pane, Side side, double width = 0, double height = 0) const;
+    /// neighbor() of each side, by Side, with one walk of the tree.
+    std::array<std::uint32_t, 4> neighbors(std::uint32_t pane, double width = 0, double height = 0) const;
 };
 
 /// The ID of a pane in a value of the wire: a whole number from 1 to

@@ -275,11 +275,26 @@ public:
     /// (its source rectangle and size shrink) and goes when none remain.
     /// Rows below the screen's last row are not cut by an upward scroll: they
     /// come into view as it moves, as with a line feed into the history.
-    /// The cell size measures the rows an image covers; 0 counts only its
-    /// top row, which goes when it leaves. A relative child moves with its
-    /// parent and is cut the same way; it goes with its parent. Virtual
-    /// placements follow their placeholder cells, so they are not moved here.
-    void scrollRegion(const RegionScroll& scroll, const Screen& screen, int cellWidth, int cellHeight);
+    /// With page margins (a region smaller than the screen), a kitty image
+    /// that reaches past a margin stays where it is, as kitty's spec says;
+    /// sixel and iTerm2 images move and are cut. @p drop marks rows that
+    /// leave the screen (kitty's unscroll): every image anchored on them
+    /// goes, with no margin rule. The cell size measures the rows an image
+    /// covers; 0 counts only its top row, which goes when it leaves. A
+    /// relative child moves with its parent and is cut the same way; it goes
+    /// with its parent. Virtual placements follow their placeholder cells,
+    /// so they are not moved here.
+    void scrollRegion(const RegionScroll& scroll, const Screen& screen, int cellWidth, int cellHeight,
+                      bool drop = false);
+    /// An erase of part of the screen (EL, ED 0 and ED 1), in visible rows
+    /// from @p firstRow to @p lastRow and columns from @p firstCol to
+    /// @p lastCol: drops the sixel and iTerm2 images whose cells overlap
+    /// them, as xterm erases its graphics with their cells. Kitty images
+    /// stay, as kitty's spec says: a program deletes them with the delete
+    /// commands. The cell size measures the cells an image covers; 0 counts
+    /// only its first cell.
+    void eraseInternalCells(int firstRow, int lastRow, int firstCol, int lastCol, const Screen& screen, int cellWidth,
+                            int cellHeight);
 
     /// Drops every image, placement and unfinished upload: a reset, or the
     /// alternate screen's clear, after which no id names an old image.
@@ -304,7 +319,8 @@ public:
                   std::uint32_t displayWidth = 0, std::uint32_t displayHeight = 0);
     /// addSixel() with the frames of an animation (an iTerm2 GIF), which
     /// runs and loops while it shows. @p gaps holds the milliseconds of
-    /// each frame. Every frame has the size of the first.
+    /// each frame. Every frame has the size of the first. Frames past
+    /// MaxFrames are dropped, and a gap above INT_MAX is INT_MAX.
     void addInternalImage(std::vector<ImageFrame> frames, std::vector<std::uint32_t> gaps, const Screen& screen, int row,
                           int col, int cellWidth, int cellHeight, std::uint32_t displayWidth = 0,
                           std::uint32_t displayHeight = 0);

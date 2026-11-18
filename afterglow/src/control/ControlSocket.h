@@ -54,8 +54,8 @@ public:
     Q_INVOKABLE uint newTab(double pane, const QString& workingDirectory, const QStringList& command);
     Q_INVOKABLE uint newWindow(const QString& workingDirectory, const QStringList& command);
     /// split, newTab and newWindow with @p options, as Control::clientSplit
-    /// takes them: env, vars, focus, hold, stdin_text, stdin_ansi, and size
-    /// for a split.
+    /// takes them: cwd (over @p workingDirectory), env, vars, focus, hold,
+    /// stdin_text and stdin_ansi, and size for a split only.
     Q_INVOKABLE uint split(double pane, const QString& direction, const QStringList& command, const QVariantMap& options);
     Q_INVOKABLE uint newTab(double pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options);
     Q_INVOKABLE uint newWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options);
@@ -65,7 +65,7 @@ public:
     /// Focuses the pane beside @p pane on @p direction (left, right, up or
     /// down) and returns it. Fails at the edge, for a client to pass the
     /// move on.
-    Q_INVOKABLE uint focusNeighbour(double pane, const QString& direction);
+    Q_INVOKABLE uint focusNeighbor(double pane, const QString& direction);
     /// Moves a split edge of @p pane by @p cells toward @p direction, as the
     /// resize actions do. Fails when no edge of the pane can move that way.
     Q_INVOKABLE void resizePane(double pane, const QString& direction, double cells);
@@ -89,12 +89,13 @@ public:
     Q_INVOKABLE void setUserVar(double pane, const QString& name, const QString& value);
     /// @p signal: a name such as INT or SIGTERM, or a number.
     Q_INVOKABLE void signalProgram(double pane, const QString& signal);
-    /// @p state: fullscreen, maximized, normal or empty; then @p cols x
-    /// @p rows cells for one pane, or 0 and 0 for no size.
+    /// As Control::setWindowState.
     Q_INVOKABLE void setWindowState(double pane, const QString& state, double cols, double rows);
     Q_INVOKABLE void signal(double pane, double channel, double value);
     Q_INVOKABLE void notify(double pane, const QString& title, const QString& body);
-    /// copy, paste, select_all and show_last_output need Control.allowReadText.
+    /// copy, paste, select_all, show_last_output, show_first_output_on_screen
+    /// and show_last_visited_output need Control.allowReadText
+    /// (Control::readsPaneText).
     Q_INVOKABLE void runAction(double pane, const QString& action);
     /// Answered once the pane moved: a pane of a mux session's window that
     /// goes to a new window waits for the daemon off the GUI thread.

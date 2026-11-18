@@ -4,8 +4,10 @@
 #pragma once
 
 #include "ImageDecoder.h"
+#include "KeptCalls.h"
 #include "MuxHost.h"
 #include "MuxProtocol.h"
+#include "MuxStream.h"
 
 #include <AfterglowPty/Pty.h>
 #include <AfterglowVt/StateSync.h>
@@ -13,7 +15,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -32,30 +33,32 @@ namespace AfterglowMux {
 
 /// One pane of a session: the program's PTY and the terminal that parses its
 /// output. The daemon parses whether or not a window shows the session. The
-/// terminal keeps the title and the working directory. While a window shows
-/// the pane, the calls of the terminal to its host (MuxHost.h) wait for that
+/// terminal keeps the title and the working directory. While a window shows the
+/// pane, the calls of the terminal to its host (MuxHost.h) wait for that
 /// window: bells, notifications, the clipboard, transfers, drags, downloads,
-/// and the reports that answer queries (DA1, DSR, colors, sizes). Without a
-/// window, the pane answers them as a terminal with no user: a report goes to
-/// the program, a request gets a denial, the rest go. Only a bell, a flash
-/// and the newest notifications wait for the next window
-/// (setKeptNotifications()). The query of the socket
-/// of an ssh session gets its answer here always. PNG and iTerm2 images
-/// decode in a process of their own (ImageDecoder), also while no window
-/// shows the pane: the store keeps their pixels. Sixel and iTerm2 images
-/// need a cell size, which only a window measures: before the first window,
-/// they do not show.
+/// uploads, and the reports that answer queries (DA1, DSR, colors, sizes).
+/// Without a window, the pane answers them as a terminal with no user: a report
+/// goes to the program, a request gets a denial, an upload request gets
+/// nothing, the rest go. Only a bell, a flash, the newest notifications
+/// (setKeptNotifications()) and the question of an upload that a window that
+/// went did not answer wait for the next window. The query of the socket of an
+/// ssh session gets its answer here always. PNG and iTerm2 images decode in a
+/// process of their own (ImageDecoder), also while no window shows the pane:
+/// the store keeps their pixels. Sixel and iTerm2 images need a cell size,
+/// which only a window measures: before the first window, they do not show.
 ///
 /// The callbacks of the terminal and of the PTY run on the PTY reader thread,
 /// with m_mutex held for the terminal's, and the terminal's also on the
 /// daemon's thread for a resize, a reset, new terminal values (setOptions),
-/// a clear and a visibility change.
-/// They reach the daemon's thread only through @p wake, which must be safe to
-/// call from any thread. While an image decodes, the reader thread lets
+/// a clear, a visibility change and new colours (applyColors). They reach the
+/// daemon's thread only through @p wake, which must be safe to call from any
+/// thread. On the daemon's thread, setUserVar() keeps a user variable as
+/// userVarChanged() does. While an image decodes, the reader thread lets
 /// m_mutex go and the terminal stays its own: the daemon's thread does not
 /// wait for it. A frame then waits, and a change waits for the end of the
-/// feed, which makes it. Input after a change that waits waits behind it, in
-/// the pane, up to half of the PTY's queue.
+/// feed, which makes it, or for the pause of a download in that feed
+/// (pauseForDownload()), which makes it first. Input after a change that
+/// waits waits behind it, in the pane, up to half of the PTY's queue.
 class MuxPane final : public AfterglowVt::ITerminalHost, public AfterglowPty::IPtyListener
 {
 public:
@@ -113,9 +116,23 @@ public:
     /// own: the window shows the result with the next frame.
     void reset();
     void clear();
-    /// The window's answer to a DownloadBegin call, or false to stop a
-    /// download that streams: the pane's output goes on.
-    void answerDownload(bool accept);
+    /// The answer of @p window to a DownloadBegin call, or its stop of the
+    /// download that streams: the pane's output goes on. Nothing from a
+    /// window that the download did not ask, nor an answer that fits no
+    /// download of the pane (Attach::DownloadReply).
+    void answerDownload(Attach::DownloadReply reply, std::uint64_t window);
+    /// Whether the answer of @p window to the upload that the program asked
+    /// for (Attach::InputType::UploadAnswer) goes to the program: only the
+    /// answer of the window that the pane asked last, also one that came
+    /// after that window went, and only while the question is open. Another
+    /// window may have the question already, or the command that asked
+    /// ended: the answer would be a second one, or go to the shell. The
+    /// question that it answers, for uploadAnswered().
+    std::optional<std::uint64_t> uploadAnswer(std::uint64_t window) const;
+    /// The answer to @p question (uploadAnswer()) went into the PTY's queue:
+    /// the next window does not ask again. An answer that the PTY refused
+    /// leaves the question open. Nothing when the program asked anew since.
+    void uploadAnswered(std::uint64_t question);
     /// New terminal values (Terminal::setOptions), when they differ: the
     /// window shows the result with the next frame.
     void setOptions(const AfterglowVt::TerminalOptions& options);
@@ -179,11 +196,13 @@ public:
     };
     /// Without the terminal, also while an image decodes: the reader thread
     /// keeps them, and checks a directory that the shell reports once, with
-    /// no lock that the daemon's thread waits for.
-    Facts facts() const;
+    /// no lock that the daemon's thread waits for. The user variables only
+    /// with @p userVars: there can be many megabytes of them.
+    Facts facts(bool userVars = false) const;
     /// The leader of the foreground process group: the shell at its prompt.
-    /// Nothing once the program exited. It reads /proc.
-    std::optional<AfterglowPty::ForegroundProcess> foreground() const;
+    /// Nothing once the program exited. It reads /proc, the arguments only
+    /// with @p withCmdline (AfterglowPty::Pty::foreground).
+    std::optional<AfterglowPty::ForegroundProcess> foreground(bool withCmdline = true) const;
     /// The state and text of the newest program status record (OSC 7501),
     /// as the control target names them (idle, working, done, blocked,
     /// error): idle and empty without one. Nothing while an image decodes.
@@ -227,13 +246,22 @@ public:
     /// The colours of the terminal by name (Terminal::namedColors). Nothing
     /// while an image decodes.
     std::optional<std::vector<AfterglowVt::Terminal::NamedColor>> colors() const;
+    /// What applyColors() did.
+    enum class Colors : std::uint8_t {
+        Applied,
+        Decoding, ///< an image decodes: none applied, try again
+        /// a payload is no colour: those before it applied, and the next
+        /// frame takes them to the window
+        NotAColor,
+    };
     /// Applies the colour OSCs @p payloads as the program's own, and the
-    /// next frame takes them to the window. False while an image decodes,
-    /// and for a payload that is no colour, which goes with those after it.
-    bool applyColors(const std::vector<std::string>& payloads);
+    /// next frame takes them to the window.
+    Colors applyColors(const std::vector<std::string>& payloads);
     /// Sets a user variable as the program would (`afterglow ctl set-user-var`).
-    void setUserVar(const std::string& name, const std::string& value) { userVarChanged(name, value); }
-    /// Sends @p signal to the foreground process group of the program.
+    /// False when the pane has MaxUserVars others, and ignores a new name.
+    bool setUserVar(const std::string& name, const std::string& value) { return keepUserVar(name, value); }
+    /// Sends @p signal to the foreground process group of the program. On
+    /// false, errno is kill(2)'s when it failed (Pty::signalForeground).
     bool signalProgram(int signal) const { return m_pty && !m_exited && m_pty->signalForeground(signal); }
 
     /// The window that shows the pane, by Attachment::serial(), or 0 for
@@ -264,11 +292,8 @@ public:
     /// (setKeptNotifications()).
     void answerWithoutWindow(std::string_view encoded);
     /// The most bytes of the notifications that the pane keeps while no
-    /// window shows it, encoded: one over it keeps no icon, and one that
-    /// is still over it goes. A quarter of the smallest Mux.eventQueue: the
-    /// next window takes them in its queue (setWindow()), and the answers
-    /// of the program's queries still fit there.
-    static constexpr std::size_t MaxKeptBytes = std::size_t(MinEventQueue) / 4;
+    /// window shows it (KeptCalls::MaxBytes).
+    static constexpr std::size_t MaxKeptBytes = KeptCalls::MaxBytes;
     /// Mux.keptNotifications: the most notifications (OSC 9, OSC 777 and
     /// OSC 99) that the pane keeps while no window shows it, 0 for none,
     /// within MaxKeptBytes. The oldest go first. An OSC 99 notification
@@ -300,8 +325,11 @@ public:
     void clipboardWrite(std::string_view selection, std::string_view data) override;
     void pointerShapeChanged(std::string_view shape) override;
     void userVarChanged(std::string_view name, std::string_view value) override;
-    /// Asks the window that shows the pane: without one, nobody can choose
-    /// the files, and the terminal cancels the request.
+    /// Asks the window that shows the pane. Without one, or with a full
+    /// queue, nobody can choose the files: false, and the program gets
+    /// nothing, as from a terminal that refuses (ITerminalHost). When the
+    /// window goes before it answers, the next window asks again, until the
+    /// command that asked ends.
     bool uploadRequested() override;
     void commandStarted(std::string_view command) override;
     void commandFinished(int exitCode) override;
@@ -311,8 +339,6 @@ public:
     void regionScrolled(const AfterglowVt::RegionScroll& scroll) override;
     bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,
                    std::vector<std::uint8_t>& rgba) override;
-    bool decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height,
-                     std::vector<std::uint8_t>& rgba) override;
     bool decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<AfterglowVt::ImageFrame>& frames,
                            std::vector<std::uint32_t>& delays) override;
     /// The answer that the daemon gave the pane for its ssh sessions
@@ -330,14 +356,34 @@ public:
     void ptyWritable() override { m_wake(); }
 
 private:
+    /// userVarChanged() and setUserVar(): false when MaxUserVars refuses a
+    /// new name.
+    bool keepUserVar(std::string_view name, std::string_view value);
     /// Makes @p change to the terminal, m_mutex held, or leaves it to the
     /// reader thread while an image decodes. Daemon's thread.
     void change(std::function<void()> change);
     void setVisibleLocked(bool visible, std::uint64_t window);
     bool decodeOutsideLock(std::string_view data, ImageFormats formats, std::uint32_t& width, std::uint32_t& height,
                            std::vector<std::uint8_t>& rgba);
-    /// ptyData(): waits while a download holds the output or fills the queue.
-    void waitForDownload(std::unique_lock<std::mutex>& lock);
+    /// ptyData(), m_mutex held: pauses the PTY's output while a download's
+    /// question holds it or its data fills the window's queue, and feeds
+    /// what the terminal held once an answer let it go. True when it ran
+    /// changes or a frame that waited for a decode (runDeferredLocked()).
+    bool pauseForDownload();
+    /// Makes the changes of the daemon's thread that waited for the feed,
+    /// and writes the input after them, in their order. True when there
+    /// were any, or a frame waited for a decode: the daemon must wake for
+    /// them. Reader thread, m_mutex held.
+    bool runDeferredLocked();
+    /// The output that pauseForDownload() paused goes on, after a change that
+    /// can end the pause: the PTY then calls ptyData() with no bytes, which
+    /// looks again. Thread-safe.
+    void resumeOutput();
+    /// The output that waits for room in the window's queue for a
+    /// download's data may go on: the queue is down to half of its bound.
+    /// The pause comes past the bound, so the reader does not pause and go
+    /// on again for each call of data. m_hostMutex held.
+    bool downloadRoomLocked() const { return m_downloadFull && m_hostBytes <= m_hostLimit / 2; }
     /// Runs @p decode on the reader thread with m_mutex let go, as a decode
     /// can take seconds.
     bool outsideLock(const std::function<bool()>& decode);
@@ -353,11 +399,6 @@ private:
     std::function<void()> m_wake;
     std::atomic<bool> m_changed{false};
     std::atomic<int> m_exitStatus{0};
-    /// ptyData() waits on it, m_mutex held, while the terminal holds the
-    /// output for a download's answer, or while the download's data fills
-    /// the window's queue.
-    std::condition_variable m_downloadWake;
-    std::atomic<bool> m_closing{false};
     std::string m_notificationCapabilities; ///< under m_hostMutex
     ImageDecoder& m_images;
     /// Readable once the pane closes: a decode that runs, and any after it,
@@ -426,6 +467,8 @@ private:
     /// forward() with m_hostMutex held, for a call encoded already. @p wake
     /// as pushLocked() returns it.
     bool queueLocked(std::string encoded, Host::Kind kind, Fit fit, bool* wake);
+    /// takeHostCalls() into @p calls, m_hostMutex held.
+    void takeHostCallsLocked(std::uint64_t window, std::size_t budget, std::vector<std::string>& calls);
     /// The bytes of @p waiting as it goes now. m_hostMutex held.
     std::string encodeLocked(const WaitingCall& waiting) const;
     /// Bytes for the program, past the window.
@@ -445,8 +488,6 @@ private:
     /// @p call as the next window gets it: a notification marked missed,
     /// without its icon when it would not fit MaxKeptBytes.
     static std::string keptEncoding(const Host::Call& call);
-    /// keep() with m_hostMutex held, for @p encoded (keptEncoding()).
-    void keepLocked(const Host::Call& call, std::string encoded);
     /// Keeps what @p waiting, a call that its window did not get, holds for
     /// the next window: a bell, a flash or a notification. m_hostMutex held.
     void keepWaitingLocked(const WaitingCall& waiting);
@@ -471,8 +512,16 @@ private:
     std::string m_checkedDirectory;
     std::uint64_t m_window = 0;
     /// The window that a download asked: its data and end go to it only. A
-    /// window that goes, or another one, ends the download.
+    /// window that goes, or another one, ends the download. 0 once it ended,
+    /// also by a refusal or a stop, which the terminal does not report.
     std::uint64_t m_downloadWindow = 0;
+    /// The download waits for its answer (DownloadReply::Accept or Refuse);
+    /// else its data streams (DownloadReply::Stop).
+    bool m_downloadAsking = false;
+    /// The reader thread paused the output for room in the window's queue
+    /// for the download's data: takeHostCalls() resumes it once the queue
+    /// is down to half of m_hostLimit (downloadRoomLocked()).
+    bool m_downloadFull = false;
     std::size_t m_hostLimit = 0;
     std::deque<WaitingCall> m_hostCalls;
     std::size_t m_hostBytes = 0;
@@ -498,19 +547,20 @@ private:
     bool m_protocolLostWaiting = false;
     int m_protocolLost = Host::LostNothing;
     bool m_protocolLostReset = false;
+    /// The window has the question of an upload, waiting or shown, and has
+    /// not answered: when it goes, m_kept keeps the question.
+    bool m_uploadAsked = false;
+    /// The leader of the foreground job when the program asked, 0 for none.
+    pid_t m_uploadAsker = 0;
+    /// The window that the pane asked last: only its answer counts
+    /// (uploadAnswer()).
+    std::uint64_t m_uploadWindow = 0;
+    /// Counts the program's questions: an answer that went closes only the
+    /// question that it answered.
+    std::uint64_t m_uploadQuestion = 0;
     /// What waits for the next window while none shows the pane
-    /// (setKeptNotifications()): the notifications, encoded, oldest first.
-    struct KeptCall
-    {
-        Host::Kind kind = Host::Kind::Notify;
-        std::string encoded;
-        std::string id; ///< of an OSC 99 notification, which a later one replaces
-    };
-    std::size_t m_keptLimit = std::size_t(DefaultKeptNotifications);
-    std::deque<KeptCall> m_kept;
-    std::size_t m_keptBytes = 0; ///< of m_kept
-    bool m_bellKept = false;
-    bool m_flashKept = false;
+    /// (setKeptNotifications()).
+    KeptCalls m_kept;
 };
 
 } // namespace AfterglowMux

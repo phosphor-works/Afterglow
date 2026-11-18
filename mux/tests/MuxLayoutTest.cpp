@@ -113,31 +113,68 @@ TEST(MuxLayout, AClosedPaneLeavesItsPlaceToTheOtherSide)
     EXPECT_TRUE(throughText(layout, &error)) << error;
 }
 
-// The panes beside a pane, as a window finds them: the nearest on that
-// side, then the one most in line with it. 0 at the edge and in another tab.
-TEST(MuxLayout, NeighboursFollowTheSplitsOfTheTab)
+// The panes beside a pane, as a window finds them: of the panes on that
+// side, the lowest sum of four times the distance along it and the distance
+// of the centres across it. 0 at the edge, and never a pane of another tab.
+TEST(MuxLayout, NeighborsFollowTheSplitsOfTheTab)
 {
     const Layout layout = twoTabs();
-    EXPECT_EQ(layout.neighbour(1, Side::Right), 2u); // 2 is above 3, both beside 1: 2 is more in line at 0.6
-    EXPECT_EQ(layout.neighbour(1, Side::Left), 0u);
-    EXPECT_EQ(layout.neighbour(1, Side::Up), 0u);
-    EXPECT_EQ(layout.neighbour(2, Side::Left), 1u);
-    EXPECT_EQ(layout.neighbour(3, Side::Left), 1u);
-    EXPECT_EQ(layout.neighbour(2, Side::Down), 3u);
-    EXPECT_EQ(layout.neighbour(3, Side::Up), 2u);
-    EXPECT_EQ(layout.neighbour(3, Side::Down), 0u);
-    EXPECT_EQ(layout.neighbour(2, Side::Right), 0u);
-    EXPECT_EQ(layout.neighbour(4, Side::Left), 0u);
-    EXPECT_EQ(layout.neighbour(9, Side::Left), 0u);
+    EXPECT_EQ(layout.neighbor(1, Side::Right), 2u); // 2 is above 3, both beside 1: 2 is more in line at 0.6
+    EXPECT_EQ(layout.neighbor(1, Side::Left), 0u);
+    EXPECT_EQ(layout.neighbor(1, Side::Up), 0u);
+    EXPECT_EQ(layout.neighbor(2, Side::Left), 1u);
+    EXPECT_EQ(layout.neighbor(3, Side::Left), 1u);
+    EXPECT_EQ(layout.neighbor(2, Side::Down), 3u);
+    EXPECT_EQ(layout.neighbor(3, Side::Up), 2u);
+    EXPECT_EQ(layout.neighbor(3, Side::Down), 0u);
+    EXPECT_EQ(layout.neighbor(2, Side::Right), 0u);
+    EXPECT_EQ(layout.neighbor(4, Side::Left), 0u);
+    EXPECT_EQ(layout.neighbor(9, Side::Left), 0u);
     // Four in a grid, (1 / 3) | (2 / 4): each finds the one across, not the
     // one at a corner.
     Layout grid;
     grid.tabs.push_back(LayoutTab{{split(false), split(true), pane(1), pane(3), split(true), pane(2), pane(4)}, 1, 0, ""});
-    EXPECT_EQ(grid.neighbour(1, Side::Right), 2u);
-    EXPECT_EQ(grid.neighbour(3, Side::Right), 4u);
-    EXPECT_EQ(grid.neighbour(4, Side::Left), 3u);
-    EXPECT_EQ(grid.neighbour(4, Side::Up), 2u);
-    EXPECT_EQ(grid.neighbour(1, Side::Down), 3u);
+    EXPECT_EQ(grid.neighbor(1, Side::Right), 2u);
+    EXPECT_EQ(grid.neighbor(3, Side::Right), 4u);
+    EXPECT_EQ(grid.neighbor(4, Side::Left), 3u);
+    EXPECT_EQ(grid.neighbor(4, Side::Up), 2u);
+    EXPECT_EQ(grid.neighbor(1, Side::Down), 3u);
+    for (const std::uint32_t id : {1u, 2u, 3u, 4u}) {
+        const std::array<std::uint32_t, 4> all = grid.neighbors(id);
+        for (const Side side : {Side::Right, Side::Down, Side::Left, Side::Up}) EXPECT_EQ(all[std::size_t(side)], grid.neighbor(id, side));
+    }
+
+    // The nearest counts four times as much as the most in line: 1 | (2 /
+    // 3) | 4, where 4 is in line with 1 but past 2 and 3.
+    Layout row;
+    row.tabs.push_back(LayoutTab{{split(false), pane(1), split(false), split(true), pane(2), pane(3), pane(4)}, 1, 0, ""});
+    EXPECT_EQ(row.neighbor(1, Side::Right), 2u);
+    EXPECT_EQ(row.neighbor(4, Side::Left), 2u);
+
+    // Only the pane's own tab: in the first tab, 2 is right of 1 and in line
+    // with 3 of the second tab, which would win there over 4.
+    Layout tabs;
+    tabs.tabs.push_back(LayoutTab{{split(false), pane(1), pane(2)}, 1, 0, ""});
+    tabs.tabs.push_back(LayoutTab{{split(false), pane(3), split(true, 0.8), pane(4), pane(5)}, 3, 0, ""});
+    EXPECT_EQ(tabs.neighbor(3, Side::Right), 4u);
+    EXPECT_EQ(tabs.neighbor(4, Side::Left), 3u);
+    EXPECT_EQ(tabs.neighbor(1, Side::Right), 2u);
+}
+
+// A window weighs the distances in its pixels: in a tall window, a pane far
+// along but in line beats one beside but far across, which wins in a square.
+TEST(MuxLayout, NeighborsWeighTheSizeOfTheWindow)
+{
+    // 1 | ((2 / 3) | 4): 1 is 0.4 of the width, 2 the top 0.3 of the middle,
+    // and 4 the right 0.3, all the height.
+    Layout layout;
+    layout.tabs.push_back(
+        LayoutTab{{split(false, 0.4), pane(1), split(false, 0.5), split(true, 0.3), pane(2), pane(3), pane(4)}, 1, 0, ""});
+    EXPECT_EQ(layout.neighbor(1, Side::Right), 3u);
+    // Pane 1 is 40 pixels wide and 3000 high: the tab is 100 by 3000.
+    EXPECT_EQ(layout.neighbor(1, Side::Right, 40, 3000), 4u);
+    // Wide, the one beside wins again.
+    EXPECT_EQ(layout.neighbor(1, Side::Right, 4000, 100), 3u);
 }
 
 TEST(MuxLayout, ATabWithoutPanesGoes)

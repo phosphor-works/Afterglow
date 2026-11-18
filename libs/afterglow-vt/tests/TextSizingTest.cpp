@@ -126,6 +126,7 @@ TEST(TextSizing, InsertAndDeleteShiftOneRowBlocksWhole)
     t.feed("\x1b[1;1H\x1b[2@");
     EXPECT_TRUE(block(t, 5));
     EXPECT_FALSE(t.at(3, 0).isMulticell());
+    ASSERT_TRUE(t.t.screen().row(0).multicell);
     EXPECT_EQ(t.t.screen().row(0).multicell->count(3), 0u);
     t.feed("\x1b[1;1H\x1b[2P");
     EXPECT_TRUE(block(t, 3));
@@ -151,7 +152,11 @@ TEST(TextSizing, InsertAndDeleteShiftOneRowBlocksWhole)
     // one across it goes.
     t.feed("\x1b[2J\x1b[?69h\x1b[1;6s\x1b[1;8H\x1b]66;w=2;xy\x07\x1b[1;1H\x1b[@");
     EXPECT_TRUE(block(t, 7));
-    t.feed("\x1b[1;6H\x1b]66;w=2;xy\x07\x1b[1;1H\x1b[@");
+    // A block printed across the right margin would wrap: it goes there
+    // before the margins.
+    t.feed("\x1b[2J\x1b[?69l\x1b[1;6H\x1b]66;w=2;xy\x07\x1b[?69h\x1b[1;6s");
+    ASSERT_TRUE(block(t, 5));
+    t.feed("\x1b[1;1H\x1b[@");
     EXPECT_FALSE(t.at(5, 0).isMulticell());
     EXPECT_FALSE(t.at(6, 0).isMulticell());
 }
@@ -220,6 +225,23 @@ TEST(TextSizing, AScrollOfSeveralRowsWithinMarginsKeepsTheBlocksItMoves)
     EXPECT_FALSE(t.at(2, 4).isMulticell());
     t.feed("\x1b[3;4Hx");
     EXPECT_NE(t.t.text(Terminal::TextScope::Screen).find('x'), std::string::npos) << t.t.text(Terminal::TextScope::Screen);
+}
+
+// kitty's unscroll drops the last rows of the screen: a block that they cut
+// goes, also its top row that comes back from the history.
+TEST(TextSizing, AnUnscrollThatCutsABlockTakesItsRowsFromTheHistory)
+{
+    Term t(10, 4);
+    t.feed("h\r\n\r\n\r\n\r\n");           // "h" in the history
+    t.feed("\x1b[H\x1b]66;s=4;a\x07");          // rows 0-3
+    t.feed("\x1b[4;1H\n");                      // rows -1 to 2
+    ASSERT_EQ(t.t.screen().historySize(), 2u);
+    t.feed("\x1b[2+T");                          // rows 1 to 4, past the screen
+    EXPECT_EQ(t.at(0, 0).codepoint(), U'h');
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) EXPECT_FALSE(t.at(x, y).isMulticell()) << x << "," << y;
+        EXPECT_EQ(t.t.screen().multicellParams(t.t.screen().row(y), 0), nullptr) << y;
+    }
 }
 
 TEST(TextSizing, TextOnABlockThatAMarginScrollMovedGoesOn)

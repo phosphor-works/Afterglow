@@ -5,7 +5,9 @@
 
 // What the client of the image decoder (ImageDecoder.cpp, in the daemon and
 // in the window) and its server (ImageServer.cpp, aglow-mux --decode-images)
-// share: the frame header on the pipe, the bounds, and their checks.
+// share: the bounds and their checks. The frames on the pipe are the records
+// of AfterglowProto/DecodeRecord.h, as aglow's. A change of either is a new
+// DecodeWireVersion (ImageDecoder.h).
 
 #include "ImageDecoder.h"
 
@@ -15,11 +17,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
-#include <string>
 #include <string_view>
 
-#include <poll.h>
 #include <signal.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -29,14 +28,12 @@ namespace AfterglowMux::decoding {
 static_assert(AfterglowImage::MaxSide == int(AfterglowProto::GraphicsMaxSide), "the decoders and the store bound a side alike");
 
 inline constexpr std::size_t MaxBytes = ImageDecoder::MaxBytes;
-
-/// Before the pixels of each frame that a decoding process writes.
-struct Header
-{
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-    std::uint32_t delayMs = 0;
-};
+/// The exit status of a server whose client is of another version.
+inline constexpr int OtherVersionStatus = 64;
+/// The exit status of aglow-mux for arguments that it does not take
+/// (main.cpp): an aglow-mux of a version from before the version argument
+/// of the server exits with it. The server itself never does.
+inline constexpr int UsageStatus = 2;
 
 inline bool fits(std::uint64_t width, std::uint64_t height)
 {
@@ -44,8 +41,8 @@ inline bool fits(std::uint64_t width, std::uint64_t height)
         && width * height * 4 <= MaxBytes;
 }
 
-// The formats that the window takes too (imageFormatAllowed in
-// afterglow/src/ImageDecode.cpp), by their signatures.
+// The formats of @p formats, by their signatures: the client checks them
+// before it sends an image, and the decoding process again.
 inline bool allowed(std::string_view data, ImageFormats formats)
 {
     const AfterglowImage::Format format = AfterglowImage::format(data);
@@ -65,28 +62,15 @@ inline void pidfdKill(int pidfd)
     ::syscall(SYS_pidfd_send_signal, pidfd, SIGKILL, nullptr, 0);
 }
 
-inline bool writeAll(int fd, const void* data, std::size_t size)
-{
-    const auto* p = static_cast<const char*>(data);
-    while (size > 0) {
-        const ssize_t n = ::write(fd, p, size);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) return false;
-        p += n;
-        size -= std::size_t(n);
-    }
-    return true;
-}
-
-/// One line on standard error, the journal under systemd, at most once a
-/// minute for each @p last: a program that sends broken images in a loop
-/// fills no log.
-inline void report(std::chrono::steady_clock::time_point& last, const std::string& text, const std::string& who = "aglow-mux")
+/// Whether a report of its kind, last made at @p last, may go now: at most
+/// one a minute, so that a program that sends broken images in a loop fills
+/// no log.
+inline bool reportDue(std::chrono::steady_clock::time_point& last)
 {
     const auto now = std::chrono::steady_clock::now();
-    if (last != std::chrono::steady_clock::time_point{} && now - last < std::chrono::minutes(1)) return;
+    if (last != std::chrono::steady_clock::time_point{} && now - last < std::chrono::minutes(1)) return false;
     last = now;
-    std::fprintf(stderr, "%s: %s\n", who.c_str(), text.c_str());
+    return true;
 }
 
 } // namespace AfterglowMux::decoding

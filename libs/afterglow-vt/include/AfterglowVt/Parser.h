@@ -68,10 +68,12 @@ struct Intermediates
 ///   void apcDispatch(std::string_view payload);
 ///
 /// Optional, for an OSC string too large to keep (an iTerm2 download):
-///   bool oscHead(std::string_view head);   // at the OSC's first ':', or
-///       its first MaxStreamHead bytes: true to take the rest as a stream
+///   bool oscHead(std::string_view head);   // at the OSC's first ':', when
+///       it is in the first MaxStreamHead bytes; @p head ends with that ':'.
+///       True to take the rest as a stream.
 ///   void oscStreamData(std::string_view data);
-///   void oscStreamEnd(bool complete);      // false: CAN, SUB or a reset
+///   void oscStreamEnd(bool complete);      // true: BEL or ESC \ ended it;
+///       false: CAN, SUB, ESC with another byte, a reset or cancelStream()
 ///   bool holdsInput() const;               // true: feed() stops at once
 template<typename Handler>
 class Parser
@@ -79,7 +81,8 @@ class Parser
 public:
     // Room for full-screen sixel images.
     static constexpr std::size_t MaxStringPayload = std::size_t(64) << 20;
-    /// An OSC with no ':' in this many bytes is kept whole, as before.
+    /// An OSC with no ':' in this many bytes is kept whole, up to
+    /// MaxStringPayload, and dispatched once it ends.
     static constexpr std::size_t MaxStreamHead = 4096;
 
     explicit Parser(Handler& handler)
@@ -113,7 +116,9 @@ public:
                         return std::size_t(run + taken - begin);
                     }
                 }
-                if (p == end) {
+                // A head that ends the run (an empty download) can hold the
+                // input too: its end waits for the answer.
+                if (p == end || holding()) {
                     break;
                 }
             } else if (m_state == State::Ground && m_utf8Needed == 0) {
@@ -159,6 +164,19 @@ public:
         return std::size_t(p - begin);
     }
 
+    /// Ends an OSC that streams as incomplete, as CAN would: its sender is
+    /// gone. The parser is back in the ground state. Nothing for another
+    /// state.
+    void cancelStream()
+    {
+        if (!m_streaming) {
+            return;
+        }
+        abortString();
+        clearSequence();
+        m_state = State::Ground;
+    }
+
     void reset()
     {
         m_state = State::Ground;
@@ -188,6 +206,12 @@ private:
 
     void advance(std::uint8_t b)
     {
+        if (m_streamEnding) {
+            // The ESC after a stream: ST ends it whole. Another sequence
+            // (a prompt mark, RIS) cuts it short, as CAN does.
+            m_streamEnding = false;
+            endStream(b == '\\');
+        }
         // Anywhere transitions.
         if (b == 0x18 || b == 0x1A) { // CAN, SUB
             abortString();
@@ -604,6 +628,7 @@ private:
             return;
         }
         m_streaming = false;
+        m_streamEnding = false;
         if constexpr (requires { m_handler.oscStreamEnd(true); }) {
             m_handler.oscStreamEnd(complete);
         }
@@ -616,7 +641,11 @@ private:
         switch (m_state) {
         case State::OscString:
             if (m_streaming) {
-                endStream(true);
+                if (bel) {
+                    endStream(true);
+                } else {
+                    m_streamEnding = true; // the byte after the ESC decides
+                }
             } else if (!overflow) {
                 m_handler.oscDispatch(m_string, bel);
             }
@@ -685,6 +714,9 @@ private:
     /// The OSC's head was seen and the handler asked: whether it streams.
     bool m_streamDecided = false;
     bool m_streaming = false;
+    /// An ESC ended the streamed OSC's bytes: whether it ended whole waits
+    /// for the next byte.
+    bool m_streamEnding = false;
     std::uint8_t m_dcsFinal = 0;
 
     char32_t m_utf8Cp = 0;

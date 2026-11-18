@@ -1819,6 +1819,19 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             // The helpers' default, also for an effect built by hand.
             effect.insert(QStringLiteral("max_bytes"), limit.toDouble());
         }
+        if (kind == QLatin1String("read_text")) {
+            // The scopes of Control::readText, in the order of its words
+            // (Control::TextScopeNames): another would fail there, after the
+            // effect counted.
+            static const QStringList Scopes{QStringLiteral("screen"), QStringLiteral("scrollback"), QStringLiteral("selection"),
+                                            QStringLiteral("last-output"), QStringLiteral("first-output-on-screen"),
+                                            QStringLiteral("last-visited-output")};
+            // The helper's default, also for an effect built by hand.
+            if (!raw.contains(QStringLiteral("scope"))) effect.insert(QStringLiteral("scope"), QStringLiteral("last-output"));
+            // An earlier refusal (max_bytes) keeps its words.
+            if (error.isEmpty() && !Scopes.contains(str(effect, "scope")))
+                error = QStringLiteral("read_text scope must be %1 or %2").arg(Scopes.mid(0, Scopes.size() - 1).join(QLatin1String(", ")), Scopes.last());
+        }
         // Pane text that a run's handler reads can go to its client, a
         // process outside the window: Control.allowReadText decides then. The
         // client of a remote run is any process of the remote host, or its

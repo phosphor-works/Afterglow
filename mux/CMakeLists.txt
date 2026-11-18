@@ -21,20 +21,23 @@ set_target_properties(afterglow_mux_protocol PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 
 # The image decoder: its client (ImageDecoder.cpp), which the daemon, the
 # window's panes and the tests link, and its server (ImageServer.cpp,
-# aglow-mux --decode-images), which only aglow-mux links. The client checks
-# an image's signature (the inline AfterglowImage::format) with the include
-# directory of the decoders, not a link: the decoders run in the server's
-# processes only, never in a program that links the client.
+# aglow-mux --decode-images), which only aglow-mux links. The client's header
+# is alone in include/: a program that links the client sees none of the
+# daemon's. The client checks an image's signature (the inline
+# AfterglowImage::format) with the include directory of the decoders, not a
+# link: the decoders run in the server's processes only, never in a program
+# that links the client.
 add_library(afterglow_mux_image STATIC src/ImageDecoder.cpp)
-target_include_directories(afterglow_mux_image PUBLIC src
-                           PRIVATE $<TARGET_PROPERTY:AfterglowImage,INTERFACE_INCLUDE_DIRECTORIES>)
-target_link_libraries(afterglow_mux_image PUBLIC Afterglow::Proto PRIVATE Afterglow::Pty)
+target_include_directories(afterglow_mux_image PUBLIC include
+                           PRIVATE src $<TARGET_PROPERTY:AfterglowImage,INTERFACE_INCLUDE_DIRECTORIES>)
+target_link_libraries(afterglow_mux_image PUBLIC Afterglow::Proto)
 set_target_properties(afterglow_mux_image PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 add_library(afterglow_mux_image_server STATIC src/ImageServer.cpp)
-target_include_directories(afterglow_mux_image_server PRIVATE src)
+target_include_directories(afterglow_mux_image_server PRIVATE src include)
 # With any sanitizer, the decoding processes keep the daemon's standard error
 # for the reports. GCC defines no macro for UBSan alone.
-if(CMAKE_CXX_FLAGS MATCHES "-fsanitize=")
+afterglow_sanitized(AFTERGLOW_MUX_SANITIZED)
+if(AFTERGLOW_MUX_SANITIZED)
     target_compile_definitions(afterglow_mux_image_server PRIVATE AFTERGLOW_MUX_SANITIZED=1)
 endif()
 target_link_libraries(afterglow_mux_image_server PUBLIC Afterglow::Proto PRIVATE Afterglow::Image Afterglow::Pty)
@@ -56,6 +59,7 @@ add_library(afterglow_mux_daemon STATIC
     src/DaemonJoin.cpp
     src/DaemonRemote.cpp
     src/DaemonWatch.cpp
+    src/KeptCalls.cpp
     src/MuxPane.cpp
     src/Proxy.cpp
     src/Session.cpp)

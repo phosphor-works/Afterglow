@@ -15,7 +15,6 @@
 #include <QJsonObject>
 #include <QMetaMethod>
 
-#include <cmath>
 #include <limits>
 
 namespace Afterglow {
@@ -43,9 +42,12 @@ QJsonObject daemonPaneMap(const Control& control, QVariantMap map)
     map.insert(QStringLiteral("window"), 0);
     map.insert(QStringLiteral("tab_id"), map.value(QStringLiteral("tab")).toInt() + 1);
     map.insert(QStringLiteral("context"), QString());
-    QVariantMap neighbours = map.value(QStringLiteral("neighbours")).toMap();
-    for (QVariant& id : neighbours) id = id.toUInt() ? daemonId(id.toUInt()) : 0;
-    map.insert(QStringLiteral("neighbours"), neighbours);
+    // Only in a map that has them: a pane map of a moved pane may not.
+    if (map.contains(QStringLiteral("neighbors"))) {
+        QVariantMap neighbors = map.value(QStringLiteral("neighbors")).toMap();
+        for (QVariant& id : neighbors) id = id.toUInt() ? daemonId(id.toUInt()) : 0;
+        map.insert(QStringLiteral("neighbors"), neighbors);
+    }
     return QJsonObject::fromVariantMap(map);
 }
 
@@ -82,106 +84,12 @@ bool localOnly(const QString& fn)
     return Names.contains(fn);
 }
 
-/// Whether keybind action @p action reaches past the window of the session
-/// and its panes: it starts a program here, opens a window or a dialog of
-/// this computer, reads or writes its clipboard or its config, or ends what
-/// the user holds. No default: a new action must take a side here.
-bool reachesThisComputer(Action action)
-{
-    switch (action) {
-    case Action::NewWindow:
-    case Action::Copy:
-    case Action::Paste:
-    case Action::SelectAll:
-    case Action::ShowLastOutput:
-    case Action::ShowFirstOutputOnScreen:
-    case Action::ShowLastVisitedOutput:
-    case Action::OpenConfig:
-    case Action::ReloadConfig:
-    case Action::UsePackageShaders:
-    case Action::SaveProject:
-    case Action::SwitchProject:
-    case Action::EndScriptKeyMode:
-    case Action::CancelOverlay:
-        return true;
-    case Action::None:
-    case Action::SplitRight:
-    case Action::SplitDown:
-    case Action::SplitLeft:
-    case Action::SplitUp:
-    case Action::ClosePane:
-    case Action::NewTab:
-    case Action::CloseTab:
-    case Action::CloseWindow:
-    case Action::NextTab:
-    case Action::PreviousTab:
-    case Action::FocusLeft:
-    case Action::FocusRight:
-    case Action::FocusUp:
-    case Action::FocusDown:
-    case Action::EqualizeSplits:
-    case Action::FontBigger:
-    case Action::FontSmaller:
-    case Action::FontReset:
-    case Action::ScrollPageUp:
-    case Action::ScrollPageDown:
-    case Action::ScrollTop:
-    case Action::ScrollBottom:
-    case Action::JumpPromptUp:
-    case Action::JumpPromptDown:
-    case Action::Search:
-    case Action::CommandPalette:
-    case Action::UrlsOpen:
-    case Action::UrlsCopy:
-    case Action::UnicodeInput:
-    case Action::ClearScreen:
-    case Action::ResetTerminal:
-    case Action::RenamePane:
-    case Action::RenameTab:
-    case Action::NotifyOnFinish:
-    case Action::MoveTabLeft:
-    case Action::MoveTabRight:
-    case Action::GotoTab1:
-    case Action::GotoTab2:
-    case Action::GotoTab3:
-    case Action::GotoTab4:
-    case Action::GotoTab5:
-    case Action::GotoTab6:
-    case Action::GotoTab7:
-    case Action::GotoTab8:
-    case Action::GotoTab9:
-    case Action::ToggleFullscreen:
-    case Action::TogglePaneZoom:
-    case Action::ResizeLeft:
-    case Action::ResizeRight:
-    case Action::ResizeUp:
-    case Action::ResizeDown:
-    case Action::CopyMode:
-    case Action::ShowHints:
-    case Action::SwapLeft:
-    case Action::SwapRight:
-    case Action::SwapUp:
-    case Action::SwapDown:
-    case Action::RotatePanesClockwise:
-    case Action::RotatePanesCounterclockwise:
-    case Action::PaneOverview:
-    case Action::MovePaneToTab:
-    case Action::MovePaneToWindow:
-    case Action::DetachTab:
-        return false;
-    }
-    return true;
-}
-
 /// Whether @p action, by its config name, reaches past the window of the
-/// session (reachesThisComputer). A name that is no action is not refused
-/// here: Control says that it is none.
+/// session (Keybinds::reachesThisComputer). A name that is no action is not
+/// refused here: Control says that it is none.
 bool reachesThisComputer(const QString& action)
 {
-    for (Action a : Keybinds::allActions()) {
-        if (Keybinds::token(a) == action) return reachesThisComputer(a);
-    }
-    return false;
+    return Keybinds::reachesThisComputer(Keybinds::fromToken(action));
 }
 
 /// Why the call @p fn with @p args does not fit the method of the same name
@@ -189,8 +97,10 @@ bool reachesThisComputer(const QString& action)
 /// of arguments, or one that does not convert to its type, in the words of
 /// the router of the control socket. Nothing for a call that fits, and for
 /// the daemon's own calls, which ControlApi does not have. The daemon passes
-/// the arguments of a client as they came.
-std::optional<MuxClient::ControlAnswer> argumentError(const QString& fn, const QJsonArray& args)
+/// the arguments of a client as they came: those that fit go into @p args
+/// as the router converts them, so that "0.5" is a number and 3 a string
+/// where the method takes one, as on the window's own target.
+std::optional<MuxClient::ControlAnswer> convertArguments(const QString& fn, QJsonArray& args)
 {
     const QMetaObject& api = ControlApi::staticMetaObject;
     const QByteArray name = fn.toLatin1();
@@ -207,18 +117,20 @@ std::optional<MuxClient::ControlAnswer> argumentError(const QString& fn, const Q
         return failed(QStringLiteral("argument count mismatch: 'control.%1' expects %2, got %3").arg(fn).arg(method->parameterCount()).arg(args.size()),
                       invalid);
     }
+    QJsonArray converted;
     for (qsizetype i = 0; i < args.size(); ++i) {
         QVariant value = args.at(i).toVariant();
         const QMetaType expected(method->parameterType(int(i)));
-        if (value.metaType() == expected) continue;
         const char* given = value.typeName();
-        if (!value.convert(expected)) {
+        if (value.metaType() != expected && !value.convert(expected)) {
             return failed(QStringLiteral("arg %1 for 'control.%2': cannot convert %3 to %4")
                               .arg(i)
                               .arg(fn, QLatin1String(given ? given : "<null-variant>"), QLatin1String(expected.name())),
                           invalid);
         }
+        converted.append(QJsonValue::fromVariant(value));
     }
+    args = converted;
     return std::nullopt;
 }
 
@@ -239,12 +151,8 @@ MuxClient::ControlAnswer answerNow(Control& control, TerminalWindow& window, con
         // The daemon started it for `afterglow ctl split` or `new-tab`.
         const qint64 id = args.at(0).toInteger(-1);
         if (id <= 0 || id > 0xffffffffLL) return failed(QStringLiteral("placePane takes a pane"));
-        const QString side = args.at(2).toString();
-        std::optional<SplitTree::Direction> direction;
-        if (side == QLatin1String("right")) direction = SplitTree::Direction::Right;
-        else if (side == QLatin1String("down")) direction = SplitTree::Direction::Down;
-        else if (side == QLatin1String("left")) direction = SplitTree::Direction::Left;
-        else if (side == QLatin1String("up")) direction = SplitTree::Direction::Up;
+        // No side: a tab of its own.
+        const std::optional<SplitTree::Direction> direction = Control::splitDirection(args.at(2).toString());
         QStringList command;
         for (const QJsonValue& word : args.at(3).toArray()) command << word.toString();
         // A refusal goes back for a call that waits for an answer: the
@@ -311,26 +219,19 @@ MuxClient::ControlAnswer answerNow(Control& control, TerminalWindow& window, con
         if (const QString error = control.setTitle(id, args.at(1).toString()); !error.isEmpty()) return failed(error);
         return {};
     }
-    if (fn == QLatin1String("focusNeighbour")) {
+    if (fn == QLatin1String("focusNeighbor")) {
         quint32 focused = 0;
-        if (const QString error = control.focusNeighbour(id, args.at(1).toString(), focused); !error.isEmpty()) return failed(error);
+        if (const QString error = control.focusNeighbor(id, args.at(1).toString(), focused); !error.isEmpty()) return failed(error);
         // The daemon's ID of the pane: the client knows no other.
         return {daemonId(focused), {}};
     }
+    // The numbers as the control target takes them, which Control checks.
     if (fn == QLatin1String("resizePane")) {
-        // As the control target reads the cells: a whole number, which
-        // Control bounds.
-        const double cells = args.at(2).toDouble(0);
-        const int count = std::isfinite(cells) && std::floor(cells) == cells && cells >= 1 && cells <= Control::MaxResizeCells ? int(cells) : 0;
-        if (const QString error = control.resizePane(id, args.at(1).toString(), count); !error.isEmpty()) return failed(error);
+        if (const QString error = control.resizePane(id, args.at(1).toString(), args.at(2).toDouble()); !error.isEmpty()) return failed(error);
         return {};
     }
     if (fn == QLatin1String("scroll")) {
-        const double amount = args.at(2).toDouble(0);
-        if (!std::isfinite(amount) || std::floor(amount) != amount || std::abs(amount) > double(Control::MaxScrollAmount)) {
-            return failed(QStringLiteral("the amount is a whole number from -%1 to %1").arg(Control::MaxScrollAmount));
-        }
-        if (const QString error = control.scroll(id, args.at(1).toString(), qint64(amount)); !error.isEmpty()) return failed(error);
+        if (const QString error = control.scroll(id, args.at(1).toString(), args.at(2).toDouble()); !error.isEmpty()) return failed(error);
         return {};
     }
     if (fn == QLatin1String("setFontSize")) {
@@ -342,10 +243,9 @@ MuxClient::ControlAnswer answerNow(Control& control, TerminalWindow& window, con
         return {};
     }
     if (fn == QLatin1String("setWindowState")) {
-        // As the control target reads a size: whole numbers, which Control bounds.
-        const double cols = args.at(2).toDouble(-1), rows = args.at(3).toDouble(-1);
-        const auto whole = [](double v) { return std::isfinite(v) && std::floor(v) == v && v >= 0 && v <= Control::MaxWindowCells ? int(v) : -1; };
-        if (const QString error = control.setWindowState(id, args.at(1).toString(), whole(cols), whole(rows)); !error.isEmpty()) return failed(error);
+        if (const QString error = control.setWindowState(id, args.at(1).toString(), args.at(2).toDouble(), args.at(3).toDouble());
+            !error.isEmpty())
+            return failed(error);
         return {};
     }
     if (fn == QLatin1String("setTabTitle")) {
@@ -353,11 +253,7 @@ MuxClient::ControlAnswer answerNow(Control& control, TerminalWindow& window, con
         return {};
     }
     if (fn == QLatin1String("signal")) {
-        // As the control target reads a channel: a whole number up to 1024,
-        // which Control names the valid channels for, else -1.
-        const double channel = args.at(1).toDouble(-1);
-        const int index = std::isfinite(channel) && std::floor(channel) == channel && channel >= 0 && channel <= 1024 ? int(channel) : -1;
-        if (const QString error = control.signal(id, index, args.at(2).toDouble()); !error.isEmpty()) return failed(error);
+        if (const QString error = control.signal(id, args.at(1).toDouble(), args.at(2).toDouble()); !error.isEmpty()) return failed(error);
         return {};
     }
     if (fn == QLatin1String("notify")) {
@@ -392,7 +288,7 @@ MuxClient::ControlAnswer answerNow(Control& control, TerminalWindow& window, con
 
 } // namespace
 
-void answerSessionCall(Control& control, const Settings& settings, TerminalWindow& window, const QString& fn, const QJsonArray& args,
+void answerSessionCall(Control& control, const Settings& settings, TerminalWindow& window, const QString& fn, QJsonArray args,
                        qint64 client, MuxClient::ControlReply reply)
 {
     // The daemon tells it when a client that opened overlays or sent their
@@ -411,7 +307,7 @@ void answerSessionCall(Control& control, const Settings& settings, TerminalWindo
     }
     // As the router of the control socket refuses it: setTitle(pane) must
     // not clear the title.
-    if (auto refused = argumentError(fn, args)) return reply(*refused);
+    if (auto refused = convertArguments(fn, args)) return reply(*refused);
     if (!window.sessionHost().isEmpty() && localOnly(fn)) return reply(failed(OtherHostRunsNothingHere));
     if (fn == QLatin1String("overlayInput")) {
         const QString error = control.addSessionOverlayInput(sessionOwner(window, client), args.at(0).toString(), args.at(1).toString(),

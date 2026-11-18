@@ -207,6 +207,7 @@ The events of a run arrive before the reply of the run.
 | `MALFORMED_REQUEST` | The line is not a valid request, or a limit is reached. |
 | `no_pane`, `busy`, `spawn_failed`, `cancelled` | An `overlay` call failed. See [overlays](#overlays). |
 | `denied`, `busy`, `no_pane`, `not_shown`, `failed`, `cancelled` | A `screenshot` call failed. See [screenshots](#screenshots). |
+| `session_pane` | A `setColors` call names a pane of a mux session. The daemon of the session has its colors. |
 
 In a session pane, `AFTERGLOW_SOCKET` is the socket of the [mux daemon](MUX.md#control-of-a-session).
 A client of that socket first selects the session with a call of the `mux` target.
@@ -274,7 +275,7 @@ Another number fails with `CALL_FAILED`.
 | `listPanes` | None | A [pane object](#pane-object) for each pane |
 | `focusedPane` | None | The pane that step 3 or 4 of the target order selects |
 | `sendText` | pane, text | None |
-| `getText` | pane, scope, options (optional) | The text, at most 1 MiB. Scopes are `screen`, `scrollback`, `selection`, `last-output`, `first-output-on-screen` and `last-visited-output`. The last two are the outputs of the [command output actions](INPUT.md#command-output), and empty when there is none. See [text options](#text-options). |
+| `getText` | pane, scope, options (optional) | The text, at most 1 MiB. Scopes are `screen`, `scrollback`, `selection`, `last-output`, `first-output-on-screen` and `last-visited-output`. The last two are the outputs of the [command output actions](INPUT.md#command-output), and empty when there is none. For a pane of a mux session whose rows still come from its daemon, `scrollback` and `last-output` fail with `the rows of pane N are still arriving from its session: try again`. See [text options](#text-options). |
 | `split` | pane, direction, command, options (optional) | The new pane. Directions are `left`, `right`, `up` and `down`. See [launch options](#launch-options). |
 | `newTab` | pane, working directory, command, options (optional) | The new tab's pane. See [launch options](#launch-options). |
 | `newWindow` | working directory, command, options (optional) | The new window's pane. See [launch options](#launch-options). |
@@ -282,16 +283,16 @@ Another number fails with `CALL_FAILED`.
 | `close` | pane | None. The pane closes without a question, also when a program runs in it. |
 | `setTitle` | pane, title | None. An empty title gives the title back to the programs. |
 | `setTabTitle` | pane, title | None. Sets the title of the pane's tab. An empty title gives the title back to the focused pane of the tab. |
-| `getColors` | pane | An object of the pane's colours as `#rrggbb`: `foreground`, `background`, `cursor`, `selection_foreground`, `selection_background`, and `color0` to `color255`. `null` for a colour that follows another: the cursor that has the text's colour, and a selection that inverts the cells. |
-| `setColors` | pane, colours, reset | None. Sets colours by the names of `getColors`, as the pane's program does with OSC 4, 10, 11, 12, 17 and 19. A colour is a string as a [theme](APPEARANCE.md) writes it, such as `#ff0000`, `red`, `rgb:ff/00/00` or `oklch(0.6 0.2 30)`. With `reset` true, the configured colours come back first. A program that asked for colour reports (mode 2031) hears of the change. A bad name or colour fails the call, and no colour changes. |
+| `getColors` | pane | An object of the pane's colors as `#rrggbb`: `foreground`, `background`, `cursor`, `selection_foreground`, `selection_background`, and `color0` to `color255`. `null` for a color that follows another: the cursor that has the text's color, and a selection that inverts the cells. |
+| `setColors` | pane, colors, reset | None. Sets colors by the names of `getColors`, as the pane's program does with OSC 4, 10, 11, 12, 17 and 19. A color is a string as a [theme](APPEARANCE.md) writes it, such as `#ff0000`, `red`, `rgb:ff/00/00` or `oklch(0.6 0.2 30)`. With `reset` true, the configured colors come back first. A program that asked for color reports (mode 2031) hears of the change. A bad name or color fails the call, and no color changes. A pane of a mux session fails with the code `session_pane`: its daemon has its colors (`afterglow ctl --session NAME set-colors`). |
 | `setFontSize` | pane, size | None. The font size in points from 4 to 96, or `+N` or `-N` points more or fewer, as `font_bigger` and `font_smaller` change it. It changes the font of every window. `font_reset` gives back `Font.size`. |
-| `setOpacity` | pane, opacity | None. The background opacity of the pane's window, from 0 to 1, until `Window.backgroundOpacity` changes. |
-| `setUserVar` | pane, name, value | None. Sets a user variable of the pane, as its program does with OSC 1337 `SetUserVar`. Scripts and `userVarChanged` hear of it. A name has 1 to 128 bytes and no `=`. |
-| `signalProgram` | pane, signal | None. Sends a signal to the foreground process group of the pane, as Ctrl+C sends `INT`. The signal is a name such as `INT`, `SIGTERM` or `hup`, or a number. Fails when the pane has no program in the foreground. |
-| `setWindowState` | pane, state, cols, rows | None. The state of the pane's window: `fullscreen`, `maximized`, `normal`, or empty to keep it. Then, with cols and rows above 0, the size of a window whose one pane has that many cells, with the padding and the tab bar. A full-screen or maximized window takes no size. 0 and 0 change no size. |
-| `focusNeighbour` | pane, direction | The pane to the `left`, `right`, `up` or `down` of the pane in its tab, which gets the focus. At the edge of the tab it fails with `no pane to the left of pane N`, and the focus stays. |
-| `resizePane` | pane, direction, cells | None. Moves a split edge of the pane by a number of cells from 1 to 10000 toward the direction, as the resize actions do with 2 cells, and as tmux's `resize-pane` does. That is the edge on that side of the pane, else the edge on the other side: `left` on the leftmost pane makes it narrower. The tab of the pane shows, and a zoom ends. Fails with `pane N has no edge that can move left` when the pane has no split edge across that direction, or when the edge is at its limit. |
-| `sendKeys` | pane, keys | None. Types the keys of a list of [key names](#key-names), as the pane's program reads typed keys. A name that names no key fails the call, and no key goes. |
+| `setOpacity` | pane, opacity | None. The background opacity of the pane's window, from 0 to 1, until `Window.backgroundOpacity` changes. 0 makes the background clear, where `Window.backgroundOpacity` takes 0.05 at least. |
+| `setUserVar` | pane, name, value | None. Sets a user variable of the pane, as its program does with OSC 1337 `SetUserVar`. Scripts and `userVarChanged` hear of it. A name has 1 to 128 bytes and no `=`. A pane has at most 256 names: a new name past them fails with `pane N has 256 user variables: it takes no new name`. A pane of a mux session fails: use `afterglow ctl --session`. |
+| `signalProgram` | pane, signal | None. Sends a signal to the foreground process group of the pane, as Ctrl+C sends `INT`. The signal is a name such as `INT`, `SIGTERM` or `hup`, or a number. At the prompt, the shell is the foreground process group, and it gets the signal. Fails with `pane N has no program to signal` when the program of the pane ended. Fails when the program runs as another user and the kernel refuses the signal. A pane of a mux session fails: use `afterglow ctl --session`. |
+| `setWindowState` | pane, state, cols, rows | None. The state of the pane's window: `fullscreen`, `maximized`, `normal`, or empty to keep it. Then, with cols and rows above 0, the size of the window. The window gets room for one pane of that many cells, at least 4 columns and 2 rows. The padding, the tab bar and the script docks of the pane and the window come in addition. 0 and 0 mean no size. The call fails when only one of cols and rows is 0. It also fails for a size with `fullscreen` or `maximized`, or with an empty state while the window is full screen or maximized. The call fails for the quick terminal, which has its own size and place. From full screen or maximized, `normal` with a size sets the size when the compositor made the window normal. |
+| `focusNeighbor` | pane, direction | The pane to the `left`, `right`, `up` or `down` of the pane in its tab, which gets the focus. At the edge of the tab it fails with `no pane to the left of the pane`, and the focus stays. |
+| `resizePane` | pane, direction, cells | None. Moves a split edge of the pane toward the direction by 1 to 10000 cells, as tmux's `resize-pane` does. The resize actions move it by `Window.resizeStepCells` cells (2 by default). That is the edge on that side of the pane, else the edge on the other side: `left` on the leftmost pane makes it narrower. When an edge moves, the tab of the pane shows and a zoom ends. Fails with `the pane has no edge that can move left` when the pane has no split edge across that direction, or when the edge is at its limit. |
+| `sendKeys` | pane, keys | None. Types the keys of a list of [key names](#key-names), as the pane's program reads typed keys. A name that names no key fails the call, and no key goes. An empty list fails with `sendKeys needs a key`. |
 | `scroll` | pane, unit, amount | None. The unit is `lines` or `pages`, with an amount that scrolls down when it is positive and up when it is negative. `prompt` jumps to the prompt that many prompts below, or above with a negative amount. `top` and `bottom` go to the ends, with any amount. Fails while the pane shows a full-screen program, and for `prompt` when there is no prompt in that direction. |
 | `signal` | pane, channel, value | None. Channels are 0 to 7. |
 | `notify` | pane, title, body | None |
@@ -318,6 +319,34 @@ For `newTab` and `newWindow`, an empty working directory uses the `Window.workin
 `afterglow ctl` changes a relative directory into an absolute one before it sends it.
 When the current directory was removed, `afterglow ctl` refuses a relative directory and exits with status 1.
 
+## Commands of afterglow ctl
+
+`afterglow ctl --help` lists all commands. These commands make the calls of the pane, the window and its colors:
+
+| Command | Call | Function |
+| --- | --- | --- |
+| `focus --direction DIR` | `focusNeighbor` | Focuses the pane to the `left`, `right`, `up` or `down`, and prints its ID. At the edge of the tab, it exits with status 1. |
+| `resize --direction DIR [--cells N]` | `resizePane` | Moves an edge of the pane by N cells, from 1 to 10000. The default is 2. `afterglow ctl` reads no settings, so `Window.resizeStepCells` does not change this default. |
+| `send-key KEY...` | `sendKeys` | Types the keys of the [key names](#key-names). |
+| `scroll LINES`, `scroll --pages N`, `scroll --prompt N`, `scroll --top`, `scroll --bottom` | `scroll` | Scrolls down, or up with a negative count. Give one of these forms. |
+| `set-tab-title TITLE...` | `setTabTitle` | Sets the title of the pane's tab. `""` gives the title back to the focused pane of the tab. |
+| `colors [--json]` | `getColors` | Prints one `name #rrggbb` line for each color, as `kitten @ get-colors` does. With `--json`, it prints the object of the call. |
+| `set-colors [--all] [--reset] [THEME] [NAME=COLOR...]` | `setColors` | Sets the colors of a theme, then the `NAME=COLOR` words. `--reset` first gives back the configured colors. |
+| `set-font-size [+\|-]N` | `setFontSize` | Sets the font size in points, or N points more or fewer. |
+| `set-opacity N` | `setOpacity` | Sets the background opacity of the window, from 0 to 1. |
+| `set-user-var NAME=VALUE...` | `setUserVar` | Sets user variables of the pane. |
+| `signal-program SIGNAL` | `signalProgram` | Sends a signal, such as `INT`, `TERM` or `9`, to the foreground process group of the pane. |
+| `window [--fullscreen\|--maximized\|--normal] [--size COLSxROWS]` | `setWindowState` | Changes the state of the window, and sizes it for one pane of COLS × ROWS cells. Give a state, a size or both. |
+
+The `THEME` of `set-colors` is a theme name or a theme file.
+A word with no `=` is a theme. A word with a `/` before its `=` is a theme file too, so give a file with `=` in its name as `./NAME`.
+`set-colors` takes one theme at most.
+
+`set-colors --all` sets the colors of every pane of every window, and takes no `--pane`.
+It leaves the panes of mux sessions, because their daemons have their colors.
+It then writes on standard error how many panes kept their colors.
+`afterglow ctl --session NAME set-colors --all` sets the colors of the panes of a session.
+
 ## Text options
 
 The options of `getText` are an object, as `kitten @ get-text` has them.
@@ -326,11 +355,12 @@ The options of `getText` are an object, as `kitten @ get-text` has them.
 | Option | Type | Function |
 | --- | --- | --- |
 | `ansi` | boolean | Each change of color or attribute as an SGR sequence, and each link as OSC 8. Each line ends with a reset. Blanks at the end of a line stay when they show a background or a link. |
-| `cursor` | boolean | At the end, the cursor's place on the screen (CUP), its shape (DECSCUSR) and whether it shows (DECTCEM). |
+| `cursor` | boolean | At the end, the cursor's place on the screen (CUP), its shape (DECSCUSR) and whether it shows (DECTCEM). Only for the `screen`, `scrollback` and `last-output` scopes. |
 | `wrap_markers` | boolean | A carriage return where a row wraps into the next one. |
 
 Another key, or a value that is not a boolean, fails the call.
-A selection is plain text with all options.
+The selection is plain text: `ansi`, `cursor` or `wrap_markers` with the `selection` scope fails the call.
+`cursor` with `first-output-on-screen` or `last-visited-output` also fails the call.
 
 ## Launch options
 
@@ -340,16 +370,20 @@ The options of `split`, `newTab` and `newWindow` are an object, as `kitten @ lau
 | Option | Type | `afterglow ctl` | Function |
 | --- | --- | --- | --- |
 | `env` | object | `--env NAME=VALUE`, `--env NAME` | Variables for the program. A string sets a variable, and `false` removes it. |
-| `vars` | object of strings | `--var NAME=VALUE` | User variables of the pane, as if its program set them with OSC 1337 `SetUserVar`. A name has 1 to 128 bytes and no `=`. |
+| `vars` | object of strings | `--var NAME=VALUE` | User variables of the pane, as if its program set them with OSC 1337 `SetUserVar`. A name has 1 to 128 bytes and no `=`. More than 256 names fail the call. |
 | `hold` | boolean | `--hold` | The pane stays open after its program exits, as with `afterglow --hold`. |
-| `focus` | boolean | `--no-focus` | With `false`, the focus stays on the pane that had it. Not for `newWindow`. |
-| `stdin_text` | string | `--stdin-text SCOPE` | The text of the call's pane in a scope of `getText` goes to the program's standard input, which then closes. The program's output still goes to the pane. It needs `Control.allowReadText`. Not for `newWindow`. |
+| `focus` | boolean | `--no-focus` | With `false`, the focus stays on the pane that had it. A new tab then opens behind the current tab. Not for `newWindow`. |
+| `stdin_text` | string | `--stdin-text SCOPE` | The text of the call's pane in a scope of `getText` goes to the program's standard input, which then closes. The program's output still goes to the pane. It needs `Control.allowReadText`, and a command: the shell would run the text as commands. Not for `newWindow`. |
 | `stdin_ansi` | boolean | `--stdin-ansi` | The text of `stdin_text` with its styles, as the `ansi` option of `getText`. |
-| `size` | number | none | For `split`: the new pane's share of the room, above 0 and below 1. |
+| `size` | number | none | The new pane's share of the room, above 0 and below 1. Only for `split`: `newTab` and `newWindow` fail with it. |
 
-A pane of a [mux session](MUX.md#control-of-a-session) takes `env` only: the daemon runs its program.
-`afterglow ctl --session` refuses the other options with a usage error.
-A session's window refuses `hold` and `stdin_text`.
+The daemon of a [mux session](MUX.md#control-of-a-session) runs the programs of its panes.
+Thus a new pane of a session takes fewer options:
+
+| Path | Options |
+| --- | --- |
+| `afterglow ctl --session NAME`, or `afterglow ctl` in a pane of a session | `env` only. `afterglow ctl` refuses the other options with a usage error. |
+| A `split` or `newTab` call to a window that shows a session | `env`, `focus` and `size`. The call fails with `hold`, `stdin_text` or `vars`. |
 `afterglow ctl overlay --stdin-text SCOPE` reads the text with `getText` first, and sends it as the overlay's standard input.
 
 ## Overlays
@@ -497,9 +531,9 @@ Thus take screenshots on a connection without subscriptions.
 | `at_prompt` | True while the cursor is in a shell prompt or its input (shell integration). False while a command runs, and without shell integration. |
 | `user_vars` | An object: the user variables that the program set with OSC 1337 `SetUserVar`, at most 256 |
 | `foreground` | The leader of the foreground process group of the pane: an object with `pid`, `cmdline` (a list of the arguments) and `cwd`. At the prompt it is the shell. `null` when it is not known, for example after the program exited. In a window, a pane of a mux session has `null`. With `afterglow ctl --session`, the daemon gives it. |
-| `neighbours` | An object with `left`, `right`, `up` and `down`: the pane beside the pane on that side in its tab, as `focusNeighbour` finds it. 0 at the edge. |
+| `neighbors` | An object with `left`, `right`, `up` and `down`. Each is the pane beside the pane on that side in its tab, as `focusNeighbor` finds it. Each is 0 at the edge. |
 
-`at_prompt`, `user_vars`, `foreground` and `neighbours` are only in the objects of `listPanes`.
+`at_prompt`, `user_vars`, `foreground` and `neighbors` are only in the objects of `listPanes`.
 
 ## Events
 
@@ -786,7 +820,7 @@ Its message on standard error starts with `aglow run: `, or `afterglow run: ` fo
 | Text in the message | Cause |
 | --- | --- |
 | `the terminal names no socket of an ssh session` | A requirement above is missing, or the pane runs no ssh session. The text comes after the reason why there is no Afterglow on this computer |
-| `the socket of the commands has no forward` | The server has `AllowStreamLocalForwarding no`. Or Afterglow did not confirm the forward in 2 seconds, and `afterglow ssh` cancelled it. `afterglow ssh -v` tells which |
+| `the socket of the commands has no forward` | The server has `AllowStreamLocalForwarding no`. Or Afterglow did not confirm the forward in 2 seconds, and `afterglow ssh` canceled it. `afterglow ssh -v` tells which |
 | `this aglow speaks another protocol than the Afterglow of this ssh session` | The `aglow` on the remote host and Afterglow have different protocols |
 | `the path of the socket on this host would be over 103 bytes` | The remote directory is too long |
 | `the socket of this ssh session, PATH, is on another host` | `aglow run` runs on a host after a second ssh hop |
@@ -809,7 +843,7 @@ On the socket of an ssh session, `aglow run` with no arguments lists only the co
 | `remoteCommandsEnabled` | Before the probe: whether the settings allow remote commands |
 | `openRemoteSocket` | After the probe. The table below gives the arguments. The result has `token`, `socket` and `path`. With another protocol or a path over 103 bytes, it has `token` and `error` (`version` or `length`), and no socket. |
 | `remoteSocketForwarded` | `ssh -O forward` added the forward. The pane answers with the path. The call fails when the socket has closed, and `afterglow ssh` then cancels the forward |
-| `remoteSocketFailed` | `ssh -O forward` failed, or `afterglow ssh` cancelled the forward because `remoteSocketForwarded` got no answer in 2 seconds. Afterglow closes the socket, and the pane answers `error=forward` |
+| `remoteSocketFailed` | `ssh -O forward` failed, or `afterglow ssh` canceled the forward because `remoteSocketForwarded` got no answer in 2 seconds. Afterglow closes the socket, and the pane answers `error=forward` |
 
 These are the arguments of `openRemoteSocket`, in their order:
 
@@ -908,8 +942,9 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | `run` calls that wait, on one connection | 256 | `run` fails with `CALL_FAILED`. |
 | `setTitle` title | 256 UTF-16 units | The title is cut. |
 | `setTabTitle` title | 256 UTF-16 units | The title is cut. |
-| The cells of `setWindowState` | 10000 columns and 10000 rows | The call fails. `afterglow ctl window` exits with status 2 before it connects. |
-| The text of `getText` and of `stdin_text` | 1 MiB of UTF-8, with the escape sequences of `ansi` and `cursor` | The text is cut after the last whole character or escape sequence that fits. |
+| The cells of `setWindowState` | 10000 columns and 10000 rows | The call fails. `afterglow ctl window` exits with status 2 before it connects. A size under 4 columns or 2 rows gets room for 4 columns and 2 rows. |
+| The text of `getText` and of `stdin_text` | 1 MiB of UTF-8, with the escape sequences of `ansi` and `cursor`. | The text is cut after the last whole character or escape sequence that fits. |
+| User variables of a pane | 256 names | `setUserVar` with a new name fails. A launch with more `vars` fails. A new name from the program (OSC 1337 `SetUserVar`) is ignored, and Afterglow logs a warning. |
 | Keys of one `sendKeys` call | 4096 | The call fails, and no key goes. `afterglow ctl send-key` exits with status 2 before it connects. |
 | Cells of one `resizePane` call | 10000 | The call fails. `afterglow ctl resize` exits with status 2 before it connects. |
 | The amount of a `scroll` call | 1000000000 up or down | The call fails. `afterglow ctl scroll` exits with status 2 before it connects. |
@@ -952,7 +987,7 @@ To send text that starts with `--`, put it after `--`: `afterglow ctl send-text 
 
 ## Words after `--`
 
-Only `send-text`, `set-title`, `notify`, `split`, `new-tab`, `new-window` and `overlay` read words after `--`.
+Only `send-text`, `set-title`, `set-tab-title`, `notify`, `split`, `new-tab`, `new-window` and `overlay` read words after `--`.
 The other commands stop with a usage error when you give such words.
 
 The word after an option that takes a value, such as `--pane`, `--cwd` or `--title`, is that value.
@@ -961,21 +996,23 @@ Give a `FILE` or a `PATH` that starts with `--` as `./--FILE` or `./--PATH`.
 
 ## Key names
 
-`afterglow ctl send-key` and the `sendKeys` call take the key names of the [bindings](INPUT.md) and of kitty's `send-key`, such as `ctrl+c`, `Ctrl+Shift+T`, `alt+x`, `Return`, `F5` and `page_up`.
+`afterglow ctl send-key` and the `sendKeys` call take the key names of the [bindings](INPUT.md) and of Kitty's `send-key`, such as `ctrl+c`, `Ctrl+Shift+T`, `alt+x`, `Return`, `F5` and `page_up`.
 A name is modifiers and a key, joined with `+`.
 Names ignore case, `_` and `-`.
 
 | Part | Names |
 | --- | --- |
 | Modifiers | `ctrl` or `control`, `shift`, `alt`, `opt` or `option`, `super`, `meta`, `cmd` or `command`. `meta` and `cmd` are the Super key, as in the bindings. |
-| Keys | `enter` or `return`, `tab`, `backspace`, `escape` or `esc`, `up`, `down`, `left`, `right`, `home`, `end`, `insert`, `delete`, `page_up`, `page_down`, `f1` to `f35`, `space`, `plus`, `minus` |
-| Keypad keys | `kp_0` to `kp_9`, `kp_decimal`, `kp_divide`, `kp_multiply`, `kp_subtract`, `kp_add`, `kp_enter`, `kp_equal`, `kp_separator`, `kp_left`, `kp_right`, `kp_up`, `kp_down`, `kp_page_up`, `kp_page_down`, `kp_home`, `kp_end`, `kp_insert`, `kp_delete`, `kp_begin` |
-| Other keys | `caps_lock`, `scroll_lock`, `num_lock`, `print_screen`, `pause`, `menu`, the modifier keys `left_shift` to `right_super`, and the media and volume keys of the kitty keyboard protocol |
-| A character | One character, such as `a`, `1`, `é` or `/`. A letter ignores case: `ctrl+C` is Ctrl with the C key. To type a capital letter, give `shift+a`. `+` and `-` can also come last after a `+`, as in `ctrl++`. |
+| Keys | `enter` or `return`, `tab`, `backspace`, `escape` or `esc`, `up`, `down`, `left`, `right`, `home`, `end`, `insert` or `ins`, `delete` or `del`, `page_up` or `pgup`, `page_down`, `pgdn` or `pgdown`, `f1` to `f35`, `space`, `plus`, `minus` |
+| Keypad keys | `kp_0` to `kp_9`, `kp_decimal`, `kp_divide`, `kp_multiply`, `kp_subtract`, `kp_add`, `kp_enter`, `kp_equal`, `kp_separator`, `kp_left`, `kp_right`, `kp_up`, `kp_down`, `kp_page_up`, `kp_page_down`, `kp_home`, `kp_end`, `kp_insert`, `kp_delete`, `kp_begin`. A keypad key with a character, such as `kp_1` or `kp_add`, types that character, as with Num Lock on. |
+| Other keys | `caps_lock`, `scroll_lock`, `num_lock`, `print_screen` or `print`, `pause`, `menu` |
+| Modifier keys | `left_shift`, `left_control`, `left_alt`, `left_super`, `left_hyper`, `left_meta`, `right_shift`, `right_control`, `right_alt`, `right_super`, `right_hyper`, `right_meta`, `iso_level3_shift`, `iso_level5_shift`. They send the key codes of the Kitty keyboard protocol. `left_ctrl` is not a key name. |
+| Media and volume keys | `media_play`, `media_pause`, `media_play_pause`, `media_reverse`, `media_stop`, `media_fast_forward`, `media_rewind`, `media_track_next`, `media_track_previous`, `media_record`, `lower_volume`, `raise_volume`, `mute_volume` |
+| A character | One character, such as `a`, `1`, `é` or `/`. A letter ignores case: `ctrl+C` is Ctrl with the C key. To type a capital letter, give `shift+a`. `+` and `-` can also come last after a `+`, as in `ctrl++`. `++` alone is not a key name: give `+` or `plus`. |
 
 The keys go as typed keys of the US layout: `shift+1` types `!`.
 Afterglow encodes each key for the program's keyboard mode, as for a key that you type.
-A program that turned on the kitty keyboard protocol gets that encoding, and a release when it asks for releases.
+A program that turned on the Kitty keyboard protocol gets that encoding, and a release when it asks for releases.
 
 ## Exit status of afterglow ctl
 
@@ -984,10 +1021,10 @@ A program that turned on the kitty keyboard protocol gets that encoding, and a r
 | 0 | The command succeeded. `afterglow ctl --help` also exits with status 0. |
 | 1 | An error, for example no Afterglow, a call that failed or no reply in time. |
 | 2 | A usage error, for example an unknown command, a missing argument or an option that the command does not take. An option given two times is a usage error too. So is an `overlay` option or command that breaks a rule. `afterglow ctl` with no command also gives status 2. So does refused text for `send-text`: over 32 MiB, or standard input that is not UTF-8 text. So does standard input for `overlay` over 4 MiB or not UTF-8 text. So does `screenshot` when its `FILE`, or `-`, is a terminal, or when `FILE` is a socket. `afterglow ctl` finds these errors before it connects. |
-| 0 to 255 from `overlay` | `afterglow ctl overlay` exits with the exit status of its program. Thus a status of 1 or 2 can come from the program. A failed or cancelled overlay gives 1. So does an exit status outside 0 to 255. |
+| 0 to 255 from `overlay` | `afterglow ctl overlay` exits with the exit status of its program. Thus a status of 1 or 2 can come from the program. A failed or canceled overlay gives 1. So does an exit status outside 0 to 255. |
 
 `afterglow ctl focus --direction` exits with status 1 at the edge of the tab.
-A navigation plugin of an editor can then pass the move on, as it does at the edge of a kitty or tmux window.
+A navigation plugin of an editor can then pass the move on, as it does at the edge of a Kitty or tmux window.
 
 `afterglow ctl watch` prints events until the connection or a subscription ends.
 Then it exits with status 1.

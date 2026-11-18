@@ -30,11 +30,6 @@ QString readable(const SettingsStore& settings, const QString& text)
     return settings.settings().control.allowReadText ? text : QString();
 }
 
-bool isWhole(double value)
-{
-    return std::isfinite(value) && std::floor(value) == value;
-}
-
 QJsonValue paneValue(quint32 id)
 {
     return QJsonValue(qint64(id));
@@ -60,7 +55,7 @@ std::optional<quint32> ControlApi::paneId(double value)
 {
     // JSON numbers arrive as doubles. A conversion to uint would wrap -1 and
     // 2^32 + 1 onto real panes, and round 1.6 to pane 2.
-    if (isWhole(value) && value >= 0 && value <= double(std::numeric_limits<quint32>::max())) return quint32(value);
+    if (Control::isWhole(value) && value >= 0 && value <= double(std::numeric_limits<quint32>::max())) return quint32(value);
     failed(QStringLiteral("a pane ID is a whole number from 0 to %1").arg(std::numeric_limits<quint32>::max()));
     return std::nullopt;
 }
@@ -68,16 +63,10 @@ std::optional<quint32> ControlApi::paneId(double value)
 QVariantList ControlApi::listPanes()
 {
     QVariantList panes;
+    // As those of userVarChanged and the command: only with read access,
+    // which also reads the command lines of the foreground processes.
     const bool readText = m_settings.settings().control.allowReadText;
-    for (PaneInfo& p : m_control.panes(true)) {
-        p.command = readable(m_settings, p.command);
-        // As those of userVarChanged and the command: only with read access.
-        if (!readText) {
-            for (QString& value : p.userVars) value.clear();
-            if (p.foreground) p.foreground->cmdline.clear();
-        }
-        panes.append(Control::paneMap(p));
-    }
+    for (const PaneInfo& p : m_control.panes(true, readText)) panes.append(m_control.clientPaneMap(Control::paneMap(p)));
     return panes;
 }
 
@@ -222,24 +211,18 @@ void ControlApi::setTitle(double pane, const QString& title)
     if (const auto id = paneId(pane)) failed(m_control.setTitle(*id, title));
 }
 
-uint ControlApi::focusNeighbour(double pane, const QString& direction)
+uint ControlApi::focusNeighbor(double pane, const QString& direction)
 {
     const auto id = paneId(pane);
     if (!id) return 0;
     quint32 focused = 0;
-    failed(m_control.focusNeighbour(*id, direction, focused));
+    failed(m_control.focusNeighbor(*id, direction, focused));
     return focused;
 }
 
 void ControlApi::resizePane(double pane, const QString& direction, double cells)
 {
-    const auto id = paneId(pane);
-    if (!id) return;
-    if (!isWhole(cells) || cells < 1 || cells > Control::MaxResizeCells) {
-        failed(QStringLiteral("cells is a whole number from 1 to %1").arg(Control::MaxResizeCells));
-        return;
-    }
-    failed(m_control.resizePane(*id, direction, int(cells)));
+    if (const auto id = paneId(pane)) failed(m_control.resizePane(*id, direction, cells));
 }
 
 void ControlApi::sendKeys(double pane, const QStringList& keys)
@@ -249,13 +232,7 @@ void ControlApi::sendKeys(double pane, const QStringList& keys)
 
 void ControlApi::scroll(double pane, const QString& unit, double amount)
 {
-    const auto id = paneId(pane);
-    if (!id) return;
-    if (!isWhole(amount) || std::abs(amount) > double(Control::MaxScrollAmount)) {
-        failed(QStringLiteral("the amount is a whole number from -%1 to %1").arg(Control::MaxScrollAmount));
-        return;
-    }
-    failed(m_control.scroll(*id, unit, qint64(amount)));
+    if (const auto id = paneId(pane)) failed(m_control.scroll(*id, unit, amount));
 }
 
 void ControlApi::setTabTitle(double pane, const QString& title)
@@ -272,7 +249,17 @@ QVariantMap ControlApi::getColors(double pane)
 
 void ControlApi::setColors(double pane, const QVariantMap& colors, bool reset)
 {
-    if (const auto id = paneId(pane)) failed(m_control.setColors(*id, colors, reset));
+    const auto id = paneId(pane);
+    if (!id) return;
+    QString code;
+    const QString error = m_control.setColors(*id, colors, reset, &code);
+    if (code.isEmpty()) {
+        failed(error);
+        return;
+    }
+    // A code of its own goes only through a pending reply. Past the
+    // router's limit of waiting calls, the router fails the call.
+    if (const PendingReply reply = deferCall(error)) reply->fail(code, error);
 }
 
 void ControlApi::setFontSize(double pane, const QString& size)
@@ -297,22 +284,12 @@ void ControlApi::signalProgram(double pane, const QString& signal)
 
 void ControlApi::setWindowState(double pane, const QString& state, double cols, double rows)
 {
-    const auto id = paneId(pane);
-    if (!id) return;
-    if (!isWhole(cols) || !isWhole(rows) || cols < 0 || rows < 0 || cols > Control::MaxWindowCells || rows > Control::MaxWindowCells) {
-        failed(QStringLiteral("a size is COLSxROWS, each from 1 to %1").arg(Control::MaxWindowCells));
-        return;
-    }
-    failed(m_control.setWindowState(*id, state, int(cols), int(rows)));
+    if (const auto id = paneId(pane)) failed(m_control.setWindowState(*id, state, cols, rows));
 }
 
 void ControlApi::signal(double pane, double channel, double value)
 {
-    const auto id = paneId(pane);
-    if (!id) return;
-    // Control names the valid channels for any value outside them.
-    const int index = isWhole(channel) && channel >= 0 && channel <= 1024 ? int(channel) : -1;
-    failed(m_control.signal(*id, index, value));
+    if (const auto id = paneId(pane)) failed(m_control.signal(*id, channel, value));
 }
 
 void ControlApi::notify(double pane, const QString& title, const QString& body)
@@ -406,7 +383,7 @@ QVariantMap ControlApi::openRemoteSocket(double pane, double pid, const QString&
         failed(QStringLiteral("this afterglow has no remote sockets"));
         return {};
     }
-    if (!isWhole(pid) || !isWhole(protocol) || std::abs(protocol) > 1e9) {
+    if (!Control::isWhole(pid) || !Control::isWhole(protocol) || std::abs(protocol) > 1e9) {
         failed(QStringLiteral("the process ID and the protocol are whole numbers"));
         return {};
     }

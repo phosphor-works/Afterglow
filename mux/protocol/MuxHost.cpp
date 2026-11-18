@@ -11,6 +11,7 @@
 #include <AfterglowProto/Transfer.h>
 
 #include <array>
+#include <cstdint>
 #include <vector>
 
 namespace AfterglowMux::Host {
@@ -224,8 +225,7 @@ std::string encode(const Call& call)
         o.varint(call.value);
         break;
     case Kind::DownloadData:
-        o.string(call.text);
-        break;
+        return encodeDownloadData(call.text);
     case Kind::DownloadEnd:
         o.signedInt(call.number);
         break;
@@ -254,6 +254,16 @@ std::string encode(const Call& call)
     return out;
 }
 
+std::string encodeDownloadData(std::string_view data)
+{
+    std::string out;
+    out.reserve(1 + 10 + data.size());
+    Out o(out);
+    o.byte(std::uint8_t(Kind::DownloadData));
+    o.string(data);
+    return out;
+}
+
 std::optional<Call> decode(std::string_view bytes)
 {
     In in(bytes);
@@ -279,6 +289,8 @@ std::optional<Call> decode(std::string_view bytes)
     case Kind::DownloadBegin:
         call.title = in.string();
         call.value = in.varint();
+        // The size that the terminal gives, at most INT64_MAX, + 1.
+        if (call.value > std::uint64_t(INT64_MAX) + 1) return std::nullopt;
         break;
     case Kind::DownloadData:
         call.text = in.string();
@@ -388,6 +400,11 @@ std::string answerWithoutWindow(const Call& call)
         return call.notification.kind == AfterglowVt::NotificationRequest::Kind::Alive ? call.notification.aliveReply() : std::string();
     case Kind::Report:
         return call.text;
+    case Kind::UploadRequest:
+        // No person can choose the files, nor cancel: nothing goes, as from
+        // a terminal that refuses (ITerminalHost::uploadRequested). Ctrl+C,
+        // iTerm2's answer to a cancel, is a signal that only a person sends.
+        return {};
     default:
         return {};
     }

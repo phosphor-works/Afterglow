@@ -164,18 +164,22 @@ A program sends a file with OSC 1337 `File` or `MultipartFile`, as iTerm2's `it2
 Downloads use `inline=0`, which is also the default.
 
 Afterglow asks before the data of the file comes, as iTerm2 does.
-The question shows the name and the size of the file.
+The question shows the name of the file. When the program declares a `size` above 0, the question also shows the size.
 The program waits until you answer.
 
-1. Select **Save to *folder*** to save the file in `Terminal.downloadDirectory`, the download folder of the desktop by default. A name that is taken gets a number: `name (1).txt`.
-2. Or select **Save As…** to choose a file in a Save dialog.
-3. Or select **Refuse**. The program goes on, and its data goes nowhere.
+| Choice | Result |
+| --- | --- |
+| **Save to *folder*** | Afterglow saves the file in `Terminal.downloadDirectory`, the download folder of the desktop by default. A name that is taken gets a number: `name (1).txt`. When the names up to `name (999).txt` are all taken, Afterglow refuses the download and shows a notice. |
+| **Save As…** | You choose a file in a Save dialog. |
+| **Refuse** | The program goes on, and its data goes nowhere. |
 
 The question starts on **Refuse**, so a Return that you type for the shell refuses.
 `Terminal.downloads` sets the policy: `ask` (the default), `allow`, which saves in `Terminal.downloadDirectory` with no question, or `deny`.
+`Terminal.downloadDirectory` is an absolute path, `~`, or a path that starts with `~/`.
+Afterglow reports another value as a problem of the configuration, and uses the download folder of the desktop.
 
-The data goes into `name.part` next to the file while it comes.
-When the whole file came, `name.part` becomes `name`.
+The data goes into `name.part` next to the file while it comes. When `name.part` is taken, the data goes into `name.N.part`.
+When the whole file came, the part file becomes `name`.
 A refused, cut or invalid download leaves no file.
 A notification tells you where the file is, or why it was not saved.
 The interface supports SSH transports that pass OSC sequences through.
@@ -187,11 +191,14 @@ python3 data/examples/compatibility/download.py /path/to/report.txt
 ```
 
 A download has no size limit: its data goes to the file as it comes, not into memory.
+Up to 8 MiB of data can wait for the disk. When more waits, Afterglow reads no more output of the pane until half of it is written.
 More data than the declared `size`, or less, or invalid base64, stops the download, and the file goes.
+A download without a declared `size`, or with a `size` of 0, has no size check.
 
 In a mux session, the window that shows the session asks, and the data streams to it. While the window takes the data slowly, the program waits. Without a window, the session refuses the download (see [what the daemon answers](MUX.md#what-the-daemon-answers)).
+When the pane leaves the window before the whole file came, the download stops, and a notification tells you that the file was not saved.
 
-The suggested name uses only the basename, without control or format characters.
+The suggested name uses only the basename, without control or format characters and without dots at its start.
 The Save dialog asks before it replaces a file.
 Closing the source pane refuses the download and removes its `.part` file.
 The protocol has no success acknowledgment.
@@ -202,32 +209,96 @@ Afterglow does not open or execute received files automatically.
 A program asks for files with OSC 1337 `RequestUpload=format=tgz`, as iTerm2's `it2ul` does.
 Afterglow asks you first, then the program gets the files that you choose.
 
-1. Select **Choose Files…** to choose one or more files.
-2. Or select **Choose a Folder…** to choose a folder with all that it holds.
-3. Or select **Refuse**. The program gets Ctrl+C, as from iTerm2.
+| Choice | Result |
+| --- | --- |
+| **Choose Files…** | You choose one or more files. |
+| **Choose a Folder…** | You choose a folder with all that it holds. |
+| **Refuse** | The program gets Ctrl+C, as from iTerm2. |
 
 The question starts on **Refuse**, so a Return that you type for the shell refuses.
+When you close the file dialog without a choice, the program also gets Ctrl+C.
 `Terminal.uploads` sets the policy: `ask` (the default), or `deny`, which refuses each request with no question.
+
+Only a choice of yours sends Ctrl+C, because Ctrl+C is a signal to the job in the foreground.
+A request that Afterglow refuses without a question gets no answer, and the program waits until you stop it.
+These requests get no answer:
+
+- each request while `Terminal.uploads` is `deny`
+- a request for a format other than `tgz`
+- a second request while the question of the first is open
 
 The program gets the files as iTerm2 sends them:
 
 | Part | Content |
 | --- | --- |
 | First line | `ok` |
-| Then | A tar archive compressed with gzip, in base64 lines of 76 characters, each ended with a carriage return |
+| Then | A tar archive compressed with gzip, in base64 lines of 76 characters. A carriage return ends each line but the last. A line feed ends the last line. |
 | Last | An empty line |
 
 Each path in the archive starts with `./`, below the deepest folder that holds all the chosen files.
 A folder chosen alone is in the archive with its name.
-Symbolic links stay links.
+A link that you choose is followed: the archive holds the file or the folder that it points to.
+A link in a chosen folder stays a link.
+A device, a socket or a named pipe in a chosen folder is left out.
+When you choose one of them directly, Afterglow refuses the files with a notification, and the program gets Ctrl+C.
 
 The answer goes to the program as typed input, in one piece.
 Typed input holds 32 MiB, so `Terminal.uploadLimit` sets the largest archive after compression: 16 MiB by default, at most 23 MiB.
+The question shows the limit. The limit of the question applies, also when the setting changes before you choose the files.
 Files that make a larger archive are refused with a notification, and the program gets Ctrl+C.
+When the typed input of the pane has no room for the answer, the program gets Ctrl+C, and a notification tells you why.
+When the command that asked ends before the files go, nothing goes to the shell.
+The question and its file dialog close when the program of the pane exits, or when shell integration reports the end of the command.
+Otherwise, a notification tells you that the files did not go.
 Use [`aglow transfer`](#the-aglow-client) for larger files: it resumes, and it sends only the changed parts of a file.
 
-A second request while the question is open gets Ctrl+C.
-In a mux session, the window that shows the session asks. Without a window, the session cancels the request with Ctrl+C at once.
+In a mux session, the window that shows the session asks.
+Without a window, the request gets no answer, and the program waits until you stop it.
+When the window goes before you answer, the next window that shows the session asks again, while the job that asked still holds the terminal.
+
+## Hide notifications of programs
+
+`Notifications.filters` is a list of rules, as `filter_notification` in Kitty.
+Afterglow does not show a notification of a program that a rule matches.
+An empty list, the default, shows every notification.
+
+```json
+{"Notifications": {"filters": ["app:\"[ng]?vim\" and not body:\"(?i)update\""]}}
+```
+
+A rule has terms of the form `field:pattern`.
+
+| Field | Text that the pattern matches |
+| --- | --- |
+| `title` | The title of the notification |
+| `body` | The body of the notification |
+| `app` | The application name of an OSC 99 notification |
+| `type` | Each type of an OSC 99 notification |
+
+The pattern is a regular expression. It can match any part of the field.
+A pattern without quotes ends at a space, or at a parenthesis that it does not open.
+Put a pattern with spaces in double quotes.
+In quotes, a backslash makes the next quote or backslash a plain character.
+
+| Word | Function |
+| --- | --- |
+| `and` | Matches when the terms on both sides match. Terms side by side also join with `and`. |
+| `or` | Matches when one of the terms on its sides matches |
+| `not` | Matches when the next term does not match |
+| `(` and `)` | Group terms |
+| `all` | Matches every notification |
+
+The words and the field names can be in any case.
+OSC 9 and OSC 777 notifications, and program status notifications (OSC 7501), have no app and no type.
+A notification that a rule matches does not count against `Notifications.rateLimit`.
+When a rule matches an OSC 99 notification that replaces one on screen, the one on screen closes.
+In a mux session, the rules of the window apply when the window shows the notification.
+
+| Item | Limit | At the limit |
+| --- | --- | --- |
+| Groups in groups | 32 levels of parentheses | Afterglow ignores the rule, and reports it as a problem of the configuration. The other rules apply. |
+
+Afterglow also ignores a rule that does not parse, and reports it in the same way.
 
 ## The aglow client
 
@@ -290,27 +361,38 @@ See [remote commands](CONTROL.md#remote-commands).
 ### aglow icat
 
 `aglow icat` shows PNG, APNG, JPEG, GIF, WebP, BMP, TIFF and netPBM (PBM, PGM, PPM and PAM) images.
-It decodes PNG, JPEG and WebP with libpng, libjpeg-turbo and libwebp, which the build includes, and GIF, BMP, TIFF and netPBM with readers of its own.
+It decodes PNG, JPEG and WebP with libpng, libjpeg-turbo and libwebp, which the build includes. It decodes GIF, BMP, TIFF and netPBM with readers of its own.
 Of a TIFF or netPBM file with more than one image, it shows the first image.
 It does not show these images:
 
-- a BMP that is compressed (run-length encoding, or JPEG or PNG data in the BMP)
-- a BMP with a depth other than 1, 4, 8, 16, 24 or 32 bits
-- a JPEG with a sample size other than 8 bits, or a progressive JPEG with more than 1,000 scans
-- Apple's CgBI PNG
-- a TIFF with a compression other than LZW, Deflate and PackBits (for example JPEG)
-- a TIFF with each sample in a plane of its own, with floating-point samples, or with a photometric interpretation other than grey, palette, RGB and CMYK
-- a BigTIFF
+| Format | Images that it does not show |
+| --- | --- |
+| BMP | Without ImageMagick, or with `--engine builtin`, a BMP with JPEG or PNG data in it. Without ImageMagick, or with `--engine builtin`, a BMP with run-length encoding that does not fit its depth: RLE8 shows only at 8 bits, and RLE4 only at 4 bits. See [other formats and URLs](#other-formats-and-urls). A BMP with a depth other than 1, 4, 8, 16, 24 or 32 bits. A BMP with color masks (BITFIELDS) at a depth other than 16 or 32 bits, or with another compression. |
+| JPEG | A JPEG with a sample size other than 8 bits. A progressive JPEG with more than 1,000 scans. |
+| PNG | Apple's CgBI PNG. |
+| TIFF: compression | A compression other than none, LZW, Deflate (8 and 32946) and PackBits, for example JPEG. The LZW of before TIFF 6. |
+| TIFF: samples | Samples in planes of their own. Samples that are not unsigned integers of one size, such as signed or floating-point samples. More than 8 samples in a pixel. |
+| TIFF: color | A photometric interpretation other than white is zero, black is zero, RGB, palette and CMYK. A gray depth other than 1, 2, 4, 8 or 16 bits. A palette depth other than 1, 2, 4 or 8 bits. A palette image with more than one sample in a pixel, such as a palette image with alpha. An RGB or CMYK depth other than 8 or 16 bits. A color map that does not have 3 × 2^bits entries. |
+| TIFF: predictor | A predictor other than none and horizontal (2). The horizontal predictor shows only at 8 and 16 bits. |
+| TIFF: layout | Strips or tiles with a side of more than 10,000 pixels. Strips or tiles with more pixels than the larger of two bounds. The first bound is 4 times the pixels of the image, and one megapixel more. The second bound is the pixels of the image with one more strip or tile across and down. That strip or tile counts at most 512 pixels a side. Thus this rule refuses no tiles of up to 512 pixels a side. A BigTIFF. |
+| netPBM | A PAM with a tuple type other than `BLACKANDWHITE`, `GRAYSCALE`, `RGB` and their `_ALPHA` forms. A PAM with a depth that is not the depth of its type. A maximum sample value (`MAXVAL`) of 0 or more than 65535. |
 
 It sends a PNG image that needs no change as it is.
 It decodes the other images to pixels.
 It also decodes a PNG image that it must scale, mirror, turn or draw on a color (`--background`).
 It also decodes a PNG image that is damaged, so that it can report the error.
-It turns a JPEG, PNG or WebP image as its EXIF orientation tells.
+It turns a JPEG, PNG or WebP image as its EXIF orientation tells, and a TIFF as its Orientation tag tells.
 It applies the gamma of a PNG (the gAMA chunk), as Kitty does.
 It converts an image with an ICC color profile or a cICP color space to sRGB.
-A child process decodes each image, with limits on its memory and CPU time.
+It converts only an RGB profile of a color image, of at most 4 MiB. It leaves the colors of an image with another profile as they are.
+A cICP chunk comes before the other color chunks of a PNG, as the third edition of the PNG specification tells.
+Thus a PNG with the cICP of sRGB shows with no gamma from its gAMA chunk.
+A child process decodes each image, with limits on its memory, its CPU time and the system calls that it can make.
 A corrupt image stops only that process, and `aglow icat` reports an error.
+`aglow` knows the system calls of x86-64, little-endian AArch64, RISC-V 64 and little-endian POWER64 processors.
+On these processors, a kernel without seccomp filters cannot limit the system calls of the child process.
+Then the child process decodes nothing. `aglow icat` sends only a PNG image that needs no change, and reports an error for the other images.
+On other processors, the child process decodes with the limits on its memory and its CPU time only.
 
 An animation plays with the times of its frames, as Kitty plays it.
 A GIF whose frames all have no time plays at 100 ms a frame.
@@ -320,11 +402,14 @@ A WebP keeps the frames before the damage only when the damage is in the image d
 A WebP file that is cut short shows nothing.
 An APNG plays the frames before a damaged frame, or before a frame whose chunks are out of order, and `aglow icat` shows a warning.
 An APNG whose first image is not a frame plays its frames without that image, as browsers play it.
+An APNG whose first frame is not valid shows its default image, and `aglow icat` shows a warning.
 With `--loop 0`, `aglow icat` decodes the first frame only.
 
 #### Other formats and URLs
 
-`aglow icat` shows AVIF, HEIC, JPEG XL, QOI, SVG, TGA, ICO and CUR images, and BMP images that are compressed, with ImageMagick.
+`aglow icat` shows AVIF, HEIC, JPEG XL, QOI, SVG, TGA, ICO and CUR images with ImageMagick.
+It also shows two kinds of BMP images with ImageMagick.
+These are a BMP with JPEG or PNG data, and a BMP with run-length encoding that does not fit its depth.
 It needs the `magick` program of ImageMagick 7 on `PATH`.
 `--engine builtin` turns this off.
 `--engine auto` and `--engine magick` do the same in `aglow`: the formats that `aglow` reads itself never go to ImageMagick.
@@ -350,6 +435,7 @@ A `file` URL names a file of this computer, and `aglow icat` reads it without `c
 
 For a directory, `aglow icat` shows the image files in it and in its subdirectories, in name order.
 It finds them by the file name extension.
+It finds the files of the formats of ImageMagick only when `magick` is on `PATH` and `--engine builtin` is not given.
 It shows only regular files: a named pipe or a device file is not an image file.
 A subdirectory that it cannot read is left out with a message.
 `aglow icat` then shows the other images, and exits with status 1.
@@ -383,6 +469,7 @@ Inside tmux, `aglow icat` works in a different way:
 | Scans of a progressive JPEG | 1,000 | `aglow icat` refuses the image. |
 | Side in cells with Unicode placeholders (`--unicode-placeholder`, and always inside tmux) | 297 cells | `aglow icat` refuses the image and exits with status 1. |
 | Wait for the terminal's answer (`--detection-timeout`) | 10 seconds, from 0 to 3,600 | `aglow icat` reports that the terminal did not answer, and exits with status 1. |
+| Wait for `tmux set -p allow-passthrough on` inside tmux | `--detection-timeout` | `aglow icat` stops `tmux`, reports that it could not turn on passthrough, and goes on. |
 
 Ctrl+C stops `aglow icat` between two parts of the output, and while a child process decodes an image.
 SIGTERM and SIGHUP also stop it at these points.
@@ -397,7 +484,7 @@ A read waits as long as the permission prompt of the terminal stays open. Press 
 It truncates an existing file, and the file keeps its owner, mode and links.
 
 When you read a PNG (`image/png`) and the clipboard holds none, `aglow clipboard` makes one from another image on the clipboard.
-It takes TIFF, BMP, WebP, APNG, GIF, netPBM and JPEG, in this order, so that a lossless image comes first.
+It takes TIFF, BMP, APNG, GIF, netPBM, WebP and JPEG, in this order, so that a lossless image comes first.
 It decodes the image in a child process with limits, as `aglow icat` does, and writes the first frame.
 For example, `aglow clipboard --get-clipboard picture.png` writes a PNG of a JPEG that a browser copied.
 
@@ -587,8 +674,7 @@ Afterglow cancels a drop after 30 seconds without a message, so the limit is bel
 
 A program must enable the protocol before it receives drag events.
 A source offer requires a physical left-button drag gesture.
-The offer comes before the [drag of selected text](INPUT.md#drag-selected-text-out-of-a-pane) when the press is inside
-the selection.
+The offer comes before the [drag of selected text](INPUT.md#drag-selected-text-out-of-a-pane) when the press is inside the selection.
 When a drag ends, Afterglow tells the source the action that the drop took (the `o` key of `t=e:x=4`).
 
 | `o` value | Action of the drop |
@@ -710,6 +796,15 @@ The suite also checks these behaviors:
 - Paste confirmation ownership and keyboard acceptance.
 - Button key releases.
 - Notifications and script text permissions.
+- Notifications of programs: an OSC 99 notification that replaces another, the icon cache of the application, and `Notifications.filters`.
+- A pane that learns that the pointer left it (the leave report of Kitty with the SGR pixel format).
+- An OSC 5522 clipboard password that you allow always. It then allows the later requests of the same kind only. An **Always allow** for a write allows no reads, and one for a read allows no writes.
+- Downloads: the question before the data comes, and the file in the download folder.
+- Uploads: the archive that a program gets for the files that you choose, or Ctrl+C when you refuse.
+- Command outputs that open in the pager, and the output that a Ctrl+Shift+right-click (`Mouse.commandOutputModifier`) picks.
+- `afterglow ctl` moves the focus between panes, resizes, scrolls and types keys.
+- `afterglow ctl` launches a program with the text of a pane, with user variables and without the focus.
+- `afterglow ctl` sets colors, the font, the opacity, user variables and the window, and sends signals.
 - Kitty drag and drop with `aglow dnd`: a text drag between two panes, and a remote directory drag. The same tests run with `kitten dnd` when it is installed.
 - Selected text that drags into another pane and not back into its own pane, with real compositor input.
 - Overlays: standard input that a control client sends in parts, and the OSC 24569 answer to the program of an overlay.

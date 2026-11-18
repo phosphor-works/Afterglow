@@ -104,7 +104,8 @@ export type CommandEvent = {
     run: string, -- for afterglow.output, output_error and exit
     terminal: State,
 }
-export type UserVarEvent = { pane: Pane, name: string, value: string, terminal: State } -- iTerm2 SetUserVar
+-- iTerm2 SetUserVar, afterglow ctl set-user-var, or the variables of a launch
+export type UserVarEvent = { pane: Pane, name: string, value: string, terminal: State }
 export type ContextEvent = { pane: Pane, context: string, terminal: State } -- OSC 3008 / RemoteHost; "" back home
 -- A split also says which pane it split from and the edge they share: 1 left, 2 top, 3 right, 4 bottom.
 export type PaneCreatedEvent = PaneEvent & { split_from: number?, edge: number? }
@@ -280,7 +281,8 @@ declare afterglow: {
     -- id: 1-64 UTF-16 units. Results are queued to the originating script instance.
     request: (id: string, effect: Effect) -> Effect,
     semantic_regions: (pane: PaneRef) -> Effect,
-    -- Result data: {text: string, truncated: boolean, available: boolean}; max 1 MiB.
+    -- read_region and read_text: result data {text: string, truncated: boolean, available: boolean};
+    -- max_bytes 1 to 1048576 (1 MiB), default 65536. read_text's scope defaults to "last-output".
     read_region: (pane: PaneRef, region: string, max_bytes: number?) -> Effect,
     read_text: (pane: PaneRef, scope: ("screen" | "scrollback" | "last-output" | "first-output-on-screen" | "last-visited-output" | "selection")?, max_bytes: number?) -> Effect,
     -- The script's own JSON object, of a package or of a single file by its id; writes use

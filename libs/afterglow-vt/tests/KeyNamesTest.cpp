@@ -60,13 +60,14 @@ TEST(KeyNames, NamesOfTheBindingsAndOfKitty)
 TEST(KeyNames, RefusesWhatNamesNoKey)
 {
     for (const std::string_view name : {"", "ctrl+", "hyper+c", "ctrl++c", "ctrl+foo", "ab", "f0", "f36", "f05", "\x01", "ctrl+\x7f",
-                                        "\xff", "+c", "shift+"}) {
+                                        "\xff", "+c", "shift+", "++"}) {
         EXPECT_FALSE(parseKeyName(name)) << name;
     }
 }
 
 // In the kitty keyboard protocol a key also reports its release when the
-// program asked for events.
+// program asked for events, and a key that types text only when it also
+// asked for every key as an escape code.
 TEST(KeyNames, FollowTheProgramsKeyboardProtocol)
 {
     Modes kitty;
@@ -79,4 +80,32 @@ TEST(KeyNames, FollowTheProgramsKeyboardProtocol)
     Modes application;
     application.cursorKeysApp = true;
     EXPECT_EQ(bytes("up", application), "\x1bOA");
+}
+
+// The keypad types its characters, as a typed keypad key does: in the legacy
+// encoding, and in kitty's until every key is reported. kitty's other names.
+TEST(KeyNames, KeypadKeysTypeTheirCharacters)
+{
+    EXPECT_EQ(bytes("kp5"), "5");
+    EXPECT_EQ(bytes("KP_0"), "0");
+    EXPECT_EQ(bytes("kp_decimal"), ".");
+    EXPECT_EQ(bytes("kp_divide"), "/");
+    EXPECT_EQ(bytes("kp_multiply"), "*");
+    EXPECT_EQ(bytes("kp_subtract"), "-");
+    EXPECT_EQ(bytes("kp_add"), "+");
+    EXPECT_EQ(bytes("kp_equal"), "=");
+    EXPECT_EQ(bytes("kp_separator"), ",");
+    Modes kitty;
+    kitty.kittyKeyboard = KittyFlag::Disambiguate;
+    EXPECT_EQ(bytes("kp7", kitty), "7");
+    kitty.kittyKeyboard = KittyFlag::Disambiguate | KittyFlag::ReportAllKeys;
+    EXPECT_EQ(bytes("kp7", kitty), "\x1b[57406u");
+    Modes application;
+    application.keypadApp = true;
+    EXPECT_EQ(bytes("kp1", application), "\x1bOq");
+    for (const std::string_view name : {"media_reverse", "media_record", "iso_level3_shift", "iso_level5_shift"}) {
+        EXPECT_TRUE(parseKeyName(name)) << name;
+    }
+    kitty.kittyKeyboard = KittyFlag::Disambiguate | KittyFlag::ReportAllKeys;
+    EXPECT_EQ(bytes("media_record", kitty), "\x1b[57437u");
 }

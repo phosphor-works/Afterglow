@@ -9,6 +9,7 @@
 #include "Formats.h"
 
 #include <algorithm>
+#include <array>
 #include <vector>
 
 namespace AfterglowImage::detail {
@@ -70,6 +71,13 @@ public:
         if (m_pos >= m_bytes.size() || (m_bytes[m_pos] != '0' && m_bytes[m_pos] != '1')) return false;
         value = std::uint32_t(m_bytes[m_pos++] - '0');
         return true;
+    }
+    /// After a number or a digit that is not there: the file ends, rather
+    /// than holding something that is not one.
+    bool atEnd()
+    {
+        skip();
+        return m_pos >= m_bytes.size();
     }
     /// The one white space character between the header and raw samples.
     bool separator()
@@ -171,7 +179,7 @@ Probe probePnm(std::string_view bytes, int& width, int& height)
     return sized(header.width, header.height, width, height);
 }
 
-bool decodePnm(std::string_view bytes, const FrameSink& sink, std::string& error)
+bool decodePnm(std::string_view bytes, const FrameSink& sink, const Options&, std::string& error, std::string&)
 {
     int width = 0;
     int height = 0;
@@ -181,59 +189,58 @@ bool decodePnm(std::string_view bytes, const FrameSink& sink, std::string& error
         return false;
     }
     if (refused(sized(header.width, header.height, width, height), "netPBM image", error)) return false;
-    const std::size_t pixels = std::size_t(width) * std::size_t(height);
-    const std::uint32_t maximum = header.maximum;
-    const auto scale = [maximum](std::uint32_t value) {
-        // A sample above the maximum is not valid: it shows as the maximum.
-        return std::uint8_t((std::min(value, maximum) * 255 + maximum / 2) / maximum);
-    };
-    // The samples of each pixel in turn, as 8 bits.
-    std::vector<std::uint8_t> samples(pixels * header.depth);
-    const bool wide = maximum > 255;
-    if (header.kind == '1' || header.kind == '2' || header.kind == '3') {
-        Reader reader(bytes, header.data);
-        for (std::uint8_t& sample : samples) {
-            std::uint64_t value = 0;
-            std::uint32_t bit = 0;
-            const bool read = header.kind == '1' ? reader.bit(bit) : reader.number(value);
-            if (!read) {
-                error = "the netPBM image is truncated";
-                return false;
-            }
-            // In a PBM, 1 is black.
-            sample = header.kind == '1' ? std::uint8_t(bit ? 0 : 255) : scale(std::uint32_t(std::min<std::uint64_t>(value, maximum)));
-        }
-    } else if (header.kind == '4') {
-        const std::size_t row = (std::size_t(width) + 7) / 8;
-        if ((bytes.size() - header.data) / row < std::size_t(height)) {
-            error = "the netPBM image is truncated";
-            return false;
-        }
-        for (std::size_t y = 0; y < std::size_t(height); ++y) {
-            for (std::size_t x = 0; x < std::size_t(width); ++x) {
-                const bool black = (at(bytes, header.data + y * row + x / 8) >> (7 - x % 8)) & 1;
-                samples[y * std::size_t(width) + x] = black ? 0 : 255;
-            }
-        }
-    } else {
-        const std::size_t size = wide ? 2 : 1;
-        if ((bytes.size() - header.data) / size < samples.size()) {
-            error = "the netPBM image is truncated";
-            return false;
-        }
-        for (std::size_t i = 0; i < samples.size(); ++i) {
-            samples[i] = scale(wide ? big(bytes, header.data + 2 * i, 2) : at(bytes, header.data + i));
-        }
+    const std::size_t w = std::size_t(width);
+    const std::size_t h = std::size_t(height);
+    const std::size_t samples = w * h * header.depth;
+    const bool plain = header.kind <= '3';
+    const bool wide = header.maximum > 255;
+    // Before the memory for the pixels: the bytes that the samples take at
+    // the least. A raw sample is one byte or two, a raw PBM has rows of
+    // whole bytes, and a plain sample is a digit, with white space between
+    // the numbers of PGM and PPM.
+    const std::size_t least = header.kind == '4' ? (w + 7) / 8 * h
+        : header.kind == '1'                     ? samples
+        : plain                                  ? 2 * samples - 1
+                                                 : samples * (wide ? 2 : 1);
+    if (bytes.size() - header.data < least) {
+        error = "the netPBM image is truncated";
+        return false;
     }
-    std::vector<unsigned char> rgba(pixels * 4);
-    const bool grey = header.depth <= 2;
-    for (std::size_t i = 0; i < pixels; ++i) {
-        const std::uint8_t* in = samples.data() + i * header.depth;
-        unsigned char* out = rgba.data() + i * 4;
-        out[0] = in[0];
-        out[1] = grey ? in[0] : in[1];
-        out[2] = grey ? in[0] : in[2];
-        out[3] = header.alpha ? in[header.depth - 1] : 255;
+    // Each sample to 8 bits; one above the maximum is not valid, and shows
+    // as the maximum.
+    std::vector<std::uint8_t> scale(std::size_t(header.maximum) + 1);
+    for (std::uint32_t v = 0; v <= header.maximum; ++v) scale[v] = std::uint8_t((v * 255 + header.maximum / 2) / header.maximum);
+    const auto scaled = [&](std::uint64_t value) { return scale[std::size_t(std::min<std::uint64_t>(value, header.maximum))]; };
+
+    std::vector<unsigned char> rgba(w * h * 4);
+    Reader reader(bytes, header.data);
+    std::size_t raw = header.data;
+    std::array<std::uint8_t, 4> in{};
+    unsigned char* out = rgba.data();
+    for (std::size_t y = 0; y < h; ++y) {
+        for (std::size_t x = 0; x < w; ++x, out += 4) {
+            // In a PBM, 1 is black.
+            if (header.kind == '4') in[0] = (at(bytes, header.data + y * ((w + 7) / 8) + x / 8) >> (7 - x % 8)) & 1 ? 0 : 255;
+            for (std::uint32_t d = 0; header.kind != '4' && d < header.depth; ++d) {
+                if (!plain) {
+                    in[d] = scaled(wide ? big(bytes, raw, 2) : at(bytes, raw));
+                    raw += wide ? 2 : 1;
+                    continue;
+                }
+                std::uint64_t value = 0;
+                std::uint32_t bit = 0;
+                if (header.kind == '1' ? !reader.bit(bit) : !reader.number(value)) {
+                    error = reader.atEnd() ? "the netPBM image is truncated" : "the netPBM image has a sample that is not valid";
+                    return false;
+                }
+                in[d] = header.kind == '1' ? (bit ? 0 : 255) : scaled(value);
+            }
+            const bool grey = header.depth <= 2;
+            out[0] = in[0];
+            out[1] = grey ? in[0] : in[1];
+            out[2] = grey ? in[0] : in[2];
+            out[3] = header.alpha ? in[header.depth - 1] : 255;
+        }
     }
     sink(rgba.data(), width, height, 0);
     return true;

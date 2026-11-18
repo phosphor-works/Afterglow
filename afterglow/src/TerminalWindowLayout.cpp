@@ -28,6 +28,9 @@ void TerminalWindow::releasePaneUi(Pane* pane)
     dropPanePrompts(pane);
     if (m_copyPane == pane) stopCopyMode();
     if (m_hover.pane == pane) m_hover = {};
+    // The pointer leaves its cells here: no later move of this window
+    // reaches its program, which hears the leave now.
+    if (m_pointerPane && (m_pointerPane == pane || m_pointerPane == program)) leavePointerPane();
     // Its overlay goes with it, and leaves what it had here.
     if (program != pane) dropOverlayUi(program);
     m_dividerDrag.reset(); // the layout changes under it
@@ -281,10 +284,11 @@ void TerminalWindow::settleRearrangement(bool wasZoomed)
     m_dividerDrag.reset();
 }
 
-bool TerminalWindow::swapPane(Pane* pane, SplitTree::Neighbour direction)
+bool TerminalWindow::swapPane(Pane* pane, SplitTree::Neighbor direction)
 {
     if (!m_splits || !m_splits->contains(pane)) return false;
-    auto* other = m_splits->neighbour(pane, direction);
+    // Laid out first: a pane that a split just made has its place from the next layout.
+    auto* other = neighborOf(pane, direction);
     const bool zoomed = m_splits->zoomedPane() != nullptr;
     if (!other || !m_splits->swap(pane, other)) return false;
     settleRearrangement(zoomed);

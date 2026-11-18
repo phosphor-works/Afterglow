@@ -23,13 +23,14 @@
 // scroll shift, hovered link, blink phase, bidi, contrast, hinting, cell
 // scale); --help lists them all.
 
+#include <AfterglowImage/Decode.h>
+#include <AfterglowProto/Graphics.h>
 #include <AfterglowRender/GpuDevice.h>
 #include <AfterglowRender/GridRenderer.h>
 #include <AfterglowRender/Snapshot.h>
 #include <AfterglowVt/Search.h>
 #include <AfterglowVt/Selection.h>
 #include <AfterglowVt/Terminal.h>
-#include <ImageDecode.h>
 #include <config/Settings.h>
 #include <config/Theme.h>
 #include <scripting/OverlaySpec.h>
@@ -55,15 +56,63 @@
 #include <exception>
 #include <initializer_list>
 #include <memory>
+#include <new>
 #include <numeric>
 #include <optional>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
 
 namespace {
 
-// Images decode as in a pane, with its decoder and its limits.
+/// Decodes @p data as a pane's decoding process does (aglow-mux
+/// --decode-images, mux/src/ImageServer.cpp): the same decoders of
+/// libs/afterglow-image, formats and limits, here in this process, which
+/// renders a file that its user chose. @p pngOnly takes a PNG only and of an
+/// APNG its default image, as kitty's f=100. Frames of at most
+/// GraphicsMaxSide a side, at most @p maxFrames of them and @p maxBytes of
+/// RGBA8 together; an animation stops at the last frame that fits.
+bool decodeAsPane(std::string_view data, bool pngOnly, std::size_t maxBytes, std::size_t maxFrames,
+                  std::vector<AfterglowVt::ImageFrame>& frames, std::vector<std::uint32_t>& delays)
+{
+    using AfterglowProto::GraphicsMaxSide;
+    const std::size_t limit = std::min(maxBytes, AfterglowProto::GraphicsDefaultQuota);
+    const AfterglowImage::Format format = AfterglowImage::format(data);
+    if (data.empty() || data.size() > AfterglowProto::GraphicsDefaultQuota || format == AfterglowImage::Format::Unknown
+        || (pngOnly && format != AfterglowImage::Format::Png))
+        return false;
+    const auto fits = [&](std::uint64_t width, std::uint64_t height, std::uint64_t bytes) {
+        return width > 0 && height > 0 && width <= GraphicsMaxSide && height <= GraphicsMaxSide && bytes + width * height * 4 <= limit;
+    };
+    // The size from the header first, as the pane's process checks it before
+    // it decodes: no canvas larger than the limit is allocated.
+    int width = 0;
+    int height = 0;
+    if (AfterglowImage::probe(data, width, height) != AfterglowImage::Probe::Image || !fits(std::uint64_t(width), std::uint64_t(height), 0))
+        return false;
+    std::uint64_t bytes = 0;
+    std::string error;
+    std::string warning;
+    try {
+        AfterglowImage::decode(data, [&](const unsigned char* pixels, int w, int h, int delayMs) {
+            if (!fits(std::uint64_t(w), std::uint64_t(h), bytes)) return false;
+            const std::size_t size = std::size_t(w) * std::size_t(h) * 4;
+            AfterglowVt::ImageFrame frame;
+            frame.width = std::uint32_t(w);
+            frame.height = std::uint32_t(h);
+            frame.rgba.assign(pixels, pixels + size);
+            frames.push_back(std::move(frame));
+            delays.push_back(std::uint32_t(std::max(0, delayMs)));
+            bytes += size;
+            return frames.size() < maxFrames;
+        }, error, warning, pngOnly ? AfterglowImage::PngFrames::DefaultImage : AfterglowImage::PngFrames::Animation);
+    } catch (const std::bad_alloc&) {
+    }
+    return !frames.empty();
+}
+
+// Images decode as in a pane (Pane::decodePng, Pane::decodeImageFrames).
 class Host : public AfterglowVt::ITerminalHost
 {
 public:
@@ -71,18 +120,20 @@ public:
     bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,
                    std::vector<std::uint8_t>& rgba) override
     {
-        return Afterglow::decodeBoundedImage(png, "PNG", width, height, rgba);
+        std::vector<AfterglowVt::ImageFrame> frames;
+        std::vector<std::uint32_t> delays;
+        if (!decodeAsPane(png, true, AfterglowProto::GraphicsDefaultQuota, 1, frames, delays)) return false;
+        width = frames.front().width;
+        height = frames.front().height;
+        rgba = std::move(frames.front().rgba);
+        return true;
     }
-    // iTerm2 inline images: the common formats by their content.
-    bool decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height,
-                     std::vector<std::uint8_t>& rgba) override
-    {
-        return Afterglow::decodeBoundedImage(data, "", width, height, rgba);
-    }
+    // iTerm2 inline images: the common formats by their content, with each
+    // frame of an animation.
     bool decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<AfterglowVt::ImageFrame>& frames,
                            std::vector<std::uint32_t>& delays) override
     {
-        return Afterglow::decodeBoundedFrames(data, maxBytes, frames, delays);
+        return decodeAsPane(data, false, maxBytes, AfterglowProto::GraphicsMaxFrames, frames, delays);
     }
 };
 
@@ -254,7 +305,7 @@ int run(QGuiApplication& app)
     parser.addOption({QStringLiteral("mouse"), QStringLiteral("The pointer in framebuffer pixels (iMouse)."), QStringLiteral("x,y")});
     parser.addOption({QStringLiteral("bidi"), QStringLiteral("Bidirectional text: off (default), auto, ltr or rtl."), QStringLiteral("mode")});
     parser.addOption({QStringLiteral("minimum-contrast"), QStringLiteral("Lowest text contrast ratio, 1 to 21 (default 1)."), QStringLiteral("f")});
-    parser.addOption({QStringLiteral("bold-is-bright"), QStringLiteral("Bold text in colours 0-7 uses colours 8-15.")});
+    parser.addOption({QStringLiteral("bold-is-bright"), QStringLiteral("Bold text in colors 0-7 uses colors 8-15.")});
     parser.addOption({QStringLiteral("hinting"), QStringLiteral("Font hinting: none, light (default) or full."), QStringLiteral("mode")});
     parser.addOption({QStringLiteral("cell-scale"), QStringLiteral("Cell width and height against the font's own, 0.5 to 3 each."), QStringLiteral("w,h")});
     parser.addOption({QStringLiteral("cursor-position"), QStringLiteral("Where the cursor is drawn while it glides, in pixels from cell 0,0."), QStringLiteral("x,y")});
@@ -602,7 +653,8 @@ int run(QGuiApplication& app)
     AfterglowRender::PaneSnapshot snapshot;
     // A row below the viewport exists only while scrolled back. The window
     // captures it past half a pixel of shift, as here.
-    snapshot.capture(terminal, selection.active ? &selection : nullptr, search, scrollShift > 0.5f ? 1 : 0);
+    auto capture = [&] { snapshot.capture(terminal, selection.active ? &selection : nullptr, search, scrollShift > 0.5f ? 1 : 0); };
+    capture();
     QSize size(cols * metrics.cellWidth, rows * metrics.cellHeight);
     if (parser.isSet(QStringLiteral("pixels"))) {
         double w = 0, h = 0;
@@ -623,6 +675,11 @@ int run(QGuiApplication& app)
         }
         gridCols = int(c);
         gridRows = int(r);
+    }
+    // One pane is focused: there is none to dim.
+    if (parser.isSet(QStringLiteral("unfocused-dim")) && !split && gridCols * gridRows < 2) {
+        std::fprintf(stderr, "--unfocused-dim needs --split or a --grid of two panes or more\n");
+        return 1;
     }
     // Script docks at the window's edges grow the frame, and docks at each
     // pane's edges grow the pane: either way the grid keeps its size.
@@ -684,8 +741,8 @@ int run(QGuiApplication& app)
         bool rowOk = false;
         const int row = parts.value(0).toInt(&rowOk);
         if (parts.size() != 2 || !rowOk || row < 0 || row >= rows
-            || !parsePair(parts[1], QLatin1Char('-'), 0, cols - 1, c0, c1) || c0 > c1) {
-            std::fprintf(stderr, "--hover-link requires row,c0-c1 within the grid\n");
+            || !parsePair(parts[1], QLatin1Char('-'), 0, cols - 1, c0, c1) || c0 > c1 || c0 != std::floor(c0) || c1 != std::floor(c1)) {
+            std::fprintf(stderr, "--hover-link requires whole cells row,c0-c1 within the grid\n");
             return 1;
         }
         pane.params.hoverRow = row;
@@ -858,7 +915,7 @@ int run(QGuiApplication& app)
     // An overlay: a terminal of its own over the first pane, drawn in its
     // place with the pane's rectangle and docks, or as a popup over a part of
     // its grid, as the window does it.
-    AfterglowVt::Terminal overlayTerminal(cols, rows, host, options);
+    std::optional<AfterglowVt::Terminal> overlayTerminal;
     AfterglowRender::PaneSnapshot overlaySnapshot;
     if (parser.isSet(QStringLiteral("overlay"))) {
         bool ok = true;
@@ -905,10 +962,11 @@ int run(QGuiApplication& app)
         }
         const Afterglow::OverlaySpec::Placement placement = spec->place(cols, rows);
         const QRect grid = spec->popup() ? placement.grid : QRect(0, 0, cols, rows);
-        overlayTerminal.resize(grid.width(), grid.height(), metrics.cellWidth, metrics.cellHeight);
+        overlayTerminal.emplace(grid.width(), grid.height(), host, options);
+        overlayTerminal->resize(grid.width(), grid.height(), metrics.cellWidth, metrics.cellHeight);
         const QByteArray text = parser.value(QStringLiteral("overlay")).toUtf8();
-        overlayTerminal.feed(std::string_view(text.constData(), std::size_t(text.size())));
-        overlaySnapshot.capture(overlayTerminal);
+        overlayTerminal->feed(std::string_view(text.constData(), std::size_t(text.size())));
+        overlaySnapshot.capture(*overlayTerminal);
         // As the window keeps an ended overlay's last frame (overlayEnded).
         const bool ended = parser.isSet(QStringLiteral("overlay-ended"));
         if (ended) {
@@ -1092,9 +1150,9 @@ int run(QGuiApplication& app)
     if (parser.isSet(QStringLiteral("pulse"))) {
         const auto spec = parser.value(QStringLiteral("pulse")).split(QLatin1Char(':'));
         const QString progress = spec.value(1, QStringLiteral("0.5")), color = spec.value(2, QStringLiteral("4"));
-        if (spec.size() < 1 || spec.size() > 3 || !validNumber(spec.value(0), 1, 255, true) || !validNumber(progress, 0, 1)
+        if (spec.size() > 3 || !validNumber(spec.value(0), 1, 255, true) || !validNumber(progress, 0, 1)
             || !validNumber(color, 0, 255, true)) {
-            std::fprintf(stderr, "--pulse requires EFFECT:PROGRESS[:COLOR], effect 1..255, progress 0..1, colour 0..255\n");
+            std::fprintf(stderr, "--pulse requires EFFECT:PROGRESS[:COLOR], effect 1..255, progress 0..1, color 0..255\n");
             return 1;
         }
         panes.back().params.pulseEffect = spec.value(0).toInt();
@@ -1128,8 +1186,31 @@ int run(QGuiApplication& app)
     const QFileInfo output(args[1]);
     double renderMs = 0.0, pngMs = 0.0;
     std::vector<double> samples;
+    // The panes of other tabs, of the tab being left, of the split and the
+    // grid, and the closed one show copies of the first pane's snapshot.
+    auto copySnapshot = [&] {
+        twin = snapshot;
+        std::fill(copies.begin(), copies.end(), snapshot);
+        std::fill(tabSnapshots.begin(), tabSnapshots.end(), snapshot);
+        closed = snapshot;
+        if (ghost) closed.defaultBg = 0xFF5A2A10u; // blue
+        for (auto& copy : leftSnapshots) {
+            copy = snapshot;
+            if (transition) copy.defaultBg = 0xFF5A2A10u;
+        }
+    };
     for (int frame = 0; frame < frames; ++frame) {
         const double elapsed = frame / fps;
+        // Animated images (kitty's, and iTerm2 GIF, WebP and APNG images)
+        // move on by the frames' clock, as a pane advances them by its own.
+        // The clock starts at 1 ms: 0 marks a frame that has not shown yet,
+        // so frame 0 starts the animations.
+        const std::uint64_t generation = terminal.generation();
+        terminal.advanceAnimations(1 + std::uint64_t(std::llround(elapsed * 1000)));
+        if (terminal.generation() != generation) {
+            capture();
+            copySnapshot();
+        }
         renderer.setClockOverride(time + elapsed);
         // iDate: the date given, advanced with the frames.
         setDate(elapsed);

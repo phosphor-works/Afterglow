@@ -69,7 +69,9 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     ASSERT_EQ(ProtocolVersion, 27) << "a new protocol version: update the key lists and the calls of this test";
     // Version 27 streams iTerm2 downloads: DownloadBegin, DownloadData and
     // DownloadEnd host calls in place of Download, and the DownloadAnswer
-    // input, for which the pane's output waits (AttachTest).
+    // action, for which the pane's output waits (AttachTest). It added the
+    // UploadRequest host call of it2ul, and the UploadAnswerPart and
+    // UploadAnswer inputs that carry the answer whole.
     // Version 26 added the answer to OSC 99's query to the settings of a
     // window, empty while the window shows no notifications: a session
     // follows Notifications.enabled (below).
@@ -152,6 +154,16 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
         settingsError.clear();
         EXPECT_FALSE(sessionSettings(Json::Value(object), &settingsError)) << Json::write(kept);
         EXPECT_NE(settingsError.find("keptNotifications"), std::string::npos) << settingsError;
+    }
+    // The answer to OSC 99's query is text.
+    for (const Json::Value& capabilities : {Json::Value(3), Json::Value(nullptr), Json::Value(Json::Array{"p=title"})}) {
+        Json::Object object = toJson(followed).toObject();
+        for (auto& [key, value] : object) {
+            if (key == "notificationCapabilities") value = capabilities;
+        }
+        settingsError.clear();
+        EXPECT_FALSE(sessionSettings(Json::Value(object), &settingsError)) << Json::write(capabilities);
+        EXPECT_NE(settingsError.find("notificationCapabilities"), std::string::npos) << settingsError;
     }
     Attach::Input settingsInput;
     settingsInput.type = Attach::InputType::Settings;
@@ -236,28 +248,51 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     refreshed.frames = 300;
     EXPECT_EQ(Attach::encode(refreshed), std::string("\x08\x03\x00\x00\xac\x02", 6));
     // The Visible input and the Refresh go on the action channel: neither
-    // waits behind the input of a program. Each of the fourteen input types
-    // is on one channel or the other.
+    // waits behind the input of a program, and nor does the answer to a
+    // download, whose program reads no input until it comes. Each of the
+    // sixteen input types is on one channel or the other.
     for (const auto type : {Attach::InputType::Kill, Attach::InputType::ClosePane, Attach::InputType::Visible, Attach::InputType::Refresh,
-                            Attach::InputType::PaneForgotten})
+                            Attach::InputType::PaneForgotten, Attach::InputType::DownloadAnswer})
         EXPECT_TRUE(Attach::isAction(type)) << int(type);
     for (const auto type : {Attach::InputType::Bytes, Attach::InputType::Resize, Attach::InputType::Reset, Attach::InputType::Clear,
                             Attach::InputType::Layout, Attach::InputType::ControlReply, Attach::InputType::Settings,
-                            Attach::InputType::ControlReplyPart, Attach::InputType::DownloadAnswer})
+                            Attach::InputType::ControlReplyPart, Attach::InputType::UploadAnswerPart, Attach::InputType::UploadAnswer})
         EXPECT_FALSE(Attach::isAction(type)) << int(type);
-    // Version 27: the answer to a download's question, a byte.
-    for (const bool accept : {false, true}) {
+    // Version 27: the answer to a download's question, or its stop, a byte.
+    for (const auto reply : {Attach::DownloadReply::Refuse, Attach::DownloadReply::Accept, Attach::DownloadReply::Stop}) {
         Attach::Input answer;
         answer.type = Attach::InputType::DownloadAnswer;
         answer.pane = 3;
-        answer.accept = accept;
-        EXPECT_EQ(Attach::encode(answer), std::string("\x0e\x03", 2) + char(accept ? 1 : 0));
+        answer.download = reply;
+        EXPECT_EQ(Attach::encode(answer), std::string("\x0e\x03", 2) + char(reply));
         const auto decoded = Attach::decodeInput(Attach::encode(answer));
-        ASSERT_TRUE(decoded);
+        if (!decoded) {
+            ADD_FAILURE() << "DownloadAnswer " << int(reply) << " does not decode";
+            continue;
+        }
         EXPECT_EQ(decoded->type, Attach::InputType::DownloadAnswer);
-        EXPECT_EQ(decoded->accept, accept);
+        EXPECT_EQ(decoded->pane, 3u);
+        EXPECT_EQ(decoded->download, reply);
     }
-    EXPECT_FALSE(Attach::decodeInput(std::string("\x0e\x03\x02", 3)));
+    EXPECT_FALSE(Attach::decodeInput(std::string("\x0e\x03\x03", 3)));
+    EXPECT_FALSE(Attach::decodeInput(std::string("\x0e\x03", 2)));
+    EXPECT_FALSE(Attach::decodeInput(std::string("\x0e\x03\x01\x00", 4)));
+    // And the answer to an upload, in parts that name its pane.
+    for (const auto type : {Attach::InputType::UploadAnswerPart, Attach::InputType::UploadAnswer}) {
+        Attach::Input upload;
+        upload.type = type;
+        upload.pane = 4;
+        upload.bytes = "ok\n";
+        EXPECT_EQ(Attach::encode(upload), std::string(1, char(type)) + "\x04ok\n");
+        const auto decoded = Attach::decodeInput(Attach::encode(upload));
+        if (!decoded) {
+            ADD_FAILURE() << "upload input " << int(type) << " does not decode";
+            continue;
+        }
+        EXPECT_EQ(decoded->type, type);
+        EXPECT_EQ(decoded->pane, 4u);
+        EXPECT_EQ(decoded->bytes, "ok\n");
+    }
     Layout layout;
     layout.addTab(4);
     layout.values[4] = {"t", {"htop"}};
@@ -319,6 +354,9 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     EXPECT_EQ(Host::encode(missed), std::string("\x03\x01t\x01" "b\x01", 6));
     EXPECT_EQ(Host::encode(Host::make(Host::Kind::UserVar, "n", "v")), std::string("\x09\x01n\x01v"));
     EXPECT_EQ(Host::encode(Host::make(Host::Kind::UploadRequest)), std::string("\x11"));
+    // The daemon encodes a download's data without a Call.
+    EXPECT_EQ(Host::encodeDownloadData("ab"), std::string("\x0f\x02" "ab"));
+    EXPECT_EQ(Host::encode(Host::make(Host::Kind::DownloadData, {}, "ab")), Host::encodeDownloadData("ab"));
     EXPECT_EQ(Host::encode(Host::make(Host::Kind::TerminalProtocol, {}, "x", 5113)), std::string("\x07\xf2\x4f\x01x"));
     EXPECT_EQ(Host::encode(Host::make(Host::Kind::Report, {}, "\x1b[?62c")), std::string("\x0d\x06\x1b[?62c"));
     Host::Call finished = Host::make(Host::Kind::CommandFinished, {}, {}, -1);
@@ -452,11 +490,16 @@ TEST(MuxProtocol, HostCallsRoundTrip)
         finished.value = std::uint64_t(code < 0 ? 0 : code) * 1000;
         calls.push_back(finished);
     }
-    Host::Call begin = Host::make(Host::Kind::DownloadBegin, "file.txt");
-    begin.value = 9; // 8 bytes
-    calls.push_back(begin);
+    // A declared size of 9 bytes (the data below), of 0 bytes, of the most
+    // that the terminal gives (INT64_MAX), and none.
+    for (const std::uint64_t value : {std::uint64_t(10), std::uint64_t(1), std::uint64_t(INT64_MAX) + 1, std::uint64_t(0)}) {
+        Host::Call begin = Host::make(Host::Kind::DownloadBegin, "file.txt");
+        begin.value = value;
+        calls.push_back(begin);
+    }
     calls.push_back(Host::make(Host::Kind::DownloadData, {}, std::string("cont\0ents", 9)));
     calls.push_back(Host::make(Host::Kind::DownloadEnd, {}, {}, 1));
+    calls.push_back(Host::make(Host::Kind::DownloadEnd, {}, {}, 0));
     calls.push_back(Host::make(Host::Kind::UploadRequest));
     calls.push_back(Host::make(Host::Kind::Report, {}, "\x1b[?62;22c"));
     for (const int held : {Host::LostNothing, Host::LostReset, Host::LostPackets}) {
@@ -539,11 +582,21 @@ TEST(MuxProtocol, HostCallsRoundTrip)
 // parser never makes is refused, whole calls and not only short ones.
 TEST(MuxProtocol, HostCallsThatTheParserNeverMakesAreRefused)
 {
-    for (const std::string_view kind : {std::string_view("", 0), std::string_view("\x00", 1), std::string_view("\x0f", 1)}) {
+    // No kind, kind 0, and the first kind after the last.
+    const std::string after(1, char(std::uint8_t(Host::Kind::UploadRequest) + 1));
+    for (const std::string_view kind : {std::string_view("", 0), std::string_view("\x00", 1), std::string_view(after)}) {
         EXPECT_FALSE(Host::decode(kind)) << testing::PrintToString(std::string(kind));
     }
     const auto refused = [](const Host::Call& call) { return !Host::decode(Host::encode(call)); };
     EXPECT_TRUE(refused(Host::make(Host::Kind::TerminalProtocol, {}, "x", 99)));
+    // A download's end is whole or not, and its size is the terminal's.
+    EXPECT_TRUE(refused(Host::make(Host::Kind::DownloadEnd, {}, {}, 2)));
+    EXPECT_TRUE(refused(Host::make(Host::Kind::DownloadEnd, {}, {}, -1)));
+    Host::Call huge = Host::make(Host::Kind::DownloadBegin, "file.txt");
+    huge.value = std::uint64_t(INT64_MAX) + 2;
+    EXPECT_TRUE(refused(huge));
+    huge.value = ~std::uint64_t(0);
+    EXPECT_TRUE(refused(huge));
     EXPECT_TRUE(refused(Host::make(Host::Kind::Notify, "a\x1b]0;b", "body")));
     EXPECT_TRUE(refused(Host::make(Host::Kind::Notify, "title", "line\nline")));
     EXPECT_TRUE(refused(Host::make(Host::Kind::ProtocolLost, {}, {}, 3)));
@@ -1208,7 +1261,8 @@ TEST(MuxProtocol, AttachInputThatDoesNotDecodeIsRefused)
 {
     const std::string_view bad[] = {
         {},
-        std::string_view("\x0e\x01", 2),         // the type after PaneForgotten
+        std::string_view("\x11\x01", 2),         // the type after UploadAnswer
+        std::string_view("\x0e\x01", 2),         // a DownloadAnswer without its byte
         std::string_view("\x0d\x01\x00", 3),     // a byte after a PaneForgotten
         std::string_view("\x0a\x01", 2),         // ControlReply of a pane
         std::string_view("\x0b\x01", 2),         // Settings of a pane

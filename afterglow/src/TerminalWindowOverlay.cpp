@@ -75,7 +75,7 @@ QString TerminalWindow::openOverlay(const QString& owner, const QString& request
     Pane* program = overlay->pane();
     applySearchColors(program);
     program->setScrollPolicy(settings.scrollOnOutput, settings.scrollOnInput);
-    program->setNotificationsEnabled(settings.notifications);
+    // bindOverlay binds the program as a pane: notifications and drag waits too.
     bindOverlay(pane);
 
     // The overlay takes the keyboard: no mode of the pane is left behind it.

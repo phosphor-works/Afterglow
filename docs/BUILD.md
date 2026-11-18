@@ -42,6 +42,8 @@ The notice of libjpeg-turbo covers them, and a fix of either comes with a releas
 | KF6 GlobalAccel | Registers the quick terminal shortcut with KDE global shortcuts | The desktop portal registers the shortcut. |
 | `qqc2-desktop-style` | Draws tabs, menus and prompts in the Plasma style | The controls use the Fusion style. |
 | `bash-completion` | Loads the Bash completions of `afterglow` and `aglow` | Bash does not complete `afterglow` and `aglow` arguments. |
+| ImageMagick 7 (`magick`), at run time | Lets `aglow icat` show AVIF, HEIC, JPEG XL, QOI, SVG, TGA, ICO and CUR images. With it, `aglow icat` also shows a BMP with JPEG or PNG data, and a BMP with run-length encoding that does not fit its depth. See [other formats and URLs](DESKTOP.md#other-formats-and-urls). | `aglow icat` refuses these images with a message. |
+| `curl`, at run time | Lets `aglow icat` show images from `http`, `https` and `ftp` URLs | `aglow icat` refuses these URLs with a message. |
 | NASM | Builds the SIMD code of libjpeg-turbo on x86-64 computers | `aglow` and `aglow-mux` decode JPEG images more slowly. The configuration says so. |
 | Python 3 (3.9 or later for the tests of `aglow`) | Runs the Python tests in CTest | These tests are not added to CTest. The configuration names the tests of `aglow` that it leaves out. With `AFTERGLOW_NATIVE_TESTS=ON`, the configuration stops with an error. |
 
@@ -241,6 +243,7 @@ It also includes the shell integration scripts, the API declarations, the exampl
 It also includes the shell completions for Bash, Zsh and Fish.
 It installs `aglow` in the same directory as `afterglow`, with its Bash, Zsh and Fish completions.
 It installs the [mux daemon](MUX.md) `aglow-mux` in the same directory as `afterglow`, because `afterglow mux` runs it from there.
+A pane also decodes the images that programs send with the `aglow-mux` next to `afterglow`. Without it, these images do not show.
 The Fish completions need Fish 4 or later.
 The license notices of the third-party code in the binaries go in `share/licenses/afterglow`:
 

@@ -3,7 +3,11 @@
 
 #include "External.h"
 
+#include <AfterglowProto/DndUri.h>
+#include <AfterglowProto/Fd.h>
 #include <AfterglowProto/Graphics.h>
+#include <AfterglowProto/Limits.h>
+#include <AfterglowPty/CloseFrom.h>
 
 #include <algorithm>
 #include <array>
@@ -62,18 +66,78 @@ struct Limits
     std::uint64_t maxOutput = 0;
 };
 
+/// The first bytes of a program's error output that aglow keeps.
+constexpr std::size_t MaxErrorOutput = 65536;
+
 struct Result
 {
     bool started = false;
+    int startError = 0; ///< errno, when the program did not start
+    int waitError = 0; ///< errno of a poll() that failed: the child was killed
     int status = 0;
     bool tooLarge = false; ///< the output passed Limits::maxOutput
     bool timedOut = false;
     bool interrupted = false;
     std::string out;
-    std::string err; ///< its first 64 KiB
+    std::string err; ///< its first MaxErrorOutput bytes
 };
 
 void setNonBlocking(int fd) { ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL) | O_NONBLOCK); }
+
+/// Writes errno to @p report, for the parent, and ends the child.
+[[noreturn]] void failChild(int report)
+{
+    const int code = errno;
+    (void)!::write(report, &code, sizeof code);
+    ::_exit(127);
+}
+
+/// The child of run(), from fork() to exec(): only system calls. @p report
+/// takes the errno of a step that fails, as the exec() of a program that
+/// cannot run.
+[[noreturn]] void startChild(const std::string& program, char** argv, char** envp, const int (&ends)[3], int report,
+                             const Limits& limits, pid_t parent)
+{
+    ::prctl(PR_SET_PDEATHSIG, SIGKILL);
+    if (::getppid() != parent) ::_exit(127);
+    ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+    sigset_t none;
+    sigemptyset(&none);
+    ::sigprocmask(SIG_SETMASK, &none, nullptr);
+    // exec() puts the handlers that aglow set back to the default, and keeps
+    // a signal that aglow started with ignored (nohup) ignored. aglow
+    // ignores SIGPIPE itself, and a program that ignores SIGCHLD cannot
+    // wait for its own children.
+    std::signal(SIGPIPE, SIG_DFL);
+    std::signal(SIGCHLD, SIG_DFL);
+    AfterglowProto::limit(RLIMIT_CORE, 0, 0);
+    AfterglowProto::limit(RLIMIT_CPU, limits.cpuSeconds, limits.cpuSeconds + 1);
+    AfterglowProto::limit(RLIMIT_AS, limits.addressSpace, limits.addressSpace);
+    // Each end moves above standard error first: one that took a descriptor
+    // that aglow started without (a closed standard input) would be
+    // overwritten by the next dup2(), or keep O_CLOEXEC through a dup2() to
+    // itself.
+    report = ::fcntl(report, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+    if (report < 0) ::_exit(127);
+    int moved[3];
+    for (int i = 0; i < 3; ++i) {
+        moved[i] = ::fcntl(ends[i], F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+        if (moved[i] < 0) failChild(report);
+    }
+    for (int i = 0; i < 3; ++i) {
+        if (::dup2(moved[i], i) < 0) failChild(report);
+    }
+    // The report on the first descriptor past standard error, and nothing
+    // else of aglow: the terminal that it opened, its sockets.
+    constexpr int ReportFd = STDERR_FILENO + 1;
+    if (report != ReportFd) {
+        if (::dup3(report, ReportFd, O_CLOEXEC) < 0) failChild(report);
+        report = ReportFd;
+    }
+    AfterglowPty::closeFrom(ReportFd + 1);
+    ::execve(program.c_str(), argv, envp);
+    failChild(report);
+}
 
 /// Runs @p program with @p args and @p environment, @p input on its standard
 /// input, its standard output and error read back. The child ends with
@@ -90,109 +154,128 @@ Result run(const std::string& program, const std::vector<std::string>& args, con
     for (const auto& entry : environment) envp.push_back(const_cast<char*>(entry.c_str()));
     envp.push_back(nullptr);
 
-    int in[2], out[2], err[2];
-    if (::pipe2(in, O_CLOEXEC) != 0) return result;
-    if (::pipe2(out, O_CLOEXEC) != 0) {
-        ::close(in[0]);
-        ::close(in[1]);
-        return result;
+    // Standard input, output and error of the child, and the pipe that
+    // reports why it did not start.
+    std::array<AfterglowProto::UniqueFd, 4> ours;
+    std::array<AfterglowProto::UniqueFd, 4> theirs;
+    for (std::size_t i = 0; i < ours.size(); ++i) {
+        int fds[2];
+        if (::pipe2(fds, O_CLOEXEC) != 0) {
+            result.startError = errno;
+            return result;
+        }
+        // The child reads its standard input and writes the others.
+        ours[i].reset(i == 0 ? fds[1] : fds[0]);
+        theirs[i].reset(i == 0 ? fds[0] : fds[1]);
     }
-    if (::pipe2(err, O_CLOEXEC) != 0) {
-        for (const int fd : {in[0], in[1], out[0], out[1]}) ::close(fd);
-        return result;
-    }
+    const int ends[3] = {theirs[0].get(), theirs[1].get(), theirs[2].get()};
     const pid_t parent = ::getpid();
     const pid_t pid = ::fork();
-    if (pid == 0) {
-        ::prctl(PR_SET_PDEATHSIG, SIGKILL);
-        if (::getppid() != parent) ::_exit(127);
-        ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
-        sigset_t none;
-        sigemptyset(&none);
-        ::sigprocmask(SIG_SETMASK, &none, nullptr);
-        for (const int number : {SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGPIPE, SIGWINCH, SIGCONT, SIGCHLD}) std::signal(number, SIG_DFL);
-        const rlimit core { 0, 0 };
-        ::setrlimit(RLIMIT_CORE, &core);
-        const rlimit cpu { limits.cpuSeconds, limits.cpuSeconds + 1 };
-        ::setrlimit(RLIMIT_CPU, &cpu);
-        const rlimit space { limits.addressSpace, limits.addressSpace };
-        ::setrlimit(RLIMIT_AS, &space);
-        if (::dup2(in[0], STDIN_FILENO) < 0 || ::dup2(out[1], STDOUT_FILENO) < 0 || ::dup2(err[1], STDERR_FILENO) < 0) ::_exit(127);
-        ::closefrom(3);
-        ::execve(program.c_str(), argv.data(), envp.data());
-        ::_exit(127);
-    }
-    ::close(in[0]);
-    ::close(out[1]);
-    ::close(err[1]);
+    if (pid == 0) startChild(program, argv.data(), envp.data(), ends, theirs[3].get(), limits, parent);
     if (pid < 0) {
-        for (const int fd : {in[1], out[0], err[0]}) ::close(fd);
+        result.startError = errno;
+        return result;
+    }
+    for (auto& fd : theirs) fd.reset();
+    // EOF once exec() closed the report, else the errno of the step that
+    // failed.
+    int code = 0;
+    ssize_t n = 0;
+    do {
+        n = ::read(ours[3].get(), &code, sizeof code);
+    } while (n < 0 && errno == EINTR);
+    ours[3].reset();
+    if (n == ssize_t(sizeof code)) {
+        result.startError = code;
+        while (::waitpid(pid, &result.status, 0) < 0 && errno == EINTR) {
+        }
         return result;
     }
     result.started = true;
-    for (const int fd : {in[1], out[0], err[0]}) setNonBlocking(fd);
+    for (std::size_t i = 0; i < 3; ++i) setNonBlocking(ours[i].get());
     // aglow ignores SIGPIPE (Tty.cpp): a child that exits before it reads
     // its input gives EPIPE here.
-    int toChild = in[1];
-    if (input.empty()) {
-        ::close(toChild);
-        toChild = -1;
-    }
-    int fromChild = out[0];
-    int errors = err[0];
+    if (input.empty()) ours[0].reset();
     std::size_t written = 0;
     bool killed = false;
+    bool reaped = false;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(limits.wallSeconds);
+    // Kills the child once: on Ctrl+C, at the deadline, or past the output's limit.
+    const auto check = [&] {
+        if (killed) return;
+        if (stop && stop()) {
+            result.interrupted = killed = true;
+        } else if (std::chrono::steady_clock::now() >= deadline) {
+            result.timedOut = killed = true;
+        } else if (result.tooLarge) {
+            killed = true;
+        }
+        if (killed) {
+            ::kill(pid, SIGKILL);
+            ours[0].reset();
+        }
+    };
     std::array<char, 65536> buffer {};
-    while (fromChild >= 0 || errors >= 0) {
-        if (!killed) {
-            if (stop && stop()) {
-                result.interrupted = killed = true;
-            } else if (std::chrono::steady_clock::now() >= deadline) {
-                result.timedOut = killed = true;
-            } else if (result.tooLarge) {
-                killed = true;
-            }
-            if (killed) {
-                ::kill(pid, SIGKILL);
-                if (toChild >= 0) {
-                    ::close(toChild);
-                    toChild = -1;
-                }
-            }
+    while (ours[1].valid() || ours[2].valid()) {
+        check();
+        // A process that the program left behind (a wrapper script's) can
+        // hold the pipes open: once the killed child is gone, nothing more
+        // is read.
+        if (killed && ::waitpid(pid, &result.status, WNOHANG) == pid) {
+            reaped = true;
+            break;
         }
         std::vector<pollfd> fds;
-        if (toChild >= 0) fds.push_back({toChild, POLLOUT, 0});
-        if (fromChild >= 0) fds.push_back({fromChild, POLLIN, 0});
-        if (errors >= 0) fds.push_back({errors, POLLIN, 0});
-        if (::poll(fds.data(), fds.size(), 100) < 0 && errno != EINTR) break;
+        for (const auto& fd : ours) {
+            if (fd.valid()) fds.push_back({fd.get(), short(&fd == &ours[0] ? POLLOUT : POLLIN), 0});
+        }
+        if (::poll(fds.data(), fds.size(), 100) < 0) {
+            if (errno == EINTR) continue;
+            result.waitError = errno;
+            ::kill(pid, SIGKILL);
+            killed = true;
+            break;
+        }
         for (const pollfd& p : fds) {
             if (p.revents == 0) continue;
-            if (p.fd == toChild) {
-                const ssize_t n = ::write(toChild, input.data() + written, std::min<std::size_t>(input.size() - written, buffer.size()));
-                if (n > 0) written += std::size_t(n);
-                if ((n < 0 && errno != EAGAIN && errno != EINTR) || written == input.size()) {
-                    ::close(toChild);
-                    toChild = -1;
-                }
+            if (p.fd == ours[0].get()) {
+                const ssize_t sent = ::write(p.fd, input.data() + written, std::min<std::size_t>(input.size() - written, buffer.size()));
+                if (sent > 0) written += std::size_t(sent);
+                if ((sent < 0 && errno != EAGAIN && errno != EINTR) || written == input.size()) ours[0].reset();
                 continue;
             }
-            const ssize_t n = ::read(p.fd, buffer.data(), buffer.size());
-            if (n > 0) {
-                std::string& to = p.fd == fromChild ? result.out : result.err;
-                if (p.fd == fromChild && to.size() + std::size_t(n) > limits.maxOutput) {
+            const bool output = p.fd == ours[1].get();
+            const ssize_t got = ::read(p.fd, buffer.data(), buffer.size());
+            if (got > 0) {
+                if (output && result.out.size() + std::size_t(got) > limits.maxOutput) {
                     result.tooLarge = true;
-                } else if (p.fd == fromChild || to.size() < 65536) {
-                    to.append(buffer.data(), std::size_t(n));
+                } else if (output) {
+                    result.out.append(buffer.data(), std::size_t(got));
+                } else {
+                    result.err.append(buffer.data(), std::min(std::size_t(got), MaxErrorOutput - std::min(result.err.size(), MaxErrorOutput)));
                 }
-            } else if (n == 0 || (errno != EAGAIN && errno != EINTR)) {
-                ::close(p.fd);
-                (p.fd == fromChild ? fromChild : errors) = -1;
+            } else if (got == 0 || (errno != EAGAIN && errno != EINTR)) {
+                ours[output ? 1 : 2].reset();
             }
         }
     }
-    if (toChild >= 0) ::close(toChild);
-    while (::waitpid(pid, &result.status, 0) < 0 && errno == EINTR) {
+    for (auto& fd : ours) fd.reset();
+    // A child that closed its output can still run: the same deadline and
+    // Ctrl+C end it.
+    while (!reaped) {
+        const pid_t done = ::waitpid(pid, &result.status, killed ? 0 : WNOHANG);
+        if (done == pid || (done < 0 && errno != EINTR)) break;
+        if (done == 0) {
+            check();
+            if (!killed) ::poll(nullptr, 0, 10);
+        }
+    }
+    // Ctrl+C reaches the child too, which can end before aglow's own check
+    // saw the signal: the ends of its pipes then end the loop above.
+    if (!result.interrupted && !result.timedOut && stop && stop()) result.interrupted = true;
+    if (WIFSIGNALED(result.status) && !killed) {
+        const int number = WTERMSIG(result.status);
+        result.interrupted |= number == SIGINT || number == SIGTERM || number == SIGHUP;
     }
     return result;
 }
@@ -243,6 +326,15 @@ std::uint32_t little(std::string_view bytes, std::size_t at, int count)
     std::uint32_t value = 0;
     for (int i = count; i-- > 0;) value = value << 8 | std::uint8_t(bytes[at + std::size_t(i)]);
     return value;
+}
+
+/// The coders that @p coder reads the images in its file with: ImageMagick
+/// checks its policy for each of them too.
+std::vector<std::string_view> innerCoders(std::string_view coder)
+{
+    if (coder == "ICO" || coder == "CUR") return {"PNG"};
+    if (coder == "BMP") return {"PNG", "JPEG"};
+    return {};
 }
 
 /// The private directory of one run of magick: its policy and its
@@ -307,11 +399,13 @@ std::string magickCoder(std::string_view bytes, std::string_view name)
         && little(bytes, 4, 2) > 0) {
         return bytes[2] == 1 ? "ICO" : "CUR";
     }
-    // A BMP that aglow's reader refuses: run-length encoded, or JPEG or PNG
-    // data in a BMP.
+    // A BMP that aglow's reader refuses: JPEG or PNG data in a BMP, or a
+    // run-length encoding at a depth that it does not have (RLE8 at 8 bits
+    // and RLE4 at 4 bits read natively).
     if (bytes.size() >= 34 && bytes.starts_with("BM") && little(bytes, 14, 4) >= 40) {
         const std::uint32_t compression = little(bytes, 30, 4);
-        if (compression == 1 || compression == 2 || compression == 4 || compression == 5) return "BMP";
+        const std::uint32_t bits = little(bytes, 28, 2);
+        if (compression == 4 || compression == 5 || (compression == 1 && bits != 8) || (compression == 2 && bits != 4)) return "BMP";
     }
     // SVG: XML whose first element is svg, in the first 4 KiB.
     std::string_view head = bytes.substr(0, 4096);
@@ -357,13 +451,19 @@ bool magickToPng(std::string_view bytes, const std::string& coder, std::string& 
         error = std::string("cannot make a directory for ImageMagick: ") + std::strerror(errno);
         return false;
     }
-    // The policy of this run: the one coder reads, PNG32 writes, and nothing
-    // else: no delegate program (Ghostscript, Inkscape), no file list (@),
-    // and resource limits. The system's own policy applies as well.
+    // The policy of this run: the one coder reads, with the coders that it
+    // reads the images in it with (PNG in an icon, PNG or JPEG in a BMP),
+    // PNG32 writes, and nothing else: no delegate program (Ghostscript,
+    // Inkscape), no file list (@), and resource limits. The system's own
+    // policy applies as well.
+    std::string readers = "  <policy domain=\"coder\" rights=\"read\" pattern=\"" + coder + "\"/>\n";
+    for (const std::string_view inner : innerCoders(coder)) {
+        readers += "  <policy domain=\"coder\" rights=\"read\" pattern=\"" + std::string(inner) + "\"/>\n";
+    }
     const std::string policy = "<policymap>\n"
         "  <policy domain=\"delegate\" rights=\"none\" pattern=\"*\"/>\n"
         "  <policy domain=\"coder\" rights=\"none\" pattern=\"*\"/>\n"
-        "  <policy domain=\"coder\" rights=\"read\" pattern=\"" + coder + "\"/>\n"
+        + readers +
         "  <policy domain=\"coder\" rights=\"write\" pattern=\"PNG32\"/>\n"
         "  <policy domain=\"path\" rights=\"none\" pattern=\"@*\"/>\n"
         "  <policy domain=\"resource\" name=\"memory\" value=\"512MiB\"/>\n"
@@ -397,14 +497,21 @@ bool magickToPng(std::string_view bytes, const std::string& coder, std::string& 
     limits.maxOutput = 2 * std::uint64_t(AfterglowProto::GraphicsDefaultQuota);
     // PNG32: 8-bit RGBA always, as ImageMagick's PNG writer drops the alpha
     // of an image that is all transparent. A transparent background, so that
-    // an SVG keeps its empty areas.
-    Result result = run(program, {"-background", "none", coder + ":-[0]", "PNG32:-"}, environment, bytes, limits, stop);
+    // an SVG keeps its empty areas. -auto-orient turns the pixels upright:
+    // an orientation outside EXIF (a JPEG XL's own) would reach aglow only
+    // in a chunk of ImageMagick's that it does not read. The PNG then says
+    // orientation 1, so that aglow does not turn it again.
+    Result result = run(program, {"-background", "none", coder + ":-[0]", "-auto-orient", "PNG32:-"}, environment, bytes, limits, stop);
     if (!result.started) {
-        error = std::string("cannot run magick: ") + std::strerror(errno);
+        error = std::string("cannot run magick: ") + std::strerror(result.startError);
         return false;
     }
     if (result.interrupted) {
         error = "interrupted";
+        return false;
+    }
+    if (result.waitError != 0) {
+        error = std::string("cannot read what magick gives: ") + std::strerror(result.waitError);
         return false;
     }
     if (result.timedOut || (WIFSIGNALED(result.status) && WTERMSIG(result.status) == SIGXCPU)) {
@@ -416,6 +523,13 @@ bool magickToPng(std::string_view bytes, const std::string& coder, std::string& 
         return false;
     }
     if (!WIFEXITED(result.status) || WEXITSTATUS(result.status) != 0 || result.out.empty()) {
+        // A build of ImageMagick without the coder: its librsvg for SVG,
+        // libheif for AVIF and HEIC, libjxl for JPEG XL.
+        if (result.err.find("no decode delegate for this image format") != std::string::npos) {
+            error = coder == "RSVG" ? "aglow reads SVG images with ImageMagick's librsvg coder (RSVG), which this ImageMagick does not have"
+                                    : "this ImageMagick cannot read " + std::string(magickFormat(coder)) + " images";
+            return false;
+        }
         const std::string why = message(result.err);
         error = "ImageMagick cannot read this " + std::string(magickFormat(coder)) + " image" + (why.empty() ? "" : ": " + why);
         return false;
@@ -431,6 +545,21 @@ bool isRemoteUrl(std::string_view text)
                                                          [](char a, char b) { return a == char(std::tolower(std::uint8_t(b))); });
     };
     return scheme("http://") || scheme("https://") || scheme("ftp://");
+}
+
+std::string urlFileName(std::string_view url)
+{
+    url = url.substr(0, url.find_first_of("?#"));
+    const std::size_t scheme = url.find("://");
+    if (scheme == std::string_view::npos) return {};
+    url.remove_prefix(scheme + 3);
+    const std::size_t path = url.find('/');
+    if (path == std::string_view::npos) return {};
+    url.remove_prefix(path);
+    const std::string_view name = url.substr(url.rfind('/') + 1);
+    // The server's file is the decoded name. A name with an escaped NUL
+    // (%00) stays as the URL writes it.
+    return AfterglowProto::dndPercentDecode(name).value_or(std::string(name));
 }
 
 bool download(const std::string& url, std::uint64_t maxBytes, std::string& out, std::string& error,
@@ -453,11 +582,15 @@ bool download(const std::string& url, std::uint64_t maxBytes, std::string& out, 
     limits.maxOutput = maxBytes;
     Result result = run(program, args, currentEnvironment({}), {}, limits, stop);
     if (!result.started) {
-        error = std::string("cannot run curl: ") + std::strerror(errno);
+        error = std::string("cannot run curl: ") + std::strerror(result.startError);
         return false;
     }
     if (result.interrupted) {
         error = "interrupted";
+        return false;
+    }
+    if (result.waitError != 0) {
+        error = std::string("cannot read what curl gives: ") + std::strerror(result.waitError);
         return false;
     }
     if (result.tooLarge || (WIFEXITED(result.status) && WEXITSTATUS(result.status) == 63)) {

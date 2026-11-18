@@ -11,10 +11,11 @@
 
 namespace Afterglow {
 
-/// A rule of Notifications.filter, as kitty's filter_notification: terms
+/// A rule of Notifications.filters, as kitty's filter_notification: terms
 /// field:regexp on the title, body, app and type of a notification, joined
 /// with and, or, not and parentheses, or the word all. Terms side by side
-/// join with and. A notification that a rule matches is not shown.
+/// join with and. Keywords and fields are in any case. A notification that a
+/// rule matches is not shown.
 class NotificationFilter
 {
 public:

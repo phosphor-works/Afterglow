@@ -8,6 +8,7 @@ add_executable(afterglow_proto_tests
     ClientTest.cpp
     ClipboardTest.cpp
     ColorTest.cpp
+    DecodeProcessTest.cpp
     DeltaTest.cpp
     DragDropTest.cpp
     DndUriTest.cpp
@@ -24,6 +25,8 @@ add_executable(afterglow_proto_tests
 )
 # xxHash directly: the delta tests check the library against it.
 target_link_libraries(afterglow_proto_tests PRIVATE Afterglow::Proto afterglow_xxhash GTest::gtest_main)
+# AfterglowProto/DecodeProcess.h includes the inline AfterglowPty/CloseFrom.h.
+target_include_directories(afterglow_proto_tests PRIVATE "${PROJECT_SOURCE_DIR}/libs/afterglow-pty/include")
 set_target_properties(afterglow_proto_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 
 include(GoogleTest)

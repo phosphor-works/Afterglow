@@ -18,7 +18,7 @@ The table below lists the protocols that Afterglow supports, each with the tests
 | Kitty relative images | `P`, `Q`, signed `H`/`V`; parent movement; chained parents; cascade deletion; missing-parent, cycle and depth errors; virtual placeholder parents | `Graphics.Relative*`, `Graphics.TransmitAndPlaceReportsInvalidRelativeParent` and transmit/placeholder pixel regressions; [moving-image client](../data/examples/compatibility/relative-images.py) |
 | Kitty multiple cursors | Shapes 1/2/3/29, clear 0, coordinate types 0/2/4, color operations 30/40, capabilities and queries 100/101; clipping, reset, clear, alternate-screen lifecycle; blink and mixed shape rendering | `Extensions.MultipleCursor*`, `Extensions.ExtraCursorColors*`, `Extensions.ResizeClipsExtraCursorsToTheScreen`, `Terminal.ExtraCursorsAreBounded`, `Terminal.ResizeClipsExtraCursorsToTheClampedSize`, `SnapshotCursor.*`, `Render.MultipleCursors*`; [multi-edit client](../data/examples/compatibility/multi-edit.py) |
 | OSC 1337 downloads | `File`, `MultipartFile`, `FilePart`, `FileEnd`; a question before the data, as in iTerm2, while the program waits; data of any size streamed to the file | `Extensions.ADownload*`, `Extensions.DownloadsEndCompleteOnlyWithValidDataOfTheirSize`, `Extensions.MultipartDownloadsStreamTheirParts`, `PaneDownload.*`, `MuxAttach.ADownloadAsksTheWindowAndStreamsItsData`, `NativeWindow.ADownloadAsksBeforeItsDataAndSavesInTheDownloadFolder`, `desktop_acceptance.py`; [download client](../data/examples/compatibility/download.py), upstream [it2dl](https://iterm2.com/utilities/it2dl) |
-| OSC 1337 uploads | `RequestUpload=format=tgz`: a question, a file picker, then `ok`, the archive in base64 lines and an empty line as typed input, as iTerm2 answers; Ctrl+C for a cancel, as iTerm2 sends it | `Terminal.AnUploadRequestThatNoHostTakesIsCancelled`, `UploadArchive.*`, `MuxAttach.AnUploadRequestGoesToTheWindowOrIsCancelled`, `NativeWindow.AProgramThatAsksForFilesGetsTheArchiveOrCtrlC`; upstream [it2ul](https://iterm2.com/utilities/it2ul) |
+| OSC 1337 uploads | `RequestUpload=format=tgz`: a question, then a file picker. The program gets `ok`, the archive in base64 lines and an empty line as typed input, as iTerm2 answers. When you refuse, it gets Ctrl+C, as iTerm2 sends it. A request that Afterglow refuses without a question, or a format other than `tgz`, gets no answer. | `Terminal.AnUploadRequestThatNoHostTakesGetsNoAnswer`, `UploadArchive.*`, `MuxAttach.AnUploadRequestGoesToTheWindowOrGetsNothing`, `MuxAttach.TheNextWindowAsksForAnUploadThatTheLastOneDidNotAnswer`, `NativeWindow.AProgramThatAsksForFilesGetsTheArchiveOrCtrlC`; upstream [it2ul](https://iterm2.com/utilities/it2ul) |
 | IME context | Live cursor-row surrounding text, before/after text, UTF-16 position and cursor rectangle | `DesktopText.*`; [IME behavior](DESKTOP.md#input-methods-and-directionality) |
 | Native terminal accessibility | Viewport text, cursor, selection and character geometry through Qt/AT-SPI; pane actions, the pane menu and docked-area buttons | `DesktopText.*`, `NativeWindow.Accessible*`, `desktop_acceptance.py`; [accessibility](DESKTOP.md#accessible-terminal-text) |
 | Local file drop | Local absolute paths quoted for Bash/Zsh/Fish, targeted pane, bracketed paste, no automatic Enter | `FileDrop.*`; [file-drop workflow](DESKTOP.md#drop-files-and-text-into-a-pane) |
@@ -28,10 +28,10 @@ The table below lists the protocols that Afterglow supports, each with the tests
 | Kitty keyboard protocol | Flags 1, 2, 4, 8 and 16; push, pop, set and query, with a stack for each screen that DECSTR clears; event types, alternate keys with the base layout key, and associated text; AltGr and the fifth level key (ISO_Level3_Shift, ISO_Level5_Shift), and the media and volume keys that reach the window | `Terminal.KittyKeyboardStack*`, `Input.*`, `KeyMapping.BaseLayoutKeysLevelKeysAndHeldModifiers`; [keyboard protocols](INPUT.md#keyboard-protocols) |
 | Kitty text sizing (OSC 66) | Scale, width, fraction and alignment; the erase, scroll, overwrite and insert and delete rules of the specification | `TextSizing.*` |
 | Kitty color control (OSC 21), color stack (OSC 30001, 30101), pointer shapes (OSC 22) | See [color escape codes and pointer shapes](#color-escape-codes-and-pointer-shapes) | `Extensions.PointerShapeStacksQueriesAndReset`, `Extensions.OklchAndLabColorsInTheColorEscapeCodes`, `Conformance.ColorStack` |
-| Kitty notifications (OSC 99), with OSC 9 and OSC 777 | Chunks, icons with one icon cache (`g`) for the whole application, buttons, sounds, close and activation reports, the capability query; filter rules as Kitty's `filter_notification` (`Notifications.filter`) | `Notification.*`, `Extensions.LegacyNotificationsRejectControlsAndBadUtf8`, `ConfigTest.NotificationFilterRules`, `NativeWindow.NotificationReplacementAndApplicationImageCache` |
+| Kitty notifications (OSC 99), with OSC 9 and OSC 777 | Chunks, icons with one icon cache (`g`) for the whole application that keeps the 32 icons used last, buttons, sounds, close and activation reports, the capability query; filter rules as Kitty's `filter_notification` (`Notifications.filters`) | `Notification.*`, `Extensions.LegacyNotificationsRejectControlsAndBadUtf8`, `ConfigTest.NotificationFilterRules`, `NativeWindow.NotificationReplacementAndApplicationImageCache`, `NativeWindow.NotificationFiltersDropWhatTheyMatch`; [hide notifications](DESKTOP.md#hide-notifications-of-programs) |
 | Kitty clipboard (OSC 5522), OSC 52 and paste events (mode 5522) | Several MIME types, passwords for reads and writes, the primary selection | `Clipboard.*`, `Clipboard.PasteEventsModeIsReported`, `NativeWindow.KittenClipboard*`, `NativeWindow.AnAllowedClipboardPasswordAllowsLaterWrites` |
 | Kitty file transfer (OSC 5113), drag and drop (OSC 72) | See [Kitty file transfer](DESKTOP.md#kitty-file-transfer) and [Kitty drag and drop](DESKTOP.md#kitty-drag-and-drop) | `Transfer.*`, `Dnd.*`, `afterglow_transfer_kitten_relay`, `NativeWindow.Kitty*` |
-| Shell integration (OSC 133 and OSC 633), contexts (OSC 3008), the working directory (OSC 7) | Prompt, command and output marks, `click_events`, `cmdline` and `cmdline_url`; the context stack; `file://` directories | `Terminal.ShellIntegrationCommands`, `Extensions.VSCodeShellIntegration`, `Extensions.SystemdContexts`, `Terminal.WorkingDirectoryReportsOnlyChanges` |
+| Shell integration (OSC 133 and OSC 633), contexts (OSC 3008), the working directory (OSC 7) | Prompt, command and output marks, `click_events=1` and `click_events=2`, `special_key=1`, the secondary prompt (`k=s`), `redraw`, `cmdline` and `cmdline_url`; the context stack; `file://` directories | `Terminal.ShellIntegrationCommands`, `Extensions.VSCodeShellIntegration`, `Extensions.SystemdContexts`, `Terminal.WorkingDirectoryReportsOnlyChanges` |
 | Program status (OSC 7501), ConEmu progress and directory (OSC 9;4, OSC 9;9) | Status, progress and the working directory | `ProgramStatus.*`, `Extensions.ConEmuCommands` |
 | iTerm2 (OSC 1337) | `File` with animated GIF, WebP and APNG images, `MultipartFile`, `FilePart`, `FileEnd`, `SetUserVar`, `CurrentDir`, `ClearScrollback`, `ReportCellSize`, `SetMark`, `RemoteHost`, `Copy`, `RequestAttention`, `CursorShape` | `Extensions.ITerm2Commands`, `Extensions.ITerm2AnimatedImagesPlayAndLoop`, `PaneAnimation.AnITerm2GifPlaysThroughThePanesDecoder`, `Extensions.ITerm2SetMarkMarksTheCursorRowOnTheMainScreen`, `Extensions.Downloads*`, `Terminal.BellsRingOnlyForBel` |
 | Hyperlinks (OSC 8) | Links with and without an id, across wrapped lines and reflow | `Reflow.StyleAndLinkRunAcrossWrapsKeepItsReferences`, `StateSync.TextStylesLinksAndText` |
@@ -65,8 +65,9 @@ Relative placements do not move the terminal cursor.
 | ED 2 (erase the screen) | Images that reach into the screen go, also when their top row is in the scrollback. |
 | ED 22 (move the screen into the scrollback, then erase it, as in Kitty) | The lines down to the last line with text go into the scrollback with their images. Then ED 2 erases the screen. On the alternate screen, or with a scrolling region, ED 22 is the same as ED 2. |
 | ED 3 (erase the scrollback) | Images whose top row is in the scrollback go. Images on the screen stay, like the text. |
-| EL, ED 0 and ED 1 (erase part of a line or of the screen) | Images stay, as the Kitty specification says: a program deletes them with the delete commands. A program that draws over an image without the alternate screen, such as `top`, leaves it on the screen, as in Kitty. |
-| SU, SD, IL, DL, or a line feed or reverse index at a scroll-region margin | An image whose top-left cell is in the region moves with its rows. With a region smaller than the screen, only an image that lies entirely inside the region moves, as the Kitty specification says. One that reaches past a margin stays. It shows only its rows that are in the region after the scroll. It goes when none of its rows is in the region. Rows below the last row of the screen stay when the scroll is up: they come into view as the image moves. A relative child image moves with its parent, and the same rule cuts it. It goes when its parent goes. |
+| EL, ED 0 and ED 1 (erase part of a line or of the screen) | Kitty images stay, as the Kitty specification says: a program deletes them with the delete commands. A program that draws over a Kitty image without the alternate screen, such as `top`, leaves it on the screen, as in Kitty. Sixel and iTerm2 images whose cells overlap the erased cells go, as xterm erases its graphics with their cells. Selective erases (DECSEL, and DECSED 0 and 1) leave all images. |
+| SU, SD, IL, DL, or a line feed or reverse index at a scroll-region margin | An image whose top-left cell is in the region moves with its rows. With a region smaller than the screen, only a Kitty image that lies entirely inside the region moves, as the Kitty specification says. One that reaches past a margin stays. Sixel and iTerm2 images in the region always move. An image that moves shows only its rows that are in the region after the scroll. It goes when none of its rows is in the region. Rows below the last row of the screen stay when the scroll is up: they come into view as the image moves. A relative child image moves with its parent, and the same rule cuts it. It goes when its parent goes. |
+| Unscroll (`CSI n + T`, as in Kitty) | The rows that it pushes out at the bottom of the screen go with all their images. |
 
 The same scrolls move shell-integration marks (OSC 133) with their rows.
 A command or prompt region goes when its start or end leaves the scroll region.
@@ -75,11 +76,18 @@ Afterglow clears the selection when the scroll region holds only part of it.
 It also clears the selection when a region with left and right margins holds any of it.
 With left and right margins, only images and marks in those columns move.
 
-Afterglow stores an iTerm2 inline image at its own size, or smaller when the requested size is smaller.
-The renderer enlarges it to the requested size.
+Afterglow stores an iTerm2 inline image at its own size, or at the requested size when that is smaller.
+The renderer enlarges it to the requested size, within the limits in [Sixel, iTerm2 and escape strings](#sixel-iterm2-and-escape-strings).
 An animated GIF, WebP or APNG plays and loops while it shows, as in iTerm2 and WezTerm.
 A frame of 10 ms or less shows for 100 ms, as browsers play old GIFs.
 An animation keeps at most 1,024 frames, and its frames together fit in `Graphics.quota`: it stops at the last frame that fits.
+
+A pane decodes the images that programs send in processes of their own: PNG data of Kitty graphics, and iTerm2 images.
+`aglow-mux --decode-images`, next to `afterglow`, starts these processes.
+Each process has limits on its memory, its time and the system calls that it can make (see [images that a pane decodes](#images-that-a-pane-decodes)).
+Without `aglow-mux`, these images do not show, and Afterglow writes a warning in its log once.
+A long animation can stop at the frame where the limit of its process stops it.
+A pane converts an image with an ICC color profile or a cICP color space to sRGB, as Kitty applies the profile of a PNG.
 
 To refuse Kitty transmissions from files, temporary files and shared memory (`t=f`, `t=t`, `t=s`), set `Terminal.graphicsFileTransfer` to `"deny"`.
 The program then gets an `EPERM` error, and Afterglow opens no file.
@@ -100,7 +108,7 @@ These cases give that error:
 - The data is PNG (`f=100`) or compressed (`o=z`), and the part to read is longer than 320 MiB.
 
 With both `c` and `r`, an image keeps its aspect ratio in those cells, centered, as the Kitty specification says.
-`X` and `Y` then add no cell to the `c` × `r` cells: the cursor moves past them, and delete commands by cell find the image in them.
+`X` and `Y` then add no cell to the `c` × `r` cells. The cursor moves past them, and delete commands by cell find the image in them.
 A feature query (`a=q` with `e`) gets the keys of that action that Afterglow supports.
 The transient usage hint (`N=1`) applies to a transmission (`a=t`, `a=T`). It does not apply to a frame (`a=f`).
 When Afterglow must delete an image to make room, it first deletes an image with the hint that has no placement.
@@ -190,9 +198,11 @@ A prompt mark with no `C` before it does not count, because a shell sends it eac
 A command end mark (`D`) does not make a new prompt.
 The Bash and Zsh integration of Afterglow sends it after each command, also after Enter on an empty line.
 With a shell that sends no `C` mark, no prompt ends a file.
-A new `MultipartFile`, the size limit, a terminal reset or the end of the pane's program still ends it.
-In a mux session, a download goes to the window that shows the session, with the other requests of the session. Without a window, the mux session drops it (see [requests that wait](MUX.md#requests-that-wait)).
-OSC 1337 downloads are not resumable, and they do not upload files.
+A new `MultipartFile`, a terminal reset or the end of the pane's program still ends it.
+In a mux session, a download goes to the window that shows the session, with the other requests of the session.
+Without a window, the mux session refuses the download (see [what the daemon answers](MUX.md#what-the-daemon-answers)).
+OSC 1337 downloads are not resumable.
+A program asks for files with OSC 1337 `RequestUpload` (see [send files to a terminal application](DESKTOP.md#send-files-to-a-terminal-application)).
 Afterglow supports the Kitty file-transfer protocol separately. See [Kitty file transfer](DESKTOP.md#kitty-file-transfer).
 IME context does not permit arbitrary surrounding-text edits.
 Optional bidirectional layout of the main screen has application-grid exclusions and bounded paragraph processing.
@@ -268,22 +278,20 @@ Its message formats come from `libs/afterglow-proto`, the same code that the ter
 | --- | --- | --- |
 | `aglow transfer` | File transfer (OSC 5113): directories, links, permissions, times, zlib, deltas and the SHA-256 password form | Against the Afterglow service in process (`Client.*`). Through a pseudo-terminal, also with `--confirm-paths`. Against Kitty 0.49.2 (`kitty_transfer_interop.py`). Against a hostile terminal (`Proto.Hostile.*`) |
 | `aglow dnd` | Drag and drop (OSC 72): MIME data, copy and move, remote directory trees in both directions | Against Afterglow in a nested KWin (`NativeWindow.Aglow*`). As the target or source of a remote drag (`AglowDrop.*`, `AglowDrag.*`). With the question that lists the files before a drop replaces them (`AglowOverwrite.*`) |
-| `aglow icat` | Graphics (APC G): PNG as it is, other formats as pixels, GIF, WebP and APNG animation frames, Unicode placeholders, tmux passthrough; an ICC profile or a cICP color space converted to sRGB | `aglow_icat_render` draws its output with the Afterglow renderer. `aglow_icat_decode` checks the pixels of crafted images, and the first frame of a GIF over the 320 MiB budget. `aglow_tmux_pty` runs it in a private tmux server, with `allow-passthrough` on and off. |
+| `aglow icat` | Graphics (APC G): PNG as it is, other formats as pixels, GIF, WebP and APNG animation frames, Unicode placeholders, tmux passthrough; an ICC profile or a cICP color space converted to sRGB | `aglow_icat_render` draws its output with the Afterglow renderer. `aglow_icat_decode` checks the pixels of crafted images, and the first frame of a GIF over the 320 MiB budget. `aglow_icat_external` checks the formats that go to ImageMagick and the downloads of URLs, with a fake `magick` and `curl`. `aglow_tmux_pty` runs it in a private tmux server, with `allow-passthrough` on and off. |
 | `aglow run` | The socket query of a remote host (OSC 24569), with the DA1 guard and tmux passthrough | Against a terminal and a socket that a test plays (`aglow_run_pty`). Also in a private tmux server (`aglow_tmux_pty`). Through sshd run as the user (`RemoteCommandsTest.*`) |
 | `aglow clipboard` | Clipboard (OSC 5522), and OSC 52 for plain text in a terminal without OSC 5522 | Against a terminal that a test plays (`aglow_clipboard_pty`, `aglow_clipboard_cases`), and the message formats in `libs/afterglow-proto/tests` |
 
 `aglow transfer`, `aglow dnd`, `aglow icat` and `aglow clipboard` take the options of the `kitten` command of the same name, with the differences below.
 
 - `aglow transfer` sends the permission password only in the SHA-256 form, which Afterglow and Kitty accept. It does not use Kitty's own form, which encrypts the password with `KITTY_PUBLIC_KEY`.
-- `aglow icat` decodes PNG, APNG, JPEG, GIF, WebP, BMP, TIFF and netPBM images with libpng, libjpeg-turbo, libwebp and readers of its own, with any `--engine`. It sends only the other formats to ImageMagick (AVIF, HEIC, JPEG XL, QOI, SVG, TGA, ICO, CUR and compressed BMP), on standard input and with a policy of its own. `--engine magick` is the same as `--engine auto`. Of an animation in such a format, it shows the first frame.
+- `aglow icat` decodes PNG, APNG, JPEG, GIF, WebP, BMP, TIFF and netPBM images itself, with any `--engine`. It uses libpng, libjpeg-turbo, libwebp and readers of its own. It sends only the other formats to ImageMagick, on standard input and with a policy of its own. These are AVIF, HEIC, JPEG XL, QOI, SVG, TGA, ICO and CUR. They also include a BMP with JPEG or PNG data, and a BMP with run-length encoding that does not fit its depth. `aglow` reads RLE8 only at 8 bits and RLE4 only at 4 bits. `--engine magick` is the same as `--engine auto`. `aglow icat` shows the first frame of an animation in such a format.
 - `aglow icat` downloads URLs with `curl`, which must be installed, where `kitten icat` has its own HTTP client.
-- `aglow icat` converts an image with an embedded color profile (ICC) or a cICP color space to sRGB with Little CMS, as the builtin engine of `kitten icat` does. A PNG that it sends as it is keeps its profile, for the terminal. The two can differ by 1 in a sample: an Adobe RGB JPEG of `100,150,200` gives `66,151,202` in `kitten icat`, and `66,151,203` in `aglow icat` and in Pillow.
+- `aglow icat` converts an image with an embedded color profile (ICC) or a cICP color space to sRGB. It uses Little CMS, as the builtin engine of `kitten icat` does. It converts only an RGB profile of a color image, of at most 4 MiB. A PNG that it sends as it is keeps its profile, for the terminal. The two can differ by 1 in a sample. An Adobe RGB JPEG of `100,150,200` gives `66,151,202` in `kitten icat`, and `66,151,203` in `aglow icat` and in Pillow.
 - cICP: the primaries BT.709, BT.2020 and Display P3, with the sRGB, linear, PQ and HLG transfers, in full range. PQ and HLG map 203 cd/m², their reference white (BT.2408), to the white of sRGB, and clip what is brighter. Other cICP values leave the pixels as they are.
-- A pane converts an image that a program sends with an ICC profile or a cICP color space to sRGB, as Kitty applies the profile of a PNG.
-- A pane decodes the images that programs send in processes of their own, with `aglow-mux --decode-images` from next to `afterglow`, with limits on their memory, time and system calls. Without that program, such images do not show, and a warning says so once. A long animation can stop at the frame where the limit of its process stops it.
 - `aglow icat` accepts `--silent` and ignores it, as `kitten icat` does.
 - `aglow icat` compresses pixels with zlib only when it sends them through the terminal connection. A file or shared memory holds raw pixels.
-- `aglow clipboard` makes a PNG from a JPEG, GIF, WebP, BMP, TIFF or netPBM image on the clipboard, as `kitten clipboard` does. It does not make other image formats.
+- `aglow clipboard` makes a PNG from a JPEG, GIF, APNG, WebP, BMP, TIFF or netPBM image on the clipboard, as `kitten clipboard` does. It does not make other image formats.
 - `aglow dnd` has the option `--confirm-drop-timeout`, which `kitten dnd` does not have.
 - `aglow clipboard` has the option `--detection-timeout`, which `kitten clipboard` does not have.
 - `aglow icat --image-id` refuses a number outside 0 to 4294967295. `kitten icat` wraps it.
@@ -362,12 +370,12 @@ The permissions of the socket are the only boundary.
 | OKLCH and LAB colors | The code and the gamut mapping of CSS Color 4. See [color escape codes](#color-escape-codes-and-pointer-shapes). | Kitty clips colors outside sRGB, and gives other values for LAB. |
 | Caps Lock and Num Lock in the Kitty keyboard protocol | Reported only in the "report all keys" mode, so that a program reads Num Lock+Up as Up. | The Kitty specification also reports them in the disambiguate mode, for keys without text. |
 | F13 to F35 without the Kitty keyboard protocol | The sequences of xterm's terminfo entry, as the Kitty specification lets a terminal do. | Kitty sends its own CSI u codes. |
-| Ctrl with a key of a non-Latin layout | The key of the first Latin layout, as Qt's shortcuts do: Ctrl+С on a Russian layout is Ctrl+C, also in the Kitty keyboard protocol without alternate keys (`CSI 99;5u`). With alternate keys (flag 4) Afterglow sends the key of the layout and the base layout key, as Kitty does: `CSI 1089::99;5u`. | Without flag 4, Kitty sends the key of the layout, `CSI 1089;5u`, which a program that knows only Latin shortcuts does not read as Ctrl+C. |
+| Ctrl with a key of a non-Latin layout | The key of the first Latin layout, as Qt's shortcuts do. Ctrl+С on a Russian layout is Ctrl+C, also in the Kitty keyboard protocol without alternate keys (`CSI 99;5u`). With alternate keys (flag 4) Afterglow sends the key of the layout and the base layout key, as Kitty does: `CSI 1089::99;5u`. | Without flag 4, Kitty sends the key of the layout, `CSI 1089;5u`, which a program that knows only Latin shortcuts does not read as Ctrl+C. |
 | Ctrl+Shift, Super or Ctrl+Alt+Shift with a letter, digit or punctuation key, without the Kitty keyboard protocol | xterm's bytes: Ctrl+Shift+I sends a tab (0x09), Super+A sends `a`. A program without the Kitty protocol reads these. | Kitty sends a CSI u code, such as `CSI 105;6u` for Ctrl+Shift+I. |
 | A temporary image file (`t=t`) | Deleted only when `tty-graphics-protocol` is in its path below the temporary directory. | Kitty looks for the tag anywhere in the path. |
 | Sized text (OSC 66) at a resize that reflows | The text stays, at the normal size, because a block of several rows cannot wrap. | The Kitty specification does not say what a reflow does with sized text. |
 | Unscroll (`CSI n + T`) with a scrolling region smaller than the screen | Blank lines, as SD gives. Afterglow fills from the scrollback only when the region is the whole screen. | Kitty also fills a region that starts at the top line. |
-| OSC 1337 downloads | One question with the name and the size: Save to the download folder, Save As…, or Refuse, and a `Terminal.downloads` policy. The data goes to the file as it comes. | iTerm2 asks two questions (allow the download, then where to save it), asks again past 1 GiB, and keeps the data in memory until the end. Kitty does not support OSC 1337 downloads. |
+| OSC 1337 downloads | One question with the name, and with the size when the program declares one. The choices are Save to the download folder, Save As… and Refuse. `Terminal.downloads` sets a policy. The data goes to the file as it comes. | iTerm2 asks two questions: allow the download, then where to save it. It asks again past 1 GiB, and keeps the data in memory until the end. Kitty does not support OSC 1337 downloads. |
 | The end message of a drag (`t=e:x=4`) | Has the key `o`, the action that the drop took. A move to another application is reported as a copy. | Kitty sends no `o`. |
 
 The differences of `aglow` from `kitten` are in [aglow interoperability](#aglow-interoperability).
@@ -427,6 +435,32 @@ The limits count 4 bytes for each pixel of all these formats, because Afterglow 
 | A PNG image whose decoded pixels (width × height × 4 bytes) are more than 320 MiB | The program gets an `EBADPNG` error. |
 | A PNG image whose decoded pixels (width × height × 4 bytes) are more than `Graphics.quota` | The program gets an `ENOSPC` error. |
 
+### Images that a pane decodes
+
+The processes that decode the images of a pane have these limits.
+A session pane has the same limits in the daemon (see [MUX.md](MUX.md#limits)).
+
+| Item | Limit | At the limit |
+| --- | --- | --- |
+| Side of an image | 10,000 pixels | A Kitty command gets an `EBADPNG` error. An iTerm2 image does not show. |
+| Decoded pixels of an image (width × height × 4 bytes) | 320 MiB | A Kitty command gets an `EBADPNG` error. An iTerm2 image does not show. |
+| Time to decode an image | 30 seconds, and a CPU time of 5 seconds and 1 second more for each 16 MiB of pixels | The process ends, and the decode fails as above. |
+| Memory of a decoding process | Its memory at its start, and 8 times the decoded pixels and 64 MiB more | The decode fails as above. |
+| Scans of a progressive JPEG | 1,000 | The decode fails as above. |
+
+The processes need a kernel with seccomp filters, and Linux 5.3 or later (`pidfd_open`).
+They also need an x86-64, little-endian AArch64, RISC-V 64 or little-endian POWER64 processor.
+Elsewhere, the images that programs send do not show, and Afterglow writes why in its log.
+
+### Sixel, iTerm2 and escape strings
+
+| Item | Limit | At the limit |
+| --- | --- | --- |
+| An OSC, DCS or APC string | 64 MiB | Afterglow ignores the whole string. The data of an OSC 1337 file goes on as it comes, and this limit does not apply to it. |
+| A Sixel image | 10,000 pixels on a side, and 4,096 × 4,096 pixels | Afterglow does not show the image. |
+| Pixel writes of one Sixel image | 4 × 4,096 × 4,096 | Afterglow does not show the image. A `$` repaints a band, so a short image can write the same pixels many times. |
+| The size that an iTerm2 image shows at | 10,000 pixels on a side, and 4,096 × 4,096 pixels | The image shows smaller. When it keeps its aspect ratio, both sides shrink by the same factor. |
+
 ### Multiple cursors
 
 CSI parsing permits 4,096 numeric parameters per sequence.
@@ -483,7 +517,7 @@ See `libs/afterglow-proto/tests` for the message formats.
 Run focused tests:
 
 ```sh
-ctest --test-dir build --output-on-failure -R 'Graphics.Relative|Graphics.TransmitAndPlaceReportsInvalidRelativeParent|Extensions.Multiple|Terminal.ExtraCursorsAreBounded|Terminal.ResizeClipsExtraCursors|Extensions.ResizeClipsExtraCursors|Extensions.ExtraCursor|Extensions.Download|DesktopText|FileDrop|Render.Multiple|SnapshotCursor|Bidi|Graphics.Indexed|Render.Indexed|SnapshotImages.Indexed'
+ctest --test-dir build --output-on-failure -R 'Graphics.Relative|Graphics.TransmitAndPlaceReportsInvalidRelativeParent|Extensions.Multiple|Terminal.ExtraCursorsAreBounded|Terminal.ResizeClipsExtraCursors|Extensions.ResizeClipsExtraCursors|Extensions.ExtraCursor|Extensions.*Download|PaneDownload|UploadArchive|Terminal.AnUploadRequest|MuxAttach.*(Download|Upload)|DesktopText|FileDrop|Render.Multiple|SnapshotCursor|Bidi|Graphics.Indexed|Render.Indexed|SnapshotImages.Indexed'
 ```
 
 See [accessibility and downloads](TESTING.md#accessibility-and-downloads) for the native acceptance suite.

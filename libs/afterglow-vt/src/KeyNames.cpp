@@ -102,14 +102,22 @@ std::optional<Key> keyNamed(const std::string& name)
         {"rightcontrol", Key::RightControl},
         {"rightalt", Key::RightAlt},
         {"rightsuper", Key::RightSuper},
+        {"isolevel3shift", Key::IsoLevel3Shift},
+        {"isolevel5shift", Key::IsoLevel5Shift},
+        {"lefthyper", Key::LeftHyper},
+        {"leftmeta", Key::LeftMeta},
+        {"righthyper", Key::RightHyper},
+        {"rightmeta", Key::RightMeta},
         {"mediaplay", Key::MediaPlay},
         {"mediapause", Key::MediaPause},
         {"mediaplaypause", Key::MediaPlayPause},
+        {"mediareverse", Key::MediaReverse},
         {"mediastop", Key::MediaStop},
         {"mediafastforward", Key::MediaFastForward},
         {"mediarewind", Key::MediaRewind},
         {"mediatracknext", Key::MediaTrackNext},
         {"mediatrackprevious", Key::MediaTrackPrevious},
+        {"mediarecord", Key::MediaRecord},
         {"lowervolume", Key::LowerVolume},
         {"raisevolume", Key::RaiseVolume},
         {"mutevolume", Key::MuteVolume},
@@ -127,6 +135,27 @@ std::optional<Key> keyNamed(const std::string& name)
         if (name[1] != '0' && number >= 1 && number <= 35) return Key(int(Key::F1) + number - 1);
     }
     return std::nullopt;
+}
+
+/// What a keypad key types with NumLock on, as a typed one does: its text
+/// goes in the legacy encoding and in kitty's unless every key is reported.
+/// Empty for another key.
+std::string_view keypadText(Key key)
+{
+    if (key >= Key::Keypad0 && key <= Key::Keypad9) {
+        static constexpr std::string_view Digits = "0123456789";
+        return Digits.substr(std::size_t(int(key) - int(Key::Keypad0)), 1);
+    }
+    switch (key) {
+    case Key::KeypadDecimal: return ".";
+    case Key::KeypadDivide: return "/";
+    case Key::KeypadMultiply: return "*";
+    case Key::KeypadSubtract: return "-";
+    case Key::KeypadAdd: return "+";
+    case Key::KeypadEqual: return "=";
+    case Key::KeypadSeparator: return ",";
+    default: return {};
+    }
 }
 
 /// The character of a character key named in words.
@@ -177,6 +206,8 @@ std::optional<NamedKey> parseKeyName(std::string_view name)
     } else if (name.ends_with("++")) {
         keyWord = name.substr(name.size() - 1);
         modifiers = name.substr(0, name.size() - 2);
+        // "++": a '+' that ends no modifier.
+        if (modifiers.empty()) return std::nullopt;
     } else {
         const std::size_t plus = name.rfind('+');
         keyWord = plus == std::string_view::npos ? name : name.substr(plus + 1);
@@ -210,6 +241,7 @@ std::optional<NamedKey> parseKeyName(std::string_view name)
             const auto key = keyNamed(word);
             if (!key) return std::nullopt;
             out.key = *key;
+            out.text = keypadText(*key);
             return out;
         }
     }

@@ -1,9 +1,15 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: GPL-3.0-or-later
+# Once: config.fish can source this file too (the no-rc switch), and the
+# second run would find the switches gone.
+set -q __afterglow_loaded; and return
+# Read before any other return, so that no program of the shell inherits them.
+set -g __afterglow_features " $AFTERGLOW_SHELL_FEATURES "
+set -g __afterglow_cursor $AFTERGLOW_PROMPT_CURSOR
+set -e AFTERGLOW_SHELL_FEATURES AFTERGLOW_PROMPT_CURSOR
 status is-interactive; or return
 # This runs after config.fish, which can turn the integration off.
 test "$AFTERGLOW_SHELL_INTEGRATION" = 0; and return
-set -q __afterglow_loaded; and return
 set -g __afterglow_loaded 1
 # ssh through `afterglow ssh`, unless the user already wraps it.
 if test -n "$AFTERGLOW_SSH_HELPER"; and not functions -q ssh
@@ -15,19 +21,18 @@ if test -n "$AFTERGLOW_SSH_HELPER"; and not functions -q ssh
         end
     end
 end
-# The parts that Terminal.shellIntegration turns off, as Kitty's switches.
-set -g __afterglow_features " $AFTERGLOW_SHELL_FEATURES "
-set -e AFTERGLOW_SHELL_FEATURES
-# Fish 4+ supplies native OSC 133 marks, including redraw handling. Leave its
-# mark-prompt feature setting intact. Older Fish gets the marks here, as
-# Kitty's integration gives them. AFTERGLOW_FISH_PROMPT_MARKS=1 forces them,
-# for the tests of a Fish 4.
+# Fish 4+ supplies native OSC 133 marks, including redraw handling, unless
+# no-prompt-mark started it with --features=no-mark-prompt. Older Fish gets
+# the marks here, as Kitty's integration gives them.
+# AFTERGLOW_FISH_PROMPT_MARKS=1 forces them, for the tests of a Fish 4.
 if not string match -q '* no-prompt-mark *' -- $__afterglow_features
     and begin
         test "$AFTERGLOW_FISH_PROMPT_MARKS" = 1
         or string match -qr '^[0-3]\.' -- $version
     end
-    function __afterglow_mark_prompt --on-event fish_prompt
+    # As Kitty: a prompt drawn again after Ctrl+C or a syntax error is a
+    # prompt too, and fish_prompt does not come for it.
+    function __afterglow_mark_prompt --on-event fish_prompt --on-event fish_cancel --on-event fish_posterror
         set -l saved_status $status
         test "$__afterglow_mark_state" = command; and printf '\e]133;D\a'
         set -g __afterglow_mark_state prompt
@@ -48,12 +53,22 @@ if not string match -q '* no-prompt-mark *' -- $__afterglow_features
     end
     # Afterglow erases the prompt at a resize: Fish draws it again.
     set -g fish_handle_reflow 1
-    # The special key, as Kitty binds it: the passive moves where Fish has them.
-    set -l suffix ''
-    bind --function-names | string match -q forward-char-passive; and set suffix -passive
-    for mode in (bind --list-modes | string match -v paste)
-        bind --preset -M $mode \e\[1u forward-char$suffix
-        bind --preset -M $mode \e\[1\;1u backward-char$suffix
+    # The special key, as Kitty binds it: the passive moves where Fish has
+    # them. At a prompt, not now: Fish loads its key bindings at the first
+    # prompt, and again when fish_key_bindings changes, and erases the preset
+    # bindings with them. Each mode of the bindings gets them.
+    function __afterglow_bind_special_key --on-event fish_prompt
+        set -l saved_status $status
+        if test "$__afterglow_bound_for" != "$fish_key_bindings"
+            set -g __afterglow_bound_for $fish_key_bindings
+            set -l suffix ''
+            bind --function-names | string match -q forward-char-passive; and set suffix -passive
+            for mode in (bind --list-modes | string match -v paste)
+                bind --preset -M $mode \e\[1u forward-char$suffix
+                bind --preset -M $mode \e\[1\;1u backward-char$suffix
+            end
+        end
+        return $saved_status
     end
 end
 # A bar while the user edits the command, the configured cursor for it, in
@@ -61,7 +76,7 @@ end
 if not string match -q '* no-cursor *' -- $__afterglow_features
     function __afterglow_prompt_cursor --on-event fish_prompt
         set -l saved_status $status
-        test "$fish_key_bindings" = fish_default_key_bindings; and printf '\e[%s q' (string replace -r '^$' 5 -- "$AFTERGLOW_PROMPT_CURSOR")
+        test "$fish_key_bindings" = fish_default_key_bindings; and printf '\e[%s q' (string replace -r '^$' 5 -- "$__afterglow_cursor")
         return $saved_status
     end
     function __afterglow_command_cursor --on-event fish_preexec
@@ -70,47 +85,34 @@ if not string match -q '* no-cursor *' -- $__afterglow_features
 end
 # sudo and run0 drop TERMINFO_DIRS, where afterglow's own terminfo entry is:
 # the command gets a TERM that every system knows, as Kitty's no-sudo switch
-# covers. A sudo of the user's own stays.
+# covers. sudo keeps TERM from its own environment (sudoers env_reset), so
+# its options stay as typed. A sudo of the user's own stays.
+function __afterglow_system_knows_term
+    # HOME too: the command runs as another user, without this ~/.terminfo.
+    if command -q tput
+        env HOME=/nonexistent TERMINFO_DIRS= TERMINFO= tput -T afterglow longname >/dev/null 2>&1
+    else
+        for dir in /etc/terminfo /lib/terminfo /usr/share/terminfo /usr/lib/terminfo
+            test -e $dir/a/afterglow -o -e $dir/61/afterglow; and return 0
+        end
+        return 1
+    end
+end
 if not string match -q '* no-sudo *' -- $__afterglow_features
     and test "$TERM" = afterglow
-    and not functions -q sudo
-    and not env TERMINFO_DIRS= TERMINFO= tput -T afterglow longname >/dev/null 2>&1
-    function sudo --wraps sudo --description 'sudo with a TERM that the system knows'
-        # VAR=value must come after sudo's options; -e and -v take none.
-        set -l i 1
-        set -l skip 0
-        while test $i -le (count $argv)
-            set -l arg $argv[$i]
-            if test $skip = 1
-                set skip 0
-            else if test "$arg" = --
-                set i (math $i + 1)
-                break
-            else if string match -qr -- '^(--edit|--validate|-e.*|-v.*|-[^-].*[ev].*)$' $arg
-                command sudo $argv
-                return
-            else if contains -- $arg --user --group --host --chdir --chroot --role --type --command-timeout --auth-type --login-class --prompt --close-from --other-user
-                set skip 1
-            else if string match -qr -- '^--' $arg
-            else if string match -qr -- '^-.*[aCcDghpRrtTuU]$' $arg
-                set skip 1
-            else if not string match -qr -- '^-|=' $arg
-                break
-            end
-            set i (math $i + 1)
+    and not __afterglow_system_knows_term
+    if not functions -q sudo
+        function sudo --wraps sudo --description 'sudo with a TERM that the system knows'
+            TERM=xterm-256color command sudo $argv
         end
-        set -l options
-        set -l rest
-        test $i -gt 1; and set options $argv[1..(math $i - 1)]
-        test $i -le (count $argv); and set rest $argv[$i..-1]
-        command sudo $options TERM=xterm-256color $rest
     end
-    if command -q run0
+    if command -q run0; and not functions -q run0
         function run0 --wraps run0
             TERM=xterm-256color command run0 --setenv=TERM $argv
         end
     end
 end
+functions -e __afterglow_system_knows_term
 if not string match -q '* no-cwd *' -- $__afterglow_features
     function __afterglow_cwd --on-event fish_prompt
         set -l saved_status $status

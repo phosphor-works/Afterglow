@@ -19,9 +19,13 @@ namespace Afterglow::UploadArchive {
 /// The archive of @p paths, files and directories with what is in them, as
 /// iTerm2 makes it: each path relative to the deepest directory that holds
 /// all of them (the parent of a directory chosen alone), and written as
-/// "./path" so that no name starts with '-'. Symbolic links stay links. Its
-/// gzip data is at most @p maxBytes: nothing, with @p error set, past that,
-/// for a file that cannot be read, or for a path that does not exist.
+/// "./path" so that no name starts with '-'. A chosen link is followed, a
+/// link in a chosen directory stays a link. Devices, sockets and pipes in a
+/// chosen directory are left out. The setuid and setgid bits are dropped.
+/// Its gzip data is at most @p maxBytes. Nothing, with @p error set to a
+/// sentence for the user, past that, for an empty @p paths, for a path that
+/// does not exist, for a chosen device, socket or pipe, or for a file that
+/// cannot be read or that changes while it is read.
 std::optional<std::string> build(const QStringList& paths, std::size_t maxBytes, QString& error);
 
 /// What the program reads: "ok", then the archive in base64 lines of 76

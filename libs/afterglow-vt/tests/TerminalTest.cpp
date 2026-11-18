@@ -729,6 +729,26 @@ TEST(Terminal, TheCommandOfARowAndTheFirstOutputOfRows)
     Term none(20, 10);
     EXPECT_EQ(none.t.commandOutputAt(0), std::nullopt);
     EXPECT_EQ(none.t.firstCommandOutputIn(0, 9), std::nullopt);
+    // Stable ids, not visible rows: in a screen of three rows, the first
+    // command is in the history. Once its rows left the history, its output
+    // is no first output of any rows.
+    Term history(20, 3, 3);
+    history.feed("\x1b]133;A\a$ \x1b]133;B\aone\x1b]133;C\a\r\nout1\r\n\x1b]133;D;0\a");
+    history.feed("\x1b]133;A\a$ \x1b]133;B\atwo\x1b]133;C\a\r\nout2\r\nout2b\r\n\x1b]133;D;0\a");
+    const auto both = history.t.semanticRegions();
+    ASSERT_EQ(both.size(), 6u);
+    ASSERT_EQ(history.t.primaryScreen().historySize(), 3u);
+    ASSERT_EQ(history.t.primaryScreen().rowsDropped(), 0u);
+    EXPECT_EQ(history.t.commandOutputAt(0), both[2].id);
+    EXPECT_EQ(history.t.commandOutputAt(1), both[2].id);
+    EXPECT_EQ(history.t.commandOutputAt(2), both[5].id);
+    EXPECT_EQ(history.t.commandOutputAt(4), both[5].id);
+    EXPECT_EQ(history.t.firstCommandOutputIn(0, 5), both[2].id);
+    EXPECT_EQ(history.t.firstCommandOutputIn(2, 5), both[5].id);
+    history.feed("x\r\ny\r\nz\r\n");
+    ASSERT_EQ(history.t.primaryScreen().rowsDropped(), 3u);
+    EXPECT_FALSE(history.t.semanticRegions()[2].available);
+    EXPECT_EQ(history.t.firstCommandOutputIn(0, 8), both[5].id);
 }
 
 TEST(Terminal, SemanticRegionsWhoseRowsAResizeDropsAreGone)
@@ -1728,27 +1748,59 @@ TEST(Terminal, TextWithWrapMarkersAndTheCursor)
     EXPECT_EQ(t.t.text(Terminal::TextScope::Screen, 1 << 20, nullptr, format), "abcdefg\nxy\x1b[3;3H\x1b[6 q\x1b[?25l");
 }
 
-// A limit cuts at the last whole character or escape sequence.
+// A limit cuts at the last whole character or escape sequence, and the cut
+// text ends the style and the link that it leaves open, within the limit.
 TEST(Terminal, StyledTextCutsNoEscapeSequence)
 {
     Term t(20, 2);
     t.feed("a\x1b[31mbc");
     TextFormat ansi;
     ansi.ansi = true;
-    for (std::size_t limit = 0; limit < 16; ++limit) {
+    const std::string whole = "a\x1b[0;31mbc\x1b[m";
+    for (std::size_t limit = 0; limit < 20; ++limit) {
         bool truncated = false;
         const std::string text = t.t.text(Terminal::TextScope::Screen, limit, &truncated, ansi);
-        const std::string whole = "a\x1b[0;31mbc\x1b[m";
         EXPECT_LE(text.size(), limit);
-        // As in plain text: a row that fills the limit leaves no room for
-        // the line feed after it.
-        EXPECT_EQ(truncated, limit <= whole.size()) << limit;
-        EXPECT_EQ(whole.substr(0, text.size()), text) << limit;
-        // What was kept ends at a boundary.
-        for (const std::size_t boundary : {std::size_t(0), std::size_t(1), std::size_t(8), std::size_t(9), std::size_t(10), whole.size()}) {
-            if (boundary <= limit && boundary > text.size()) ADD_FAILURE() << limit << " cut at " << text.size() << ", not " << boundary;
-        }
+        // Only the blank row after it left out: nothing is lost.
+        EXPECT_EQ(truncated, limit < whole.size()) << limit;
+        const std::string expected = limit == 0 ? ""
+            : limit < 11                         ? "a"
+            : limit == 11                        ? "a\x1b[0;31m\x1b[m"
+            : limit == 12                        ? "a\x1b[0;31mb\x1b[m"
+                                                 : whole;
+        EXPECT_EQ(text, expected) << limit;
     }
+    // A link: its end goes with the cut.
+    Term link(20, 2);
+    link.feed("\x1b]8;;http://x\x1b\\abcd");
+    const std::string linked = link.t.text(Terminal::TextScope::Screen, 24, nullptr, ansi);
+    EXPECT_EQ(linked, "\x1b]8;;http://x\x1b\\ab\x1b]8;;\x1b\\");
+    // The cursor's sequences count in the limit, and go only whole.
+    TextFormat cursor;
+    cursor.cursor = true;
+    bool truncated = false;
+    const std::string all = t.t.text(Terminal::TextScope::Screen, 1 << 20, &truncated, cursor);
+    EXPECT_FALSE(truncated);
+    for (std::size_t limit = 0; limit <= all.size(); ++limit) {
+        const std::string text = t.t.text(Terminal::TextScope::Screen, limit, &truncated, cursor);
+        EXPECT_LE(text.size(), limit);
+        EXPECT_EQ(truncated, limit < all.size()) << limit;
+    }
+}
+
+// The blank rows that the end of a text trims are no part that a limit cuts.
+TEST(Terminal, ALimitThatLeavesOutOnlyBlankRowsCutsNothing)
+{
+    Term t(10, 4);
+    t.feed("abc\r\n\r\n");
+    bool truncated = true;
+    EXPECT_EQ(t.t.text(Terminal::TextScope::Screen, 3, &truncated), "abc");
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ(t.t.text(Terminal::TextScope::All, 3, &truncated), "abc");
+    EXPECT_FALSE(truncated);
+    t.feed("\x1b[4;1Hz");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::Screen, 3, &truncated), "abc");
+    EXPECT_TRUE(truncated);
 }
 
 // set-colors of afterglow ctl: the OSCs of a program's colours, from the
@@ -1762,7 +1814,9 @@ TEST(Terminal, TheHostSetsAndResetsColoursByName)
         ADD_FAILURE() << "no colour " << name;
         return std::nullopt;
     };
-    const Rgb configured = *named("color1");
+    const auto color1 = named("color1");
+    ASSERT_TRUE(color1);
+    const Rgb configured = *color1;
     ASSERT_EQ(t.t.namedColors().size(), 5u + 256u);
     EXPECT_FALSE(named("cursor"));
     for (const auto& [name, rgb] : {std::pair{"background", Rgb{1, 2, 3}}, std::pair{"color1", Rgb{0xff, 0, 0x10}},
@@ -1787,13 +1841,13 @@ TEST(Terminal, TheHostSetsAndResetsColoursByName)
 }
 
 // it2ul (OSC 1337 RequestUpload): a host that cannot ask the user, and a
-// format other than tgz, get Ctrl+C, iTerm2's answer to a cancel.
-TEST(Terminal, AnUploadRequestThatNoHostTakesIsCancelled)
+// format other than tgz, get no answer. Ctrl+C would signal the foreground
+// job from the program's own output: only a person's cancel sends it.
+TEST(Terminal, AnUploadRequestThatNoHostTakesGetsNoAnswer)
 {
     Term t(10, 2);
     t.feed("\x1b]1337;RequestUpload=format=tgz;version=dGFy\a");
-    EXPECT_EQ(t.host.written, "\x03");
-    t.host.written.clear();
+    EXPECT_EQ(t.host.written, "");
     struct Asking : RecordingHost
     {
         int asked = 0;
@@ -1809,5 +1863,5 @@ TEST(Terminal, AnUploadRequestThatNoHostTakesIsCancelled)
     EXPECT_EQ(asking.written, "");
     terminal.feed("\x1b]1337;RequestUpload=format=zip\a");
     EXPECT_EQ(asking.asked, 1);
-    EXPECT_EQ(asking.written, "\x03");
+    EXPECT_EQ(asking.written, "");
 }

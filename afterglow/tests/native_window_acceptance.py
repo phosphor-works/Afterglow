@@ -36,7 +36,11 @@ with tempfile.TemporaryDirectory(prefix="afterglow-native-") as temporary:
     root = Path(temporary)
     with NestedDesktop(root) as desktop:
         marker = root / "drag-ready"
-        env = dict(desktop.env, AFTERGLOW_NATIVE_DND_READY=str(marker), AFTERGLOW_NATIVE_ISOLATED="1")
+        # A test writes "+Keysym" and "-Keysym" tokens (a press and a release) here,
+        # and the runner sends them to the nested KWin as one batch.
+        key_marker = root / "keys"
+        env = dict(desktop.env, AFTERGLOW_NATIVE_DND_READY=str(marker), AFTERGLOW_NATIVE_KEYS=str(key_marker),
+                   AFTERGLOW_NATIVE_ISOLATED="1")
         command = ["dbus-run-session", "--", binary]
         if args.filter:
             command.append("--gtest_filter=" + args.filter)
@@ -47,9 +51,16 @@ with tempfile.TemporaryDirectory(prefix="afterglow-native-") as temporary:
         try:
             while process.poll() is None:
                 coordinates = []
+                keys = []
                 def ready():
                     if process.poll() is not None:
                         return True
+                    try:
+                        # The test renames the file into place: it is whole.
+                        keys[:] = key_marker.read_text().split() or ["(empty)"]
+                        return True
+                    except FileNotFoundError:
+                        pass
                     try:
                         coordinates[:] = map(int, marker.read_text().split())
                     except (FileNotFoundError, ValueError):
@@ -62,7 +73,13 @@ with tempfile.TemporaryDirectory(prefix="afterglow-native-") as temporary:
                     wait_for(ready, timeout=remaining)
                 except AssertionError:
                     raise AssertionError(f"The native tests did not finish within {args.timeout} s") from None
-                if len(coordinates) in (4, 5):
+                if keys:
+                    if not all(len(key) > 1 and key[0] in "+-" for key in keys):
+                        raise AssertionError(f"{key_marker}: {keys} is not a list of +Keysym and -Keysym")
+                    # Gone before the keys go: the test waits for that, then for what they type.
+                    key_marker.unlink()
+                    desktop.keys([(key[1:], key[0] == "+") for key in keys])
+                elif len(coordinates) in (4, 5):
                     marker.unlink(missing_ok=True)
                     Path(str(marker) + ".pressed").unlink(missing_ok=True)
                     hovered = Path(str(marker) + ".hovered")

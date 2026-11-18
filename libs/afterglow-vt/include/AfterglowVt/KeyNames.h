@@ -23,7 +23,8 @@ struct NamedKey
 {
     Key key = Key::Text;
     std::uint8_t mods = 0;
-    /// What the key types (Key::Text): empty with Ctrl, which types a control.
+    /// What the key types: for Key::Text its character, empty with Ctrl,
+    /// which types a control; for a keypad key its character ("kp5": "5").
     std::string text;
     char32_t unshifted = 0;
     char32_t shifted = 0;
@@ -40,7 +41,7 @@ inline constexpr std::size_t MaxKeysAtOnce = 4096;
 /// one UTF-8 character. Names and modifiers ignore case, '_' and '-'; a
 /// letter key ignores case too, so "ctrl+C" is Ctrl with the C key, and
 /// "shift+a" types A. The keys "+" and "-" are "plus" and "minus", or a '+'
-/// or '-' at the end ("ctrl++").
+/// or '-' at the end after a modifier ("ctrl++"): "++" names no key.
 AFTERGLOWVT_EXPORT std::optional<NamedKey> parseKeyName(std::string_view name);
 
 /// The bytes that a press and a release of @p key send to a program in

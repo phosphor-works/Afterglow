@@ -1,10 +1,15 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "ImageServer.h"
+
 #include "ImageDecoder.h"
 #include "ImageWire.h"
 
 #include <AfterglowImage/Decode.h>
+#include <AfterglowProto/DecodeFilter.h>
+#include <AfterglowProto/DecodeProcess.h>
+#include <AfterglowProto/DecodeRecord.h>
 #include <AfterglowProto/Limits.h>
 #include <AfterglowPty/CloseFrom.h>
 
@@ -14,24 +19,18 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <new>
 #include <string>
 
 #include <fcntl.h>
-#include <linux/audit.h>
-#include <linux/filter.h>
-#include <linux/seccomp.h>
 #include <poll.h>
 #include <signal.h>
-#include <spawn.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -57,22 +56,10 @@ namespace {
 
 // ---------------------------------------------------------- the process ---
 
-// The architectures whose system calls the filter knows, little-endian all:
-// it reads a descriptor from the low word of an argument. On any other, a
-// decoding process decodes nothing (NoFilterStatus).
-#if defined(__x86_64__)
-#define AFTERGLOW_MUX_FILTER_ARCH AUDIT_ARCH_X86_64
-#elif defined(__aarch64__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-#define AFTERGLOW_MUX_FILTER_ARCH AUDIT_ARCH_AARCH64
-#elif defined(__riscv) && __riscv_xlen == 64
-#define AFTERGLOW_MUX_FILTER_ARCH AUDIT_ARCH_RISCV64
-#elif defined(__powerpc64__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-#define AFTERGLOW_MUX_FILTER_ARCH AUDIT_ARCH_PPC64LE
-#endif
-
 /// The exit status of a decoding process that cannot limit its system calls
-/// (a kernel without seccomp filters, or a processor whose system calls the
-/// filter does not know): it decodes nothing, and the server says so.
+/// (AfterglowProto::allowOnlyDecoding: a kernel without seccomp filters, or
+/// a processor whose system calls the filter does not know): it decodes
+/// nothing, and the server says so.
 constexpr int NoFilterStatus = 3;
 /// The exit status of a decoding process that did not decode its image: a
 /// file that is no image of its formats, too large, corrupt, or that needs
@@ -81,107 +68,31 @@ constexpr int NoFilterStatus = 3;
 /// with which a sanitizer ends a process.
 constexpr int RefusedStatus = 4;
 
-/// Past this, the decoding process makes only the system calls that
-/// decoding needs: memory (mmap, munmap, mremap, mprotect, madvise, brk), a
-/// read of its file, a write of its pixels or of a sanitizer's report (to
-/// /dev/null but in a sanitizer build), the lowering of its own limits
-/// (prlimit64, getrlimit, setrlimit), close, futex, getrandom, clock_gettime,
-/// rt_sigreturn, its end, and sigaltstack(), which AddressSanitizer calls
-/// before each noreturn call (_exit, longjmp, throw) and which changes only
-/// the caller's own signal stack. Any other fails with ENOSYS, so that code
-/// that a corrupt file took over can open, run or connect to nothing, and
-/// read no terminal that standard error may be. A system call of another
-/// architecture kills it. False when the filter cannot be set, and on an
-/// architecture that it does not know.
-bool allowOnlyDecoding()
+/// The server's lines on standard error: the journal of the daemon, or the
+/// log of the window that started it.
+void report(std::chrono::steady_clock::time_point& last, const std::string& text)
 {
-    if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return false;
-#ifndef AFTERGLOW_MUX_FILTER_ARCH
-    return false;
-#else
-    constexpr std::uint32_t NativeArch = AFTERGLOW_MUX_FILTER_ARCH;
-    constexpr std::uint32_t Allow = SECCOMP_RET_ALLOW;
-    constexpr std::uint32_t Refuse = SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA);
-    // The low word of the first argument: a descriptor or a process id
-    // (little endian, as the architectures here are).
-    constexpr std::uint32_t FirstArgument = offsetof(seccomp_data, args);
-    std::vector<sock_filter> filter;
-    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, arch)));
-    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, NativeArch, 1, 0));
-    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
-    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)));
-    // read() of standard input only.
-    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_read, 0, 4));
-    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FirstArgument));
-    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STDIN_FILENO, 0, 1));
-    filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
-    filter.push_back(BPF_STMT(BPF_RET | BPF_K, Refuse));
-    // write() of standard output and standard error only.
-    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_write, 0, 5));
-    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FirstArgument));
-    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STDOUT_FILENO, 1, 0));
-    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, STDERR_FILENO, 0, 1));
-    filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
-    filter.push_back(BPF_STMT(BPF_RET | BPF_K, Refuse));
-    // prlimit64() of this process only: the limits go down once the
-    // image's header is read, and no hard limit can go up.
-    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_prlimit64, 0, 4));
-    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FirstArgument));
-    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 1));
-    filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
-    filter.push_back(BPF_STMT(BPF_RET | BPF_K, Refuse));
-#ifdef SYS_getrlimit
-    for (const long call : {long(SYS_getrlimit), long(SYS_setrlimit)}) {
-        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, std::uint32_t(call), 0, 1));
-        filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
-    }
-#endif
-    for (const long call : {SYS_close, SYS_mmap, SYS_munmap, SYS_mremap, SYS_mprotect, SYS_madvise, SYS_brk, SYS_futex,
-                            SYS_getrandom, SYS_clock_gettime, SYS_rt_sigreturn, SYS_sigaltstack, SYS_exit, SYS_exit_group}) {
-        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, std::uint32_t(call), 0, 1));
-        filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
-    }
-    filter.push_back(BPF_STMT(BPF_RET | BPF_K, Refuse));
-    const sock_fprog program{static_cast<unsigned short>(filter.size()), filter.data()};
-    return ::prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) == 0;
-#endif
+    if (reportDue(last)) std::fprintf(stderr, "afterglow-image: %s\n", text.c_str());
 }
 
 /// A decoding process: reads the image from @p input, a memory file, and
-/// writes the header and the pixels of its first frame to @p output, or of
+/// writes a Frame record (AfterglowProto/DecodeRecord.h) with the pixels of
+/// its first frame to @p output, or of
 /// each frame for ImageFormats::CommonFrames, at most GraphicsMaxFrames and
-/// MaxBytes of pixels together. It ends
-/// with the server @p server, and exits at once: no handler of the server
-/// runs in it.
+/// MaxBytes of pixels together. Of an APNG for ImageFormats::Png, its
+/// default image, as kitty shows it. It ends with the server @p server, and
+/// exits at once: no handler of the server runs in it.
 [[noreturn]] void decodeProcess(int input, int output, ImageFormats formats, pid_t server)
 {
-    ::prctl(PR_SET_PDEATHSIG, SIGKILL);
-    if (::getppid() != server) ::_exit(RefusedStatus);
-    // The server blocks SIGCHLD for its signalfd: the limits' signals must
-    // arrive here.
-    sigset_t none;
-    ::sigemptyset(&none);
-    ::sigprocmask(SIG_SETMASK, &none, nullptr);
-    if (::dup2(input, STDIN_FILENO) < 0 || ::dup2(output, STDOUT_FILENO) < 0) ::_exit(RefusedStatus);
-    AfterglowPty::closeFrom(STDERR_FILENO + 1);
-#ifndef AFTERGLOW_MUX_SANITIZED
     // Standard error is the daemon's journal, or a terminal: code that a
     // corrupt file took over writes neither. A sanitizer build keeps it, for
     // the reports.
-    const int null = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
-    if (null < 0 || ::dup2(null, STDERR_FILENO) < 0) ::_exit(RefusedStatus);
-    ::close(null);
+#ifdef AFTERGLOW_MUX_SANITIZED
+    constexpr bool keepStandardError = true;
+#else
+    constexpr bool keepStandardError = false;
 #endif
-    // The kernel's OOM killer takes this process before the daemon. Before
-    // PR_SET_DUMPABLE, which gives /proc/self to root.
-    if (const int adjust = ::open("/proc/self/oom_score_adj", O_WRONLY | O_CLOEXEC); adjust >= 0) {
-        (void)!::write(adjust, "1000", 4);
-        ::close(adjust);
-    }
-    // No core file, also where systemd-coredump takes cores through a pipe,
-    // which RLIMIT_CORE does not stop.
-    AfterglowProto::limit(RLIMIT_CORE, 0, 0);
-    ::prctl(PR_SET_DUMPABLE, 0);
+    if (!AfterglowProto::startDecodingProcess(server, input, output, keepStandardError)) ::_exit(RefusedStatus);
 
     struct stat file{};
     if (::fstat(STDIN_FILENO, &file) != 0 || file.st_size <= 0 || std::uint64_t(file.st_size) > MaxBytes) ::_exit(RefusedStatus);
@@ -199,7 +110,8 @@ bool allowOnlyDecoding()
     // the file is parsed: the header too comes from the program.
     AfterglowProto::limit(RLIMIT_AS, memoryFor(MaxBytes), memoryFor(MaxBytes));
     AfterglowProto::limit(RLIMIT_CPU, secondsFor(MaxBytes), secondsFor(MaxBytes) + 1);
-    if (!allowOnlyDecoding()) ::_exit(NoFilterStatus);
+    // Standard error is /dev/null here, but in a sanitizer build.
+    if (!AfterglowProto::allowOnlyDecoding()) ::_exit(NoFilterStatus);
     int width = 0;
     int height = 0;
     if (AfterglowImage::probe(data, width, height) != AfterglowImage::Probe::Image || !fits(std::uint64_t(width), std::uint64_t(height)))
@@ -217,15 +129,17 @@ bool allowOnlyDecoding()
     try {
         std::string error;
         std::string warning;
+        const AfterglowImage::PngFrames png =
+            formats == ImageFormats::Png ? AfterglowImage::PngFrames::DefaultImage : AfterglowImage::PngFrames::Animation;
         AfterglowImage::decode(data, [&](const unsigned char* pixels, int w, int h, int delayMs) {
             const std::uint64_t size = std::uint64_t(w) * std::uint64_t(h) * 4;
             if (!fits(std::uint64_t(w), std::uint64_t(h)) || bytes + size > MaxBytes) return false;
-            const Header header{std::uint32_t(w), std::uint32_t(h), std::uint32_t(std::max(0, delayMs))};
-            if (!writeAll(STDOUT_FILENO, &header, sizeof header) || !writeAll(STDOUT_FILENO, pixels, std::size_t(size))) return false;
+            if (!AfterglowProto::writeDecodeFrame(STDOUT_FILENO, std::uint32_t(w), std::uint32_t(h), std::max(0, delayMs), pixels))
+                return false;
             written = true;
             bytes += size;
             return formats == ImageFormats::CommonFrames && ++frames < AfterglowProto::GraphicsMaxFrames;
-        }, error, warning);
+        }, error, warning, png);
     } catch (const std::bad_alloc&) {
     }
     ::_exit(written ? 0 : RefusedStatus);
@@ -256,9 +170,13 @@ bool receiveRequest(int socket, ImageFormats& formats, AfterglowProto::UniqueFd&
         input.reset(fds[0]);
         output.reset(fds[1]);
     }
-    formats = byte == std::uint8_t(ImageFormats::Png)        ? ImageFormats::Png
-        : byte == std::uint8_t(ImageFormats::CommonFrames) ? ImageFormats::CommonFrames
-                                                            : ImageFormats::Common;
+    if (byte == std::uint8_t(ImageFormats::Png) || byte == std::uint8_t(ImageFormats::CommonFrames)) {
+        formats = ImageFormats(byte);
+    } else {
+        // No formats of this version: the caller answers with no process.
+        input.reset();
+        output.reset();
+    }
     return true;
 }
 
@@ -294,14 +212,18 @@ void reap(std::chrono::steady_clock::time_point& lastReport)
     while (::waitpid(-1, &status, WNOHANG) > 0) {
         // SIGKILL is the daemon's own end of a process, and SIGPIPE that of
         // one whose pane closed before it wrote.
-        if (WIFSIGNALED(status) && WTERMSIG(status) != SIGKILL && WTERMSIG(status) != SIGPIPE)
-            report(lastReport, "an image decoder ended with signal " + std::to_string(WTERMSIG(status)) + ": the image does not show");
+        // The frames of an animation that came before the end still show.
+        if (WIFSIGNALED(status) && WTERMSIG(status) == SIGXCPU)
+            report(lastReport, "an image decoder ran out of CPU time: the image, or the rest of its frames, does not show");
+        else if (WIFSIGNALED(status) && WTERMSIG(status) != SIGKILL && WTERMSIG(status) != SIGPIPE)
+            report(lastReport, "an image decoder ended with signal " + std::to_string(WTERMSIG(status))
+                                   + ": the image, or the rest of its frames, does not show");
         if (!WIFEXITED(status)) continue;
         const int code = WEXITSTATUS(status);
         if (code == NoFilterStatus)
-            report(lastReport, "the image decoder cannot limit its system calls (no seccomp, or a processor that it does not know): images of sessions do not show");
+            report(lastReport, "the image decoder cannot limit its system calls (no seccomp, or a processor that it does not know): images do not show");
         else if (code != 0 && code != RefusedStatus)
-            report(lastReport, "an image decoder failed with status " + std::to_string(code) + ": the image does not show");
+            report(lastReport, "an image decoder failed with status " + std::to_string(code) + ": the image, or the rest of its frames, does not show");
     }
 }
 
@@ -309,14 +231,17 @@ void reap(std::chrono::steady_clock::time_point& lastReport)
 
 // ----------------------------------------------------------- the server ---
 
-int runImageServer(std::string_view parent)
+int runImageServer(std::string_view parent, std::string_view version)
 {
     // Its own name in ps and the journal, which /proc/self/exe would make
-    // "exe". The decoding processes take it too. It ends when the daemon's
-    // end of its socket closes, however the daemon ends: no PDEATHSIG, which
+    // "exe". The decoding processes take it too. It ends when the client's
+    // end of its socket closes, however the client ends: no PDEATHSIG, which
     // follows the thread that started it, and a restart runs on a pane's.
     ::prctl(PR_SET_NAME, "afterglow-image");
     if (std::to_string(::getppid()) != parent) return 1;
+    // A client of another version would read the frames wrong: it reports
+    // the status instead.
+    if (version != DecodeWireVersion) return OtherVersionStatus;
     // A daemon that started without standard error gives the server none: a
     // descriptor that it receives would land there.
     if (::fcntl(STDERR_FILENO, F_GETFD) < 0 && ::open("/dev/null", O_WRONLY | O_CLOEXEC) != STDERR_FILENO) return 1;
@@ -361,7 +286,7 @@ int runImageServer(std::string_view parent)
         } else if (!process.valid()) {
             // A kernel older than Linux 5.3 has no pidfd_open().
             report(lastReport, std::string("the image decoder cannot watch its process (pidfd_open: ") + std::strerror(errno)
-                                   + "): images of sessions do not show");
+                                   + "): images do not show");
             ::kill(pid, SIGKILL);
         }
         answer(STDIN_FILENO, process.get());

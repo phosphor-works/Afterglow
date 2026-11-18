@@ -366,6 +366,22 @@ class NestedDesktop:
         self.x.XFlush(self.display)
         time.sleep(0.06)
 
+    def keys(self, events):
+        """Sends key events, each a pair of an X keysym name and True for a press,
+        with one flush: KWin reads them together and sends them to its client in
+        one batch, as a fast typist's keys can come."""
+        held = []
+        for name, down in events:
+            event, value = self._event(2 if down else 3, 0, 0,
+                                       sum({MODIFIER_MASKS.get(h.split("_")[0], 0) for h in held}))
+            value.keycode = self._keycode(name)
+            check(self.x.XSendEvent(self.display, self.window, 0, 1 if down else 2, C.byref(event)), "XSendEvent failed")
+            if down and name not in held:
+                held.append(name)
+            elif not down and name in held:
+                held.remove(name)
+        self.x.XFlush(self.display)
+
     def text(self, value):
         """Types ASCII text. Shift is held for capitals and shifted symbols."""
         for char in value:

@@ -9,6 +9,8 @@
 
 #include <QLoggingCategory>
 
+#include <cerrno>
+#include <cstring>
 #include <memory>
 #include <mutex>
 
@@ -34,14 +36,19 @@ AfterglowMux::ImageDecoder* decoder()
     g_tried = true;
     std::string error;
     const std::string executable = g_executable.empty() ? Aglow::siblingExecutable("aglow-mux", &error) : g_executable;
-    if (executable.empty() || ::access(executable.c_str(), X_OK) != 0) {
-        qCWarning(lcProgramImages).noquote() << "no image decoder:"
-            << (error.empty() ? QString::fromStdString(executable) + QStringLiteral(" is not there") : QString::fromStdString(error))
-            << "- the images that programs send do not show";
+    if (error.empty() && executable.empty()) error = "no aglow-mux";
+    // Why it cannot run: missing, or there and not executable.
+    if (error.empty() && ::access(executable.c_str(), X_OK) != 0) error = executable + ": " + std::strerror(errno);
+    if (!error.empty()) {
+        qCWarning(lcProgramImages).noquote() << "no image decoder:" << QString::fromStdString(error)
+                                             << "- the images that programs send do not show";
         return nullptr;
     }
-    // As the daemon's: its reports name the program that decodes.
-    g_decoder = std::make_unique<AfterglowMux::ImageDecoder>(executable, AfterglowMux::ImageDecoder::WaitMs, "afterglow");
+    // The reports of the decoder's client go to the log, as the window's
+    // other warnings.
+    g_decoder = std::make_unique<AfterglowMux::ImageDecoder>(executable, AfterglowMux::ImageDecoder::WaitMs, [](const std::string& line) {
+        qCWarning(lcProgramImages).noquote() << QString::fromStdString(line);
+    });
     return g_decoder.get();
 }
 

@@ -4,6 +4,7 @@
 #include <AfterglowVt/Screen.h>
 
 #include <algorithm>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -718,8 +719,6 @@ int Screen::unscroll(int n)
     if (k == 0) {
         return 0;
     }
-    // A block across the cut would lose its lower rows.
-    eraseMulticellsCrossing(0, m_rowCount - 1, 0, m_cols - 1, m_rowCount - k);
     for (int i = 0; i < k; ++i) {
         releaseRow(m_rows.back());
         m_rows.pop_back();
@@ -727,6 +726,13 @@ int Screen::unscroll(int n)
     for (int y = 0; y < k; ++y) {
         expand(row(y)); // history rows return to the screen
     }
+    // A block across the cut lost its lower rows: it now reaches past the
+    // last row of the screen, and goes. Erased after the history rows came
+    // back, it takes its top rows that were in the history too. A block
+    // whose top is still in the history keeps those rows there, as a scroll
+    // into the history leaves it.
+    eraseMulticellsCrossing(std::numeric_limits<int>::min(), m_rowCount - 1, 0, m_cols - 1, m_rowCount);
+    ++m_historyRewinds;
     // A view scrolled back stays on its rows, as kitty's does.
     m_viewportOffset = m_viewportOffset > std::size_t(k) ? m_viewportOffset - std::size_t(k) : 0;
     return k;
@@ -963,6 +969,7 @@ void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracke
         for (int k = 1; k <= pulled; ++k) {
             expand(m_rows[historySize() - std::size_t(k)]); // history rows return to the screen
         }
+        if (pulled > 0) ++m_historyRewinds;
         m_rowCount += pulled;
         cursor.y += pulled;
         savedCursor.y += pulled;
