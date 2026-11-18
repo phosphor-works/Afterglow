@@ -389,11 +389,22 @@ class Shells:
         (bash_dir / 'ssh').write_text('_stub_ssh() { COMPREPLY=(ssh-marker); }\ncomplete -F _stub_ssh ssh\n')
         (self.fish_dir / 'ssh.fish').write_text('complete -c ssh -f -a ssh-marker\n')
         (self.zsh_functions / '_ssh').write_text('#compdef ssh\ncompadd ssh-marker\n')
-        # Only the stubs, the shells' directories and /usr/bin and /bin, not the rest of the user's PATH: an
-        # afterglow, aglow or aglow-mux of the user there would run by mistake, and a completion that falls back
-        # on one would pass.
-        shell_dirs = [str(Path(found).parent) for found in map(shutil.which, ('bash', 'fish', 'zsh')) if found]
-        path = ':'.join(dict.fromkeys([str(self.bin), *shell_dirs, '/usr/bin', '/bin']))
+        # The stubs, then every program of the user's PATH but an afterglow, aglow or aglow-mux, as links in a
+        # directory of the test: one of the user's would run by mistake, and a completion that falls back on one
+        # would pass. The others stay for the shells and the programs that the completions run (readlink), which
+        # a system need not keep in /usr/bin or /bin (NixOS), where an installed afterglow can be too.
+        tools = tmp / 'tools'
+        tools.mkdir()
+        for directory in os.environ.get('PATH', '/usr/bin:/bin').split(':'):
+            if not directory or not os.path.isdir(directory):
+                continue
+            for entry in os.scandir(directory):
+                target = tools / entry.name
+                if entry.name in ('afterglow', 'aglow', 'aglow-mux') or os.path.lexists(target):
+                    continue
+                if os.access(entry.path, os.X_OK) and not entry.is_dir():
+                    target.symlink_to(entry.path)
+        path = f'{self.bin}:{tools}'
         self.env = dict(os.environ, PATH=path,
                         STUB_LOG=str(self.log), STUB_IDS='nav\nscene', HOME=str(tmp),
                         XDG_CONFIG_HOME=str(tmp / '.config'), XDG_DATA_HOME=str(tmp / '.local/share'),
