@@ -63,7 +63,7 @@ of the active window or of the window that was active last.
 With --session NAME, the commands act on mux session NAME (afterglow mux),
 and pane IDs are those of the mux daemon. In a pane of a session, they act
 on that session. While no window shows the session, only ls, send-text,
-get-text, send-key, colors, set-colors, set-user-var, signal-program, split,
+paste, get-text, send-key, colors, set-colors, set-user-var, signal-program, split,
 new-tab, move-pane, detach-tab, close, watch and focus without --direction
 work. get-text then reads no --selection or --last-visited-output: the
 window has them.
@@ -73,6 +73,9 @@ the default config file, not the --config or -o of a running Afterglow.
   ls [--json]                           list panes
   send-text [--raw] TEXT...             type TEXT (\n, \r, \t, \e, \\ and \xHH for U+00HH unless --raw)
   send-text --stdin                     type standard input (UTF-8 text)
+  paste [--raw] TEXT...                 paste TEXT, as a paste in the window: bracketed when the
+                                        program asks, the line ends as Enter, no other controls
+  paste --stdin                         paste standard input (UTF-8 text, in one request of 1 MiB)
   get-text [--screen|--scrollback|--selection|--last-output|--first-output-on-screen|
             --last-visited-output] [--ansi] [--cursor] [--wrap-markers]
                                         print pane text (needs Control.allowReadText), with
@@ -709,17 +712,40 @@ std::optional<QString> stdinScopeError(const QString& scope)
 const QString NoCurrentDirectory = QStringLiteral("the current directory was removed, so give an absolute directory");
 
 const QStringList Commands = {
-    QStringLiteral("ls"),           QStringLiteral("send-text"),      QStringLiteral("get-text"),
-    QStringLiteral("split"),        QStringLiteral("move-pane"),      QStringLiteral("detach-tab"),
-    QStringLiteral("new-tab"),      QStringLiteral("new-window"),     QStringLiteral("focus"),
-    QStringLiteral("close"),        QStringLiteral("set-title"),      QStringLiteral("signal"),
-    QStringLiteral("notify"),       QStringLiteral("scripts"),        QStringLiteral("open-directory"),
-    QStringLiteral("projects"),     QStringLiteral("save-project"),   QStringLiteral("open-project"),
-    QStringLiteral("action"),       QStringLiteral("watch"),          QStringLiteral("overlay"),
-    QStringLiteral("screenshot"),   QStringLiteral("resize"),         QStringLiteral("send-key"),
-    QStringLiteral("scroll"),       QStringLiteral("set-tab-title"),  QStringLiteral("colors"),
-    QStringLiteral("set-colors"),   QStringLiteral("set-font-size"),  QStringLiteral("set-opacity"),
-    QStringLiteral("set-user-var"), QStringLiteral("signal-program"), QStringLiteral("window"),
+    QStringLiteral("ls"),
+    QStringLiteral("send-text"),
+    QStringLiteral("paste"),
+    QStringLiteral("get-text"),
+    QStringLiteral("split"),
+    QStringLiteral("move-pane"),
+    QStringLiteral("detach-tab"),
+    QStringLiteral("new-tab"),
+    QStringLiteral("new-window"),
+    QStringLiteral("focus"),
+    QStringLiteral("close"),
+    QStringLiteral("set-title"),
+    QStringLiteral("signal"),
+    QStringLiteral("notify"),
+    QStringLiteral("scripts"),
+    QStringLiteral("open-directory"),
+    QStringLiteral("projects"),
+    QStringLiteral("save-project"),
+    QStringLiteral("open-project"),
+    QStringLiteral("action"),
+    QStringLiteral("watch"),
+    QStringLiteral("overlay"),
+    QStringLiteral("screenshot"),
+    QStringLiteral("resize"),
+    QStringLiteral("send-key"),
+    QStringLiteral("scroll"),
+    QStringLiteral("set-tab-title"),
+    QStringLiteral("colors"),
+    QStringLiteral("set-colors"),
+    QStringLiteral("set-font-size"),
+    QStringLiteral("set-opacity"),
+    QStringLiteral("set-user-var"),
+    QStringLiteral("signal-program"),
+    QStringLiteral("window"),
 };
 
 // The standard input of `overlay`, as much as an overlay takes. It goes in
@@ -785,10 +811,10 @@ int runCtl(int argc, char** argv)
         args = args.mid(0, dash);
     }
     // Only these read words after "--": elsewhere they would be dropped unseen.
-    static const QStringList TakesTrailing = {QStringLiteral("new-window"), QStringLiteral("split"),
-                                              QStringLiteral("new-tab"),    QStringLiteral("send-text"),
-                                              QStringLiteral("set-title"),  QStringLiteral("notify"),
-                                              QStringLiteral("overlay"),    QStringLiteral("set-tab-title")};
+    static const QStringList TakesTrailing = {
+        QStringLiteral("new-window"), QStringLiteral("split"),   QStringLiteral("new-tab"),
+        QStringLiteral("send-text"),  QStringLiteral("paste"),   QStringLiteral("set-title"),
+        QStringLiteral("notify"),     QStringLiteral("overlay"), QStringLiteral("set-tab-title")};
     if (!trailing.isEmpty() && !TakesTrailing.contains(command)) {
         return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
     }
@@ -1180,7 +1206,8 @@ int runCtl(int argc, char** argv)
         act = [&, name = args.first(), overwrite](qint64 pane) {
             return printObject(QStringLiteral("saveProject"), {pane, name, overwrite});
         };
-    } else if (command == QLatin1String("send-text")) {
+    } else if (command == QLatin1String("send-text") || command == QLatin1String("paste")) {
+        const bool paste = command == QLatin1String("paste");
         QString text;
         // Refused as aglow run refuses its input, with the status of a
         // usage error.
@@ -1206,9 +1233,24 @@ int runCtl(int argc, char** argv)
             if (text.toUtf8().size() > CtlMaxText)
                 return fail(tooLong, AfterglowProto::Run::UsageError);
         }
-        act = [&sendText, text](qint64 pane) {
-            return sendText(pane, text);
-        };
+        if (paste) {
+            // One request: a paste in parts would bracket each part as a
+            // paste of its own. The text with its JSON escaping fits in the
+            // request line, with room for the rest of the request.
+            const qsizetype escaped = QJsonDocument(QJsonArray{text}).toJson(QJsonDocument::Compact).size();
+            if (escaped > IpcClient::MaxLineBytes - CtlRequestRoom) {
+                return fail(QStringLiteral("a paste goes in one request of 1 MiB, and this text needs %1 bytes there")
+                                .arg(escaped),
+                            AfterglowProto::Run::UsageError);
+            }
+            act = [&run, text](qint64 pane) {
+                return run(QStringLiteral("paste"), {pane, text});
+            };
+        } else {
+            act = [&sendText, text](qint64 pane) {
+                return sendText(pane, text);
+            };
+        }
     } else if (command == QLatin1String("screenshot")) {
         const bool tab = takeFlag(QStringLiteral("--tab"));
         const bool window = takeFlag(QStringLiteral("--window"));

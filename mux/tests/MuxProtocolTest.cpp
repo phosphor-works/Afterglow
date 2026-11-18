@@ -72,7 +72,9 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 28) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 29) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 29 added the paste call of the control target, which sends
+    // text as a paste in a window does (AttachTest).
     // Version 28 gave the control target the shell's state: shell, input and
     // last_exit in the pane objects of listPanes in place of at_prompt, the
     // shellChanged event, the mark and shellRegions calls, the since scope of

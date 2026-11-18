@@ -621,7 +621,7 @@ A window that answers a command follows its own settings too.
 
 | Command | No window shows the session | A window shows the session |
 | --- | --- | --- |
-| `ls`, `send-text`, `send-key`, `get-text` (screen, scrollback and last output, also with `--ansi`, `--cursor` and `--wrap-markers`) | The daemon acts | The daemon acts |
+| `ls`, `send-text`, `paste`, `send-key`, `get-text` (screen, scrollback and last output, also with `--ansi`, `--cursor` and `--wrap-markers`) | The daemon acts | The daemon acts |
 | `colors`, `set-colors`, `set-user-var`, `signal-program` | The daemon acts on its terminal and its program of the pane | The daemon acts, and the window shows the colors with the next frame. The control socket of the window does not set the colors and the user variables of a session pane, or signal its program. The daemon has them. |
 | `close` | The daemon closes the pane, and its program ends. When it is the last pane of the session, the session ends, whatever `Mux.onClose` says. | As without a window |
 | `split` | The daemon starts the program. The pane goes beside its pane, on the side that the command names, and gets the focus. | The daemon starts the program, and the window places the pane in the same way |

@@ -20,6 +20,7 @@
 
 #include <AfterglowProto/Color.h>
 #include <AfterglowPty/Pty.h>
+#include <AfterglowVt/Input.h>
 #include <AfterglowVt/KeyNames.h>
 #include <AfterglowVt/Terminal.h>
 
@@ -92,11 +93,11 @@ bool among(std::string_view fn, std::initializer_list<std::string_view> names)
 /// The calls whose first argument is a pane.
 bool takesPane(std::string_view fn)
 {
-    return among(fn, {"sendText",    "getText",       "split",          "newTab",        "focus",       "close",
-                      "setTitle",    "signal",        "notify",         "runAction",     "movePane",    "detachTab",
-                      "saveProject", "overlay",       "screenshot",     "focusNeighbor", "resizePane",  "sendKeys",
-                      "scroll",      "setTabTitle",   "getColors",      "setColors",     "setFontSize", "setOpacity",
-                      "setUserVar",  "signalProgram", "setWindowState", "mark",          "shellRegions"});
+    return among(fn, {"sendText",    "getText",       "split",          "newTab",        "focus",        "close",
+                      "setTitle",    "signal",        "notify",         "runAction",     "movePane",     "detachTab",
+                      "saveProject", "overlay",       "screenshot",     "focusNeighbor", "resizePane",   "sendKeys",
+                      "scroll",      "setTabTitle",   "getColors",      "setColors",     "setFontSize",  "setOpacity",
+                      "setUserVar",  "signalProgram", "setWindowState", "mark",          "shellRegions", "paste"});
 }
 
 /// The calls that only a window answers.
@@ -440,6 +441,22 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         std::string bytes;
         for (const AfterglowVt::NamedKey& key : keys)
             bytes += AfterglowVt::encodeNamedKey(key, *modes);
+        // As sendText: after the window's input that waits.
+        if (shownWindow && shownWindow->holdsInput(pane->id()))
+            return failed(request, "program closed or input queue full");
+        if (bytes.empty() || pane->input(bytes) == MuxPane::Input::Written)
+            return ipcReply(request.id.value_or(0), nullptr);
+        return failed(request, "program closed or input queue full");
+    }
+    if (fn == "paste") {
+        if (args.size() != 2 || !args[1].isString())
+            return ipcError(request.id, IpcErrorCode::InvalidArg, "paste takes (pane, text)");
+        // As a paste in a window: bracketed when the program asked for it
+        // (mode 2004), with the line ends as Enter and no other control.
+        const auto modes = pane->modes();
+        if (!modes)
+            return decoding(request, pane->id());
+        const std::string bytes = AfterglowVt::encodePaste(args[1].toString(), *modes);
         // As sendText: after the window's input that waits.
         if (shownWindow && shownWindow->holdsInput(pane->id()))
             return failed(request, "program closed or input queue full");

@@ -19869,6 +19869,39 @@ return {
     delete shown;
 }
 
+// The control call paste sends text as a paste in the window: between the
+// paste marks while the program asks for them, the line ends as Enter, and
+// no other control. It asks no question for a line end, as a client chose
+// the text.
+TEST_F(NativeWindow, ThePasteCallBracketsAsTheProgramAsks)
+{
+    restartApplication(
+        QStringLiteral("paste.conf"), testSettings({}),
+        {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+         QStringLiteral("stty raw -echo; printf '\\033[?2004hre''ady'; head -c15 | od -An -tx1 | tr -s ' '; "
+                        "exec cat")});
+    if (HasFatalFailure())
+        return;
+    QPointer<Pane> pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    ASSERT_TRUE(waitFor(
+        [&] {
+            return pane && screenOf(pane).contains(QStringLiteral("ready"));
+        },
+        5000));
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    TestControl test(directory, QStringLiteral("paste-control.conf"), window);
+    EXPECT_EQ(test.control.paste(pane->id(), QStringLiteral("a\nb\x1b")), QString());
+    EXPECT_TRUE(waitFor(
+        [&] {
+            return pane && screenOf(pane).contains(QStringLiteral(" 1b 5b 32 30 30 7e 61 0d 62 1b 5b 32 30 31 7e"));
+        },
+        5000))
+        << (pane ? screenOf(pane).toStdString() : std::string("the pane closed"));
+    EXPECT_EQ(test.control.paste(4294967295u, QStringLiteral("x")), QStringLiteral("no pane 4294967295"));
+}
+
 TEST_F(NativeWindow, ControlMovesBetweenPanesResizesScrollsAndTypesKeys)
 {
     // What `afterglow ctl` does as `kitten @` does: focus-window with a

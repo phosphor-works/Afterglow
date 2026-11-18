@@ -5,6 +5,7 @@
 #include "shell/Ssh.h"
 #include "MuxConnect.h"
 #include <gtest/gtest.h>
+#include <AfterglowVt/Input.h>
 #include <AfterglowVt/Terminal.h>
 #include <QFile>
 #include <QDir>
@@ -527,6 +528,53 @@ TEST_P(ShellFeatures, TheMarksTellTheShellsState)
         ASSERT_TRUE(s.pty->write("\x03"));
         EXPECT_TRUE(until(state(ShellState::Prompt))) << o.take();
     }
+    o.exit();
+}
+
+// A paste of two lines, bracketed as the control call paste sends it, and
+// Enter: the shell runs both lines, and their output regions say how many
+// commands it saw.
+TEST_P(ShellFeatures, APasteOfTwoLinesRunsBoth)
+{
+    if (QStandardPaths::findExecutable(QString::fromStdString(GetParam())).isEmpty())
+        GTEST_SKIP() << GetParam() << " not installed";
+    QTemporaryDir home(QDir::tempPath() + "/afterglow features-XXXXXX");
+    ASSERT_TRUE(home.isValid());
+    Started s = start(home.path(), QStringLiteral("enabled"));
+    ASSERT_TRUE(s.pty);
+    Output& o = *s.output;
+    using AfterglowVt::ShellState;
+    std::uint64_t before = 0;
+    AfterglowVt::Modes modes;
+    {
+        std::unique_lock lock(o.mutex);
+        ASSERT_TRUE(o.changed.wait_for(lock, std::chrono::seconds(8),
+                                       [&] {
+                                           return o.terminal.shellState() == ShellState::Prompt
+                                               && o.terminal.modes().bracketedPaste;
+                                       }))
+            << "bracketed paste: " << o.terminal.modes().bracketedPaste;
+        before = o.terminal.lastPromptId();
+        modes = o.terminal.modes();
+    }
+    ASSERT_TRUE(s.pty->write(AfterglowVt::encodePaste("echo o''ne\nfalse", modes)));
+    ASSERT_TRUE(s.pty->write("\r"));
+    std::unique_lock lock(o.mutex);
+    ASSERT_TRUE(o.changed.wait_for(lock, std::chrono::seconds(8), [&] {
+        return o.terminal.shellState() == ShellState::Prompt && o.terminal.lastPromptId() > before
+            && o.terminal.lastExitCode().has_value();
+    })) << o.text;
+    EXPECT_EQ(o.terminal.lastExitCode(), std::optional<int>(1));
+    std::size_t outputs = 0;
+    for (const AfterglowVt::SemanticRegion& region : o.terminal.semanticRegions()) {
+        if (region.id > before && region.kind == AfterglowVt::SemanticZoneKind::Output)
+            ++outputs;
+    }
+    // Bash runs each line as a command of its own. Zsh and Fish run the
+    // command line that the paste made as one.
+    EXPECT_EQ(outputs, GetParam() == "bash" ? 2u : 1u);
+    EXPECT_NE(o.text.find("one"), std::string::npos) << o.text;
+    lock.unlock();
     o.exit();
 }
 

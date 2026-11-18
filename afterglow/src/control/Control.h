@@ -263,6 +263,8 @@ public:
     /// Moves @p pane's tab to a new window, as movePane() does.
     void detachTab(quint32 pane, PaneMoved done);
     QString sendText(quint32 pane, const QString& text);
+    /// The control call paste: @p text as a paste of the pane's program.
+    QString paste(quint32 pane, const QString& text);
     /// Honours Control.allowReadText.
     /// @p format: plain, or with styles, wrap markers or the cursor (not for
     /// a selection, which is plain text).
