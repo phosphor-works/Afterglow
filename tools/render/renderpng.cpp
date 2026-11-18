@@ -314,6 +314,10 @@ int run(QGuiApplication& app)
                       QStringLiteral("n")});
     parser.addOption({QStringLiteral("overview-closing"),
                       QStringLiteral("The overview is closing onto the --highlight card, at --overview-amount.")});
+    parser.addOption({QStringLiteral("highlight-from"),
+                      QStringLiteral("The pane that the overview's highlight left, counting every tab (default none): "
+                                     "with --overview-position, how far the highlight has gone from it."),
+                      QStringLiteral("n")});
     parser.addOption({QStringLiteral("tab-transition"),
                       QStringLiteral("Tab transition shader, from a copy of the panes on a blue background."),
                       QStringLiteral("ref")});
@@ -539,6 +543,7 @@ int run(QGuiApplication& app)
                           {"overview-amount", 0, 1, false},
                           {"overview-position", -1000, 1000, false},
                           {"highlight", 0, AfterglowRender::MaxShaderPanes - 1, true},
+                          {"highlight-from", 0, AfterglowRender::MaxShaderPanes - 1, true},
                           {"tabs", 1, AfterglowRender::MaxShaderPanes, true},
                           {"current-tab", 0, AfterglowRender::MaxShaderPanes - 1, true},
                           {"transition-progress", 0, 1, false},
@@ -578,12 +583,13 @@ int run(QGuiApplication& app)
     for (const Needs& rule :
          {Needs{"open-edge", {"open-progress"}}, Needs{"context-progress", {"context"}},
           Needs{"previous-context", {"context"}}, Needs{"overview-amount", {"overview"}},
-          Needs{"highlight", {"overview"}}, Needs{"overview-closing", {"overview"}},
-          Needs{"overview-position", {"overview"}}, Needs{"tabs", {"overview"}}, Needs{"current-tab", {"overview"}},
-          Needs{"overview-age", {"overview"}}, Needs{"highlight-age", {"overview"}},
-          Needs{"transition-progress", {"tab-transition"}}, Needs{"transition-direction", {"tab-transition"}},
-          Needs{"transition-age", {"tab-transition"}}, Needs{"search-current", {"search"}},
-          Needs{"wake-age", {"wake-from"}}, Needs{"unfocused-dim", {"split", "grid"}},
+          Needs{"highlight", {"overview"}}, Needs{"highlight-from", {"overview"}},
+          Needs{"overview-closing", {"overview"}}, Needs{"overview-position", {"overview"}},
+          Needs{"tabs", {"overview"}}, Needs{"current-tab", {"overview"}}, Needs{"overview-age", {"overview"}},
+          Needs{"highlight-age", {"overview"}}, Needs{"transition-progress", {"tab-transition"}},
+          Needs{"transition-direction", {"tab-transition"}}, Needs{"transition-age", {"tab-transition"}},
+          Needs{"search-current", {"search"}}, Needs{"wake-age", {"wake-from"}},
+          Needs{"unfocused-dim", {"split", "grid"}},
           Needs{"pane-effects", {"open-progress", "context", "pulse", "close-progress"}}}) {
         if (!parser.isSet(QLatin1String(rule.option)))
             continue;
@@ -1342,6 +1348,13 @@ int run(QGuiApplication& app)
             std::fprintf(stderr, "--highlight must be below the number of cards (%d)\n", perTab * tabCount);
             return 1;
         }
+        const int highlightFrom = parser.isSet(QStringLiteral("highlight-from"))
+            ? parser.value(QStringLiteral("highlight-from")).toInt()
+            : -1;
+        if (highlightFrom >= perTab * tabCount) {
+            std::fprintf(stderr, "--highlight-from must be below the number of cards (%d)\n", perTab * tabCount);
+            return 1;
+        }
         overview.emplace();
         // Closing: open is 0, and the highlight stays on the card it closes onto.
         overview->open = !parser.isSet(QStringLiteral("overview-closing"));
@@ -1363,6 +1376,7 @@ int run(QGuiApplication& app)
                 copy.overlay.reset(); // the overlay is the current tab's
                 copy.params.focused = false;
                 copy.params.highlighted = tab * perTab + i == highlight;
+                copy.params.highlightOrigin = tab * perTab + i == highlightFrom;
                 addPaneDocks(copy);
                 other.panes.push_back(copy);
             }
@@ -1371,6 +1385,8 @@ int run(QGuiApplication& app)
         }
         if (highlight / perTab == currentTab)
             panes[std::size_t(highlight % perTab)].params.highlighted = true;
+        if (highlightFrom >= 0 && highlightFrom / perTab == currentTab)
+            panes[std::size_t(highlightFrom % perTab)].params.highlightOrigin = true;
     }
     // The tab being left: its own blue copies, apart from the overview's.
     // Copied before the pane effects below set the last pane's opening,

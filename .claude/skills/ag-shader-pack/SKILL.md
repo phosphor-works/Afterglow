@@ -93,7 +93,7 @@ Then read the PNG with the Read tool and look at it. Useful options (`--help` li
 | Parameters | `--param my-pack:style=1` |
 | Several panes | `--split`, `--grid 3x2`, with the window's dividers and `--unfocused-dim F` over the unfocused panes |
 | Script docks | `--dock EDGE:CELLS:TEXT`, for example `--dock top:1:$'\e[44m main \e[0m'` (repeatable; EDGE is `top`, `bottom`, `left` or `right`; CELLS is 1 to 8 rows for `top` and `bottom`, 1 to 80 columns for `left` and `right`) |
-| Overview | `--overview phosphor-overview --tabs 3 --highlight 4 --overview-position 3.5`; closing: `--overview-closing --overview-amount 0.6` |
+| Overview | `--overview phosphor-overview --tabs 3 --highlight 4 --overview-position 3.5`; closing: `--overview-closing --overview-amount 0.6`; a highlight on its way from another pane: `--highlight 4 --highlight-from 0 --overview-position 2` |
 | Tab switch | `--tab-transition phosphor-tabs --transition-progress 0.4 --transition-direction -1` |
 | Pane effects | `--pane-effects phosphor-panes --open-progress 0.5 --open-edge 2`, `--close-progress`, `--context 1`, `--pulse 1:0.5` (4 to 255: a package's pulse) |
 | Overlay transition | `--overlay $'\e[42m picker \e[0m' --overlay-progress 0.5`, with `--overlay-transition overlay-fade` (the default, `""` for none) |

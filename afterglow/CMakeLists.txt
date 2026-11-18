@@ -37,6 +37,8 @@ qt_add_library(afterglow_app STATIC
     src/ProjectStore.cpp
     src/ProjectStore.h
     src/ShownText.h
+    src/OverviewNavigation.cpp
+    src/OverviewNavigation.h
     src/SplitTree.cpp
     src/SplitTree.h
     src/TerminalWindowProject.cpp

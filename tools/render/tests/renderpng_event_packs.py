@@ -175,6 +175,16 @@ def main():
             rests("an overview of two tabs that is closed", *overview, "--overview-amount", "0", "--tabs", "2")
             draws("an overview that is open", *overview)
             draws("an overview that closes", *overview, "--overview-closing", "--overview-amount", "0.5")
+            # Four cards. The highlight is on its way from card 0 to card 2: it
+            # fades between those two, and does not light card 1 as it passes.
+            there = (*overview, "--tabs", "2", "--highlight", "2")
+            arrived = render(*there)
+            check(render(*there, "--highlight-from", "0") == arrived,
+                  "a highlight that has arrived shows nothing of the pane that it left")
+            halfway = render(*there, "--highlight-from", "0", "--overview-position", "1")
+            check(halfway != arrived, "a highlight on its way shows the pane that it left")
+            check(halfway != render(*there, "--overview-position", "1"),
+                  "a highlight on its way does not light the card between")
             print(family + "-overview: passed", flush=True)
 
         # The two families differ in their look, not only in their names.

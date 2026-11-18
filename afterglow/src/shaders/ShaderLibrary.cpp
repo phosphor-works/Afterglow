@@ -288,6 +288,13 @@ QString loadPackMetadata(const QString& pack, AfterglowRender::ShaderProgramSour
             return QStringLiteral("settleSeconds must be a number above 0, at most 600");
         source.settleSeconds = float(seconds);
     }
+    if (const auto navigation = document.object().value(QStringLiteral("overviewNavigation"));
+        !navigation.isUndefined()) {
+        const QString how = navigation.toString();
+        if (how != QLatin1String("order") && how != QLatin1String("direction"))
+            return QStringLiteral("overviewNavigation must be \"order\" or \"direction\"");
+        source.overviewByDirection = how == QLatin1String("direction");
+    }
     const auto value = document.object().value(QStringLiteral("geometryPasses"));
     if (value.isUndefined())
         return {};
