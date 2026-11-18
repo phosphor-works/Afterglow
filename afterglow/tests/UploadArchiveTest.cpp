@@ -17,6 +17,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cerrno>
+#include <cstring>
+
 #include <sys/stat.h>
 #include <sys/time.h>
 
@@ -215,7 +218,12 @@ TEST(UploadArchive, KeepsTimesAndDropsSetuid)
         || QFileInfo(root + QStringLiteral("/future")).lastModified().toSecsSinceEpoch() != future) {
         GTEST_SKIP() << "the file system keeps no such times";
     }
-    ASSERT_EQ(::chmod(QFile::encodeName(root + QStringLiteral("/setuid")).constData(), 06755), 0);
+    // A system can refuse the bits (the seccomp filter of a Nix build): it
+    // holds no such file to send, and only the times are checked.
+    const bool setuid = ::chmod(QFile::encodeName(root + QStringLiteral("/setuid")).constData(), 06755) == 0;
+    if (!setuid) {
+        ASSERT_EQ(errno, EPERM) << std::strerror(errno);
+    }
 
     QString error;
     const auto archive = UploadArchive::build({root}, 1 << 20, error);
@@ -224,6 +232,8 @@ TEST(UploadArchive, KeepsTimesAndDropsSetuid)
     unpack(*archive, out);
     EXPECT_EQ(QFileInfo(out + QStringLiteral("/t/old")).lastModified().toSecsSinceEpoch(), -86400);
     EXPECT_EQ(QFileInfo(out + QStringLiteral("/t/future")).lastModified().toSecsSinceEpoch(), future);
+    if (!setuid)
+        GTEST_SKIP() << "this system refuses setuid and setgid bits: the times passed, the bits were not tried";
     const QString listing = runTar(*archive, {QStringLiteral("-tvzf"), QStringLiteral("-")});
     bool seen = false;
     for (const QString& line : listing.split(QLatin1Char('\n'))) {

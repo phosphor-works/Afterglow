@@ -734,7 +734,11 @@ TEST(PaneDownload, APaneThatClosesWhileItsProgramWaitsForAnAnswerClosesAtOnce)
         closing.start();
         pane.reset();
         EXPECT_LT(closing.elapsed(), 2000);
-        EXPECT_TRUE(QDir(dir.path()).entryList(QDir::Files).isEmpty());
+        // The writer's thread removes the part file after the pane went: the
+        // pane does not wait for the disk (DownloadFile::release).
+        EXPECT_TRUE(waitFor([&] {
+            return QDir(dir.path()).entryList(QDir::Files).isEmpty();
+        })) << QDir(dir.path()).entryList(QDir::Files).join(QLatin1Char(' ')).toStdString();
     }
 }
 

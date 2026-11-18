@@ -18,6 +18,12 @@ endif()
 include(CTest)
 include(GNUInstallDirs)
 
+# gtest_discover_tests lists each test executable's tests when CTest runs, not
+# after the link. A listing at build time runs the test binary inside the build
+# with a 5 s limit, which a loaded or niced build can miss and fail on, and it
+# runs test binaries in builds that never test (packages, cross builds).
+set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter)
 endif()

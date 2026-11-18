@@ -100,7 +100,10 @@ bool readHeader(std::string_view bytes, Header& header)
     return true;
 }
 
-using Palette = std::vector<std::array<std::uint8_t, 4>>;
+// Every index fits: it is a byte, or fewer bits of one. A fixed table, as
+// in Gif.cpp, also keeps GCC from a false -Wstringop-overflow on the fill of
+// a vector whose length it knows only as 2 to 256.
+using Palette = std::array<std::array<std::uint8_t, 4>, 256>;
 
 /// Run-length encoded indices of @p bits (8 or 4) from @p data into @p rgba,
 /// @p width by @p height: runs of one index (of two that alternate in
@@ -186,8 +189,9 @@ bool decodeBmp(std::string_view bytes, const FrameSink& sink, const Options&, st
     Channel blue;
     Channel alpha;
     Palette palette;
+    const bool indexed = bits == 1 || bits == 4 || bits == 8;
     const bool rle = (bits == 8 && header.compression == Rle8) || (bits == 4 && header.compression == Rle4);
-    if (bits == 1 || bits == 4 || bits == 8) {
+    if (indexed) {
         if (header.compression != Rgb && !rle) {
             error = "the BMP is compressed, which is not supported";
             return false;
@@ -200,7 +204,7 @@ bool decodeBmp(std::string_view bytes, const FrameSink& sink, const Options&, st
             error = "the BMP is truncated";
             return false;
         }
-        palette.assign(count, {0, 0, 0, 255});
+        palette.fill({0, 0, 0, 255});
         for (std::size_t i = 0; i < listed; ++i) {
             const std::size_t p = headerEnd + i * entry;
             palette[i] = {at(bytes, p + 2), at(bytes, p + 1), at(bytes, p), 255};
@@ -261,7 +265,7 @@ bool decodeBmp(std::string_view bytes, const FrameSink& sink, const Options&, st
         const std::size_t source = offset + std::size_t(stride) * (header.topDown ? y : h - 1 - y);
         unsigned char* out = &rgba[y * w * 4];
         for (std::size_t x = 0; x < w; ++x, out += 4) {
-            if (!palette.empty()) {
+            if (indexed) {
                 const std::size_t bit = x * bits;
                 const std::uint8_t byte = at(bytes, source + bit / 8);
                 const std::size_t index = (byte >> (8 - bits - bit % 8)) & ((1u << bits) - 1);

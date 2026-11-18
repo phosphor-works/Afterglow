@@ -559,8 +559,11 @@ protected:
     {
         const std::string directory = m_dir + "/ssh-bin";
         ASSERT_EQ(::mkdir(directory.c_str(), 0700), 0) << std::strerror(errno);
+        // The test's own PATH after them: /usr/bin and /bin hold no env or
+        // mkdir on every system (NixOS).
+        const char* own = std::getenv("PATH");
         const std::string path = mux
-            ? directory + ":" + std::filesystem::path(AFTERGLOW_BINARY).parent_path().string() + ":/usr/bin:/bin"
+            ? directory + ":" + std::filesystem::path(AFTERGLOW_BINARY).parent_path().string() + ":" + (own ? own : "")
             : directory;
         // The values come in the environment: no quoting of paths here.
         setVariable("FAKE_SSH_LOG", sshLog());

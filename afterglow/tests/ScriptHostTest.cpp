@@ -1301,14 +1301,14 @@ TEST(ScriptTasksTest, ProcessesReportSuccessFailureLimitsAndCancellationOnce)
     EXPECT_TRUE(start(job("ok", {"/bin/sh", "-c", "printf hello; printf warning >&2"})).deferred);
     EXPECT_TRUE(start(job("bad", {"/bin/sh", "-c", "exit 7"})).deferred);
     EXPECT_TRUE(start(job("spawn", {"/no/such/afterglow-test-command"})).deferred);
-    auto timeout = job("timeout", {"/bin/sleep", "10"});
+    auto timeout = job("timeout", {QStandardPaths::findExecutable(QStringLiteral("sleep")), "10"});
     timeout["timeout_ms"] = 30;
     EXPECT_TRUE(start(timeout).deferred);
     // The probe below sees the jobs: a sleep of 10 s runs now.
     ASSERT_FALSE(children().subtract(before).isEmpty());
     EXPECT_TRUE(
         start(job("limit", {"/bin/sh", "-c", "while :; do printf xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; done"})).deferred);
-    EXPECT_TRUE(start(job("cancel", {"/bin/sleep", "10"})).deferred);
+    EXPECT_TRUE(start(job("cancel", {QStandardPaths::findExecutable(QStringLiteral("sleep")), "10"})).deferred);
     EXPECT_TRUE(tasks.apply("owner", {{"kind", "cancel"}, {"name", "cancel"}}, {}, {}).error.isEmpty());
     ASSERT_TRUE(await([&] {
         return results.size() == 6;
@@ -1384,7 +1384,7 @@ TEST(ScriptTasksTest, OwnerCleanupStopsTimersAndDropsAsyncCallbacks)
     }));
     const auto before = children();
     EXPECT_TRUE(tasks
-                    .apply("owner", job("job", {"/bin/sleep", "5"}),
+                    .apply("owner", job("job", {QStandardPaths::findExecutable(QStringLiteral("sleep")), "5"}),
                            [&](auto) {
                                ++callbacks;
                            },

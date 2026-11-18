@@ -105,7 +105,7 @@ struct StuckDecode
     pid_t server = 0;
 
     /// @p after follows the image in the same write, which the pane reads at once.
-    explicit StuckDecode(int waitMs, const std::string& then = "exec /bin/sleep 60", const std::string& before = {},
+    explicit StuckDecode(int waitMs, const std::string& then = "exec sleep 60", const std::string& before = {},
                          const std::string& after = {})
     {
         if (dir.path.empty())
@@ -126,7 +126,7 @@ struct StuckDecode
         AfterglowPty::SpawnOptions spawn;
         spawn.argv = {"/bin/sh", "-c", before + "cat '" + image + "'; " + then};
         spawn.inheritEnvironment = false;
-        spawn.environment = {{"PATH", "/usr/bin:/bin"}, {"HOME", dir.path.string()}, {"TERM", "xterm-256color"}};
+        spawn.environment = {{"PATH", MuxTest::testPath()}, {"HOME", dir.path.string()}, {"TERM", "xterm-256color"}};
         std::string error;
         if (!pane->start(std::move(spawn), std::string(), &error))
             pane.reset();
@@ -206,7 +206,7 @@ struct ShellPane
         spawn.argv.insert(spawn.argv.end(), args.begin(), args.end());
         spawn.workingDirectory = directory;
         spawn.inheritEnvironment = false;
-        spawn.environment = {{"PATH", "/usr/bin:/bin"}, {"HOME", directory}, {"TERM", "xterm-256color"}};
+        spawn.environment = {{"PATH", MuxTest::testPath()}, {"HOME", directory}, {"TERM", "xterm-256color"}};
         std::string error;
         if (!pane->start(std::move(spawn), std::string(), &error)) {
             ADD_FAILURE() << "the pane did not start: " << error;
@@ -255,7 +255,7 @@ TEST(MuxPane, VisibilityWaitsForADecode)
     // its image, and rings the bell after it, in the same read. The pane's
     // window shows it while the image decodes: the report comes after the
     // decode, in its order with the program's output, so after the bell.
-    StuckDecode stuck(30000, "exec /bin/sleep 60", "printf '\\033[?2033h'; ", "\a");
+    StuckDecode stuck(30000, "exec sleep 60", "printf '\\033[?2033h'; ", "\a");
     SKIP_WITHOUT_SERVER(stuck);
     ASSERT_TRUE(stuck.pane);
     stuck.pane->setWindow(1, std::size_t(1) << 20);
@@ -298,7 +298,7 @@ TEST(MuxPane, VisibilityWaitsForADecode)
 // comes first, and those of the wait after it.
 TEST(MuxPane, ADownloadAfterADecodeWakesTheDaemonAndKeepsTheOrder)
 {
-    StuckDecode stuck(30000, "printf do''ne; exec /bin/sleep 60", "read -r _; printf '\\a'; ",
+    StuckDecode stuck(30000, "printf do''ne; exec sleep 60", "read -r _; printf '\\a'; ",
                       "\x1b]1337;File=name=eA==;size=1:eA==\a");
     SKIP_WITHOUT_SERVER(stuck);
     ASSERT_TRUE(stuck.pane);
@@ -357,10 +357,9 @@ TEST(MuxPane, InputWaitsInThePaneBehindAChangeThatWaitsForADecode)
     ASSERT_FALSE(out.path.empty());
     const std::string size = (out.path / "size").string();
     const std::string line = (out.path / "line").string();
-    StuckDecode stuck(30000,
-                      "IFS= read -r line; stty size > '" + size + "'; printf '%s' \"$line\" > '" + line
-                          + "'; exec /bin/sleep 60",
-                      "printf '\\033]133;A\\007'; ");
+    StuckDecode stuck(
+        30000, "IFS= read -r line; stty size > '" + size + "'; printf '%s' \"$line\" > '" + line + "'; exec sleep 60",
+        "printf '\\033]133;A\\007'; ");
     SKIP_WITHOUT_SERVER(stuck);
     ASSERT_TRUE(stuck.pane);
     ASSERT_TRUE(stuck.decoding());
@@ -400,7 +399,7 @@ TEST(MuxPane, TheBoundOfWaitingInputCountsThePtyQueueAndWhatWent)
     // the input past a full line, and its queue would not hold what went.
     StuckDecode stuck(30000,
                       "stty raw -echo; while [ ! -e '" + next + "' ]; do sleep 0.02; done; cat '" + image
-                          + "'; exec /bin/sleep 60");
+                          + "'; exec sleep 60");
     SKIP_WITHOUT_SERVER(stuck);
     ASSERT_TRUE(stuck.pane);
     ASSERT_TRUE(stuck.decoding());

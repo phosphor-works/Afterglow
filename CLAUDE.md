@@ -96,6 +96,8 @@ wrong, and points to the skills that hold the procedures.
   callbacks are the exception: they let the lock go while the decoder runs (`Pane::decodeOutsideLock`).
 - Logging uses categories named `afterglow.<area>`.
 - Match the surrounding code: its comment density, naming and idiom. A comment says why, not what.
+- Format C++ with `clang-format -i` (the `.clang-format` of phosphor-libs) and QML with `qmlformat -i`. CI checks
+  the files that a change touches.
 
 ## Text
 
@@ -170,6 +172,11 @@ The reviewers in `.claude/agents/review/` report findings for one area each. The
 
 ## Lessons that cost a session
 
+- CI runs the suite as root in an Arch container and in the Nix build sandbox, where only `/bin/sh` (BusyBox ash)
+  has a fixed path and `/usr` does not exist. 59 tests failed there on `/bin/cat`, `PATH=/usr/bin:/bin`, a `$`
+  prompt that no PS1 set, and `/usr` as a directory. A test finds a program through `PATH`
+  (`MuxTest::programInPath`, `MuxTest::testPath`, `QStandardPaths::findExecutable`), and sets the PS1 that it waits
+  for. A copy of a Phosphor header in `/usr/include` also hid a library that a target did not link: only CI saw it.
 - A persistent shader buffer over the 256 MiB budget was transparent with no message, so Orrery drew nothing. Now
   it renders smaller and logs a warning. When a pack draws nothing, check the budget log first.
 - An effect that animates only while visible must still stop scheduling frames when it has nothing to move. Pane

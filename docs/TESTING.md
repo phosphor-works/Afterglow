@@ -200,7 +200,7 @@ python3 tools/conformance/test_tuifuzz.py build/tools/conformance/afterglow_tuif
 build/tools/conformance/afterglow_screen_checks_tests
 ```
 
-`test_tuifuzz.py` reports Skipped when `bwrap` is not installed.
+`test_tuifuzz.py` reports Skipped when `bwrap` is not installed, or when `bwrap` cannot make its sandbox. A container without unprivileged user namespaces is one example.
 
 `afterglow_renderpng_images` checks that `afterglow_renderpng` decodes iTerm2 images as a pane does, and moves animations on with `--frames`.
 It needs a Wayland display and a Vulkan device. Without them, it reports Skipped.

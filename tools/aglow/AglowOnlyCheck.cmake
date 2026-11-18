@@ -8,7 +8,8 @@
 #       [-DCONFIGS=<TYPE>,...] [-DC_FLAGS_<TYPE>=<flags>] [-DCXX_FLAGS_<TYPE>=<flags>]
 #       [-DLINKER_FLAGS_<TYPE>=<flags>]
 #       [-DPREFIX_PATH=<dir>:...] [-DPKG_CONFIG=<path>] [-DTOOLCHAIN_FILE=<file>] [-DSYSROOT=<dir>]
-#       [-DCPM_CACHE=<dir>] [-DDEPS_ARCHIVES=<dir>] [-DCONFIG=<type>] [-DJOBS=<n>] -P AglowOnlyCheck.cmake
+#       [-DCPM_CACHE=<dir>] [-DDEPS_ARCHIVES=<dir>] [-DSTATIC_RUNTIME_DIRS=<dir>:...]
+#       [-DCONFIG=<type>] [-DJOBS=<n>] -P AglowOnlyCheck.cmake
 #
 # Builds aglow and aglow-mux alone (AFTERGLOW_AGLOW_ONLY) from SOURCE in
 # BINARY, as a remote host or a distribution package does, and installs them
@@ -39,7 +40,8 @@
 # archives come from where that build took them, and so are the places where
 # it found PCRE2 and its other packages: PREFIX_PATH (its CMAKE_PREFIX_PATH,
 # with a colon between the directories), PKG_CONFIG, TOOLCHAIN_FILE and
-# SYSROOT. The link time optimization of afterglow-vt is off: GCC's
+# SYSROOT. STATIC_RUNTIME_DIRS is its AFTERGLOW_STATIC_RUNTIME_DIRS, with a
+# colon between the directories. The link time optimization of afterglow-vt is off: GCC's
 # -flto=auto would run a job for each processor, beyond JOBS.
 
 foreach(required SOURCE BINARY GENERATOR PHOSPHOR_LIBS MUX_LIBS)
@@ -81,6 +83,14 @@ foreach(pair "CMAKE_MAKE_PROGRAM;MAKE_PROGRAM" "CMAKE_BUILD_TYPE;BUILD_TYPE" "CM
         list(APPEND args "-D${name}=${${given}}")
     endif()
 endforeach()
+
+# A list cannot pass as one argument, as its semicolons split it, so it goes
+# in a cache file that the configurations read first.
+if(STATIC_RUNTIME_DIRS)
+    string(REPLACE ":" ";" dirs "${STATIC_RUNTIME_DIRS}")
+    file(WRITE "${BINARY}/static-runtime.cmake" "set(AFTERGLOW_STATIC_RUNTIME_DIRS \"${dirs}\" CACHE STRING \"\")\n")
+    list(APPEND args -C "${BINARY}/static-runtime.cmake")
+endif()
 
 # find_package, find_library and pkg_check_modules read the environment
 # variable too, and it holds a list with no semicolon.
