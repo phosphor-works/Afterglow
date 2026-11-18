@@ -423,7 +423,7 @@ Draw the tab being left at progress 0 and the new tab at 1. The switch then star
 The tab being left has no layer, pane or window shaders, because its image does not include them.
 With window shaders, the first frame of a switch can differ from the frame before it.
 The overview takes precedence: a switch that the overview makes does not run the transition.
-[Phosphor Tabs](../data/shaders/phosphor-tabs/effect.frag) slides the new tab in flat.
+[The flat tab transition](../data/shaders/shared/flat_tabs.glsl) of Phosphor Tabs and Plain Tabs slides the new tab in flat.
 The example pack [Tab Switch](../examples/shaders/tab-switch/effect.frag) shows a cube, a page flip, a shatter and a slide.
 
 `Shaders.paneEffects` names the pack that animates panes as they split open and close.
@@ -444,13 +444,13 @@ Scripts play pulses with `afterglow.pulse`. `panePulse(i)` runs from 0 to 1, lin
 `panePulseEffect(i)` is 0 for none, 1 for a portal, 2 for a flash or 3 for a shake. A pack can define its own numbers from 4 to 255.
 `panePulseColor(i)` is the palette color the script chose.
 While any pane is away from here, the pack also runs on each frame Afterglow draws. Those frames come only from changes, so a static mark costs no extra frames.
-[Phosphor Panes](../data/shaders/phosphor-panes/effect.frag) fades panes in and out, and marks a pane that is away with a line at its edge.
+[The flat pane effects](../data/shaders/shared/flat_panes.glsl) of Phosphor Panes and Plain Panes fade panes in and out, and mark a pane that is away with a line at its edge.
 The example pack [Pane Effects](../examples/shaders/pane-effects/effect.frag) shows a hinge and a picture tube, and a ring and a vortex for the context change.
 
 Input does not reach the panes while the overview is open.
 The highlighted pane is the one the user chooses, so a pack needs no hit testing.
 While the overview shows, other tabs use two more window-sized textures. Afterglow releases them when it closes.
-[Phosphor Overview](../data/shaders/phosphor-overview/effect.frag) lays the panes out flat, each tab as a picture of its layout.
+[The flat overview](../data/shaders/shared/flat_overview.glsl) of Phosphor Overview and Plain Overview lays the panes out flat, each tab as a picture of its layout.
 The example pack [Pane Deck](../examples/shaders/pane-deck/effect.frag) traces the panes as live cards on a carousel in one pass.
 
 ### Overlay transitions
@@ -524,7 +524,7 @@ Use `toLinearPremultiplied` and `toSrgbPremultiplied` for colors with alpha.
 Transparent colors convert to zero to prevent division by zero.
 The feedback-glow example stores linear premultiplied light and converts back during composition.
 
-### The Phosphor spectrum
+### The Phosphor spectrum and the rim
 
 Include `phosphor_spectrum.glsl` to draw with the gradient of the bundled Phosphor packs.
 The file is in the `shared/` directory of the bundled packs, so the [include search](SHADERS.md#pack-locations) finds it.
@@ -535,10 +535,32 @@ A pack that includes it must declare the parameters `followTheme` (`bool`) and `
 | `spectrum(t)` | The gradient at `t`, 0 to 1, as encoded sRGB: cyan, blue, purple and rose by default. |
 | `spectrumStop(i)` | Color `i` of the gradient, 0 to 3. With `followTheme`, a bright color of the terminal palette. |
 | `spectrumContext(context)` | The color for a `paneContext()` value: cyan remote, rose elevated, purple a container. |
+
+`rim.glsl` draws a line at the edge of a rectangle, with a halo inside it. It needs no parameter, and `phosphor_spectrum.glsl` includes it.
+
+| Function | Value |
+| --- | --- |
 | `rimDistance(pixel, rect)` | How far inside a rectangle a pixel is, in pixels. Negative outside. |
 | `drawRim(color, tint, inside, width, line, reach, halo)` | A line at the edge of a rectangle, with a halo inside it, over a premultiplied color. |
 | `addLight(color, light)` | A premultiplied color with light added. Alpha rises to cover the light. |
 | `coverWith(color, paint, amount)` | A premultiplied color blended toward an opaque color. |
+
+### The flat event packs
+
+The bundled overview, tab transition and pane effects packs come in two looks, Phosphor and plain, with one motion.
+The motion is in three files in the same `shared/` directory.
+A pack declares the parameters that the file names, defines macros for its look, and then includes the file.
+Its `pTerminal` returns the function of the file. Afterglow looks for `pTerminal` in the pack's own file, so an include file cannot define it.
+
+| File | Function | Macros | Packs |
+| --- | --- | --- | --- |
+| `flat_overview.glsl` | `flatOverview(uv)` | `OVERVIEW_TINT(t)`, and optionally `OVERVIEW_GLOW` and `OVERVIEW_REACH` | `phosphor-overview`, `plain-overview` |
+| `flat_tabs.glsl` | `flatTabs(uv)` | Optionally `TAB_SEAM_TINT(t)` | `phosphor-tabs`, `plain-tabs` |
+| `flat_panes.glsl` | `flatPanes(uv)` | `PANE_CONTEXT_TINT(context)`, and optionally `PANE_EDGE_TINT(pixel, r)`, `PANE_RIM`, `PANE_GLOW`, `PANE_REACH`, `PANE_HALO` and `PANE_SETTLED` | `phosphor-panes`, `plain-panes` |
+
+The comment at the top of each file gives its parameters and what each macro does.
+[Plain Panes](../data/shaders/plain-panes/effect.frag) is a complete pack in one macro, one include and one call.
+A pack of your own can do the same to change only the colors.
 
 ## Ownership and reset
 

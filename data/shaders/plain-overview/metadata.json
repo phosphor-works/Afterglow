@@ -1,0 +1,22 @@
+{
+    "id": "plain-overview",
+    "name": "Plain Overview",
+    "category": "Overview",
+    "description": "In the pane overview, the window steps back and each tab becomes a small picture of its panes, each pane in its real place. The panes stay live. The highlighted pane lifts a little, and its rim takes the cursor color of the theme. This is the layout of Phosphor Overview with no gradient and no glow.",
+    "author": "afterglow",
+    "version": "1.0",
+    "fragmentShader": "effect.frag",
+    "parameters": [
+        {"id": "margin", "name": "Margin (share of the window)", "group": "Layout", "type": "float", "default": 0.07, "min": 0.0, "max": 0.3},
+        {"id": "tabGap", "name": "Gap between tabs (share of a tab)", "group": "Layout", "type": "float", "default": 0.08, "min": 0.0, "max": 0.4},
+        {"id": "gap", "name": "Gap between panes", "group": "Layout", "type": "float", "default": 12.0, "min": 0.0, "max": 32.0, "unit": "px"},
+        {"id": "corner", "name": "Corner radius", "group": "Layout", "type": "float", "default": 8.0, "min": 0.0, "max": 32.0, "unit": "px"},
+        {"id": "lift", "name": "Lift of the highlighted pane, up to the gap", "group": "Layout", "type": "float", "default": 0.03, "min": 0.0, "max": 0.2},
+        {"id": "otherBrightness", "name": "Brightness of other panes", "group": "Panes", "type": "float", "default": 0.7, "min": 0.2, "max": 1.0},
+        {"id": "outline", "name": "Outline of other panes", "group": "Panes", "type": "float", "default": 0.18, "min": 0.0, "max": 1.0},
+        {"id": "numbers", "name": "Pane numbers", "group": "Panes", "type": "bool", "default": true},
+        {"id": "backdropDim", "name": "Backdrop dimming", "group": "Panes", "type": "float", "default": 0.6, "min": 0.0, "max": 1.0},
+        {"id": "rim", "name": "Rim line", "group": "Rim", "type": "float", "default": 1.0, "min": 0.0, "max": 1.0},
+        {"id": "rimWidth", "name": "Rim line width", "group": "Rim", "type": "float", "default": 2.0, "min": 0.5, "max": 8.0, "unit": "px"}
+    ]
+}

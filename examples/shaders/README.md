@@ -10,7 +10,7 @@ To use a pack, copy its directory into the `shaders` directory beside your confi
 
 ```sh
 mkdir -p ~/.config/afterglow/shaders
-cp -r examples/shaders/bloom ~/.config/afterglow/shaders/
+cp -r examples/shaders/crt-curve ~/.config/afterglow/shaders/
 ```
 
 Then name the pack in a [shader chain](../../docs/SHADERS.md#shader-chains).
@@ -18,10 +18,8 @@ Afterglow loads the pack without a restart.
 
 | Pack | Use it as | Shows |
 | --- | --- | --- |
-| [bloom](bloom) | `Shaders.pane` or `Shaders.window` | A glow around bright text and colors. |
 | [crt-curve](crt-curve) | `Shaders.pane` or `Shaders.window` | A bent screen with a [pointer map](../../docs/SHADER-API.md#pointer-maps). |
 | [tilt](tilt) | `Shaders.pane` | A screen in perspective with a pointer map. |
-| [cursor-trail](cursor-trail) | `Shaders.cursor` | A streak that follows a cursor jump, from event ages. |
 | [feedback-glow](feedback-glow/README.md) | `Shaders.pane` or `Shaders.text` | One buffer pass that keeps bright pixels. |
 | [depth-trails](depth-trails/README.md) | `Shaders.background` | Two buffer passes, depth, a vertex stage and an image parameter. |
 | [orrery](orrery) | `Shaders.background` | A mesh pass with an object hierarchy. |
@@ -33,5 +31,5 @@ Afterglow loads the pack without a restart.
 To preview a pack from a built checkout, without a copy, name this directory:
 
 ```sh
-printf 'hello\n' | build/tools/render/afterglow_renderpng --shader-dir examples/shaders --shader bloom - bloom.png
+printf 'hello\n' | build/tools/render/afterglow_renderpng --shader-dir examples/shaders --pane-shader crt-curve - crt-curve.png
 ```

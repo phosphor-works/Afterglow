@@ -150,8 +150,9 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - System audio input through CAVA, with its framerate, smoothing and frequency range in `Audio` settings.
 - Scrollback-driven inputs and parameter transitions with Phosphor curves.
 - Time helpers `timeAngle` and `timeCycle` that keep full precision however long the window runs, and `timeSeconds` for the full clock.
-- Bundled packs in the Phosphor design language: Phosphor Overview, Phosphor Tabs, Phosphor Panes and Overlay Fade, which are the defaults of the four event packs, and Phosphor Depths.
-- Example packs in the `examples/shaders` directory of the source repository: Bloom, CRT Curve, Cursor Trail, Depth Trails, Feedback Glow, Mesh Reactor, Orrery, Pane Deck, Pane Effects, Tab Switch and Tilt.
+- Bundled packs in the Phosphor design language: Phosphor Overview, Phosphor Tabs and Phosphor Panes, which are the defaults of their event packs, and Phosphor Depths.
+- Bundled neutral packs, which take their colors from the theme: Plain Overview, Plain Tabs and Plain Panes, with the motion of the Phosphor packs and no gradient or glow, Overlay Fade, Bloom and Cursor Trail.
+- Example packs in the `examples/shaders` directory of the source repository: CRT Curve, Depth Trails, Feedback Glow, Mesh Reactor, Orrery, Pane Deck, Pane Effects, Tab Switch and Tilt.
 - Packs that move the content can define a pointer map (`pPointerMap`). Clicks, selections and links then reach the cell that the pack draws under the pointer.
 - Pane rectangles, every tab's pane pixels and overview state for window shaders, through `terminal_panes.glsl`.
 - The Phosphor and Glasshouse example scenes, in the `examples` directory of the source repository.

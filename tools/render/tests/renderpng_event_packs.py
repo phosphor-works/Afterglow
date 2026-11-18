@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The bundled event packs in afterglow_renderpng: they load, and they start and end on the window.
 Usage: renderpng_event_packs.py AFTERGLOW_RENDERPNG
-The default packs of Shaders.overview, tabTransition and paneEffects draw
+The Phosphor and plain packs of Shaders.overview, tabTransition and paneEffects draw
 only while their event shows. At the ends of an event the window must show
 as it does with no effect, pixel for pixel, or the picture jumps when the
 pack stops. In the middle of an event the picture must differ, or the pack draws
@@ -132,47 +132,57 @@ def main():
         def draws(name, kind, pack, *options):
             check(render(kind, pack, *options) != render(kind, "through", *options), name, "must draw", options)
 
-        tabs = ("--tab-transition", "phosphor-tabs")
-        for style in ("0", "1"):
-            chosen = (*tabs, "--param", "phosphor-tabs:style=" + style)
-            same("a tab switch that has arrived", *chosen, "--transition-progress", "1")
-            for direction in ("1", "-1"):
-                differs("a tab switch on its way", *chosen, "--transition-progress", "0.5", "--transition-direction",
-                        direction)
-        # Both styles start on the tab being left, whichever way the switch goes.
-        left = render(*tabs, "--transition-progress", "0")
-        check(left != plain, "the tab being left is another picture")
-        check(render(*tabs, "--transition-progress", "0", "--transition-direction", "-1") == left,
-              "a slide to the left starts on the tab being left")
-        check(render(*tabs, "--param", "phosphor-tabs:style=1", "--transition-progress", "0") == left,
-              "a fade starts on the tab being left")
-        print("phosphor-tabs: passed", flush=True)
+        # The Phosphor packs and the plain packs share their motion: both
+        # families get the same checks.
+        for family in ("phosphor", "plain"):
+            tabs = ("--tab-transition", family + "-tabs")
+            for style in ("0", "1"):
+                chosen = (*tabs, "--param", family + "-tabs:style=" + style)
+                same("a tab switch that has arrived", *chosen, "--transition-progress", "1")
+                for direction in ("1", "-1"):
+                    differs("a tab switch on its way", *chosen, "--transition-progress", "0.5",
+                            "--transition-direction", direction)
+            # Both styles start on the tab being left, whichever way the switch goes.
+            left = render(*tabs, "--transition-progress", "0")
+            check(left != plain, "the tab being left is another picture")
+            check(render(*tabs, "--transition-progress", "0", "--transition-direction", "-1") == left,
+                  "a slide to the left starts on the tab being left")
+            check(render(*tabs, "--param", family + "-tabs:style=1", "--transition-progress", "0") == left,
+                  "a fade starts on the tab being left")
+            print(family + "-tabs: passed", flush=True)
 
-        panes = ("--pane-effects", "phosphor-panes")
-        same("a pane that has opened", *panes, "--open-progress", "1")
-        rests("a pane that has opened", *panes, "--open-progress", "1")
-        draws("a pane that opens", *panes, "--open-progress", "0.3")
-        rests("a pane that has closed", *panes, "--close-progress", "1")
-        draws("a pane that closes", *panes, "--close-progress", "0.2")
-        back = ("--context", "0", "--previous-context", "1")
-        same("a pane that has returned here", *panes, *back, "--context-progress", "1")
-        draws("a pane that returns here", *panes, *back, "--context-progress", "0.3")
-        # A pane that is away keeps its line, until the mark parameter removes it.
-        for context in ("1", "2", "3"):
-            draws("a pane that is away", *panes, "--context", context, "--context-progress", "1")
-        rests("a pane that is away with no mark", *panes, "--context", "1", "--context-progress", "1", "--param",
-              "phosphor-panes:mark=0")
-        for effect in ("1", "2", "3"):
-            rests("a pulse that has ended", *panes, "--pulse", effect + ":1")
-            draws("a pulse that runs", *panes, "--pulse", effect + ":0.3")
-        print("phosphor-panes: passed", flush=True)
+            panes = ("--pane-effects", family + "-panes")
+            same("a pane that has opened", *panes, "--open-progress", "1")
+            rests("a pane that has opened", *panes, "--open-progress", "1")
+            draws("a pane that opens", *panes, "--open-progress", "0.3")
+            rests("a pane that has closed", *panes, "--close-progress", "1")
+            draws("a pane that closes", *panes, "--close-progress", "0.2")
+            back = ("--context", "0", "--previous-context", "1")
+            same("a pane that has returned here", *panes, *back, "--context-progress", "1")
+            draws("a pane that returns here", *panes, *back, "--context-progress", "0.3")
+            # A pane that is away keeps its line, until the mark parameter removes it.
+            for context in ("1", "2", "3"):
+                draws("a pane that is away", *panes, "--context", context, "--context-progress", "1")
+            rests("a pane that is away with no mark", *panes, "--context", "1", "--context-progress", "1", "--param",
+                  family + "-panes:mark=0")
+            for effect in ("1", "2", "3"):
+                rests("a pulse that has ended", *panes, "--pulse", effect + ":1")
+                draws("a pulse that runs", *panes, "--pulse", effect + ":0.3")
+            print(family + "-panes: passed", flush=True)
 
-        overview = ("--overview", "phosphor-overview")
-        same("an overview that is closed", *overview, "--overview-amount", "0")
-        rests("an overview of two tabs that is closed", *overview, "--overview-amount", "0", "--tabs", "2")
-        draws("an overview that is open", *overview)
-        draws("an overview that closes", *overview, "--overview-closing", "--overview-amount", "0.5")
-        print("phosphor-overview: passed", flush=True)
+            overview = ("--overview", family + "-overview")
+            same("an overview that is closed", *overview, "--overview-amount", "0")
+            rests("an overview of two tabs that is closed", *overview, "--overview-amount", "0", "--tabs", "2")
+            draws("an overview that is open", *overview)
+            draws("an overview that closes", *overview, "--overview-closing", "--overview-amount", "0.5")
+            print(family + "-overview: passed", flush=True)
+
+        # The two families differ in their look, not only in their names.
+        for options in (("--tab-transition", "{}-tabs", "--transition-progress", "0.5"),
+                        ("--pane-effects", "{}-panes", "--open-progress", "0.3"), ("--overview", "{}-overview")):
+            pictures = [render(*(o.format(family) for o in options)) for family in ("phosphor", "plain")]
+            check(pictures[0] != pictures[1], "the Phosphor pack and the plain pack must differ", options)
+        print("the two families differ: passed", flush=True)
 
 
 if __name__ == "__main__":

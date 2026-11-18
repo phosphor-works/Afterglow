@@ -63,7 +63,7 @@ Without layer shaders, Afterglow does not allocate separate layers.
 `Shaders.params` sets parameter values for each pack reference:
 
 ```json
-{"Shaders": {"window": ["phosphor-depths"], "params": {"phosphor-depths": {"dustIntensity": 0.2}}}}
+{"Shaders": {"window": ["bloom"], "params": {"bloom": {"strength": 0.5}}}}
 ```
 
 Afterglow compiles a pack one time. A change of `Shaders.params` does not compile it again.
@@ -108,7 +108,8 @@ Set `Shaders.overlayTransition` to an empty string to switch at once.
 
 ## Bundled packs
 
-Afterglow installs the Phosphor packs. They use the colors and the motion of the Phosphor design language.
+Afterglow installs two groups of packs.
+The Phosphor packs use the colors and the motion of the Phosphor design language. They are the defaults.
 A position moves on a spring, a color changes with a fade, and an edge that changes is bright at once and then fades.
 
 | Pack | Chain | Default | Look |
@@ -116,15 +117,33 @@ A position moves on a spring, a color changes with a fade, and an edge that chan
 | `phosphor-overview` | `overview` | Yes | Each tab as a small picture of its panes, with the spectrum on the rim of the highlighted pane. |
 | `phosphor-tabs` | `tabTransition` | Yes | The new tab slides in over the tab being left. The spectrum runs down the edge between them. |
 | `phosphor-panes` | `paneEffects` | Yes | Panes fade in and out with a rim in the spectrum. A pane that is away keeps a line in the color of its context. |
-| `overlay-fade` | `overlayTransition` | Yes | An overlay and its pane blend. |
 | `phosphor-depths` | `window` | No | Slow clouds of the spectrum below the text, dust, and an ember at the cursor. |
 
-The five layer chains are empty by default, so Afterglow draws the terminal with no shader until you name a pack.
 The packs with the spectrum have the parameters `stop0` to `stop3` for its four colors.
 Set their `followTheme` parameter to `true` to take the colors from the terminal palette.
 
+The neutral packs have no color of their own. They take their colors from the theme.
+The three plain packs have the motion of the Phosphor packs with no gradient and no glow.
+
+| Pack | Chain | Default | Look |
+| --- | --- | --- | --- |
+| `plain-overview` | `overview` | No | Each tab as a small picture of its panes. The rim of the highlighted pane has the cursor color of the theme. |
+| `plain-tabs` | `tabTransition` | No | The new tab slides in over the tab being left, or the two fade. |
+| `plain-panes` | `paneEffects` | No | Panes fade in and out. A pane that is away keeps a line in a palette color of the theme. |
+| `overlay-fade` | `overlayTransition` | Yes | An overlay and its pane blend. |
+| `bloom` | `pane` or `window` | No | Bright text and colors glow into the space round them. |
+| `cursor-trail` | `pane` | No | A streak that fades follows the cursor when it jumps. |
+
+To use the neutral group in place of the Phosphor packs:
+
+```json
+{"Shaders": {"overview": "plain-overview", "tabTransition": "plain-tabs", "paneEffects": "plain-panes"}}
+```
+
+The five layer chains are empty by default, so Afterglow draws the terminal with no shader until you name a pack.
+
 The [example packs](../examples/shaders/README.md) in the source repository show other looks and the rest of the shader API.
-These include a bloom, a CRT screen, a cursor trail, a carousel overview and a cube tab switch.
+These include a CRT screen, a tilted screen, a carousel overview and a cube tab switch.
 Copy one into `~/.config/afterglow/shaders/` to use it.
 [The Phosphor scene](../examples/phosphor/README.md) combines a 3D core, text afterimages and command reactions.
 [Glasshouse](../examples/glasshouse/README.md) provides another complete desktop scene.
@@ -308,7 +327,7 @@ An update past this limit fails with an error.
 Hidden windows catch up when they render again.
 
 [shader-parameters.luau](../examples/scripts/shader-parameters.luau) adds Bloom boost and reset commands.
-Install it in `~/.config/afterglow/scripts/`. Copy the [Bloom example pack](../examples/shaders/README.md) and name it in a shader chain.
+Install it in `~/.config/afterglow/scripts/` and enable Bloom in a shader chain.
 It targets the current tab, or the window for a window effect.
 It reports when Bloom is absent.
 

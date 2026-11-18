@@ -203,9 +203,9 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | `cursor` | `[]` |  | Shaders run over each pane's cursor layer alone. |
 | `overlayTransition` | `"overlay-fade"` |  | Shader that blends a pane and the overlay that runs over it, as the overlay opens and closes. An empty value, or a pack that does not load, switches at once. |
 | `overview` | `"phosphor-overview"` |  | Shader that draws the pane overview (pane_overview). An empty value turns the overview off. |
-| `pane` | `[]` |  | Shaders run over each pane. Name a pack by its directory name, which is normally its id, such as phosphor-depths. Name a pack of a package as <package>.<pack>, such as my-extension.wall. |
+| `pane` | `[]` |  | Shaders run over each pane. Name a pack by its directory name, which is normally its id, such as cursor-trail or bloom. Name a pack of a package as <package>.<pack>, such as my-extension.wall. |
 | `paneEffects` | `"phosphor-panes"` |  | Shader that animates panes as they split open and close. It also marks a pane when its shell moves to another host, user or container, and while the shell stays there. Animation.splits off turns these off too. An empty value turns it off. |
-| `params` | `{}` |  | Parameter values for each shader reference, such as { "phosphor-depths": { "dustIntensity": 0.2 } }. The value of each reference must be an object. |
+| `params` | `{}` |  | Parameter values for each shader reference, such as { "bloom": { "strength": 0.5 } }. The value of each reference must be an object. |
 | `tabTransition` | `"phosphor-tabs"` |  | Shader that animates switching tabs. An empty value switches at once. |
 | `text` | `[]` |  | Shaders run over each pane's text layer alone: glyphs, decorations and images over the text. |
 | `window` | `[]` |  | Shaders run over the whole window, across panes, after the pane shaders. |

@@ -210,7 +210,7 @@ To run it alone:
 python3 tools/render/tests/renderpng_images.py build/tools/render/afterglow_renderpng
 ```
 
-`afterglow_renderpng_event_packs` draws the bundled packs of the overview, the tab switch and the pane effects.
+`afterglow_renderpng_event_packs` draws the bundled Phosphor and plain packs of the overview, the tab switch and the pane effects.
 At the start and the end of each event, the picture must be the window with no pack, pixel for pixel.
 In the middle of each event, the picture must differ.
 It has the same requirements. To run it alone:

@@ -1174,7 +1174,7 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("pane"), stringList(d.shaders.pane), QMetaType::QVariantList,
          QStringLiteral(
              "Shaders run over each pane. Name a pack by its directory name, which is normally its id, such as "
-             "phosphor-depths. Name a pack of a package as <package>.<pack>, such as my-extension.wall.")},
+             "cursor-trail or bloom. Name a pack of a package as <package>.<pack>, such as my-extension.wall.")},
         {QStringLiteral("window"), stringList(d.shaders.window), QMetaType::QVariantList,
          QStringLiteral("Shaders run over the whole window, across panes, after the pane shaders.")},
         stringKey(QStringLiteral("overview"), d.shaders.overview,
@@ -1192,8 +1192,7 @@ PhosphorConfig::Schema buildSchema()
                       "Shader that blends a pane and the overlay that runs over it, as the overlay opens and closes. "
                       "An empty value, or a pack that does not load, switches at once.")),
         {QStringLiteral("params"), QVariantMap{}, QMetaType::QVariantMap,
-         QStringLiteral("Parameter values for each shader reference, such as { \"phosphor-depths\": { "
-                        "\"dustIntensity\": 0.2 } }. The "
+         QStringLiteral("Parameter values for each shader reference, such as { \"bloom\": { \"strength\": 0.5 } }. The "
                         "value of each reference must be an object.")},
     };
     schema.groups[HintsGroup] = {

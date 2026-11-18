@@ -17,14 +17,17 @@ chains. Read the sections that apply before you write GLSL. This skill gives the
 
 | Directory | Packs | Installs |
 | --- | --- | --- |
-| `data/shaders/` | The Phosphor packs: the defaults of the event chains, and Phosphor Depths | Yes |
-| `examples/shaders/` | Packs that show the API or another look (Bloom, CRT Curve, Pane Deck, Tab Switch) | No |
+| `data/shaders/` | The Phosphor packs (the defaults of the event chains, and Phosphor Depths), and the neutral packs: Plain Overview, Plain Tabs, Plain Panes, Overlay Fade, Bloom and Cursor Trail | Yes |
+| `examples/shaders/` | Packs that show the API or another look (CRT Curve, Tilt, Pane Deck, Tab Switch) | No |
 | `examples/packages/*/shaders/` | The packs of an example script package | No |
 
-A pack in `data/shaders/` follows the Phosphor design language. A position moves on the host's spring, and a color
+A Phosphor pack follows the Phosphor design language. A position moves on the host's spring, and a color
 changes with a fade. An edge that changes is bright at once, and then its glow fades. Nothing turns in 3D, and nothing
 loops to get attention. The colors are the spectrum (cyan, blue, purple, rose) from `shared/phosphor_spectrum.glsl`,
-with the `followTheme` and `stop0` to `stop3` parameters. A default of `Shaders.*` names only a pack of
+with the `followTheme` and `stop0` to `stop3` parameters. A neutral pack has no color of its own: it takes colors
+from the theme. The motion of an event pack is in `shared/flat_overview.glsl`, `flat_tabs.glsl` and `flat_panes.glsl`.
+A Phosphor pack and its plain pack both include that file, and differ only in the macros that they define before the
+include: change the motion there, one time, for both. A default of `Shaders.*` names only a pack of
 `data/shaders/` (`ConfigTest` checks it). A test or a tool that needs an example pack copies it into the `shaders`
 directory of its configuration (`installExamplePack` in `NativeWindowTest.cpp`), or names `--shader-dir examples/shaders`.
 
@@ -38,7 +41,8 @@ stages) and an optional `README.md`.
   files carry no SPDX header; `REUSE.toml` licenses them.
 - Each GLSL file starts with the SPDX header. New packs are `LGPL-2.1-or-later`. Keep the license of an existing file.
 - A stage defines `vec4 pTerminal(vec2 uv)` and returns premultiplied colour. Afterglow adds `main()`, the
-  parameters as `p_<id>`, and `terminal_lib.glsl`.
+  parameters as `p_<id>`, and `terminal_lib.glsl`. It looks for `pTerminal` in the stage's own file, before it
+  expands the includes: an entry point in an include file gives "Link failed" with no other message.
 - A final pass that moves the content (a bend, a lens, a perspective) also defines `vec2 pPointerMap(vec2 uv)`,
   through the same helper as `pTerminal`, so clicks reach the cell drawn under the pointer
   (docs/SHADER-API.md#pointer-maps). Add the pack to `PointerMapTest`, with parameter values that move its
@@ -95,7 +99,7 @@ Then read the PNG with the Read tool and look at it. Useful options (`--help` li
 | Overlay transition | `--overlay $'\e[42m picker \e[0m' --overlay-progress 0.5`, with `--overlay-transition overlay-fade` (the default, `""` for none) |
 | Audio | `--audio-bands 0.8,0.4,0.2` |
 | A package's packs | `--package examples/packages/scripted-overview --overview scripted-overview.wall` |
-| An example pack | `--shader-dir examples/shaders --shader bloom` (the user's own packs then do not load) |
+| An example pack | `--shader-dir examples/shaders --pane-shader crt-curve` (the user's own packs then do not load) |
 | Frame time | `--timings`, with `--pixels 3840x2160` for 4K |
 
 Check the edge cases, not only the middle of an animation: progress 0 and 1, one pane, two panes, many panes (the

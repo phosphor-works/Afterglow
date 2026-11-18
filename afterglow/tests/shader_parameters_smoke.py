@@ -50,7 +50,6 @@ with tempfile.TemporaryDirectory(prefix="afterglow-shader-parameters-") as temp:
     # (the default overview, pane effects, tab switch and overlay fade too)
     # cannot answer.
     shutil.copytree(source / "data/shaders", config / "shaders")
-    shutil.copytree(source / "examples/shaders/bloom", config / "shaders/bloom")
     writer = config / "scripts/writer.luau"
     writer.write_text('''
 return {
