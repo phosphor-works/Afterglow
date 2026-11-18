@@ -481,8 +481,16 @@ std::unique_ptr<Pty> Pty::spawn(SpawnOptions options, IPtyListener& listener, st
         struct sigaction fallback{};
         fallback.sa_handler = SIG_DFL;
         for (int sig = 1; sig < NSIG; ++sig) {
-            if (sig != SIGKILL && sig != SIGSTOP)
-                sigaction(sig, &fallback, nullptr);
+            if (sig == SIGKILL || sig == SIGSTOP)
+                continue;
+            // glibc refuses the real-time signals that it keeps for itself
+            // (32 and 33), so a launcher that ignores them would pass that on.
+            // The kernel takes an all-zero sigaction as SIG_DFL with no flags,
+            // in the layout of every architecture.
+            if (sigaction(sig, &fallback, nullptr) != 0 && errno == EINVAL) {
+                const unsigned long none[8] = {};
+                ::syscall(SYS_rt_sigaction, sig, none, nullptr, NSIG / 8);
+            }
         }
         sigset_t all;
         sigemptyset(&all);
