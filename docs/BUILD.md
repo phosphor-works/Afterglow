@@ -19,6 +19,8 @@ To build `aglow` and `aglow-mux` alone, without Qt, see [build aglow and aglow-m
 - GTest, unless you configure with `-DBUILD_TESTING=OFF`.
 - The static C and C++ runtime libraries (`libc.a` and `libstdc++.a`), for `aglow`.
   Fedora puts them in the packages `glibc-static` and `libstdc++-static`.
+  When the compiler does not search their directories, give them in `-DAFTERGLOW_STATIC_RUNTIME_DIRS`, separated by `;`.
+  Only the link of `aglow` searches these directories.
   Without them, the configuration stops with a message.
   To build without `aglow`, configure with `-DAFTERGLOW_BUILD_AGLOW=OFF`.
   Then `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` show an error and exit with status 127.

@@ -160,8 +160,6 @@ stdenv.mkDerivation {
     fontconfig
     libxkbcommon
     pcre2
-    # libc.a, for the static aglow.
-    glibc.static
   ];
 
   checkInputs = [ gtest ];
@@ -170,6 +168,10 @@ stdenv.mkDerivation {
     "-DCMAKE_BUILD_TYPE=Release"
     "-DBUILD_TESTING=${if withTests then "ON" else "OFF"}"
     "-DAFTERGLOW_DEPS_ARCHIVES=${depsArchives}"
+    # libc.a for the static aglow. Only its link searches here: in
+    # buildInputs, every link would find this libc.a first, the shared
+    # libraries' too.
+    "-DAFTERGLOW_STATIC_RUNTIME_DIRS=${glibc.static}/lib"
   ];
 
   doCheck = withTests;
