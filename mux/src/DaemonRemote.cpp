@@ -12,6 +12,7 @@
 // control target, in CONTROL.md.
 
 #include "Daemon.h"
+#include "ProcessFds.h"
 
 #include <AfterglowProto/Lock.h>
 #include <AfterglowProto/Random.h>
@@ -31,7 +32,6 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <spawn.h>
-#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -88,11 +88,6 @@ std::size_t utf16Units(std::string_view text)
     for (std::size_t i = 0; i < text.size() && AfterglowProto::nextUtf8(text, i, cp);)
         units += cp > 0xffff ? 2 : 1;
     return units;
-}
-
-int pidfdOpen(pid_t pid)
-{
-    return int(::syscall(SYS_pidfd_open, pid, 0));
 }
 
 } // namespace
@@ -260,7 +255,7 @@ std::string Daemon::remoteCall(const IpcRequest& request, pid_t caller)
     session->ssh = std::move(ssh);
     session->destination = destination;
     session->host = host;
-    session->pidfd = pidfdOpen(pid_t(*pid));
+    session->pidfd = watchProcess(pid_t(*pid));
     if (session->pidfd < 0)
         return failed(request, "no process " + std::to_string(*pid) + ": " + std::strerror(errno));
     session->path = Remote::socketPath(directory, *token);
@@ -413,7 +408,7 @@ void Daemon::cancelForward(const SshSession& session)
     // (no descriptor left), the loop looks every CancelLookMs: the daemon
     // never waits for ssh. One that runs past CancelWaitMs is killed.
     m_cancels.push_back(
-        {pid, pidfdOpen(pid), std::chrono::steady_clock::now() + std::chrono::milliseconds(CancelWaitMs), false});
+        {pid, watchProcess(pid), std::chrono::steady_clock::now() + std::chrono::milliseconds(CancelWaitMs), false});
 }
 
 int Daemon::sshDueMs() const

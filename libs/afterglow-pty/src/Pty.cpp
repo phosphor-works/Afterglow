@@ -35,6 +35,12 @@
 #include <termios.h>
 #include <unistd.h>
 
+#if defined(__FreeBSD__)
+#include <sys/event.h>
+#include <sys/sysctl.h>
+#include <sys/user.h>
+#endif
+
 extern char** environ;
 
 namespace AfterglowPty {
@@ -71,6 +77,70 @@ std::optional<ProcessStat> parseProcessStat(std::string_view stat)
     return parsed;
 }
 
+#if defined(__FreeBSD__)
+
+namespace {
+
+// FreeBSD has no /proc by default: the kernel's process table, through
+// sysctl(3), has the same records.
+
+std::optional<kinfo_proc> processInfo(pid_t pid)
+{
+    int name[] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, int(pid)};
+    kinfo_proc info{};
+    std::size_t size = sizeof info;
+    if (::sysctl(name, 4, &info, &size, nullptr, 0) != 0 || size != sizeof info)
+        return std::nullopt;
+    return info;
+}
+
+/// The bytes of a sysctl of process @p pid (KERN_PROC_ARGS), at most @p max.
+std::string processBytes(int what, pid_t pid, std::size_t max)
+{
+    int name[] = {CTL_KERN, KERN_PROC, what, int(pid)};
+    std::size_t size = 0;
+    if (::sysctl(name, 4, nullptr, &size, nullptr, 0) != 0 || size == 0)
+        return {};
+    std::string bytes(size, '\0');
+    if (::sysctl(name, 4, bytes.data(), &size, nullptr, 0) != 0)
+        return {};
+    bytes.resize(std::min(size, max));
+    return bytes;
+}
+
+} // namespace
+
+std::optional<ProcessStat> processStat(pid_t pid)
+{
+    const auto info = processInfo(pid);
+    if (!info)
+        return std::nullopt;
+    ProcessStat stat;
+    // The letters of Linux: only 'Z' is read.
+    switch (info->ki_stat) {
+    case SRUN:
+        stat.state = 'R';
+        break;
+    case SSTOP:
+        stat.state = 'T';
+        break;
+    case SZOMB:
+        stat.state = 'Z';
+        break;
+    default:
+        stat.state = 'S';
+        break;
+    }
+    stat.parent = info->ki_ppid;
+    stat.group = info->ki_pgid;
+    stat.session = info->ki_sid;
+    stat.terminal = (long long)(info->ki_tdev);
+    stat.foregroundGroup = info->ki_tpgid;
+    return stat;
+}
+
+#else
+
 std::optional<ProcessStat> processStat(pid_t pid)
 {
     // The whole file: a line read would stop at a new line in the name.
@@ -81,6 +151,8 @@ std::optional<ProcessStat> processStat(pid_t pid)
     whole << file.rdbuf();
     return parseProcessStat(whole.str());
 }
+
+#endif
 
 std::string Pty::defaultShell(const SpawnOptions& options)
 {
@@ -251,6 +323,35 @@ private:
 // daemon asks from the thread that runs every session. A live directory
 // whose own name ends in " (deleted)" reads the same, and is refused too:
 // only a stat could tell them apart.
+#if defined(__FreeBSD__)
+// The kernel's name of the directory, from its cache of names: empty when it
+// has none (a removed directory). No stat of the path, as on Linux.
+std::optional<std::string> directoryOf(pid_t pid)
+{
+    int name[] = {CTL_KERN, KERN_PROC, KERN_PROC_CWD, int(pid)};
+    kinfo_file file{};
+    std::size_t size = sizeof file;
+    if (::sysctl(name, 4, &file, &size, nullptr, 0) != 0 || size == 0 || file.kf_path[0] != '/')
+        return std::nullopt;
+    return std::string(file.kf_path);
+}
+
+// Whether the process group GROUP has a member in SESSION: the kernel lists
+// the members of a group, the leader too when it runs.
+bool groupInSession(pid_t group, pid_t session)
+{
+    int name[] = {CTL_KERN, KERN_PROC, KERN_PROC_PGRP, int(group)};
+    std::size_t size = 0;
+    if (::sysctl(name, 4, nullptr, &size, nullptr, 0) != 0 || size == 0)
+        return false;
+    // Room for members that start between the two calls.
+    std::vector<kinfo_proc> members(size / sizeof(kinfo_proc) + 4);
+    size = members.size() * sizeof(kinfo_proc);
+    if (::sysctl(name, 4, members.data(), &size, nullptr, 0) != 0 || size < sizeof(kinfo_proc))
+        return false;
+    return members.front().ki_sid == session;
+}
+#else
 std::optional<std::string> directoryOf(pid_t pid)
 {
     static constexpr std::string_view Deleted = " (deleted)";
@@ -283,6 +384,7 @@ bool groupInSession(pid_t group, pid_t session)
     }
     return false;
 }
+#endif
 
 } // namespace
 
@@ -487,10 +589,15 @@ std::unique_ptr<Pty> Pty::spawn(SpawnOptions options, IPtyListener& listener, st
             // (32 and 33), so a launcher that ignores them would pass that on.
             // The kernel takes an all-zero sigaction as SIG_DFL with no flags,
             // in the layout of every architecture.
+            // FreeBSD's libc refuses no signal that the kernel takes.
+#ifdef SYS_rt_sigaction
             if (sigaction(sig, &fallback, nullptr) != 0 && errno == EINVAL) {
                 const unsigned long none[8] = {};
                 ::syscall(SYS_rt_sigaction, sig, none, nullptr, NSIG / 8);
             }
+#else
+            sigaction(sig, &fallback, nullptr);
+#endif
         }
         sigset_t all;
         sigemptyset(&all);
@@ -558,6 +665,18 @@ std::unique_ptr<Pty> Pty::spawn(SpawnOptions options, IPtyListener& listener, st
     int pidFd = -1;
 #ifdef SYS_pidfd_open
     pidFd = int(syscall(SYS_pidfd_open, pid, 0));
+#elif defined(__FreeBSD__)
+    // A kqueue that waits for the child's exit: poll() shows it readable
+    // then, as a pidfd.
+    pidFd = ::kqueuex(KQUEUE_CLOEXEC);
+    if (pidFd >= 0) {
+        struct kevent change{};
+        EV_SET(&change, uintptr_t(pid), EVFILT_PROC, EV_ADD, NOTE_EXIT, 0, nullptr);
+        if (::kevent(pidFd, &change, 1, nullptr, 0, nullptr) != 0) {
+            ::close(pidFd);
+            pidFd = -1;
+        }
+    }
 #endif
     // The pipe closes at exec, or carries the stage and errno of a failure.
     pollfd execReport{execPipe[0], POLLIN, 0};
@@ -780,8 +899,21 @@ std::optional<int> signalNumber(std::string_view name)
 #endif
         {"CHLD", SIGCHLD},     {"CLD", SIGCHLD},  {"CONT", SIGCONT},   {"STOP", SIGSTOP}, {"TSTP", SIGTSTP},
         {"TTIN", SIGTTIN},     {"TTOU", SIGTTOU}, {"URG", SIGURG},     {"XCPU", SIGXCPU}, {"XFSZ", SIGXFSZ},
-        {"VTALRM", SIGVTALRM}, {"PROF", SIGPROF}, {"WINCH", SIGWINCH}, {"IO", SIGIO},     {"POLL", SIGPOLL},
-        {"PWR", SIGPWR},       {"SYS", SIGSYS},
+        {"VTALRM", SIGVTALRM}, {"PROF", SIGPROF}, {"WINCH", SIGWINCH}, {"IO", SIGIO},     {"SYS", SIGSYS},
+#ifdef SIGPOLL
+        {"POLL", SIGPOLL},
+#else
+        {"POLL", SIGIO}, // SIGPOLL, where the system names it, is SIGIO
+#endif
+#ifdef SIGPWR
+        {"PWR", SIGPWR},
+#endif
+#ifdef SIGINFO
+        {"INFO", SIGINFO},
+#endif
+#ifdef SIGEMT
+        {"EMT", SIGEMT},
+#endif
     };
     for (const auto& [n, value] : Names) {
         if (upper == n)
@@ -830,12 +962,16 @@ std::optional<ForegroundProcess> Pty::foreground(bool withCmdline) const
     ForegroundProcess out;
     out.pid = group;
     if (withCmdline) {
-        std::ifstream file("/proc/" + std::to_string(group) + "/cmdline", std::ios::binary);
         // The arguments end with a NUL each. A process can rewrite them, so the
         // last one may not end. A list of every pane must fit in one answer.
+#if defined(__FreeBSD__)
+        std::string bytes = processBytes(KERN_PROC_ARGS, group, ForegroundProcess::MaxCmdlineBytes);
+#else
+        std::ifstream file("/proc/" + std::to_string(group) + "/cmdline", std::ios::binary);
         std::string bytes(ForegroundProcess::MaxCmdlineBytes, '\0');
         file.read(bytes.data(), std::streamsize(bytes.size()));
         bytes.resize(std::size_t(file.gcount()));
+#endif
         // A process that rewrote its arguments pads them with NULs (postgres,
         // setproctitle): they are no arguments.
         bytes.erase(bytes.find_last_not_of('\0') + 1);
@@ -856,9 +992,14 @@ std::string Pty::foregroundProcess() const
     if (group <= 0 || group == m_pid.load()) {
         return {};
     }
+#if defined(__FreeBSD__)
+    const auto info = processInfo(group);
+    const std::string name = info ? std::string(info->ki_comm) : std::string();
+#else
     std::ifstream comm("/proc/" + std::to_string(group) + "/comm");
     std::string name;
     std::getline(comm, name);
+#endif
     return name.empty() ? std::string("a program") : name;
 }
 

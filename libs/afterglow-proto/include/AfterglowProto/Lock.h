@@ -29,7 +29,8 @@ int lockFile(const std::string& path, std::string* error);
 /// Whether a holder has the lock of the file at @p path, without taking it:
 /// a probe that took it would make a holder that starts meanwhile fail with
 /// LockHeld. A file that a holder left when it was killed, or when the
-/// computer stopped, exists with no lock on it. Reads /proc/locks, which
+/// computer stopped, exists with no lock on it. On FreeBSD, asks with
+/// fcntl(F_GETLK), which sees flocks too. On Linux, reads /proc/locks, which
 /// names each flock by device and inode. Without /proc/locks, a file that
 /// exists counts as held. /proc/locks shows only the locks of processes in
 /// the pid namespace of the reader's /proc: from a sandbox with a pid

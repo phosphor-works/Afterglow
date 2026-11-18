@@ -20,7 +20,6 @@
 #include <string_view>
 
 #include <signal.h>
-#include <sys/syscall.h>
 #include <unistd.h>
 
 namespace AfterglowMux::decoding {
@@ -50,18 +49,6 @@ inline bool allowed(std::string_view data, ImageFormats formats)
     if (formats == ImageFormats::Png)
         return format == AfterglowImage::Format::Png;
     return format != AfterglowImage::Format::Unknown;
-}
-
-// Through syscall(2): <sys/pidfd.h> of some glibc versions declares them
-// without C linkage.
-inline int pidfdOpen(pid_t pid)
-{
-    return int(::syscall(SYS_pidfd_open, pid, 0));
-}
-
-inline void pidfdKill(int pidfd)
-{
-    ::syscall(SYS_pidfd_send_signal, pidfd, SIGKILL, nullptr, 0);
 }
 
 /// Whether a report of its kind, last made at @p last, may go now: at most

@@ -6,6 +6,7 @@
 #include "ImageDecoder.h"
 
 #include <AfterglowProto/DndUri.h>
+#include <AfterglowProto/Socket.h>
 #include <AfterglowProto/Text.h>
 
 #include <algorithm>
@@ -35,7 +36,7 @@ int pixels(int cells, int cellSize)
 /// The name of this host, empty when it has none.
 std::string hostName()
 {
-    std::array<char, HOST_NAME_MAX + 1> here{};
+    std::array<char, AfterglowProto::MaxHostNameBytes + 1> here{};
     if (::gethostname(here.data(), here.size() - 1) != 0)
         return {};
     return here.data();
@@ -117,7 +118,7 @@ std::string localDirectory(std::string_view reported)
 /// shell escape of an editor (vim's :!) runs in the editor's group, and the
 /// editor is a job to ask about.
 ///
-/// The pid is SO_PEERCRED's, of the process that connected. A client that
+/// The pid is the socket's peer credential, of the process that connected. A client that
 /// passed its connection on and exited could have its pid reused; the
 /// clients of the daemon keep their connection to themselves.
 bool leadsForeground(pid_t pid, pid_t session)

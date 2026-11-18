@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -36,6 +37,14 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#if defined(__FreeBSD__)
+#include <sys/param.h>
+#include <sys/procctl.h>
+#include <sys/resource.h>
+#include <sys/sysctl.h>
+#include <sys/user.h>
+#endif
 
 using AfterglowMux::ImageDecoder;
 using AfterglowMux::ImageFormats;
@@ -130,6 +139,9 @@ std::string gifOf(std::size_t count)
 /// the decoders, and for a server, its decoding processes.
 std::set<pid_t> children(pid_t parent = ::getpid())
 {
+#if defined(__FreeBSD__)
+    return MuxTest::processesOf(parent);
+#else
     std::set<pid_t> found;
     std::error_code ignored;
     for (const auto& task : std::filesystem::directory_iterator("/proc/" + std::to_string(parent) + "/task", ignored)) {
@@ -138,6 +150,7 @@ std::set<pid_t> children(pid_t parent = ::getpid())
             found.insert(pid);
     }
     return found;
+#endif
 }
 
 /// The one process that is in @p after and not in @p before, or 0.
@@ -185,6 +198,17 @@ std::string shellQuoted(const std::filesystem::path& path)
 /// image (decode() makes it before it waits for the server).
 bool decodeRuns()
 {
+#if defined(__FreeBSD__)
+    // No /proc, and a memfd has no name in its F_KINFO: any shared memory
+    // object, which this process holds for no other reason.
+    for (int fd = 0, end = ::getdtablesize(); fd < end; ++fd) {
+        kinfo_file file{};
+        file.kf_structsize = sizeof file;
+        if (::fcntl(fd, F_KINFO, &file) == 0 && file.kf_type == KF_TYPE_SHM)
+            return true;
+    }
+    return false;
+#else
     std::error_code ignored;
     for (const auto& fd : std::filesystem::directory_iterator("/proc/self/fd", ignored)) {
         std::error_code error;
@@ -192,6 +216,7 @@ bool decodeRuns()
             return true;
     }
     return false;
+#endif
 }
 
 } // namespace
@@ -665,6 +690,51 @@ TEST(MuxImageDecoder, ADecodingProcessHasItsLimitsAndItsFilter)
     ASSERT_TRUE(decode(decoder, Png, ImageFormats::Png).ok);
     const pid_t server = added(before, children());
     ASSERT_GT(server, 0);
+#if defined(__FreeBSD__)
+    // Capability mode in place of the filter, as the kernel's process table
+    // shows it, and the limits as the kernel has them.
+    bool sandboxed = false;
+    int noNewPrivileges = 0;
+    std::array<rlimit, 3> limit{};
+    bool limitsRead = false;
+    std::thread watch([&] {
+        const auto deadline = Clock::now() + std::chrono::seconds(10);
+        while (Clock::now() < deadline) {
+            for (const pid_t process : children(server)) {
+                int name[] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, int(process)};
+                kinfo_proc info{};
+                std::size_t size = sizeof info;
+                // Not the zombie of the first decode, which the server has not reaped yet.
+                if (::sysctl(name, 4, &info, &size, nullptr, 0) != 0 || info.ki_stat == SZOMB
+                    || !(info.ki_cr_flags & KI_CRF_CAPABILITY_MODE))
+                    continue;
+                // Read once it is in capability mode: the limits are set before it.
+                sandboxed = true;
+                ::procctl(P_PID, process, PROC_NO_NEW_PRIVS_STATUS, &noNewPrivileges);
+                limitsRead = true;
+                const int resources[] = {RLIMIT_AS, RLIMIT_CPU, RLIMIT_CORE};
+                for (std::size_t i = 0; i < limit.size(); ++i) {
+                    int which[] = {CTL_KERN, KERN_PROC, KERN_PROC_RLIMIT, int(process), resources[i]};
+                    std::size_t bytes = sizeof(rlimit);
+                    limitsRead = limitsRead && ::sysctl(which, 5, &limit[i], &bytes, nullptr, 0) == 0;
+                }
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
+    const Decoded d = decode(decoder, large, ImageFormats::Png);
+    watch.join();
+    EXPECT_TRUE(d.ok);
+    ASSERT_TRUE(sandboxed) << "no decoding process was seen in capability mode";
+    EXPECT_EQ(noNewPrivileges, PROC_NO_NEW_PRIVS_ENABLE);
+    // The process can end between its mode and its limits: then there is
+    // nothing to check, which is a failure, not a pass.
+    ASSERT_TRUE(limitsRead) << "the decoding process ended before its limits were read";
+    EXPECT_NE(limit[0].rlim_cur, RLIM_INFINITY);
+    EXPECT_NE(limit[1].rlim_cur, RLIM_INFINITY);
+    EXPECT_EQ(limit[2].rlim_cur, rlim_t(0));
+#else
     // A process inherits the filters of its parent (a Nix build runs under
     // one), so a filter alone does not tell the decoding process's own: it
     // has one filter more than the server. A kernel before 5.9 counts no
@@ -712,6 +782,7 @@ TEST(MuxImageDecoder, ADecodingProcessHasItsLimitsAndItsFilter)
     EXPECT_EQ(line("Max address space").find("unlimited"), std::string::npos) << limits;
     EXPECT_EQ(line("Max cpu time").find("unlimited"), std::string::npos) << limits;
     EXPECT_NE(line("Max core file size").find(" 0 "), std::string::npos) << limits;
+#endif
 }
 
 TEST(MuxImageDecoder, PanesDecodeAtOnce)

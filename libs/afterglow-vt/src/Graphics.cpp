@@ -25,6 +25,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#if defined(__FreeBSD__)
+#include <sys/param.h>
+#include <sys/user.h>
+#endif
+
 namespace AfterglowVt {
 
 namespace {
@@ -237,6 +242,25 @@ std::uint64_t placementKey(std::uint32_t image, std::uint32_t placement)
 long long anchorIndex(const Placement& p, const Screen& s)
 {
     return static_cast<long long>(p.row) - static_cast<long long>(s.rowsDropped());
+}
+
+/// The path of the directory that @p fd has open, as the kernel names it:
+/// what a rename of a directory on the way cannot change. Linux's
+/// /proc/self/fd, FreeBSD's F_KINFO (no /proc there).
+std::filesystem::path openedPath(int fd, std::error_code& ec)
+{
+#if defined(__FreeBSD__)
+    kinfo_file file{};
+    file.kf_structsize = sizeof file;
+    if (::fcntl(fd, F_KINFO, &file) != 0 || file.kf_path[0] != '/') {
+        ec = std::error_code(errno ? errno : ENOENT, std::generic_category());
+        return {};
+    }
+    ec.clear();
+    return std::filesystem::path(file.kf_path);
+#else
+    return std::filesystem::read_symlink("/proc/self/fd/" + std::to_string(fd), ec);
+#endif
 }
 
 bool forbiddenFile(const std::filesystem::path& path)
@@ -935,7 +959,7 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size
         const int parent = open(canonical.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
         if (parent < 0)
             return fail();
-        const auto actualParent = std::filesystem::read_symlink("/proc/self/fd/" + std::to_string(parent), ec);
+        const auto actualParent = openedPath(parent, ec);
         if (ec || forbiddenFile(actualParent)) {
             close(parent);
             return fail();
@@ -975,8 +999,13 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size
         if (name.size() > 4096 || name.find('\0') != std::string::npos)
             return fail();
         // O_NONBLOCK: a FIFO planted in /dev/shm must not hang the open before
-        // readPayload's fstat rejects it.
+        // readPayload's fstat rejects it. FreeBSD's objects are no files, so
+        // nothing can be planted, and its shm_open() refuses the flag.
+#if defined(__FreeBSD__)
+        const int fd = shm_open(name.c_str(), O_RDONLY | O_CLOEXEC, 0);
+#else
         const int fd = shm_open(name.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK, 0);
+#endif
         if (fd < 0)
             return fail();
         // pread is safe if the sender truncates the object concurrently; mmap
@@ -1027,7 +1056,7 @@ bool GraphicsStore::releaseMedium(const Command& cmd, const std::string& data) c
     const int parent = open(canonical.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (parent < 0)
         return false;
-    const auto actualParent = std::filesystem::read_symlink("/proc/self/fd/" + std::to_string(parent), ec);
+    const auto actualParent = openedPath(parent, ec);
     const bool released =
         !ec && deleteTemporaryFile(parent, actualParent, canonical.filename(), nullptr, m_temporaryDirectory);
     close(parent);

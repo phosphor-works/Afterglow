@@ -22,7 +22,11 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <poll.h>
+#if defined(__linux__)
 #include <sys/prctl.h>
+#elif defined(__FreeBSD__)
+#include <sys/procctl.h>
+#endif
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -101,10 +105,19 @@ void setNonBlocking(int fd)
 [[noreturn]] void startChild(const std::string& program, char** argv, char** envp, const int (&ends)[3], int report,
                              const Limits& limits, pid_t parent)
 {
+#if defined(__linux__)
     ::prctl(PR_SET_PDEATHSIG, SIGKILL);
     if (::getppid() != parent)
         ::_exit(127);
     ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+#elif defined(__FreeBSD__)
+    int deathSignal = SIGKILL;
+    ::procctl(P_PID, 0, PROC_PDEATHSIG_CTL, &deathSignal);
+    if (::getppid() != parent)
+        ::_exit(127);
+    int noNewPrivileges = PROC_NO_NEW_PRIVS_ENABLE;
+    ::procctl(P_PID, 0, PROC_NO_NEW_PRIVS_CTL, &noNewPrivileges);
+#endif
     sigset_t none;
     sigemptyset(&none);
     ::sigprocmask(SIG_SETMASK, &none, nullptr);

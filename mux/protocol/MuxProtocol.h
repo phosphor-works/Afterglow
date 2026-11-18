@@ -56,6 +56,14 @@ namespace Fn {
 inline constexpr const char* Version = "version"; ///< () -> {version, protocol}
 inline constexpr const char* NewSession =
     "newSession"; ///< (protocol, options) -> {name, pane}: pane is its first pane's ID
+/// (protocol, environment) -> null: the environment of the caller
+/// (environmentJson()), which a session that a later newSession call on
+/// this connection starts with SessionOptions::callerEnvironment takes.
+/// `aglow-mux proxy` sends its own, that of the user's ssh login, before it
+/// carries the client's bytes. The daemon reads the environment of no other
+/// process: a kernel that refuses that to the user (FreeBSD with
+/// security.bsd.unprivileged_proc_debug=0) needs no exception.
+inline constexpr const char* CallerEnvironment = "callerEnvironment";
 inline constexpr const char* ListSessions = "listSessions"; ///< () -> [session]
 inline constexpr const char* KillSession = "killSession"; ///< (name) -> null
 /// (protocol, name, {takeover, eventQueue, history}) -> {name, window,
@@ -279,9 +287,10 @@ struct SessionOptions
     /// callerEnvironment, the variables that it sets over the environment of
     /// the caller.
     std::vector<std::pair<std::string, std::string>> environment;
-    /// The session's environment is that of the process that calls
-    /// newSession, with `environment` over it: for a session on another host,
-    /// `aglow-mux proxy` there, which runs in the user's ssh login. Its
+    /// The session's environment is the one that the caller sent on the same
+    /// connection (Fn::CallerEnvironment), with `environment` over it: for a
+    /// session on another host, that of `aglow-mux proxy` there, which runs
+    /// in the user's ssh login. Its
     /// panes without a command run the user's shell as a login shell, in
     /// HOME without a directory.
     bool callerEnvironment = false;

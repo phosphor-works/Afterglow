@@ -25,7 +25,12 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
+#if defined(__linux__)
 #include <sys/prctl.h>
+#elif defined(__FreeBSD__)
+#include <sys/sysctl.h>
+#include <sys/user.h>
+#endif
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -121,11 +126,45 @@ SpawnOptions shell(const std::string& script)
     return options;
 }
 
+/// Whether the kernel tells this user the working directory of another of
+/// its processes. FreeBSD with security.bsd.unprivileged_proc_debug=0 does
+/// not: a pane's directory then comes from its shell alone (OSC 7).
+bool processDirectoriesShown()
+{
+    const pid_t child = ::fork();
+    if (child < 0)
+        return true;
+    if (child == 0) {
+        ::pause();
+        ::_exit(0);
+    }
+    bool shown = false;
+#if defined(__FreeBSD__)
+    int name[] = {CTL_KERN, KERN_PROC, KERN_PROC_CWD, int(child)};
+    kinfo_file file{};
+    std::size_t size = sizeof file;
+    shown = ::sysctl(name, 4, &file, &size, nullptr, 0) == 0 && file.kf_path[0] == '/';
+#else
+    std::error_code ignored;
+    shown = !std::filesystem::read_symlink("/proc/" + std::to_string(child) + "/cwd", ignored).empty();
+#endif
+    ::kill(child, SIGKILL);
+    ::waitpid(child, nullptr, 0);
+    return shown;
+}
+
 int openDescriptors()
 {
     int count = 0;
+#if defined(__linux__)
     for ([[maybe_unused]] const auto& entry : std::filesystem::directory_iterator("/proc/self/fd"))
         ++count;
+#else
+    // No /proc: ask each descriptor that the process may have.
+    for (int fd = 0, end = ::getdtablesize(); fd < end; ++fd)
+        if (::fcntl(fd, F_GETFD) != -1)
+            ++count;
+#endif
     return count;
 }
 
@@ -594,6 +633,9 @@ TEST(Pty, TheChildGetsOnlyTheStandardStreams)
 
 TEST(Pty, TheChildStartsWithNoBlockedOrIgnoredSignalAndTheCallerKeepsItsMask)
 {
+#if !defined(__linux__)
+    GTEST_SKIP() << "reads the child's masks in /proc/self/status (Linux)";
+#endif
     // A mask and a disposition of the caller: spawn() blocks every signal
     // around fork() and must put this mask back, and the child must not
     // inherit either of them across exec.
@@ -706,6 +748,9 @@ TEST(Pty, TheProcessStatusOfThisProcessIsReadWithANameThatHoldsANewLine)
 {
     // The name of this thread, the main one, is the process's name in
     // /proc/PID/stat: a line read would end inside it.
+#if !defined(__linux__)
+    GTEST_SKIP() << "reads /proc/PID/stat (Linux)";
+#else
     char name[16] = {};
     ASSERT_EQ(prctl(PR_GET_NAME, name), 0);
     ASSERT_EQ(prctl(PR_SET_NAME, "t)\n(x) Z 9 9"), 0);
@@ -716,6 +761,7 @@ TEST(Pty, TheProcessStatusOfThisProcessIsReadWithANameThatHoldsANewLine)
     EXPECT_EQ(stat->parent, ::getppid());
     EXPECT_EQ(stat->group, ::getpgrp());
     EXPECT_EQ(stat->session, ::getsid(0));
+#endif
 }
 
 // closeListed(), the fallback of closeFrom() for a kernel without
@@ -748,8 +794,13 @@ TEST(Pty, TheDescriptorsThatProcListsCloseFromTheFirst)
                 first = fd;
             last = fd;
         }
+#if defined(__FreeBSD__)
+        // No /proc to list them: closeFrom() is a system call there.
+        closeFrom(first);
+#else
         if (!closeListed(first))
             ::_exit(12);
+#endif
         if (::fcntl(kept, F_GETFD) < 0)
             ::_exit(13);
         for (int fd = first; fd <= last; ++fd) {
@@ -820,7 +871,9 @@ TEST(Pty, ForegroundIsTheLeaderOfTheGroupWithItsArguments)
     ASSERT_TRUE(process);
     EXPECT_EQ(process->pid, pty->pid());
     EXPECT_EQ(process->cmdline, (std::vector<std::string>{"/bin/sh", "-c", "sleep 30; :", "x"}));
-    EXPECT_FALSE(process->cwd.empty());
+    if (processDirectoriesShown()) {
+        EXPECT_FALSE(process->cwd.empty());
+    }
     const auto bare = pty->foreground(false);
     ASSERT_TRUE(bare);
     EXPECT_EQ(bare->pid, pty->pid());
@@ -876,6 +929,10 @@ TEST(Pty, SignalsAForegroundGroupWhoseLeaderExited)
 // once output resumes.
 TEST(Pty, PausedOutputStillWritesInput)
 {
+#if defined(__FreeBSD__)
+    GTEST_SKIP() << "FreeBSD drops the output that the master did not read about a second after the last close of the "
+                    "terminal: a pause over the exit loses it";
+#endif
     std::string directory = (std::filesystem::temp_directory_path() / "afterglow-pause-XXXXXX").string();
     ASSERT_TRUE(::mkdtemp(directory.data()));
     // Also after an assertion that ends the test early.

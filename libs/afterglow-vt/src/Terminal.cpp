@@ -8,6 +8,7 @@
 
 #include <AfterglowProto/Base64.h>
 #include <AfterglowProto/Color.h>
+#include <AfterglowProto/FromChars.h>
 #include <AfterglowProto/DragDrop.h>
 #include <AfterglowProto/Transfer.h>
 
@@ -274,7 +275,7 @@ std::string cleanTitle(std::string_view text)
 /// (the application's locale may use a comma).
 bool parseNumber(std::string_view s, double& out)
 {
-    const auto parsed = std::from_chars(s.data(), s.data() + s.size(), out);
+    const auto parsed = AfterglowProto::fromChars(s.data(), s.data() + s.size(), out);
     return !s.empty() && parsed.ec == std::errc{} && parsed.ptr == s.data() + s.size() && std::isfinite(out);
 }
 

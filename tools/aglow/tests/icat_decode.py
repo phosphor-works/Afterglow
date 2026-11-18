@@ -343,8 +343,16 @@ WEBP_ADOBE = bytes.fromhex(
     "0f95706172610000000000000000000233006368726d00000000000300000000a3d70000547b000035c30000b5c30000266600000f5c5650"
     "384c110000002f03c000000750cb9215b9ff8188e87f0000")
 
+# FreeBSD has no /proc: ps and procstat tell the same.
+FREEBSD = sys.platform.startswith("freebsd")
+
+
 def children(pid):
     """The processes whose parent is PID."""
+    if FREEBSD:
+        # One -o each: BSD ps reads "pid=,ppid=" as one column with the header ",ppid=".
+        out = subprocess.run(["ps", "-ax", "-o", "pid=", "-o", "ppid="], capture_output=True, text=True).stdout
+        return [int(fields[0]) for fields in (line.split() for line in out.splitlines()) if len(fields) == 2 and fields[1] == str(pid)]
     found = []
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
@@ -360,6 +368,12 @@ def children(pid):
 
 def limits(pid):
     """The lines of /proc/PID/limits that the decoder child sets, or None when PID is gone."""
+    if FREEBSD:
+        result = subprocess.run(["procstat", "-l", str(pid)], capture_output=True, text=True)
+        if result.returncode != 0:
+            return None
+        rows = [line.split(None, 2) for line in result.stdout.splitlines()[1:]]
+        return [row[2] for row in rows if len(row) == 3 and row[2].split()[0] in ("cputime", "vmemoryuse")]
     try:
         lines = Path(f"/proc/{pid}/limits").read_text().splitlines()
     except OSError:
@@ -369,6 +383,9 @@ def limits(pid):
 
 def alive(pid):
     """Whether PID runs or is stopped: not a zombie, and not gone."""
+    if FREEBSD:
+        state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        return state != "" and not state.startswith("Z")
     try:
         return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] not in ("Z", "X")
     except OSError:
@@ -392,7 +409,8 @@ def run(aglow, path, *options, env=None, cwd=None, timeout=60):
 
 # The processors whose system calls the decoder child's filter knows (AfterglowProto/DecodeFilter.h). On another,
 # the child decodes with its limits alone.
-FILTERED = os.uname().machine in ("x86_64", "aarch64", "riscv64", "ppc64le")
+# On FreeBSD the child enters Capsicum instead, which /proc does not show: DecodeProcessTest checks it.
+FILTERED = not FREEBSD and os.uname().machine in ("x86_64", "aarch64", "riscv64", "ppc64le")
 
 
 def seccomp(pid):

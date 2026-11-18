@@ -463,10 +463,20 @@ bool Tty::restore()
     }
     if (m_raw) {
         // TCSAFLUSH: replies that arrive late are dropped, not typed into the shell.
+        // FreeBSD's TCSAFLUSH first waits, with no limit, until the terminal
+        // read the output that flush() gave up on: there the input is
+        // flushed alone, and the modes change at once.
         int result;
+#if defined(__FreeBSD__)
+        ::tcflush(m_fd, TCIFLUSH);
+        do {
+            result = ::tcsetattr(m_fd, TCSANOW, &m_saved);
+        } while (result != 0 && errno == EINTR);
+#else
         do {
             result = ::tcsetattr(m_fd, TCSAFLUSH, &m_saved);
         } while (result != 0 && errno == EINTR);
+#endif
         ok = result == 0 && ok;
         m_raw = false;
     }

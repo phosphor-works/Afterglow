@@ -5,6 +5,7 @@
 
 #include "Attach.h"
 #include "ImageDecoder.h"
+#include "ProcessFds.h"
 #include "Session.h"
 
 #include <AfterglowProto/IpcServer.h>
@@ -265,8 +266,12 @@ private:
     bool reads(const AfterglowProto::IpcServerConnection& connection) const;
     /// The attachment by its serial(), or nullptr.
     Attachment* attachment(std::uint64_t serial) const;
-    /// @p caller gives the environment of a session with callerEnvironment.
-    std::string newSession(const AfterglowProto::IpcRequest& request, pid_t caller);
+    /// A session with callerEnvironment takes the environment that
+    /// callerEnvironment() kept for @p connection.
+    std::string newSession(const AfterglowProto::IpcRequest& request,
+                           const AfterglowProto::IpcServerConnection& connection);
+    std::string callerEnvironment(const AfterglowProto::IpcRequest& request,
+                                  const AfterglowProto::IpcServerConnection& connection);
     std::string killSession(const AfterglowProto::IpcRequest& request);
     /// The connection of the call becomes the window's stream once the
     /// answer went (m_attaching).
@@ -429,7 +434,7 @@ private:
     /// wake for its calls and command clients, which the next pass fails.
     bool m_again = false;
     /// Before the sessions: their panes decode with it until they end.
-    ImageDecoder m_images{"/proc/self/exe"};
+    ImageDecoder m_images{selfExecutable()};
     std::vector<std::unique_ptr<AfterglowProto::IpcListener>> m_listeners;
     int m_wakeFd = -1;
     int m_signalFd = -1;
@@ -452,6 +457,9 @@ private:
         std::string name;
     };
     std::map<const AfterglowProto::IpcServerConnection*, Selected> m_selected;
+    /// The environment that each connection's caller sent (callerEnvironment()).
+    std::map<const AfterglowProto::IpcServerConnection*, std::vector<std::pair<std::string, std::string>>>
+        m_callerEnvironments;
     /// The control calls that wait for the answer of a window, by the ID of
     /// their Control event.
     struct Forward

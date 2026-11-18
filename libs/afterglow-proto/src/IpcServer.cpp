@@ -22,6 +22,15 @@ namespace AfterglowProto {
 
 namespace {
 
+// The connections that wait for their accept. Linux makes one over it wait
+// too; FreeBSD refuses it at once, so there it has room for the clients that
+// start together (an `aglow run` in each pane of a script).
+#if defined(__FreeBSD__)
+constexpr int ListenBacklog = SOMAXCONN;
+#else
+constexpr int ListenBacklog = 16;
+#endif
+
 // The limit of PhosphorIpc::parseRequest.
 constexpr std::size_t MaxArgs = 4096;
 
@@ -216,7 +225,7 @@ IpcListener::Listen IpcListener::listen(const std::string& path, std::string* er
     }
     // From here the file is ours: a failure removes it.
     struct stat bound{};
-    if (::chmod(path.c_str(), 0600) != 0 || ::lstat(path.c_str(), &bound) != 0 || ::listen(fd, 16) != 0) {
+    if (::chmod(path.c_str(), 0600) != 0 || ::lstat(path.c_str(), &bound) != 0 || ::listen(fd, ListenBacklog) != 0) {
         const int failure = errno;
         ::unlink(path.c_str());
         return fail("cannot listen on " + path + ": " + std::strerror(failure), fd);
@@ -296,10 +305,9 @@ int IpcListener::accept()
             }
             return -1;
         }
-        ucred peer{};
-        socklen_t size = sizeof peer;
+        PeerCredentials peer;
         // The effective user, as the client's own check of the server.
-        if (::getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &size) != 0 || peer.uid != ::geteuid()) {
+        if (!peerCredentials(fd, peer) || peer.uid != ::geteuid()) {
             ::close(fd);
             continue;
         }
@@ -494,6 +502,16 @@ bool IpcServerConnection::flush()
             continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
             return true;
+        if (n < 0 && (errno == EPIPE || errno == ECONNRESET)) {
+            // A client that closed with answers to come: as in fill(), the
+            // complete lines that came still count, and no answer can go
+            // any more. FreeBSD tells this here first, where Linux's read
+            // gives ECONNRESET.
+            m_peerGone = true;
+            m_out.clear();
+            m_outOffset = 0;
+            break;
+        }
         close();
         return false;
     }

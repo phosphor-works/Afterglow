@@ -5,6 +5,7 @@
 
 #include "ImageDecoder.h"
 #include "ImageWire.h"
+#include "ProcessFds.h"
 
 #include <AfterglowImage/Decode.h>
 #include <AfterglowProto/DecodeFilter.h>
@@ -22,13 +23,16 @@
 #include <cstring>
 #include <new>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #include <sys/mman.h>
+#if defined(__linux__)
 #include <sys/prctl.h>
-#include <sys/signalfd.h>
+#endif
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -57,8 +61,8 @@ namespace {
 // ---------------------------------------------------------- the process ---
 
 /// The exit status of a decoding process that cannot limit its system calls
-/// (AfterglowProto::allowOnlyDecoding: a kernel without seccomp filters, or
-/// a processor whose system calls the filter does not know): it decodes
+/// (AfterglowProto::allowOnlyDecoding: a kernel without seccomp filters or
+/// Capsicum, or a processor whose system calls the filter does not know): it decodes
 /// nothing, and the server says so.
 constexpr int NoFilterStatus = 3;
 /// The exit status of a decoding process that did not decode its image: a
@@ -220,36 +224,40 @@ void answer(int socket, int pidfd)
     while (::sendmsg(socket, &message, MSG_NOSIGNAL) < 0 && errno == EINTR) { }
 }
 
-/// The decoding processes that ended. One that a signal other than the
-/// daemon's SIGKILL ended (a crash, the CPU limit), and one that exited with
-/// a status that it does not give itself (a sanitizer's report), go to the
-/// journal.
-void reap(std::chrono::steady_clock::time_point& lastReport)
+/// Reaps the decoding process @p pid once it ended: false while it runs.
+/// One that a signal other than the daemon's SIGKILL ended (a crash, the CPU
+/// limit), and one that exited with a status that it does not give itself
+/// (a sanitizer's report), go to the journal.
+bool reap(std::chrono::steady_clock::time_point& lastReport, pid_t pid, int options = WNOHANG)
 {
     int status = 0;
-    while (::waitpid(-1, &status, WNOHANG) > 0) {
-        // SIGKILL is the daemon's own end of a process, and SIGPIPE that of
-        // one whose pane closed before it wrote.
-        // The frames of an animation that came before the end still show.
-        if (WIFSIGNALED(status) && WTERMSIG(status) == SIGXCPU)
-            report(lastReport,
-                   "an image decoder ran out of CPU time: the image, or the rest of its frames, does not show");
-        else if (WIFSIGNALED(status) && WTERMSIG(status) != SIGKILL && WTERMSIG(status) != SIGPIPE)
-            report(lastReport,
-                   "an image decoder ended with signal " + std::to_string(WTERMSIG(status))
-                       + ": the image, or the rest of its frames, does not show");
-        if (!WIFEXITED(status))
-            continue;
-        const int code = WEXITSTATUS(status);
-        if (code == NoFilterStatus)
-            report(lastReport,
-                   "the image decoder cannot limit its system calls (no seccomp, or a processor that it does not "
-                   "know): images do not show");
-        else if (code != 0 && code != RefusedStatus)
-            report(lastReport,
-                   "an image decoder failed with status " + std::to_string(code)
-                       + ": the image, or the rest of its frames, does not show");
-    }
+    pid_t reaped = 0;
+    while ((reaped = ::waitpid(pid, &status, options)) < 0 && errno == EINTR) { }
+    if (reaped == 0)
+        return false;
+    if (reaped < 0)
+        return true;
+    // SIGKILL is the daemon's own end of a process, and SIGPIPE that of
+    // one whose pane closed before it wrote.
+    // The frames of an animation that came before the end still show.
+    if (WIFSIGNALED(status) && WTERMSIG(status) == SIGXCPU)
+        report(lastReport, "an image decoder ran out of CPU time: the image, or the rest of its frames, does not show");
+    else if (WIFSIGNALED(status) && WTERMSIG(status) != SIGKILL && WTERMSIG(status) != SIGPIPE)
+        report(lastReport,
+               "an image decoder ended with signal " + std::to_string(WTERMSIG(status))
+                   + ": the image, or the rest of its frames, does not show");
+    if (!WIFEXITED(status))
+        return true;
+    const int code = WEXITSTATUS(status);
+    if (code == NoFilterStatus)
+        report(lastReport,
+               "the image decoder cannot limit its system calls (no seccomp or Capsicum, or a processor that it does "
+               "not know): images do not show");
+    else if (code != 0 && code != RefusedStatus)
+        report(lastReport,
+               "an image decoder failed with status " + std::to_string(code)
+                   + ": the image, or the rest of its frames, does not show");
+    return true;
 }
 
 } // namespace
@@ -262,7 +270,11 @@ int runImageServer(std::string_view parent, std::string_view version)
     // "exe". The decoding processes take it too. It ends when the client's
     // end of its socket closes, however the client ends: no PDEATHSIG, which
     // follows the thread that started it, and a restart runs on a pane's.
+#if defined(__linux__)
     ::prctl(PR_SET_NAME, "afterglow-image");
+#else
+    ::setproctitle("-afterglow-image");
+#endif
     if (std::to_string(::getppid()) != parent)
         return 1;
     // A client of another version would read the frames wrong: it reports
@@ -276,26 +288,26 @@ int runImageServer(std::string_view parent, std::string_view version)
     // Standard input is the socket of the daemon, standard error the
     // daemon's. Nothing else of the daemon reaches the server.
     AfterglowPty::closeFrom(STDERR_FILENO + 1);
-    sigset_t children;
-    ::sigemptyset(&children);
-    ::sigaddset(&children, SIGCHLD);
-    ::sigprocmask(SIG_BLOCK, &children, nullptr);
-    AfterglowProto::UniqueFd ended(::signalfd(-1, &children, SFD_NONBLOCK | SFD_CLOEXEC));
-    if (!ended.valid())
-        return 1;
     const pid_t self = ::getpid();
     std::chrono::steady_clock::time_point lastReport;
+    // The decoding processes that run, with the server's own copy of their
+    // descriptor: it shows their end, when the server reaps them. On FreeBSD
+    // they send no SIGCHLD, and the last close of the descriptor would kill
+    // one that still decodes.
+    std::vector<std::pair<pid_t, AfterglowProto::UniqueFd>> running;
+    std::vector<pollfd> ready;
     for (;;) {
-        std::array<pollfd, 2> ready{{{STDIN_FILENO, POLLIN, 0}, {ended.get(), POLLIN, 0}}};
+        ready.assign(1, {STDIN_FILENO, POLLIN, 0});
+        for (const auto& process : running)
+            ready.push_back({process.second.get(), POLLIN, 0});
         if (::poll(ready.data(), ready.size(), -1) < 0) {
             if (errno == EINTR)
                 continue;
             return 1;
         }
-        if (ready[1].revents) {
-            signalfd_siginfo info{};
-            while (::read(ended.get(), &info, sizeof info) == ssize_t(sizeof info)) { }
-            reap(lastReport);
+        for (std::size_t i = running.size(); i-- > 0;) {
+            if (ready[i + 1].revents && reap(lastReport, running[i].first))
+                running.erase(running.begin() + std::ptrdiff_t(i));
         }
         if (!ready[0].revents)
             continue;
@@ -308,11 +320,12 @@ int runImageServer(std::string_view parent, std::string_view version)
             answer(STDIN_FILENO, -1);
             continue;
         }
-        const pid_t pid = ::fork();
+        int descriptor = -1;
+        const pid_t pid = forkWithDescriptor(descriptor);
         if (pid == 0)
             decodeProcess(input.get(), output.get(), formats, self);
-        // The process is not reaped before reap() runs: its pidfd names it.
-        AfterglowProto::UniqueFd process(pid > 0 ? pidfdOpen(pid) : -1);
+        // The process is not reaped before its descriptor shows its end.
+        AfterglowProto::UniqueFd process(descriptor);
         if (pid < 0) {
             report(lastReport,
                    std::string("the image decoder cannot start a process: ") + std::strerror(errno)
@@ -323,8 +336,11 @@ int runImageServer(std::string_view parent, std::string_view version)
                    std::string("the image decoder cannot watch its process (pidfd_open: ") + std::strerror(errno)
                        + "): images do not show");
             ::kill(pid, SIGKILL);
+            reap(lastReport, pid, 0);
         }
         answer(STDIN_FILENO, process.get());
+        if (process.valid())
+            running.emplace_back(pid, std::move(process));
     }
 }
 

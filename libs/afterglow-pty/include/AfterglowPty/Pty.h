@@ -79,8 +79,9 @@ struct ProcessStat
 /// '(' and the last ')', can hold any byte, ')' and new lines included.
 /// Empty when the text does not have the fields.
 AFTERGLOWPTY_EXPORT std::optional<ProcessStat> parseProcessStat(std::string_view stat);
-/// Reads the whole of /proc/@p pid/stat and parses it. Empty when the
-/// process is gone or the file does not parse.
+/// Reads the whole of /proc/@p pid/stat and parses it (on FreeBSD, the
+/// kernel's process table through sysctl). Empty when the process is gone
+/// or the file does not parse.
 AFTERGLOWPTY_EXPORT std::optional<ProcessStat> processStat(pid_t pid);
 
 /// The number of signal @p name: "INT", "SIGINT", "sigint", "2", or a

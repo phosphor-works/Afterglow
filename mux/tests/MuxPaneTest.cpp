@@ -55,6 +55,13 @@ struct NullHost : AfterglowVt::ITerminalHost
 std::set<pid_t> imageServers()
 {
     std::set<pid_t> found;
+#if defined(__FreeBSD__)
+    // No comm to change there: the server sets its title (setproctitle).
+    for (const pid_t pid : MuxTest::processesOf(::getpid())) {
+        if (MuxTest::argumentsOf(pid) == std::string("afterglow-image", sizeof "afterglow-image"))
+            found.insert(pid);
+    }
+#else
     std::error_code ignored;
     for (const auto& task : std::filesystem::directory_iterator("/proc/self/task", ignored)) {
         std::ifstream list(task.path() / "children");
@@ -63,6 +70,7 @@ std::set<pid_t> imageServers()
                 found.insert(pid);
         }
     }
+#endif
     return found;
 }
 
@@ -387,7 +395,11 @@ TEST(MuxPane, TheBoundOfWaitingInputCountsThePtyQueueAndWhatWent)
     const std::string image = (out.path / "image").string();
     std::ofstream(image) << "\x1b_Ga=T,f=100,i=2,q=2;" << AfterglowProto::base64Encode(AfterglowImage::TestFiles::Png)
                          << "\x1b\\";
-    StuckDecode stuck(30000, "while [ ! -e '" + next + "' ]; do sleep 0.02; done; cat '" + image + "'; exec sleep 60");
+    // Raw and without echo: a terminal in canonical mode takes, and drops,
+    // the input past a full line, and its queue would not hold what went.
+    StuckDecode stuck(30000,
+                      "stty raw -echo; while [ ! -e '" + next + "' ]; do sleep 0.02; done; cat '" + image
+                          + "'; exec sleep 60");
     SKIP_WITHOUT_SERVER(stuck);
     ASSERT_TRUE(stuck.pane);
     ASSERT_TRUE(stuck.decoding());
@@ -427,6 +439,8 @@ TEST(MuxPane, APaneThatClosesDoesNotWaitForItsDecode)
 // program.
 TEST(MuxPane, FactsGiveTheCheckedDirectoryOfTheShell)
 {
+    if (!MuxTest::processDirectoriesShown())
+        GTEST_SKIP() << "the kernel tells no directory of another process (security.bsd.unprivileged_proc_debug=0)";
     TempDir home;
     TempDir reported;
     TempDir other;

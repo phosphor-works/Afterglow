@@ -31,13 +31,21 @@
 #include <fstream>
 #include <functional>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include <fcntl.h>
 #include <poll.h>
+#if defined(__linux__)
 #include <sys/prctl.h>
+#elif defined(__FreeBSD__)
+#include <sys/procctl.h>
+#include <sys/sysctl.h>
+#include <sys/user.h>
+#endif
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -345,7 +353,12 @@ public:
         if (pid < 0)
             return -1;
         if (pid == 0) {
+#if defined(__linux__)
             ::prctl(PR_SET_PDEATHSIG, SIGKILL);
+#elif defined(__FreeBSD__)
+            int deathSignal = SIGKILL;
+            ::procctl(P_PID, 0, PROC_PDEATHSIG_CTL, &deathSignal);
+#endif
             if (::getppid() != parent)
                 ::_exit(127);
             // The report goes to 3 first, from above 10: the files opened
@@ -621,8 +634,15 @@ inline std::uint32_t firstPaneOf(TestDaemon& daemon, const std::string& name, st
 /// still finds.
 inline bool running(pid_t pid)
 {
+#if defined(__FreeBSD__)
+    int name[] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, int(pid)};
+    kinfo_proc info{};
+    std::size_t size = sizeof info;
+    return ::sysctl(name, 4, &info, &size, nullptr, 0) == 0 && size == sizeof info && info.ki_stat != SZOMB;
+#else
     const std::string stat = readFile("/proc/" + std::to_string(pid) + "/stat");
     return !stat.empty() && stat.find(") Z ") == std::string::npos;
+#endif
 }
 
 /// A Python program that puts the terminal in raw mode, writes @p query
@@ -684,12 +704,80 @@ struct TempDir
     }
 };
 
+/// Whether the kernel tells this user the working directory of another of
+/// its processes. FreeBSD with security.bsd.unprivileged_proc_debug=0 does
+/// not: a pane's directory then comes from its shell alone (OSC 7).
+inline bool processDirectoriesShown()
+{
+    const pid_t child = ::fork();
+    if (child < 0)
+        return true;
+    if (child == 0) {
+        ::pause();
+        ::_exit(0);
+    }
+    bool shown = false;
+#if defined(__FreeBSD__)
+    int name[] = {CTL_KERN, KERN_PROC, KERN_PROC_CWD, int(child)};
+    kinfo_file file{};
+    std::size_t size = sizeof file;
+    shown = ::sysctl(name, 4, &file, &size, nullptr, 0) == 0 && file.kf_path[0] == '/';
+#else
+    std::error_code ignored;
+    shown = !std::filesystem::read_symlink("/proc/" + std::to_string(child) + "/cwd", ignored).empty();
+#endif
+    ::kill(child, SIGKILL);
+    ::waitpid(child, nullptr, 0);
+    return shown;
+}
+
 /// Whether the kernel lists the children of a thread, which the tests of
-/// the image decoder's processes read (CONFIG_PROC_CHILDREN).
+/// the image decoder's processes read (CONFIG_PROC_CHILDREN). FreeBSD's
+/// process table always does (processesOf()).
 inline bool childrenListed()
 {
+#if defined(__linux__)
     return std::filesystem::exists("/proc/self/task/" + std::to_string(::gettid()) + "/children");
+#else
+    return true;
+#endif
 }
+
+#if defined(__FreeBSD__)
+/// The processes whose parent is @p parent, from the kernel's process table.
+inline std::set<pid_t> processesOf(pid_t parent)
+{
+    std::set<pid_t> found;
+    int name[] = {CTL_KERN, KERN_PROC, KERN_PROC_PROC, 0};
+    std::size_t size = 0;
+    if (::sysctl(name, 4, nullptr, &size, nullptr, 0) != 0)
+        return found;
+    // Room for processes that start between the two calls.
+    std::vector<kinfo_proc> table(size / sizeof(kinfo_proc) + 16);
+    size = table.size() * sizeof(kinfo_proc);
+    if (::sysctl(name, 4, table.data(), &size, nullptr, 0) != 0)
+        return found;
+    table.resize(size / sizeof(kinfo_proc));
+    for (const kinfo_proc& p : table) {
+        if (p.ki_ppid == parent)
+            found.insert(p.ki_pid);
+    }
+    return found;
+}
+
+/// The arguments of process @p pid, each ending with a NUL: its title once
+/// it set one (setproctitle).
+inline std::string argumentsOf(pid_t pid)
+{
+    int name[] = {CTL_KERN, KERN_PROC, KERN_PROC_ARGS, int(pid)};
+    std::string bytes(4096, '\0');
+    std::size_t size = bytes.size();
+    if (::sysctl(name, 4, bytes.data(), &size, nullptr, 0) != 0)
+        return {};
+    bytes.resize(size);
+    return bytes;
+}
+#endif
 
 /// A grey PNG of @p width by @p height, with the CRCs that libpng checks.
 inline std::string greyPng(std::uint32_t width, std::uint32_t height)

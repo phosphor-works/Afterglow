@@ -54,6 +54,33 @@ function(afterglow_test_runs test macro program)
     add_dependencies(${test} ${program})
 endfunction()
 
+# afterglow_test_uses_jthread(<test>): the test executable <test> uses
+# std::jthread. libc++ before LLVM 20, the base system's of FreeBSD 15, has
+# it only with -fexperimental-library: the test gets that flag there.
+function(afterglow_test_uses_jthread test)
+    if(NOT DEFINED AFTERGLOW_JTHREAD_FLAG)
+        include(CheckCXXSourceCompiles)
+        set(source "#include <thread>\nint main() { std::jthread t([] {}); }")
+        set(CMAKE_REQUIRED_FLAGS "-std=c++20 -pthread")
+        set(CMAKE_REQUIRED_LINK_OPTIONS -pthread)
+        check_cxx_source_compiles("${source}" AFTERGLOW_JTHREAD_PLAIN)
+        set(flag "")
+        if(NOT AFTERGLOW_JTHREAD_PLAIN)
+            string(APPEND CMAKE_REQUIRED_FLAGS " -fexperimental-library")
+            list(APPEND CMAKE_REQUIRED_LINK_OPTIONS -fexperimental-library)
+            check_cxx_source_compiles("${source}" AFTERGLOW_JTHREAD_EXPERIMENTAL)
+            if(AFTERGLOW_JTHREAD_EXPERIMENTAL)
+                set(flag -fexperimental-library)
+            endif()
+        endif()
+        set(AFTERGLOW_JTHREAD_FLAG "${flag}" CACHE INTERNAL "The flag that std::jthread needs, if any")
+    endif()
+    if(AFTERGLOW_JTHREAD_FLAG)
+        target_compile_options(${test} PRIVATE ${AFTERGLOW_JTHREAD_FLAG})
+        target_link_options(${test} PRIVATE ${AFTERGLOW_JTHREAD_FLAG})
+    endif()
+endfunction()
+
 # Zsh has no one place for completions: with the prefix /usr, Debian and
 # Ubuntu read share/zsh/vendor-completions, not share/zsh/site-functions. The
 # default is empty so that it follows CMAKE_INSTALL_DATADIR at each configure:

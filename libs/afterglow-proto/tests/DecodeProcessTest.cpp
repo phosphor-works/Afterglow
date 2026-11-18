@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#include <AfterglowProto/DecodeFilter.h>
 #include <AfterglowProto/DecodeProcess.h>
 #include <AfterglowProto/DecodeRecord.h>
 #include <AfterglowProto/Fd.h>
@@ -14,7 +15,11 @@
 
 #include <fcntl.h>
 #include <signal.h>
+#if defined(__linux__)
 #include <sys/prctl.h>
+#elif defined(__FreeBSD__)
+#include <sys/procctl.h>
+#endif
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -130,7 +135,7 @@ TEST(DecodeProcess, TheProcessHoldsOnlyItsInputItsOutputAndNullAndIsNotDumpable)
     };
     Pipe output;
     ASSERT_TRUE(output.reader.valid());
-    UniqueFd input(::open("/proc/self/exe", O_RDONLY | O_CLOEXEC));
+    UniqueFd input(::open("/bin/sh", O_RDONLY | O_CLOEXEC));
     ASSERT_TRUE(input.valid());
     struct stat inputFile{};
     ASSERT_EQ(::fstat(input.get(), &inputFile), 0);
@@ -166,7 +171,13 @@ TEST(DecodeProcess, TheProcessHoldsOnlyItsInputItsOutputAndNullAndIsNotDumpable)
         found.othersClosed = ::fcntl(held.get(), F_GETFD) < 0 && ::fcntl(STDERR_FILENO + 1, F_GETFD) < 0;
         sigset_t now;
         found.unblocked = ::sigprocmask(SIG_SETMASK, nullptr, &now) == 0 && !::sigismember(&now, SIGCHLD);
+#if defined(__linux__)
         found.notDumpable = ::prctl(PR_GET_DUMPABLE) == 0;
+#elif defined(__FreeBSD__)
+        // -1: tracing (and reading the memory) is disabled.
+        int tracing = 0;
+        found.notDumpable = ::procctl(P_PID, 0, PROC_TRACE_STATUS, &tracing) == 0 && tracing == -1;
+#endif
         struct sigaction interrupt{};
         found.defaultInterrupt = ::sigaction(SIGINT, nullptr, &interrupt) == 0 && interrupt.sa_handler == SIG_DFL;
         // /proc/self belongs to root now: the score is not readable to all.
@@ -199,6 +210,35 @@ TEST(DecodeProcess, TheProcessHoldsOnlyItsInputItsOutputAndNullAndIsNotDumpable)
     if (found.oomScoreAdj != -1) {
         EXPECT_EQ(found.oomScoreAdj, 1000);
     }
+}
+
+// Past allowOnlyDecoding(), the process opens nothing (seccomp on Linux,
+// Capsicum on FreeBSD), and still writes its standard output and ends.
+TEST(DecodeProcess, PastTheFilterNothingOpensAndTheOutputStillGoes)
+{
+    if (!DecodeFilterKnown)
+        GTEST_SKIP() << "the filter does not know the system calls of this processor";
+    Pipe output;
+    ASSERT_TRUE(output.reader.valid());
+    const pid_t parent = ::getpid();
+    const pid_t pid = ::fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        if (!startDecodingProcess(parent, -1, output.writer.get(), false))
+            ::_exit(2);
+        if (!allowOnlyDecoding())
+            ::_exit(3);
+        const char opened = ::open("/dev/null", O_RDONLY | O_CLOEXEC) >= 0 ? 'o' : 'n';
+        ::_exit(::write(STDOUT_FILENO, &opened, 1) == 1 ? 0 : 4);
+    }
+    output.writer.reset();
+    char opened = 0;
+    const DecodeWait wait;
+    EXPECT_EQ(readFromDecoder(output.reader.get(), &opened, 1, wait), DecodeRead::Done);
+    int status = -1;
+    ASSERT_EQ(::waitpid(pid, &status, 0), pid);
+    EXPECT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0) << status;
+    EXPECT_EQ(opened, 'n');
 }
 
 // A parent that started without standard error can hand its output over in

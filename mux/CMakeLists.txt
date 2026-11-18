@@ -16,7 +16,10 @@ target_include_directories(afterglow_mux_protocol PUBLIC protocol)
 # directory, not a link, so that every program that links this library does
 # not link libAfterglowPty too.
 target_include_directories(afterglow_mux_protocol PRIVATE $<TARGET_PROPERTY:AfterglowPty,INTERFACE_INCLUDE_DIRECTORIES>)
-target_link_libraries(afterglow_mux_protocol PUBLIC Afterglow::Vt Afterglow::Proto)
+# MuxConnect.cpp starts a thread. glibc has the threads in libc; FreeBSD's
+# libc does not.
+find_package(Threads REQUIRED)
+target_link_libraries(afterglow_mux_protocol PUBLIC Afterglow::Vt Afterglow::Proto PRIVATE Threads::Threads)
 set_target_properties(afterglow_mux_protocol PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 
 # The image decoder: its client (ImageDecoder.cpp), which the daemon, the

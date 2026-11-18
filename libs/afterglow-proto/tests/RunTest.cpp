@@ -158,7 +158,10 @@ public:
     bool write(std::string_view data)
     {
         while (!data.empty()) {
-            const ssize_t n = ::write(m_in, data.data(), data.size());
+            // In small writes, which the pipe buffers: FreeBSD hands a large
+            // one to the reader directly, and the write returns only once
+            // the reader took all of it, also what it reads only later.
+            const ssize_t n = ::write(m_in, data.data(), std::min<std::size_t>(data.size(), 4096));
             if (n <= 0)
                 return false;
             data.remove_prefix(std::size_t(n));
@@ -179,7 +182,11 @@ public:
     /// holds then sleeps in the kernel until a reader or a signal comes.
     bool outputFull(int timeoutMs = 5000) const
     {
+#ifdef F_GETPIPE_SZ
         const int capacity = ::fcntl(m_out, F_GETPIPE_SZ);
+#else
+        const int capacity = 0;
+#endif
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
         while (std::chrono::steady_clock::now() < deadline) {
             int queued = 0;
@@ -508,6 +515,9 @@ TEST(RunClient, AClosedStdoutEndsTheRunAsSigpipeDoes)
 
 TEST(RunClient, ASignalEndsAWriteThatAFullStdoutHoldsBack)
 {
+#ifndef F_GETPIPE_SZ
+    GTEST_SKIP() << "needs the size of a pipe (F_GETPIPE_SZ, Linux)";
+#endif
     FakeServer server;
     Client client(server, {"tools", "talk"});
     ASSERT_TRUE(client.started());
@@ -986,6 +996,9 @@ TEST(RunClient, CompletionDoesNotWaitLong)
 
 TEST(RunClient, CompletionWaitsOnceForTheConnectionAndTheList)
 {
+#if defined(__FreeBSD__)
+    GTEST_SKIP() << "FreeBSD refuses a connection over a full backlog at once (ECONNREFUSED): it does not wait";
+#endif
     // A backlog of 0 holds one connection: the client's connect waits
     // behind it until the server takes that one.
     FakeServer server(0);
@@ -1429,6 +1442,9 @@ TEST(RunClient, AnErrorThatCameWithAnAnswerEndsTheWaitForInput)
 
 TEST(RunClient, AnAckThatTheClosedServerRefusesLeavesItsReasonToRead)
 {
+#ifndef F_GETPIPE_SZ
+    GTEST_SKIP() << "needs the size of a pipe (F_GETPIPE_SZ, Linux)";
+#endif
     // An event over AckBytes that stdout holds back, then the reason and
     // the end: the ack goes after the server closed.
     FakeServer server;

@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstring>
 #include <tuple>
+#include <thread>
 
 using namespace MuxTest;
 
@@ -207,7 +208,10 @@ TEST(MuxDaemon, ASecondDaemonRefusesToStart)
     const std::optional<int> status = second > 0 ? daemon.waitExit(5s, true) : std::nullopt;
     // Read only from a daemon that ended: one that still runs holds the
     // write end, and the read would wait for it.
-    const std::string reported = status ? readFile("/proc/self/fd/" + std::to_string(report[0])) : std::string();
+    std::string reported;
+    char chunk[512];
+    for (ssize_t n = 0; status && (n = ::read(report[0], chunk, sizeof chunk)) > 0;)
+        reported.append(chunk, std::size_t(n));
     ::close(report[0]);
     ASSERT_GT(second, 0);
     ASSERT_TRUE(status) << "the second daemon still runs " << daemon.errors();
@@ -340,21 +344,53 @@ TEST(MuxDaemon, ASessionCanTakeTheEnvironmentOfItsCaller)
     ASSERT_EQ(::chmod(shell.c_str(), 0700), 0);
     if (::access(shell.c_str(), X_OK) != 0)
         GTEST_SKIP() << daemon.dir() << " runs no program";
-    // The caller is this process: its environment from its start, which
-    // /proc shows, PATH among it. That is all of the developer's
-    // environment, which TestDaemon::cleanEnvironment() never sees: the
-    // shell of this session runs only printf, mv and sleep, nothing that
-    // looks up a socket, a display or a bus.
+    // The caller's environment comes first on its connection, as
+    // `aglow-mux proxy` sends that of the user's ssh login. The client's
+    // variables go over it: FROM_CLIENT is the client's.
+    IpcConnection connection;
+    IpcConnection::Error error;
+    ASSERT_TRUE(connection.connect(daemon.socket(), &error, 2000)) << error.message;
+    // Its PATH finds printf, mv and sleep: /usr/bin and /bin hold none of
+    // them on a system such as NixOS.
+    const std::string path = "/caller/bin:" + testPath();
+    ASSERT_TRUE(connection.call(Target, Fn::CallerEnvironment,
+                                Json::Array{ProtocolVersion, environmentJson({{"PATH", path}, {"FROM_CLIENT", "no"}})},
+                                5000, &error))
+        << error.message;
     SessionOptions o = daemon.options({}, "far");
     o.environment = {{"FROM_CLIENT", "yes"}, {"SHELL", shell}, {"HOME", home}};
     o.launch.workingDirectory.clear();
     o.callerEnvironment = true;
-    ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+    ASSERT_TRUE(connection.call(Target, Fn::NewSession, Json::Array{ProtocolVersion, toJson(o)}, 10000, &error))
+        << error.message << " " << daemon.errors();
     ASSERT_TRUE(waitFor([&] {
         return !readFile(out).empty();
     }));
-    const char* path = std::getenv("PATH");
-    EXPECT_EQ(readFile(out), "-l\n" + home + "\n" + (path ? path : "") + "\nyes\n");
+    EXPECT_EQ(readFile(out), "-l\n" + home + "\n" + path + "\nyes\n");
+}
+
+// The environment of a caller counts on its own connection only, and a
+// session that wants one fails without it, saying why.
+TEST(MuxDaemon, ASessionOfTheCallersEnvironmentNeedsItOnItsConnection)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    IpcConnection other;
+    IpcConnection::Error error;
+    ASSERT_TRUE(other.connect(daemon.socket(), &error, 2000)) << error.message;
+    ASSERT_TRUE(other.call(Target, Fn::CallerEnvironment,
+                           Json::Array{ProtocolVersion, environmentJson({{"PATH", "/bin"}})}, 5000, &error))
+        << error.message;
+    SessionOptions o = daemon.options({"/bin/sh", "-c", "exec sleep 60"}, "far");
+    o.callerEnvironment = true;
+    EXPECT_FALSE(daemon.newSession(o, &error));
+    EXPECT_EQ(error.code, IpcErrorCode::CallFailed);
+    EXPECT_NE(error.message.find("sent no environment"), std::string::npos) << error.message;
+    // A bad environment is refused, as in newSession.
+    EXPECT_FALSE(other.call(Target, Fn::CallerEnvironment,
+                            Json::Array{ProtocolVersion, Json::Array{Json::Value(Json::Array{"A=B", "c"})}}, 5000,
+                            &error));
+    EXPECT_EQ(error.code, IpcErrorCode::InvalidArg);
 }
 
 TEST(MuxDaemon, ThePaneEnvironmentLeavesOutTheDaemonsOwn)

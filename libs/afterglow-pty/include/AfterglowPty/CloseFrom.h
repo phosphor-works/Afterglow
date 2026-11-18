@@ -15,6 +15,25 @@
 // system calls, no allocation and no lock.
 namespace AfterglowPty {
 
+#if defined(__FreeBSD__)
+// close_range() and closefrom() are system calls of every supported release.
+
+/// Closes the descriptors from @p first to @p last.
+inline void closeRange(int first, int last)
+{
+    if (first > last)
+        return;
+    ::close_range(unsigned(first), unsigned(last), 0);
+}
+
+/// Closes every descriptor from @p first up.
+inline void closeFrom(int first)
+{
+    ::closefrom(first);
+}
+
+#else
+
 /// Closes the descriptors from @p first to @p last.
 inline void closeRange(int first, int last)
 {
@@ -86,5 +105,7 @@ inline void closeFrom(int first)
     for (rlim_t fd = rlim_t(first); fd < last; ++fd)
         ::close(int(fd));
 }
+
+#endif
 
 } // namespace AfterglowPty

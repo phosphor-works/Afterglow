@@ -3,6 +3,7 @@
 
 #include "ImageDecoder.h"
 #include "ImageWire.h"
+#include "ProcessFds.h"
 
 #include <AfterglowProto/DecodeRecord.h>
 
@@ -292,7 +293,7 @@ AfterglowProto::UniqueFd ImageDecoder::requestLocked(ImageFormats formats, int i
             break;
         }
         if (const AfterglowProto::UniqueFd stale = answerLocked(); stale.valid())
-            pidfdKill(stale.get());
+            killProcess(stale.get());
         if (!m_socket.valid())
             return {};
         // The server answers in order: the next one follows.
@@ -432,7 +433,7 @@ bool ImageDecoder::run(std::string_view data, ImageFormats formats, std::size_t 
         int pidfd;
         ~Kill()
         {
-            pidfdKill(pidfd);
+            killProcess(pidfd);
         }
     } kill{process.get()};
 

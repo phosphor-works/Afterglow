@@ -955,7 +955,7 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
     EXPECT_EQ(large->cellWidth, 65535);
     EXPECT_EQ(large->cellHeight, 16);
     // The bad variable name, named as such.
-    EXPECT_FALSE(sessionOptions(with(good, "environment", Json::Array{Json::Array{"A=B", "c"}}), &error));
+    EXPECT_FALSE(sessionOptions(with(good, "environment", Json::Array{Json::Value(Json::Array{"A=B", "c"})}), &error));
     EXPECT_NE(error.find("variable name"), std::string::npos) << error;
     // The environment of the attach answer reads as a session's does.
     const auto environment = environmentFrom(environmentJson({{"A", "1"}, {"B", ""}}), &error);
