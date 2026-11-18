@@ -46,6 +46,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMargins>
+#include <QTemporaryDir>
 
 #include <algorithm>
 #include <array>
@@ -298,6 +299,10 @@ int run(QGuiApplication& app)
                       QStringLiteral("size")});
     parser.addOption({QStringLiteral("package"),
                       QStringLiteral("A script package folder whose shaders load as <package>.<pack> (repeatable)."),
+                      QStringLiteral("dir")});
+    parser.addOption({QStringLiteral("shader-dir"),
+                      QStringLiteral("Take the user's packs from this directory, such as examples/shaders, and not "
+                                     "from ~/.config/afterglow/shaders."),
                       QStringLiteral("dir")});
     parser.addOption({QStringLiteral("overview"),
                       QStringLiteral("Pane overview shader, shown open (or closing, with --overview-closing)."),
@@ -782,7 +787,24 @@ int run(QGuiApplication& app)
                                                   : QString()};
     const qsizetype wanted = refs.size();
     if (wanted > 0) {
-        Afterglow::ShaderLibrary library;
+        // The library reads the user's packs from shaders/ in a configuration
+        // directory, and makes its preset directory there: --shader-dir gets a
+        // configuration directory of its own, whose shaders/ is a link.
+        std::unique_ptr<QTemporaryDir> packConfig;
+        if (parser.isSet(QStringLiteral("shader-dir"))) {
+            const QFileInfo packs(parser.value(QStringLiteral("shader-dir")));
+            packConfig = std::make_unique<QTemporaryDir>();
+            if (!packs.isDir() || !packConfig->isValid()
+                || !QFile::link(packs.absoluteFilePath(), packConfig->filePath(QStringLiteral("shaders")))) {
+                std::fprintf(stderr, "--shader-dir %s: not a directory that can be read\n",
+                             qPrintable(packs.filePath()));
+                return 1;
+            }
+        }
+        const std::unique_ptr<Afterglow::ShaderLibrary> owned = packConfig
+            ? std::make_unique<Afterglow::ShaderLibrary>(packConfig->path())
+            : std::make_unique<Afterglow::ShaderLibrary>();
+        Afterglow::ShaderLibrary& library = *owned;
         QMap<QString, QString> packages;
         for (const QString& dir : parser.values(QStringLiteral("package"))) {
             // The application loads a package only when its id names its

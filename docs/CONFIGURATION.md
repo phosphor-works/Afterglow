@@ -15,7 +15,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | --- | --- | --- | --- |
 | `bellCurve` | `"spring:14,1"` |  | Curve of the visual bell fade, in the splitCurve format. |
 | `bellDuration` | `150` | 16–5000 | Duration of the visual bell fade in milliseconds for curves other than springs. |
-| `contextDuration` | `1000` | 16–5000 | Milliseconds that the portal of Shaders.paneEffects takes when the shell of a pane moves to another host, user or container. |
+| `contextDuration` | `1000` | 16–5000 | Milliseconds that Shaders.paneEffects takes to show that the shell of a pane moved to another host, user or container. |
 | `cursor` | `true` |  | Animate cursor movement between cells. |
 | `cursorCurve` | `"spring:48,1"` |  | Curve of cursor motion between cells, in the splitCurve format. |
 | `cursorDuration` | `150` | 16–5000 | Duration of cursor motion in milliseconds for curves other than springs. |
@@ -29,7 +29,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | `scrollDuration` | `150` | 16–5000 | Duration of scroll motion in milliseconds for curves other than springs. |
 | `splitCurve` | `"spring:22,1"` |  | Curve of split animations, as a Phosphor curve spec. Use a spring such as spring:22,1 (angular frequency, damping ratio), a cubic Bezier such as 0.2,0,0,1, or a named easing such as elastic-out. An invalid spec uses the default. |
 | `splitDuration` | `250` | 16–5000 | Duration of split animations in milliseconds for curves other than springs, which settle by themselves. |
-| `splits` | `true` |  | Animate split opening, closing and resizing. It also controls the open and close animations, the portal and the away frame of Shaders.paneEffects. |
+| `splits` | `true` |  | Animate split opening, closing and resizing. It also controls the open and close animations and the mark of a pane that is away from here in Shaders.paneEffects. |
 | `tabCurve` | `"spring:13,0.9"` |  | Curve of tab switches (Shaders.tabTransition), in the splitCurve format. |
 | `tabDuration` | `400` | 16–5000 | Duration of tab switches in milliseconds for curves other than springs. |
 
@@ -202,11 +202,11 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | `background` | `[]` |  | Shaders run over each pane's background layer alone: cell backgrounds and images under the text. |
 | `cursor` | `[]` |  | Shaders run over each pane's cursor layer alone. |
 | `overlayTransition` | `"overlay-fade"` |  | Shader that blends a pane and the overlay that runs over it, as the overlay opens and closes. An empty value, or a pack that does not load, switches at once. |
-| `overview` | `"pane-deck"` |  | Shader that draws the pane overview (pane_overview). An empty value turns the overview off. |
-| `pane` | `[]` |  | Shaders run over each pane. Name a pack by its directory name, which is normally its id, such as cursor-trail or bloom. Name a pack of a package as <package>.<pack>, such as my-extension.wall. |
-| `paneEffects` | `"pane-effects"` |  | Shader that animates panes as they split open and close. It draws a portal when the shell of a pane moves to another host, user or container. While the shell stays there, it draws the away frame around the pane. Animation.splits off turns these off too. An empty value turns it off. |
-| `params` | `{}` |  | Parameter values for each shader reference, such as { "bloom": { "strength": 0.5 } }. The value of each reference must be an object. |
-| `tabTransition` | `"tab-switch"` |  | Shader that animates switching tabs. An empty value switches at once. |
+| `overview` | `"phosphor-overview"` |  | Shader that draws the pane overview (pane_overview). An empty value turns the overview off. |
+| `pane` | `[]` |  | Shaders run over each pane. Name a pack by its directory name, which is normally its id, such as phosphor-depths. Name a pack of a package as <package>.<pack>, such as my-extension.wall. |
+| `paneEffects` | `"phosphor-panes"` |  | Shader that animates panes as they split open and close. It also marks a pane when its shell moves to another host, user or container, and while the shell stays there. Animation.splits off turns these off too. An empty value turns it off. |
+| `params` | `{}` |  | Parameter values for each shader reference, such as { "phosphor-depths": { "dustIntensity": 0.2 } }. The value of each reference must be an object. |
+| `tabTransition` | `"phosphor-tabs"` |  | Shader that animates switching tabs. An empty value switches at once. |
 | `text` | `[]` |  | Shaders run over each pane's text layer alone: glyphs, decorations and images over the text. |
 | `window` | `[]` |  | Shaders run over the whole window, across panes, after the pane shaders. |
 

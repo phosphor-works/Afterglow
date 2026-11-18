@@ -12,6 +12,7 @@ Afterglow loads none of them until you copy one into your configuration director
 | [scripts](scripts) | Single-file Luau scripts. [Scripting](../docs/SCRIPTING.md) describes the API. |
 | [packages](packages) | Script packages, each with a README. [Packages](../docs/PACKAGES.md) lists them. |
 | [projects](projects) | A project file. [Projects](../docs/PROJECTS.md) describes the format. |
+| [shaders](shaders/README.md) | Shader packs that show the shader API, and other looks for the overview, tab switches and pane effects. |
 | [phosphor](phosphor/README.md) | A reactive scene with a 3D core, audio response and shell reactions. |
 | [glasshouse](glasshouse/README.md) | A desktop scene with glass panes and two color worlds. |
 | [compatibility](compatibility/README.md) | Demo clients of the image, multiple-cursor and download protocols. |

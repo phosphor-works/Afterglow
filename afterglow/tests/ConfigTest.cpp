@@ -1864,6 +1864,25 @@ TEST_F(ConfigTest, PopupDimDefaultsOverridesAndClamps)
     EXPECT_DOUBLE_EQ(low.settings().window.popupDim, 0.0);
 }
 
+TEST_F(ConfigTest, TheDefaultShadersAreTheBundledEventPacksAndNoLayerShaders)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    const ShaderRefs& shaders = defaults.settings().shaders;
+    EXPECT_EQ(shaders.overview, QStringLiteral("phosphor-overview"));
+    EXPECT_EQ(shaders.tabTransition, QStringLiteral("phosphor-tabs"));
+    EXPECT_EQ(shaders.paneEffects, QStringLiteral("phosphor-panes"));
+    EXPECT_EQ(shaders.overlayTransition, QStringLiteral("overlay-fade"));
+    // A default names a pack that installs: the example packs do not.
+    for (const QString* ref :
+         {&shaders.overview, &shaders.tabTransition, &shaders.paneEffects, &shaders.overlayTransition}) {
+        EXPECT_TRUE(
+            QFile::exists(QStringLiteral(AFTERGLOW_BUNDLED_SHADERS "/") + *ref + QStringLiteral("/metadata.json")))
+            << ref->toStdString();
+    }
+    // The layer chains draw nothing until the user names a pack.
+    EXPECT_EQ(shaders.size(), 4);
+}
+
 TEST_F(ConfigTest, OverlayTransitionAndFadeDefaultsOverridesAndClamps)
 {
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
@@ -2365,7 +2384,8 @@ TEST_F(ConfigTest, WriteKeepsAFileThatDoesNotParse)
     const QString path = write(QStringLiteral("config.json"), R"({"Window": {"padding": 9}})");
     SettingsStore store(path);
     write(QStringLiteral("config.json"), R"({"Window": {"padding": 10)");
-    EXPECT_FALSE(store.write(QStringLiteral("Shaders"), QStringLiteral("overview"), QStringLiteral("pane-deck")));
+    EXPECT_FALSE(
+        store.write(QStringLiteral("Shaders"), QStringLiteral("overview"), QStringLiteral("phosphor-overview")));
     EXPECT_EQ(read(path), QByteArray(R"({"Window": {"padding": 10)"));
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("does not parse")));
 }

@@ -1023,7 +1023,7 @@ TEST(ShaderLibraryPackages, PackagePacksAnswerOnlyToTheirNamespacedId)
     ShaderParameterValues packed;
     EXPECT_TRUE(library.validateParameters(ref, {}, packed).isEmpty());
     EXPECT_FALSE(library.validateParameters(QStringLiteral("wall"), {}, packed).isEmpty());
-    EXPECT_EQ(build(QStringLiteral("pane-deck")), 1u);
+    EXPECT_EQ(build(QStringLiteral("phosphor-overview")), 1u);
     library.setPackageShaders({});
     EXPECT_EQ(build(QStringLiteral("scripted-overview.wall")), 0u);
 }
@@ -1084,14 +1084,14 @@ TEST(ShaderLibraryPackages, APackagePackWithAnotherIdIsLeftOut)
     const QMap<QString, QString> packages{
         {QStringLiteral("scripted-overview"), tmp.filePath(QStringLiteral("shaders"))}};
 
-    // It claims the id of the bundled pane-deck pack.
+    // It claims the id of the bundled Phosphor Overview pack.
     QByteArray claimed = original;
-    claimed.replace("\"scripted-overview.wall\"", "\"pane-deck\"");
+    claimed.replace("\"scripted-overview.wall\"", "\"phosphor-overview\"");
     ASSERT_TRUE(writeMetadata(claimed));
     library.setPackageShaders(packages);
     EXPECT_FALSE(library.packIds().contains(QStringLiteral("scripted-overview.wall")));
     EXPECT_EQ(build(QStringLiteral("scripted-overview.wall")), 0u);
-    EXPECT_EQ(build(QStringLiteral("pane-deck")), 1u);
+    EXPECT_EQ(build(QStringLiteral("phosphor-overview")), 1u);
 
     // An id that no other pack declares: the registry keeps the pack, so only
     // the check of the id that it declares can leave it out.

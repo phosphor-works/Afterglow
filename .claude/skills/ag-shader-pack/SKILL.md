@@ -1,6 +1,6 @@
 ---
 name: ag-shader-pack
-description: "Write, change or preview an Afterglow shader pack (data/shaders, a package's shaders/), or change the shader contract that packs read. Covers the pack layout, the contract headers and their C++ mirrors, previews with afterglow_renderpng, and the performance check. Use when: shader pack, new effect, GLSL, pTerminal, metadata.json, overview pack, tab transition pack, pane effect, overlay transition, overlay fade, preview a shader, render a PNG, uniform layout."
+description: "Write, change or preview an Afterglow shader pack (data/shaders, examples/shaders, a package's shaders/), or change the shader contract that packs read. Covers the pack layout, the contract headers and their C++ mirrors, previews with afterglow_renderpng, and the performance check. Use when: shader pack, new effect, GLSL, pTerminal, metadata.json, overview pack, tab transition pack, pane effect, overlay transition, overlay fade, preview a shader, render a PNG, uniform layout."
 ---
 
 <!--
@@ -12,6 +12,21 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 `docs/SHADER-API.md` is the contract for pack authors, and `docs/SHADERS.md` tells users how to configure the
 chains. Read the sections that apply before you write GLSL. This skill gives the procedure and the traps.
+
+## Where a pack goes
+
+| Directory | Packs | Installs |
+| --- | --- | --- |
+| `data/shaders/` | The Phosphor packs: the defaults of the event chains, and Phosphor Depths | Yes |
+| `examples/shaders/` | Packs that show the API or another look (Bloom, CRT Curve, Pane Deck, Tab Switch) | No |
+| `examples/packages/*/shaders/` | The packs of an example script package | No |
+
+A pack in `data/shaders/` follows the Phosphor design language. A position moves on the host's spring, and a color
+changes with a fade. An edge that changes is bright at once, and then its glow fades. Nothing turns in 3D, and nothing
+loops to get attention. The colors are the spectrum (cyan, blue, purple, rose) from `shared/phosphor_spectrum.glsl`,
+with the `followTheme` and `stop0` to `stop3` parameters. A default of `Shaders.*` names only a pack of
+`data/shaders/` (`ConfigTest` checks it). A test or a tool that needs an example pack copies it into the `shaders`
+directory of its configuration (`installExamplePack` in `NativeWindowTest.cpp`), or names `--shader-dir examples/shaders`.
 
 ## A pack
 
@@ -74,12 +89,13 @@ Then read the PNG with the Read tool and look at it. Useful options (`--help` li
 | Parameters | `--param my-pack:style=1` |
 | Several panes | `--split`, `--grid 3x2`, with the window's dividers and `--unfocused-dim F` over the unfocused panes |
 | Script docks | `--dock EDGE:CELLS:TEXT`, for example `--dock top:1:$'\e[44m main \e[0m'` (repeatable; EDGE is `top`, `bottom`, `left` or `right`; CELLS is 1 to 8 rows for `top` and `bottom`, 1 to 80 columns for `left` and `right`) |
-| Overview | `--overview pane-deck --tabs 3 --highlight 4 --overview-position 3.5`; closing: `--overview-closing --overview-amount 0.6` |
-| Tab switch | `--tab-transition tab-switch --transition-progress 0.4 --transition-direction -1` |
-| Pane effects | `--pane-effects pane-effects --open-progress 0.5 --open-edge 2`, `--close-progress`, `--context 1`, `--pulse 1:0.5` (4 to 255: a package's pulse) |
+| Overview | `--overview phosphor-overview --tabs 3 --highlight 4 --overview-position 3.5`; closing: `--overview-closing --overview-amount 0.6` |
+| Tab switch | `--tab-transition phosphor-tabs --transition-progress 0.4 --transition-direction -1` |
+| Pane effects | `--pane-effects phosphor-panes --open-progress 0.5 --open-edge 2`, `--close-progress`, `--context 1`, `--pulse 1:0.5` (4 to 255: a package's pulse) |
 | Overlay transition | `--overlay $'\e[42m picker \e[0m' --overlay-progress 0.5`, with `--overlay-transition overlay-fade` (the default, `""` for none) |
 | Audio | `--audio-bands 0.8,0.4,0.2` |
 | A package's packs | `--package examples/packages/scripted-overview --overview scripted-overview.wall` |
+| An example pack | `--shader-dir examples/shaders --shader bloom` (the user's own packs then do not load) |
 | Frame time | `--timings`, with `--pixels 3840x2160` for 4K |
 
 Check the edge cases, not only the middle of an animation: progress 0 and 1, one pane, two panes, many panes (the
@@ -97,4 +113,5 @@ rendering for `settleSeconds` after each event, so read them only when the effec
 
 - `ctest --test-dir build -R 'Render|Shader'` passes.
 - The previews at the edge cases look right.
-- `docs/SHADERS.md` lists a new bundled pack, and `CHANGELOG.md` mentions it.
+- `docs/SHADERS.md` lists a new bundled pack, `examples/shaders/README.md` a new example pack, and `CHANGELOG.md`
+  mentions it.

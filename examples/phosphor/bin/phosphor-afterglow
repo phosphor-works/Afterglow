@@ -92,7 +92,7 @@ def launch(binary, mode, autoplay, mesh=False):
         config = json.loads((ROOT / 'config/phosphor.json').read_text())
         config.update(json.loads((ROOT / 'config' / (mode + '.json')).read_text()))
         if mesh:
-            shutil.copytree(ROOT.parent.parent / 'data/shaders/mesh-reactor', app_home / 'shaders/mesh-reactor')
+            shutil.copytree(ROOT.parent / 'shaders/mesh-reactor', app_home / 'shaders/mesh-reactor')
             config['Shaders']['background'] = ['mesh-reactor', 'phosphor-lens']
             config['Shaders'].setdefault('params', {})['mesh-reactor'] = {'linearOutput': True}
         config['Terminal']['shell'] = str(ROOT / 'bin/phosphor-shell')

@@ -1,6 +1,7 @@
 -- SPDX-FileCopyrightText: 2026 fuddlesworth
 -- SPDX-License-Identifier: GPL-3.0-or-later
--- Example: Shaders.pane = ["bloom"] in config.json.
+-- Example: Shaders.pane = ["bloom"] in config.json, with the Bloom pack from
+-- examples/shaders copied into the shaders directory of the configuration.
 -- A failure goes to stderr. A run from the palette shows it as a notification.
 local function fail(ev, message) return { afterglow.output_error(ev, message .. "\n"), afterglow.exit(ev, 1) } end
 return {

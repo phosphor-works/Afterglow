@@ -1068,8 +1068,8 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("scroll"), anim.scroll, QMetaType::Bool, QStringLiteral("Animate scrolling between rows.")},
         {QStringLiteral("splits"), anim.splits, QMetaType::Bool,
          QStringLiteral(
-             "Animate split opening, closing and resizing. It also controls the open and close animations, the "
-             "portal and the away frame of Shaders.paneEffects.")},
+             "Animate split opening, closing and resizing. It also controls the open and close animations and the "
+             "mark of a pane that is away from here in Shaders.paneEffects.")},
         curveKey(QStringLiteral("splitCurve"), anim.splitCurve,
                  QStringLiteral(
                      "Curve of split animations, as a Phosphor curve spec. Use a spring such as spring:22,1 (angular "
@@ -1093,8 +1093,8 @@ PhosphorConfig::Schema buildSchema()
                QStringLiteral("Milliseconds that a pane takes to open or close in Shaders.paneEffects.")),
         intKey(QStringLiteral("contextDuration"), anim.contextDuration, 16, 5000,
                QStringLiteral(
-                   "Milliseconds that the portal of Shaders.paneEffects takes when the shell of a pane moves to "
-                   "another host, user or container.")),
+                   "Milliseconds that Shaders.paneEffects takes to show that the shell of a pane moved to another "
+                   "host, user or container.")),
         curveKey(
             QStringLiteral("overlayCurve"), anim.overlayCurve,
             QStringLiteral("Curve of the fade of an overlay over its pane (Shaders.overlayTransition), in the "
@@ -1174,7 +1174,7 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("pane"), stringList(d.shaders.pane), QMetaType::QVariantList,
          QStringLiteral(
              "Shaders run over each pane. Name a pack by its directory name, which is normally its id, such as "
-             "cursor-trail or bloom. Name a pack of a package as <package>.<pack>, such as my-extension.wall.")},
+             "phosphor-depths. Name a pack of a package as <package>.<pack>, such as my-extension.wall.")},
         {QStringLiteral("window"), stringList(d.shaders.window), QMetaType::QVariantList,
          QStringLiteral("Shaders run over the whole window, across panes, after the pane shaders.")},
         stringKey(QStringLiteral("overview"), d.shaders.overview,
@@ -1184,16 +1184,16 @@ PhosphorConfig::Schema buildSchema()
                   QStringLiteral("Shader that animates switching tabs. An empty value switches at once.")),
         stringKey(
             QStringLiteral("paneEffects"), d.shaders.paneEffects,
-            QStringLiteral("Shader that animates panes as they split open and close. It draws a portal when the shell "
-                           "of a pane moves to another host, user or container. While the shell stays there, it draws "
-                           "the away frame around the pane. Animation.splits off turns these off too. An empty value "
-                           "turns it off.")),
+            QStringLiteral("Shader that animates panes as they split open and close. It also marks a pane when its "
+                           "shell moves to another host, user or container, and while the shell stays there. "
+                           "Animation.splits off turns these off too. An empty value turns it off.")),
         stringKey(QStringLiteral("overlayTransition"), d.shaders.overlayTransition,
                   QStringLiteral(
                       "Shader that blends a pane and the overlay that runs over it, as the overlay opens and closes. "
                       "An empty value, or a pack that does not load, switches at once.")),
         {QStringLiteral("params"), QVariantMap{}, QMetaType::QVariantMap,
-         QStringLiteral("Parameter values for each shader reference, such as { \"bloom\": { \"strength\": 0.5 } }. The "
+         QStringLiteral("Parameter values for each shader reference, such as { \"phosphor-depths\": { "
+                        "\"dustIntensity\": 0.2 } }. The "
                         "value of each reference must be an object.")},
     };
     schema.groups[HintsGroup] = {

@@ -192,7 +192,7 @@ int main(int argc, char** argv)
         // The font, shaders and animations are fixed here, not left to the
         // defaults, so runs stay comparable with the recorded baselines: those
         // ran with animated cursor, scrolling and splits, and before the
-        // overview, pane-effect, tab-switch and overlay-fade packs existed.
+        // event packs (Shaders.overview and the three others) existed.
         // Every event pack is off, so a pack added later does not change the runs.
         QJsonObject noEventShaders;
         for (const QString& key : ShaderEventKeys)
