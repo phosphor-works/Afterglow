@@ -15,25 +15,19 @@ Shell events charge and fracture the reactor. Shock fronts distort live terminal
 From a built checkout, run:
 
 ```sh
-data/examples/phosphor/bin/phosphor-afterglow launch --show --binary ./build/afterglow/afterglow
+examples/phosphor/bin/phosphor-afterglow launch --show --binary ./build/afterglow/afterglow
 ```
 
 Add `--mesh` to use the triangle-mesh reactor with the same script commands:
 
 ```sh
-data/examples/phosphor/bin/phosphor-afterglow launch --mesh --show --binary ./build/afterglow/afterglow
+examples/phosphor/bin/phosphor-afterglow launch --mesh --show --binary ./build/afterglow/afterglow
 ```
 
 This mode adds segmented armor, plasma, orbiting emitters and a lit floor.
 The default scene uses ray marching.
 
-After installation, run:
-
-```sh
-/usr/share/afterglow/examples/phosphor/bin/phosphor-afterglow launch --show
-```
-
-Adjust the path for an installation prefix other than `/usr`.
+With an installed Afterglow, omit `--binary`. The launcher then runs the `afterglow` on `PATH`.
 Requirements are Python 3, Bash, Wayland, Vulkan and the current Afterglow shader and Luau APIs.
 Required interfaces include the terminal shader contract with `terminal_history.glsl`, `terminal_audio.glsl`, `highDynamicRange` and `uScrollback`, version 1 snapshots, parameter transitions and presets.
 Install `cava` for audio response.
@@ -254,7 +248,7 @@ Copy the packs, including `shared/`, into a separate configuration directory, an
 
 ```sh
 mkdir -p /tmp/phosphor-render/afterglow/shaders
-cp -r data/examples/phosphor/shaders/* /tmp/phosphor-render/afterglow/shaders/
+cp -r examples/phosphor/shaders/* /tmp/phosphor-render/afterglow/shaders/
 XDG_CONFIG_HOME=/tmp/phosphor-render afterglow_renderpng --background-shader phosphor-field \
     --background-shader phosphor-lens --dpr 2 --time 10 \
     --signal 0=1@0 --frames 48 --fps 24 input.ansi fracture.png

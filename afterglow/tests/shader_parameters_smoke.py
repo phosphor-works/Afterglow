@@ -45,7 +45,7 @@ with tempfile.TemporaryDirectory(prefix="afterglow-shader-parameters-") as temp:
     config = root / "afterglow"
     read_state = install_inspector(config)
     source = Path(__file__).resolve().parents[2]
-    shutil.copytree(source / "data/examples/packages/scene-controls", config / "scripts/scene-controls")
+    shutil.copytree(source / "examples/packages/scene-controls", config / "scripts/scene-controls")
     # Every pack from the checkout, so an installed copy of a bundled pack
     # (the default overview, pane effects, tab switch and overlay fade too)
     # cannot answer.

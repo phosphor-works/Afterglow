@@ -54,7 +54,7 @@ with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
         repo.mkdir(parents=True)
         subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=30, env=GIT_ENV)
     package = config / "scripts/project-navigator"
-    source = Path(__file__).resolve().parents[2] / "data/examples/packages/project-navigator"
+    source = Path(__file__).resolve().parents[2] / "examples/packages/project-navigator"
     with NestedDesktop(root) as desktop, (args.artifacts / "application.log").open("w") as log:
         env = dict(desktop.env, QT_FORCE_STDERR_LOGGING="1", QT_LOGGING_TO_CONSOLE="1",
                    QT_LOGGING_RULES="afterglow.scripts.info=true")

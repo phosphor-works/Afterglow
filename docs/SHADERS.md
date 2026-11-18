@@ -109,8 +109,8 @@ Both have the pane's layer and pane shaders while they blend, and the window sha
 `Animation.overlayCurve` and `Animation.overlayDuration` set the time.
 Set `Shaders.overlayTransition` to an empty string to switch at once.
 
-[The Phosphor scene](../data/examples/phosphor/README.md) combines a 3D core, text afterimages and command reactions.
-[Glasshouse](../data/examples/glasshouse/README.md) provides another complete desktop scene.
+[The Phosphor scene](../examples/phosphor/README.md) combines a 3D core, text afterimages and command reactions.
+[Glasshouse](../examples/glasshouse/README.md) provides another complete desktop scene.
 
 ## Previous text and color
 
@@ -290,14 +290,14 @@ Afterglow keeps at most 4,096 overrides, one for each script, instance and pane.
 An update past this limit fails with an error.
 Hidden windows catch up when they render again.
 
-[shader-parameters.luau](../data/examples/scripts/shader-parameters.luau) adds Bloom boost and reset commands.
+[shader-parameters.luau](../examples/scripts/shader-parameters.luau) adds Bloom boost and reset commands.
 Install it in `~/.config/afterglow/scripts/` and enable Bloom in a shader chain.
 It targets the current tab, or the window for a window effect.
 It reports when Bloom is absent.
 
 ### Presets
 
-[scene-controls](../data/examples/packages/scene-controls/README.md) provides effect selection, presets, quality, intensity, save and reset controls.
+[scene-controls](../examples/packages/scene-controls/README.md) provides effect selection, presets, quality, intensity, save and reset controls.
 
 | Helper | Result |
 | --- | --- |
@@ -330,4 +330,4 @@ History uses the current tab even when the anchor pane is in a background tab.
 Queries observe the shared analyzer without starting capture.
 Unavailable or stale capture returns false availability and zero levels.
 Scripts can sample with bounded timers. The host handles continuous FFT input and interpolation.
-[contextual-scene](../data/examples/packages/contextual-scene/README.md) makes one decision each second and changes exposure with a smooth transition.
+[contextual-scene](../examples/packages/contextual-scene/README.md) makes one decision each second and changes exposure with a smooth transition.

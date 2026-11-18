@@ -344,7 +344,7 @@ if(NOT PHOSPHORFSLOADER_USE_SYSTEM_VALIJSON)
 endif()
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shaders/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/shaders)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/themes/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/themes)
-# Scripting: types for editors and examples to copy; neither loads on its own.
+# Scripting: the types for editors. They do not load on their own.
 install(FILES src/scripting/afterglow.d.luau DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/api)
 # Shell completion, where each shell looks for the completions of packages.
 install(FILES ${PROJECT_SOURCE_DIR}/data/completions/afterglow.bash
@@ -352,16 +352,6 @@ install(FILES ${PROJECT_SOURCE_DIR}/data/completions/afterglow.bash
 # Zsh: the directory comes from AFTERGLOW_ZSH_COMPLETION_DIR (CMakeLists.txt).
 install(FILES ${PROJECT_SOURCE_DIR}/data/completions/_afterglow DESTINATION ${AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR})
 install(FILES ${PROJECT_SOURCE_DIR}/data/completions/afterglow.fish DESTINATION ${CMAKE_INSTALL_DATADIR}/fish/vendor_completions.d)
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/packages/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/packages)
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/projects/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/projects)
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/scripts/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/scripts)
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/glasshouse/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/glasshouse
-        USE_SOURCE_PERMISSIONS)
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/phosphor/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/phosphor
-        USE_SOURCE_PERMISSIONS)
-# The demo clients of the protocols that docs/COMPATIBILITY.md and
-# docs/DESKTOP.md name: python3 runs them.
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/compatibility/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/compatibility)
 
 # Desktop integration.
 install(FILES ${PROJECT_SOURCE_DIR}/data/${AFTERGLOW_APP_ID}.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)

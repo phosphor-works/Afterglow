@@ -29,10 +29,10 @@ gtest_discover_tests(afterglow_app_tests)
 qt_add_executable(afterglow_scripting_tests ScriptHostTest.cpp ScriptPackageTest.cpp)
 target_link_libraries(afterglow_scripting_tests PRIVATE afterglow_scripting GTest::gtest)
 target_compile_definitions(afterglow_scripting_tests PRIVATE
-    AFTERGLOW_EXAMPLE_PACKAGES="${PROJECT_SOURCE_DIR}/data/examples/packages"
-    AFTERGLOW_EXAMPLE_SCRIPTS="${PROJECT_SOURCE_DIR}/data/examples/scripts"
-    AFTERGLOW_PHOSPHOR_SCRIPTS="${PROJECT_SOURCE_DIR}/data/examples/phosphor/scripts"
-    AFTERGLOW_GLASSHOUSE_SCRIPTS="${PROJECT_SOURCE_DIR}/data/examples/glasshouse/scripts")
+    AFTERGLOW_EXAMPLE_PACKAGES="${PROJECT_SOURCE_DIR}/examples/packages"
+    AFTERGLOW_EXAMPLE_SCRIPTS="${PROJECT_SOURCE_DIR}/examples/scripts"
+    AFTERGLOW_PHOSPHOR_SCRIPTS="${PROJECT_SOURCE_DIR}/examples/phosphor/scripts"
+    AFTERGLOW_GLASSHOUSE_SCRIPTS="${PROJECT_SOURCE_DIR}/examples/glasshouse/scripts")
 gtest_discover_tests(afterglow_scripting_tests PROPERTIES TIMEOUT 60)
 
 qt_add_executable(afterglow_config_tests ConfigTest.cpp DesktopTest.cpp)
@@ -147,7 +147,8 @@ gtest_discover_tests(afterglow_shell_tests)
 
 qt_add_executable(afterglow_shader_tests ShaderControlsTest.cpp)
 target_link_libraries(afterglow_shader_tests PRIVATE afterglow_shaders GTest::gtest)
-target_compile_definitions(afterglow_shader_tests PRIVATE AFTERGLOW_SHADER_DATA_DIR="${PROJECT_SOURCE_DIR}/data")
+target_compile_definitions(afterglow_shader_tests PRIVATE AFTERGLOW_SHADER_DATA_DIR="${PROJECT_SOURCE_DIR}/data"
+    AFTERGLOW_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples")
 gtest_discover_tests(afterglow_shader_tests)
 
 find_package(Python3 COMPONENTS Interpreter)

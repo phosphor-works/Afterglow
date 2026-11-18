@@ -540,7 +540,7 @@ It prints the directory for its log, screenshots and results.
 | `--artifacts DIR` | A new temporary directory | The directory for the log, the screenshots and the results |
 | `--timeout` | 300 seconds, and 600 seconds for `scene_acceptance.py` | The time for the whole run. At the limit, the runner stops the test and exits with status 124. |
 
-See [Phosphor performance](../data/examples/phosphor/PERFORMANCE.md) for benchmark commands and measurement limits.
+See [Phosphor performance](../examples/phosphor/PERFORMANCE.md) for benchmark commands and measurement limits.
 
 ## Projects and the project navigator
 
@@ -564,7 +564,7 @@ Without it, the test stops with an error.
 It keeps its screenshots and log in a new temporary directory, or in the directory that `--artifacts` gives.
 `project_smoke.py`, `navigator_smoke.py` and `navigator_ui_smoke.py` take `--timeout`, the time for the whole run in seconds. The default is 300.
 At the limit, the runner stops the test and exits with status 124.
-See [projects](PROJECTS.md) and the [project navigator](../data/examples/packages/project-navigator/README.md) for what the tests cover.
+See [projects](PROJECTS.md) and the [project navigator](../examples/packages/project-navigator/README.md) for what the tests cover.
 
 ## Native performance measurements
 

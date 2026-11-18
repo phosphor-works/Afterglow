@@ -77,7 +77,7 @@ Install Monaspace Neon Var before the run. With another font, the times are not 
 The benchmark's NVIDIA memory sampler is optional.
 Other GPUs still produce timings, with memory marked unavailable.
 The tool does not substitute whole-machine GPU memory.
-[Shader scenes](../../../docs/TESTING.md#shader-scenes) gives the scene tests and their requirements.
+[Shader scenes](../../docs/TESTING.md#shader-scenes) gives the scene tests and their requirements.
 
 ## Measurement limits
 
@@ -86,7 +86,7 @@ The mesh cases measure one depth-tested mesh pass. The cases do not measure othe
 Persistent buffer pixels have a 256 MiB limit per window.
 Region inputs and uploaded images share a separate 256 MiB cache.
 Driver allocations and frames in flight require additional memory.
-See the [shader pass API](../../../docs/SHADER-API.md).
+See the [shader pass API](../../docs/SHADER-API.md).
 
 Luau summaries remain cached for 100 ms. Contextual exposure samples once each second.
 Continuous motion and audio remain in the host and GPU.

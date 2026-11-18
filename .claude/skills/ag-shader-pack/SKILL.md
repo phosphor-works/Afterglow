@@ -79,7 +79,7 @@ Then read the PNG with the Read tool and look at it. Useful options (`--help` li
 | Pane effects | `--pane-effects pane-effects --open-progress 0.5 --open-edge 2`, `--close-progress`, `--context 1`, `--pulse 1:0.5` (4 to 255: a package's pulse) |
 | Overlay transition | `--overlay $'\e[42m picker \e[0m' --overlay-progress 0.5`, with `--overlay-transition overlay-fade` (the default, `""` for none) |
 | Audio | `--audio-bands 0.8,0.4,0.2` |
-| A package's packs | `--package data/examples/packages/scripted-overview --overview scripted-overview.wall` |
+| A package's packs | `--package examples/packages/scripted-overview --overview scripted-overview.wall` |
 | Frame time | `--timings`, with `--pixels 3840x2160` for 4K |
 
 Check the edge cases, not only the middle of an animation: progress 0 and 1, one pane, two panes, many panes (the

@@ -357,7 +357,7 @@ int main(int argc, char** argv)
         } else if (mode == QLatin1String("scripts")) {
             const QString scriptDir = QFileInfo(str("config")).absolutePath() + QStringLiteral("/benchmark-scripts");
             QDir().mkpath(scriptDir);
-            QFile source(str("repo") + QStringLiteral("/data/examples/phosphor/scripts/phosphor.luau"));
+            QFile source(str("repo") + QStringLiteral("/examples/phosphor/scripts/phosphor.luau"));
             if (!source.open(QIODevice::ReadOnly))
                 throw std::runtime_error("Cannot read Phosphor script");
             QByteArray scriptSource = source.readAll();

@@ -153,7 +153,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Bundled packs: Bloom, CRT Curve, Cursor Trail, Depth Trails, Feedback Glow, Mesh Reactor, Orrery, Overlay Fade, Pane Deck, Pane Effects, Phosphor Depths, Tab Switch and Tilt.
 - Packs that move the content can define a pointer map (`pPointerMap`). Clicks, selections and links then reach the cell that the pack draws under the pointer.
 - Pane rectangles, every tab's pane pixels and overview state for window shaders, through `terminal_panes.glsl`.
-- The Phosphor and Glasshouse example scenes.
+- The Phosphor and Glasshouse example scenes, in the `examples` directory of the source repository.
 
 ### Scripting and control
 

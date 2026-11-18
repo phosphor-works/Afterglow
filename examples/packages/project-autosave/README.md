@@ -11,7 +11,7 @@ Install from the repository root:
 
 ```sh
 mkdir -p ~/.config/afterglow/scripts
-cp -r data/examples/packages/project-autosave ~/.config/afterglow/scripts/
+cp -r examples/packages/project-autosave ~/.config/afterglow/scripts/
 ```
 
 When you use a custom configuration file, use the `scripts/` directory beside that file.
