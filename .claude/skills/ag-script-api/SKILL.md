@@ -47,7 +47,7 @@ owner may see (key mode keys). Declare the handler and its event table in `after
 - `CHANGELOG.md` under `## Unreleased`.
 - `afterglow/tests/ScriptHostTest.cpp`: validation, the dropped-field trap, and await.
 - `afterglow/tests/NativeWindowTest.cpp` when the window changes (`ag-verify-live`).
-- An example in `data/examples/scripts/` or a package in `data/examples/packages/` for a feature that authors will
+- An example in `examples/scripts/` or a package in `examples/packages/` for a feature that authors will
   copy. Examples use the await style.
 
 ## Package manifest fields

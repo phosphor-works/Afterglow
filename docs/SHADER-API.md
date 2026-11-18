@@ -569,4 +569,4 @@ The feedback-glow half-resolution RGBA16F pair uses approximately 31.6 MiB at 4K
 
 - [Feedback Glow](../data/shaders/feedback-glow/README.md): one buffer with retained bright pixels.
 - [Depth Trails](../data/shaders/depth-trails/README.md): two buffers, depth, a vertex stage and an image parameter.
-- [The Phosphor scene](../data/examples/phosphor/README.md): a complete reactive scene.
+- [The Phosphor scene](../examples/phosphor/README.md): a complete reactive scene.

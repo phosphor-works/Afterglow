@@ -7,7 +7,7 @@ Install the package:
 
 ```sh
 mkdir -p ~/.config/afterglow/scripts
-cp -r data/examples/packages/scene-controls ~/.config/afterglow/scripts/
+cp -r examples/packages/scene-controls ~/.config/afterglow/scripts/
 ```
 
 ## Edit a scene
@@ -34,7 +34,7 @@ Reset removes the overrides of this package. The values of other scripts or of t
 The host validates all values. Edits animate for 350 ms.
 The editor supports numeric, boolean, color and image parameters.
 Images change at transition completion.
-See [image limits](../../../../docs/SHADER-API.md#images).
+See [image limits](../../../docs/SHADER-API.md#images).
 Presets with unknown or unsupported parameters are rejected.
 
 ## Commands from a shell

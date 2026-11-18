@@ -54,14 +54,14 @@ try:
         # Every pack from the checkout, so an installed copy of a bundled pack
         # (the default overview, pane effects and tab switch too) cannot answer.
         shutil.copytree(repo/'data/shaders',config/'shaders')
-        shutil.copytree(repo/'data/examples/phosphor/shaders',config/'shaders',dirs_exist_ok=True)
-        shutil.copytree(repo/'data/examples/phosphor/scripts',config/'scripts')
+        shutil.copytree(repo/'examples/phosphor/shaders',config/'shaders',dirs_exist_ok=True)
+        shutil.copytree(repo/'examples/phosphor/scripts',config/'scripts')
         for package in ['scene-controls','contextual-scene']:
-            shutil.copytree(repo/'data/examples/packages'/package,config/'scripts'/package)
+            shutil.copytree(repo/'examples/packages'/package,config/'scripts'/package)
         read_state=install_inspector(config)
         (root/'.bashrc').write_text("PS1='SCENE> '\n")
-        settings=json.loads((repo/'data/examples/phosphor/config/phosphor.json').read_text())
-        settings.update(json.loads((repo/'data/examples/phosphor/config/dark.json').read_text()))
+        settings=json.loads((repo/'examples/phosphor/config/phosphor.json').read_text())
+        settings.update(json.loads((repo/'examples/phosphor/config/dark.json').read_text()))
         settings['Terminal'].update(shell='/bin/bash',env={'HOME':tmp},confirmClose=False,scrollback=20000)
         settings['Control']={'allowReadText':True};settings['QuickTerminal']={'shortcut':''}
         settings['Audio'].update(inputMethod='pulse',inputSource=sink+'.monitor')

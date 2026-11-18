@@ -98,11 +98,11 @@ MUTABLE=(
 
 Add the Afterglow switch beside the Kitty theme switch.
 The install does not put `glasshouse-afterglow` on `PATH`.
-Use its full path, and change the prefix to match your installation:
+Use its full path in your checkout of this repository:
 
 ```bash
 put "${TMP_KITTY}" "${KITTY_DIR}/theme-active.conf"
-/usr/share/afterglow/examples/glasshouse/bin/glasshouse-afterglow world "${MODE}"
+/path/to/afterglow/examples/glasshouse/bin/glasshouse-afterglow world "${MODE}"
 ```
 
 A world switch changes the same `Colors` settings and the window opacity as the install.
@@ -111,7 +111,7 @@ A world switch changes the same `Colors` settings and the window opacity as the 
 
 Shaders read `uSignal` values through `signalValue` and `signalAge`.
 Scripts use `afterglow.signal(pane, channel, value)`.
-Other programs use `afterglow ctl signal CHANNEL VALUE` or the `signal` call of the [control socket](../../../docs/CONTROL.md).
+Other programs use `afterglow ctl signal CHANNEL VALUE` or the `signal` call of the [control socket](../../docs/CONTROL.md).
 
 | Channel | Name | Value |
 | --- | --- | --- |

@@ -120,7 +120,7 @@ Afterglow validates the layout before it creates windows or runs commands.
 A save or an open that a limit stops names that limit and the count of the layout.
 A save keeps a pane command that is over the command limits as an empty command, and gives a warning.
 
-1. Copy [development.json](../data/examples/projects/development.json) into the project directory.
+1. Copy [development.json](../examples/projects/development.json) into the project directory.
 2. Set the directories and commands for your system.
 3. Open the `development` project.
 
@@ -202,7 +202,7 @@ The ID maps connect saved labels to runtime IDs.
 Project creation uses the structural action budget.
 Window snapshots contain `project`. An unnamed window has an empty project name.
 
-The [project script](../data/examples/scripts/projects.luau) shows a native selector.
+The [project script](../examples/scripts/projects.luau) shows a native selector.
 The [control socket](CONTROL.md#control-calls) supplies `projects`, `saveProject` and `openProject`.
 The CLI prints save and open results as JSON.
 

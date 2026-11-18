@@ -258,7 +258,8 @@ Use the prefix of the configuration step. Do not give a different `--prefix` her
 If you do, shell integration is off, and the executable can miss its plugin, shader packs and themes.
 
 The installation includes the executable, desktop entry, AppStream metadata, icons, shader packs, themes and terminfo entry.
-It also includes the shell integration scripts, the API declarations, the examples and the license texts.
+It also includes the shell integration scripts, the API declarations and the license texts.
+The [examples](../examples/README.md) stay in the source repository.
 It also includes the shell completions for Bash, Zsh and Fish.
 It installs `aglow` in the same directory as `afterglow`, with its Bash, Zsh and Fish completions.
 It installs the [mux daemon](MUX.md) `aglow-mux` in the same directory as `afterglow`, because `afterglow mux` runs it from there.

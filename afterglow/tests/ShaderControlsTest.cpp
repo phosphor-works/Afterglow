@@ -284,37 +284,39 @@ int main(int argc, char** argv)
     // The developer's ~/.local/share/afterglow/shaders and the system's stay out.
     qputenv("XDG_DATA_HOME", config.filePath(QStringLiteral("data-home")).toUtf8());
     qputenv("XDG_DATA_DIRS", config.filePath(QStringLiteral("data-dirs")).toUtf8());
-    const QString packages = QStringLiteral(AFTERGLOW_SHADER_DATA_DIR "/examples/packages/");
-    QDirIterator packs(QStringLiteral(AFTERGLOW_SHADER_DATA_DIR), {QStringLiteral("metadata.json")}, QDir::Files,
-                       QDirIterator::Subdirectories);
-    while (packs.hasNext()) {
-        const QFileInfo metadata(packs.next());
-        // Package packs load only through their package, as "<package>.<pack>".
-        if (metadata.absoluteFilePath().startsWith(packages))
-            continue;
-        const QDir source = metadata.dir();
-        copiedPacks.insert(source.dirName());
-        const QString target = config.filePath(QStringLiteral("afterglow/shaders/") + source.dirName());
-        if (!QDir().mkpath(target))
-            return 1;
-        QDirIterator files(source.absolutePath(), QDir::Files, QDirIterator::Subdirectories);
-        while (files.hasNext()) {
-            const QString from = files.next();
-            const QString to = target + QLatin1Char('/') + source.relativeFilePath(from);
-            if (!QDir().mkpath(QFileInfo(to).absolutePath()) || !QFile::copy(from, to))
-                return 1;
-        }
-    }
+    // The bundled packs, and the packs of the example scenes.
+    const QStringList roots{QStringLiteral(AFTERGLOW_SHADER_DATA_DIR), QStringLiteral(AFTERGLOW_EXAMPLES_DIR)};
+    const QString packages = QStringLiteral(AFTERGLOW_EXAMPLES_DIR "/packages/");
     const QString shared = config.filePath(QStringLiteral("afterglow/shaders/shared"));
     if (!QDir().mkpath(shared))
         return 1;
-    QDirIterator includes(QStringLiteral(AFTERGLOW_SHADER_DATA_DIR), {QStringLiteral("*.glsl")}, QDir::Files,
-                          QDirIterator::Subdirectories);
-    while (includes.hasNext()) {
-        const QString from = includes.next();
-        if (QFileInfo(from).dir().dirName() == QLatin1String("shared")
-            && !QFile::copy(from, shared + QLatin1Char('/') + QFileInfo(from).fileName()))
-            return 1;
+    for (const QString& root : roots) {
+        QDirIterator packs(root, {QStringLiteral("metadata.json")}, QDir::Files, QDirIterator::Subdirectories);
+        while (packs.hasNext()) {
+            const QFileInfo metadata(packs.next());
+            // Package packs load only through their package, as "<package>.<pack>".
+            if (metadata.absoluteFilePath().startsWith(packages))
+                continue;
+            const QDir source = metadata.dir();
+            copiedPacks.insert(source.dirName());
+            const QString target = config.filePath(QStringLiteral("afterglow/shaders/") + source.dirName());
+            if (!QDir().mkpath(target))
+                return 1;
+            QDirIterator files(source.absolutePath(), QDir::Files, QDirIterator::Subdirectories);
+            while (files.hasNext()) {
+                const QString from = files.next();
+                const QString to = target + QLatin1Char('/') + source.relativeFilePath(from);
+                if (!QDir().mkpath(QFileInfo(to).absolutePath()) || !QFile::copy(from, to))
+                    return 1;
+            }
+        }
+        QDirIterator includes(root, {QStringLiteral("*.glsl")}, QDir::Files, QDirIterator::Subdirectories);
+        while (includes.hasNext()) {
+            const QString from = includes.next();
+            if (QFileInfo(from).dir().dirName() == QLatin1String("shared")
+                && !QFile::copy(from, shared + QLatin1Char('/') + QFileInfo(from).fileName()))
+                return 1;
+        }
     }
     const auto path = config.filePath(QStringLiteral("afterglow/shaders/types"));
     QDir().mkpath(path);
@@ -997,8 +999,7 @@ TEST(ShaderLibraryPriority, UserPacksAndIncludesWinOverSystemOnes)
 TEST(ShaderLibraryPackages, PackagePacksAnswerOnlyToTheirNamespacedId)
 {
     ShaderLibrary library;
-    const QString package =
-        QStringLiteral(AFTERGLOW_SHADER_DATA_DIR) + QStringLiteral("/examples/packages/scripted-overview");
+    const QString package = QStringLiteral(AFTERGLOW_EXAMPLES_DIR) + QStringLiteral("/packages/scripted-overview");
     auto build = [&](const QString& ref) {
         ShaderLibrary::Refs refs;
         refs.overview = ref;
@@ -1032,8 +1033,7 @@ TEST(ShaderLibraryPackages, PackagePacksAnswerOnlyToTheirNamespacedId)
 TEST(ShaderLibraryPackages, OverlayTransitionBuildsItsChainFromABundledOrPackagePack)
 {
     ShaderLibrary library;
-    const QString package =
-        QStringLiteral(AFTERGLOW_SHADER_DATA_DIR) + QStringLiteral("/examples/packages/scripted-overview");
+    const QString package = QStringLiteral(AFTERGLOW_EXAMPLES_DIR) + QStringLiteral("/packages/scripted-overview");
     auto build = [&](const QString& ref) {
         ShaderLibrary::Refs refs;
         refs.overlayTransition = ref;
@@ -1061,7 +1061,7 @@ TEST(ShaderLibraryPackages, OverlayTransitionBuildsItsChainFromABundledOrPackage
 TEST(ShaderLibraryPackages, APackagePackWithAnotherIdIsLeftOut)
 {
     const QString source =
-        QStringLiteral(AFTERGLOW_SHADER_DATA_DIR) + QStringLiteral("/examples/packages/scripted-overview/shaders/wall");
+        QStringLiteral(AFTERGLOW_EXAMPLES_DIR) + QStringLiteral("/packages/scripted-overview/shaders/wall");
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString wall = tmp.filePath(QStringLiteral("shaders/wall"));

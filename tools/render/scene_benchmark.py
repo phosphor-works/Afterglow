@@ -25,7 +25,7 @@ args = parser.parse_args()
 repo = Path(__file__).resolve().parents[2]
 out = args.output.resolve(); out.mkdir(parents=True, exist_ok=True)
 config = out / 'config/afterglow/shaders'
-shutil.copytree(repo / 'data/examples/phosphor/shaders', config, dirs_exist_ok=True)
+shutil.copytree(repo / 'examples/phosphor/shaders', config, dirs_exist_ok=True)
 # Bundled packs are copied too, so an older installed copy cannot shadow them.
 for pack in ['feedback-glow', 'mesh-reactor']:
     shutil.copytree(repo / 'data/shaders' / pack, config / pack, dirs_exist_ok=True)

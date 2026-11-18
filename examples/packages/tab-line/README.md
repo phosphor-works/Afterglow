@@ -11,7 +11,7 @@ Install from the repository root:
 
 ```bash
 mkdir -p ~/.config/afterglow/scripts
-cp -r data/examples/packages/tab-line ~/.config/afterglow/scripts/
+cp -r examples/packages/tab-line ~/.config/afterglow/scripts/
 ```
 
 When you use a custom configuration file, use the `scripts/` directory beside that file.

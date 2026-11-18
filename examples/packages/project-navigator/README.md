@@ -9,14 +9,13 @@ It uses native selectors, asynchronous jobs, project layouts and persistent stat
 
 Copy this complete directory into `~/.config/afterglow/scripts/project-navigator/`.
 When you use a custom configuration file, use the `scripts/` directory beside that file.
-With the `/usr` installation prefix, examples are installed in `/usr/share/afterglow/examples/packages/project-navigator/`.
 Loading the package does not run commands.
 
 From the repository root, install it with:
 
 ```bash
 mkdir -p ~/.config/afterglow/scripts
-cp -r data/examples/packages/project-navigator ~/.config/afterglow/scripts/
+cp -r examples/packages/project-navigator ~/.config/afterglow/scripts/
 ```
 
 The destination must contain `scripts/project-navigator/package.json`, not

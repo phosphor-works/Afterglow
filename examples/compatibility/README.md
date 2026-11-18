@@ -6,9 +6,9 @@
 Run these inside Afterglow. They do not modify your configuration.
 
 ```sh
-python3 data/examples/compatibility/relative-images.py
-python3 data/examples/compatibility/multi-edit.py
-python3 data/examples/compatibility/download.py /path/to/file.txt
+python3 examples/compatibility/relative-images.py
+python3 examples/compatibility/multi-edit.py
+python3 examples/compatibility/download.py /path/to/file.txt
 ```
 
 `relative-images.py` moves a parent image while its child follows the declared offset.
@@ -21,7 +21,7 @@ Afterglow asks where to save the file.
 
 Image and cursor clients demonstrate Kitty protocols.
 The download format is shared with iTerm2 `it2dl`.
-See [supported operations and limits](../../../docs/COMPATIBILITY.md).
+See [supported operations and limits](../../docs/COMPATIBILITY.md).
 
 For a minimal color example inside an application-owned screen:
 
