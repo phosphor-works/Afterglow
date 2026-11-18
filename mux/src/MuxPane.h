@@ -238,7 +238,8 @@ public:
             CommandFinished,
             Title,
             Status,
-            Shell
+            Shell,
+            Text
         };
         Kind kind = Kind::Bell;
         std::string name{}; ///< UserVar: its name. Status, Shell: the state.
@@ -494,9 +495,11 @@ private:
     std::atomic<int> m_lastExit{NoExitCode};
     /// The newest prompt region that the watchers heard of. Under m_mutex.
     std::uint64_t m_promptId = 0;
+    /// Terminal::textGeneration() that the watchers heard of. Under m_mutex.
+    std::uint64_t m_textGeneration = 0;
     /// Takes the shell's state from the terminal, under m_mutex, and tells
-    /// the watchers of a change, or of a new prompt. True when the daemon
-    /// must wake for it.
+    /// the watchers of a change, or of a new prompt, and of a change of the
+    /// text. True when the daemon must wake for it.
     bool updateShellLocked();
 
     /// A call that waits for the window. PointerShape, UserVar and
@@ -567,7 +570,9 @@ private:
     /// events, and keeps what facts() says, and the daemon's thread takes
     /// them.
     mutable std::mutex m_hostMutex;
-    bool m_watched = false;
+    /// Atomic for a feed that changes text: it takes m_hostMutex only
+    /// while the daemon watches.
+    std::atomic<bool> m_watched{false};
     std::vector<WatchEvent> m_watchEvents;
     std::size_t m_watchBytes = 0; ///< of m_watchEvents
     /// The terminal's title and size, for facts() while an image decodes.

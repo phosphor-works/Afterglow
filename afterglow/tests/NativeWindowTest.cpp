@@ -19869,6 +19869,42 @@ return {
     delete shown;
 }
 
+// textChanged comes with the output of a pane's program, and with a reflow
+// that changes the text with no output: cat draws nothing for a new size.
+TEST_F(NativeWindow, TextChangedComesWithOutputAndWithAReflow)
+{
+    QPointer<Pane> pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    TestControl test(directory, QStringLiteral("text-changed.conf"), window);
+    int changes = 0;
+    QObject::connect(&test.control, &Control::textChanged, &test.control, [&](quint32 id) {
+        if (pane && id == pane->id())
+            ++changes;
+    });
+    ASSERT_TRUE(pane->sendInput(std::string(150, 'w') + "\n"));
+    EXPECT_TRUE(waitFor(
+        [&] {
+            return changes > 0 && pane && screenOf(pane).contains(QString(150, QLatin1Char('w')).left(40));
+        },
+        5000));
+    // Quiet: nothing more comes.
+    changes = 0;
+    EXPECT_FALSE(waitFor(
+        [&] {
+            return changes > 0;
+        },
+        400));
+    // Narrower: the long line wraps again.
+    window->resize(window->width() / 2, window->height());
+    EXPECT_TRUE(waitFor(
+        [&] {
+            return changes > 0;
+        },
+        5000));
+}
+
 // The control call paste sends text as a paste in the window: between the
 // paste marks while the program asks for them, the line ends as Enter, and
 // no other control. It asks no question for a line end, as a client chose

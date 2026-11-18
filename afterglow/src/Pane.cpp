@@ -206,22 +206,29 @@ void Pane::resize(int cols, int rows, int cellWidth, int cellHeight)
         m_session->sendResize(m_sessionPane, AfterglowMux::PaneSize{cols, rows, cellWidth, cellHeight});
         return;
     }
-    std::lock_guard lock(m_mutex);
-    const PendingSize size{cols, rows, cellWidth, cellHeight};
-    // The size that the terminal takes: a pending one (applyPendingLocked)
-    // is ahead of it.
-    const bool same = m_pendingSize ? *m_pendingSize == size
-                                    : cols == m_terminal.cols() && rows == m_terminal.rows()
-            && cellWidth == m_terminal.cellWidth() && cellHeight == m_terminal.cellHeight();
-    if (same)
-        return;
-    // While the reader thread decodes an image, the terminal is its own: it
-    // takes the size, and the PTY with it, at the end of its feed. The window
-    // draws the pane at the size it has meanwhile, as it does a session pane
-    // until the daemon's frame, and a drag of the window goes on.
-    m_pendingSize = size;
-    if (!m_decoding)
+    {
+        std::lock_guard lock(m_mutex);
+        const PendingSize size{cols, rows, cellWidth, cellHeight};
+        // The size that the terminal takes: a pending one (applyPendingLocked)
+        // is ahead of it.
+        const bool same = m_pendingSize ? *m_pendingSize == size
+                                        : cols == m_terminal.cols() && rows == m_terminal.rows()
+                && cellWidth == m_terminal.cellWidth() && cellHeight == m_terminal.cellHeight();
+        if (same)
+            return;
+        // While the reader thread decodes an image, the terminal is its own:
+        // it takes the size, and the PTY with it, at the end of its feed, and
+        // its output tells of the change. The window draws the pane at the
+        // size it has meanwhile, as it does a session pane until the
+        // daemon's frame, and a drag of the window goes on.
+        m_pendingSize = size;
+        if (m_decoding)
+            return;
         applyPendingLocked();
+    }
+    // A reflow changes the text with no output: a program such as cat draws
+    // nothing for the new size.
+    checkShellState();
 }
 
 void Pane::setVisible(bool visible)
@@ -1175,11 +1182,15 @@ void Pane::checkShellState()
 {
     AfterglowVt::ShellState state;
     std::uint64_t prompt = 0;
+    std::uint64_t text = 0;
     {
         std::lock_guard lock(m_mutex);
         state = m_terminal.shellState();
         prompt = m_terminal.lastPromptId();
+        text = m_terminal.textGeneration();
     }
+    if (std::exchange(m_textGeneration, text) != text)
+        Q_EMIT textChanged();
     // A new prompt counts as a change: a short command starts and ends
     // within one read, and its state is the prompt before and after it.
     if (state == m_shellState && prompt == m_promptId)

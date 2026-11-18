@@ -689,6 +689,9 @@ Q_SIGNALS:
     /// drew a new prompt. Emitted on the GUI thread, with the output or the
     /// session frame that changed it.
     void shellStateChanged(AfterglowVt::ShellState state);
+    /// The text of the terminal, or how it shows, changed
+    /// (Terminal::textGeneration). Emitted with shellStateChanged.
+    void textChanged();
     /// An OSC 99 desktop notification request. @p missed as for
     /// notificationRequested.
     void desktopNotificationRequested(const AfterglowVt::NotificationRequest& request, bool missed);
@@ -1078,8 +1081,10 @@ private:
     /// told last. GUI thread only.
     AfterglowVt::ShellState m_shellState = AfterglowVt::ShellState::None;
     std::uint64_t m_promptId = 0;
+    /// The Terminal::textGeneration() that textChanged told last.
+    std::uint64_t m_textGeneration = 0;
     /// Emits shellStateChanged when the terminal's state is another, or the
-    /// shell drew a new prompt.
+    /// shell drew a new prompt, and textChanged when its text changed.
     void checkShellState();
     QTimer m_animationTimer;
     bool m_seen = true; ///< setSeen()

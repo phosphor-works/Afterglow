@@ -524,6 +524,8 @@ Q_SIGNALS:
     void contextChanged(quint32 pane, const QString& context);
     /// What the pane's shell does changed (OSC 133): shellStateName().
     void shellChanged(quint32 pane, const QString& state);
+    /// The pane's text, or how it shows, changed. No text goes with it.
+    void textChanged(quint32 pane);
     /// A key for the script holding a window's key mode.
     void scriptKey(const QString& owner, quint32 pane, const QVariantMap& key);
     /// An event of a script's dock for the owner's @p handler; @p pane is a
