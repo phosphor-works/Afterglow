@@ -118,7 +118,7 @@ TEST(Socket, APathTooLongForASocketIsAnError)
     const std::string runtime = "/" + std::string(MaxSocketPathBytes, 'r');
     const auto shared = findSocket(environment({{"XDG_RUNTIME_DIR", runtime}}));
     EXPECT_TRUE(shared.path.empty());
-    EXPECT_NE(shared.error.find("over 107 bytes"), std::string::npos) << shared.error;
+    EXPECT_NE(shared.error.find("over " + std::to_string(MaxSocketPathBytes) + " bytes"), std::string::npos) << shared.error;
     const std::string longest = "/" + std::string(MaxSocketPathBytes - 1, 's');
     EXPECT_EQ(findSocket(environment({{"AFTERGLOW_SOCKET", longest}})).path, longest);
     const auto own = findSocket(environment({{"AFTERGLOW_SOCKET", longest + "s"}}));
@@ -140,7 +140,7 @@ TEST(Socket, ThePathCheckNamesWhatIsWrong)
     EXPECT_EQ(socketPathError(""), "the socket path is empty");
     const std::string longest = "/" + std::string(MaxSocketPathBytes - 1, 's');
     EXPECT_EQ(socketPathError(longest), "");
-    EXPECT_NE(socketPathError(longest + "s").find("over 107 bytes: " + longest + "s"), std::string::npos);
+    EXPECT_NE(socketPathError(longest + "s").find("over " + std::to_string(MaxSocketPathBytes) + " bytes: " + longest + "s"), std::string::npos);
 }
 
 TEST(Socket, MuxSocketsAreTheRuntimeAndTheStateDirectory)

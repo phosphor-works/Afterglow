@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#include <AfterglowProto/FromChars.h>
 #include <AfterglowProto/Json.h>
 #include <AfterglowProto/Text.h>
 
@@ -154,7 +155,7 @@ private:
             if (down) exponent = -exponent;
         }
         double value = 0;
-        const auto [end, ec] = std::from_chars(m_text.data() + start, m_text.data() + m_at, value);
+        const auto [end, ec] = fromChars(m_text.data() + start, m_text.data() + m_at, value);
         if (ec == std::errc::result_out_of_range && underflows(intStart, intEnd, fracStart, fracEnd, exponent)) {
             // Below the smallest double: the nearest one is zero.
             return Value(negative ? -0.0 : 0.0);

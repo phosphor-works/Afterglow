@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "Daemon.h"
+#include "ProcessFds.h"
 
 #include <AfterglowProto/Ipc.h>
 #include <AfterglowProto/Run.h>
+#include <AfterglowProto/Socket.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -20,7 +22,6 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/eventfd.h>
-#include <sys/signalfd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -35,21 +36,6 @@ using AfterglowProto::IpcServerConnection;
 namespace IpcErrorCode = AfterglowProto::IpcErrorCode;
 
 namespace {
-
-/// The bytes of @p path, empty when it cannot be read.
-std::string readAll(const std::string& path)
-{
-    std::string bytes;
-    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return bytes;
-    char buffer[65536];
-    for (ssize_t n; (n = ::read(fd, buffer, sizeof buffer)) != 0;) {
-        if (n > 0) bytes.append(buffer, std::size_t(n));
-        else if (errno != EINTR) break;
-    }
-    ::close(fd);
-    return bytes;
-}
 
 // ControlSocket::Target of the application. `afterglow ctl` in a session
 // pane calls it here, and `aglow run` calls AfterglowProto::Run::Target:
@@ -96,8 +82,8 @@ Daemon::Daemon(long fileLimit)
     // Blocked in this thread before any PTY thread starts, so the threads
     // inherit the mask and the signals arrive only through the signalfd.
     ::pthread_sigmask(SIG_BLOCK, &signals, nullptr);
-    m_signalFd = ::signalfd(-1, &signals, SFD_NONBLOCK | SFD_CLOEXEC);
-    if (m_signalFd < 0 && m_setupError.empty()) m_setupError = std::string("cannot create a signalfd: ") + std::strerror(errno);
+    m_signalFd = openSignalFd(signals);
+    if (m_signalFd < 0 && m_setupError.empty()) m_setupError = std::string("cannot watch for signals: ") + std::strerror(errno);
     std::signal(SIGPIPE, SIG_IGN);
 }
 
@@ -242,12 +228,7 @@ Daemon::Exit Daemon::run()
             attached.emplace_back(m_attachments[i].get(), fds[firstAttachment + i].revents);
         }
         if (fds[signalIndex].revents & POLLIN) {
-            signalfd_siginfo info{};
-            int signal = 0;
-            while (::read(m_signalFd, &info, sizeof info) == ssize_t(sizeof info)) {
-                if (signal == 0) signal = int(info.ssi_signo);
-            }
-            if (signal != 0) return {128 + signal, signal};
+            if (const int signal = takeSignals(m_signalFd); signal != 0) return {128 + signal, signal};
         }
         if (fds[wakeIndex].revents & POLLIN) {
             std::uint64_t count = 0;
@@ -389,9 +370,8 @@ bool Daemon::read(IpcServerConnection& connection)
         readRelay(connection);
         return true;
     }
-    ucred peer{};
-    socklen_t size = sizeof peer;
-    const pid_t caller = ::getsockopt(connection.fd(), SOL_SOCKET, SO_PEERCRED, &peer, &size) == 0 ? peer.pid : 0;
+    AfterglowProto::PeerCredentials peer;
+    const pid_t caller = AfterglowProto::peerCredentials(connection.fd(), peer) ? peer.pid : 0;
     IpcRequest request;
     std::string line;
     bool answered = false;
@@ -472,7 +452,8 @@ std::string Daemon::answer(const IpcRequest& request, pid_t caller, IpcServerCon
     if (request.fn == Fn::Version) {
         return ipcReply(request.id.value_or(0), Json::Object{{"version", AFTERGLOW_VERSION}, {"protocol", ProtocolVersion}});
     }
-    if (request.fn == Fn::NewSession) return newSession(request, caller);
+    if (request.fn == Fn::NewSession) return newSession(request, connection);
+    if (request.fn == Fn::CallerEnvironment) return callerEnvironment(request, connection);
     if (request.fn == Fn::ListSessions) return listSessions(request, caller);
     if (request.fn == Fn::KillSession) return killSession(request);
     if (request.fn == Fn::Attach) return attach(request);
@@ -496,7 +477,18 @@ std::optional<std::string> Daemon::versionError(const IpcRequest& request)
                         + ", and the daemon speaks " + std::to_string(ProtocolVersion));
 }
 
-std::string Daemon::newSession(const IpcRequest& request, pid_t caller)
+std::string Daemon::callerEnvironment(const IpcRequest& request, const IpcServerConnection& connection)
+{
+    if (request.args.size() != 2) return ipcError(request.id, IpcErrorCode::InvalidArg, "callerEnvironment takes (protocol, environment)");
+    if (auto error = versionError(request)) return *error;
+    std::string error;
+    auto environment = environmentFrom(request.args[1], &error);
+    if (!environment) return ipcError(request.id, IpcErrorCode::InvalidArg, error);
+    m_callerEnvironments[&connection] = std::move(*environment);
+    return ipcReply(request.id.value_or(0), nullptr);
+}
+
+std::string Daemon::newSession(const IpcRequest& request, const IpcServerConnection& connection)
 {
     if (request.args.size() != 2) return ipcError(request.id, IpcErrorCode::InvalidArg, "newSession takes (protocol, options)");
     if (auto error = versionError(request)) return *error;
@@ -506,16 +498,11 @@ std::string Daemon::newSession(const IpcRequest& request, pid_t caller)
     if (options->callerEnvironment) {
         // The caller's own (the proxy in the user's ssh login), with the
         // client's variables over it.
-        std::string callerEnviron = caller > 0 ? readAll("/proc/" + std::to_string(caller) + "/environ") : std::string();
-        if (callerEnviron.empty()) return ipcError(request.id, IpcErrorCode::CallFailed, "the daemon cannot read the environment of the caller");
-        std::vector<std::pair<std::string, std::string>> merged;
-        for (std::size_t at = 0; at < callerEnviron.size();) {
-            const std::size_t end = std::min(callerEnviron.find('\0', at), callerEnviron.size());
-            const std::string_view entry(callerEnviron.data() + at, end - at);
-            const std::size_t eq = entry.find('=');
-            if (eq != std::string_view::npos && eq > 0) merged.emplace_back(std::string(entry.substr(0, eq)), std::string(entry.substr(eq + 1)));
-            at = end + 1;
+        const auto sent = m_callerEnvironments.find(&connection);
+        if (sent == m_callerEnvironments.end()) {
+            return ipcError(request.id, IpcErrorCode::CallFailed, "the caller sent no environment (callerEnvironment) on this connection");
         }
+        std::vector<std::pair<std::string, std::string>> merged = sent->second;
         // The last value of each name of the client's, in one pass over
         // each list: a request line (1 MiB) can hold many variables.
         const auto& client = options->environment;

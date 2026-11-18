@@ -3,6 +3,8 @@
 
 #include "ITerm2.h"
 
+#include <AfterglowProto/FromChars.h>
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -30,7 +32,7 @@ double sizeArg(std::string_view spec, int cell, double total)
         unit = total / 100.0;
     }
     double n = 0;
-    const auto [ptr, ec] = std::from_chars(spec.data(), spec.data() + spec.size(), n);
+    const auto [ptr, ec] = AfterglowProto::fromChars(spec.data(), spec.data() + spec.size(), n);
     if (ec != std::errc{} || ptr != spec.data() + spec.size() || n <= 0) {
         return -1;
     }

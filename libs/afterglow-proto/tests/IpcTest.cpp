@@ -242,6 +242,9 @@ TEST(Ipc, CloseDropsTheFramesThatWait)
 
 TEST(Ipc, AConnectionThatTheServerDoesNotTakeTimesOut)
 {
+#if defined(__FreeBSD__)
+    GTEST_SKIP() << "FreeBSD refuses a connection over a full backlog at once (ECONNREFUSED): it does not wait";
+#endif
     // A backlog of 0 holds one connection: a second one waits.
     FakeServer server(0);
     ASSERT_TRUE(server.valid());
@@ -415,6 +418,9 @@ TEST(Ipc, ReleaseGivesTheSocketUpOnlyWhenNothingWaits)
 
 TEST(Ipc, ASignalThatRepeatsDoesNotMakeTheWaitOfAConnectLonger)
 {
+#if defined(__FreeBSD__)
+    GTEST_SKIP() << "FreeBSD refuses a connection over a full backlog at once (ECONNREFUSED): it does not wait";
+#endif
     // A backlog of 0 holds one connection: a second one waits.
     FakeServer server(0);
     ASSERT_TRUE(server.valid());

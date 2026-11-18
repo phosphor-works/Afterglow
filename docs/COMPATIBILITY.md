@@ -450,6 +450,7 @@ A session pane has the same limits in the daemon (see [MUX.md](MUX.md#limits)).
 
 The processes need a kernel with seccomp filters, and Linux 5.3 or later (`pidfd_open`).
 They also need an x86-64, little-endian AArch64, RISC-V 64 or little-endian POWER64 processor.
+On FreeBSD, the processes run in Capsicum capability mode instead, on any processor.
 Elsewhere, the images that programs send do not show, and Afterglow writes why in its log.
 
 ### Sixel, iTerm2 and escape strings

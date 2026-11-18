@@ -963,7 +963,18 @@ At its end, each `MuxCommandTest.*` test kills the processes that have its `XDG_
 Some `MuxCommandTest.*` tests put an `afterglow` with a script as its daemon in `build/afterglow/muxcommand-PID-*`.
 The test removes the directory at its end. When a timeout kills the test first, the next `MuxCommandTest.*` test removes it.
 Some of the tests need `python3`. Without it, they report Skipped.
-`Mux.MuxPane.*` and some `Mux.MuxImageDecoder.*` tests need a kernel that lists the children of a process (`/proc/PID/task/TID/children`). Without it, they report Skipped.
+`Mux.MuxPane.*` and some `Mux.MuxImageDecoder.*` tests need a kernel that lists the children of a process (`/proc/PID/task/TID/children`). Without it, they report Skipped. On FreeBSD, they read the process table instead.
+
+On FreeBSD, some tests report Skipped, each with its reason:
+
+| Tests | Reason |
+| --- | --- |
+| A connection over the backlog of a socket waits (`Ipc`, `RunClient`) | FreeBSD refuses the connection at once |
+| A pipe of a set size (`Client`, `RunClient`) | FreeBSD has no `F_SETPIPE_SZ` |
+| The process facts in `/proc` (`Pty`, `IpcServer`) | FreeBSD has no `/proc` with these files |
+| Output that waits in a paused pane when its program exits (`Pty`) | FreeBSD drops the output that the master did not read about a second after the last close of the terminal |
+| The directory of another process (`Pty`, `MuxAttach`, `MuxControl`, `MuxPane`) | Only with `security.bsd.unprivileged_proc_debug=0`, which refuses it to the user |
+| A hard link in the temporary directory (`Client`, `Hostile`) | Only with `security.bsd.hardlink_check_gid=1`, which refuses a link to a file of a group that the user is not in |
 Some image tests write a script to the temporary directory and run it. When that directory does not run programs (`noexec`), they report Skipped.
 `Mux.MuxDaemon.*` also skips its test of open files when the hard limit of open files is 256 or less.
 The image tests fail on a kernel without seccomp filters, and on a processor that the filter does not know. The daemon does not decode images there (see [MUX.md](MUX.md)).

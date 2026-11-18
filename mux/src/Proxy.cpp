@@ -4,7 +4,9 @@
 #include "Proxy.h"
 
 #include "MuxConnect.h"
+#include "MuxProtocol.h"
 #include "MuxStart.h"
+#include "ProcessFds.h"
 
 #include <AfterglowProto/Socket.h>
 
@@ -14,12 +16,17 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 #include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+extern char** environ;
 
 namespace AfterglowMux {
 
@@ -180,13 +187,30 @@ int bridge(int socket)
     return 0;
 }
 
+/// The proxy's environment: that of the user's ssh login, which a session
+/// that the client starts with callerEnvironment takes.
+std::vector<std::pair<std::string, std::string>> ownEnvironment()
+{
+    std::vector<std::pair<std::string, std::string>> out;
+    for (char** e = environ; e && *e; ++e) {
+        const std::string_view entry(*e);
+        const std::size_t eq = entry.find('=');
+        if (eq != std::string_view::npos && eq > 0) out.emplace_back(std::string(entry.substr(0, eq)), std::string(entry.substr(eq + 1)));
+    }
+    return out;
+}
+
 /// The path of this executable, which a daemon that the proxy starts runs.
 std::string ownPath()
 {
+#if defined(__FreeBSD__)
+    return selfExecutable();
+#else
     char path[PATH_MAX];
     const ssize_t n = ::readlink("/proc/self/exe", path, sizeof path - 1);
     if (n <= 0) return {};
     return std::string(path, std::size_t(n));
+#endif
 }
 
 } // namespace
@@ -218,6 +242,14 @@ int runProxy(bool start)
         std::fprintf(stderr, "aglow-mux proxy: %s\n", error.c_str());
         return 1;
     }
+    // The daemon reads the environment of no other process: the proxy sends
+    // its own first, for a newSession of the client with callerEnvironment.
+    // Its answer goes no further. A daemon that refuses it (one that an
+    // older build started, still running its sessions) is still carried:
+    // only such a newSession fails, and says why.
+    AfterglowProto::IpcConnection::Error environmentError;
+    (void)reached.connection->call(Target, Fn::CallerEnvironment, AfterglowProto::Json::Array{ProtocolVersion, environmentJson(ownEnvironment())},
+                                   CallTimeoutMs, &environmentError);
     AfterglowProto::IpcConnection::Error releaseError;
     const int socket = reached.connection->release(&releaseError);
     if (socket < 0) {

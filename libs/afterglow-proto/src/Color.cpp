@@ -9,6 +9,7 @@
 // as a middle gray: the CSS results are the reference here.
 
 #include <AfterglowProto/Color.h>
+#include <AfterglowProto/FromChars.h>
 
 #include <algorithm>
 #include <array>
@@ -200,7 +201,7 @@ bool parseValue(std::string_view token, double& value, Unit& unit)
         // from_chars would take the '-' of "+-1".
         if (token.starts_with('-')) return false;
     }
-    const auto parsed = std::from_chars(token.data(), token.data() + token.size(), value);
+    const auto parsed = fromChars(token.data(), token.data() + token.size(), value);
     if (parsed.ec != std::errc{} || parsed.ptr == token.data() || !std::isfinite(value)) return false;
     const std::string_view suffix(parsed.ptr, std::size_t(token.data() + token.size() - parsed.ptr));
     unit = Unit::Number;

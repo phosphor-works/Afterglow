@@ -8,12 +8,18 @@
 #include <cstdint>
 #include <vector>
 
+#include <unistd.h>
+
+#if defined(__linux__)
 #include <linux/audit.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
-#include <unistd.h>
+#elif defined(__FreeBSD__)
+#include <sys/capsicum.h>
+#include <sys/procctl.h>
+#endif
 
 /// The system calls of a process that decodes untrusted input: aglow's
 /// decoder child and the decoding processes of aglow-mux.
@@ -23,7 +29,9 @@ namespace AfterglowProto {
 // it reads a descriptor from the low word of an argument. The macro is this
 // header's own: it ends at the end of the header. A preprocessor test, as an
 // unknown architecture may lack the calls that the filter names (SYS_mmap).
-#if defined(__x86_64__)
+// Linux only: FreeBSD's Capsicum limits descriptors, not system calls.
+#if !defined(__linux__)
+#elif defined(__x86_64__)
 #define AFTERGLOW_DECODE_FILTER_ARCH AUDIT_ARCH_X86_64
 #elif defined(__aarch64__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #define AFTERGLOW_DECODE_FILTER_ARCH AUDIT_ARCH_AARCH64
@@ -33,8 +41,9 @@ namespace AfterglowProto {
 #define AFTERGLOW_DECODE_FILTER_ARCH AUDIT_ARCH_PPC64LE
 #endif
 
-/// Whether allowOnlyDecoding() knows the system calls of this processor.
-#ifdef AFTERGLOW_DECODE_FILTER_ARCH
+/// Whether allowOnlyDecoding() works here: on Linux, on a processor whose
+/// system calls the filter knows; on FreeBSD always (Capsicum).
+#if defined(__FreeBSD__) || defined(AFTERGLOW_DECODE_FILTER_ARCH)
 inline constexpr bool DecodeFilterKnown = true;
 #else
 inline constexpr bool DecodeFilterKnown = false;
@@ -53,8 +62,27 @@ inline constexpr bool DecodeFilterKnown = false;
 /// set, and on an architecture that it does not know (DecodeFilterKnown).
 /// The caller makes standard error /dev/null, but in a sanitizer build, and
 /// closes every other descriptor first.
+///
+/// On FreeBSD, the process enters Capsicum's capability mode instead: it can
+/// open no path, run no program, connect to nothing and signal no other
+/// process. Of its descriptors, standard input can only be read (and
+/// fstat'ed), standard output and standard error only written, and none
+/// takes an ioctl or an fcntl. Memory, limits, clocks and its end stay.
 inline bool allowOnlyDecoding()
 {
+#if defined(__FreeBSD__)
+    int noNewPrivileges = PROC_NO_NEW_PRIVS_ENABLE;
+    if (::procctl(P_PID, 0, PROC_NO_NEW_PRIVS_CTL, &noNewPrivileges) != 0) return false;
+    const auto restrict = [](int fd, cap_rights_t& rights) {
+        return ::cap_rights_limit(fd, &rights) == 0 && ::cap_ioctls_limit(fd, nullptr, 0) == 0 && ::cap_fcntls_limit(fd, 0) == 0;
+    };
+    cap_rights_t reading;
+    cap_rights_t writing;
+    ::cap_rights_init(&reading, CAP_READ, CAP_FSTAT);
+    ::cap_rights_init(&writing, CAP_WRITE, CAP_FSTAT);
+    if (!restrict(STDIN_FILENO, reading) || !restrict(STDOUT_FILENO, writing) || !restrict(STDERR_FILENO, writing)) return false;
+    return ::cap_enter() == 0;
+#else
     if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return false;
 #ifndef AFTERGLOW_DECODE_FILTER_ARCH
     return false;
@@ -104,6 +132,7 @@ inline bool allowOnlyDecoding()
     filter.push_back(BPF_STMT(BPF_RET | BPF_K, Refuse));
     const sock_fprog program{static_cast<unsigned short>(filter.size()), filter.data()};
     return ::prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) == 0;
+#endif
 #endif
 }
 

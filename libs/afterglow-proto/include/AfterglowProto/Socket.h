@@ -10,6 +10,11 @@
 #include <string_view>
 #include <vector>
 
+#include <limits.h>
+#include <sys/param.h>
+#include <sys/types.h>
+#include <sys/un.h>
+
 /// Where the sockets are. The terminal listens on its socket (InstanceSocket)
 /// and the mux daemon on its own (muxSockets()). Their clients (`afterglow
 /// ctl`, `aglow run`, `afterglow mux`) look the paths up here, so that all of
@@ -22,8 +27,27 @@ using EnvironmentLookup = std::function<const char*(const char* name)>;
 /// The process's environment.
 const char* systemEnvironment(const char* name);
 
-/// The longest socket path: sockaddr_un holds 108 bytes, the NUL included.
-inline constexpr std::size_t MaxSocketPathBytes = 107;
+/// The longest socket path: sockaddr_un holds 108 bytes on Linux and 104 on
+/// FreeBSD, the NUL included.
+inline constexpr std::size_t MaxSocketPathBytes = sizeof(sockaddr_un::sun_path) - 1;
+
+/// The longest host name, without its NUL: HOST_NAME_MAX, which FreeBSD does
+/// not define (its MAXHOSTNAMELEN counts the NUL).
+#ifdef HOST_NAME_MAX
+inline constexpr std::size_t MaxHostNameBytes = HOST_NAME_MAX;
+#else
+inline constexpr std::size_t MaxHostNameBytes = MAXHOSTNAMELEN - 1;
+#endif
+
+/// The effective user and the process at the other end of a connected Unix
+/// socket, as the kernel recorded them at connect(): SO_PEERCRED on Linux,
+/// LOCAL_PEERCRED on FreeBSD. False when the kernel does not tell.
+struct PeerCredentials
+{
+    uid_t uid = uid_t(-1);
+    pid_t pid = 0;
+};
+bool peerCredentials(int socket, PeerCredentials& out);
 
 /// Why @p path cannot be the address of a socket: it is empty, or over
 /// MaxSocketPathBytes. Empty when it can.

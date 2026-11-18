@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <AfterglowProto/FromChars.h>
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -95,7 +97,7 @@ inline bool parseColorHigh(std::string_view s, std::uint8_t& out)
 inline bool parseColorIntensity(std::string_view s, std::uint8_t& out)
 {
     double v = 0;
-    const auto parsed = std::from_chars(s.data(), s.data() + s.size(), v);
+    const auto parsed = AfterglowProto::fromChars(s.data(), s.data() + s.size(), v);
     if (s.empty() || parsed.ec != std::errc{} || parsed.ptr != s.data() + s.size() || !std::isfinite(v)) {
         return false;
     }

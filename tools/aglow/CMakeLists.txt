@@ -37,9 +37,14 @@ if(NOT AGLOW_SANITIZED)
                               AGLOW_STATIC_LINK_WORKS)
     # A static program that loads at a random address, as a dynamic one does,
     # where the C library has its start file for that (rcrt1.o): aglow reads
-    # untrusted images. Else a static program at a fixed address.
+    # untrusted images. Else a static program at a fixed address. Clang for
+    # a target without static PIE (FreeBSD) only warns that the option is
+    # unused: that fails the check too.
     set(CMAKE_REQUIRED_LINK_OPTIONS -static-pie)
     set(CMAKE_REQUIRED_FLAGS -fPIE)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        string(APPEND CMAKE_REQUIRED_FLAGS " -Werror=unused-command-line-argument")
+    endif()
     check_cxx_source_compiles("#include <string>\nint main(int argc, char**) { return int(std::string(std::size_t(argc), 'x').size()); }"
                               AGLOW_STATIC_PIE_WORKS)
     unset(CMAKE_REQUIRED_FLAGS)
@@ -357,6 +362,10 @@ if(BUILD_TESTING)
     include(GoogleTest)
     add_executable(aglow_tests tests/AglowInputTest.cpp Cli.cpp Tty.cpp)
     target_link_libraries(aglow_tests PRIVATE Afterglow::Proto GTest::gtest_main)
+    # forkpty() is in libutil on FreeBSD.
+    if(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+        target_link_libraries(aglow_tests PRIVATE util)
+    endif()
     set_target_properties(aglow_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
     gtest_discover_tests(aglow_tests TEST_PREFIX "Aglow.")
 endif()

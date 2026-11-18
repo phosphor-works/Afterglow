@@ -139,9 +139,8 @@ bool IpcConnection::connect(const std::string& path, Error* error, int timeoutMs
         close();
         return false;
     }
-    ucred peer{};
-    socklen_t size = sizeof peer;
-    if (::getsockopt(m_fd, SOL_SOCKET, SO_PEERCRED, &peer, &size) != 0 || peer.uid != ::geteuid()) {
+    PeerCredentials peer;
+    if (!peerCredentials(m_fd, peer) || peer.uid != ::geteuid()) {
         set(error, {}, "the socket belongs to another user");
         close();
         return false;

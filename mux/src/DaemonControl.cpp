@@ -51,7 +51,7 @@ namespace {
 /// it.
 void dropShellIntegration(Launch& launch)
 {
-    constexpr std::string_view Prefix = "AFTERGLOW_ORIGINAL_";
+    static constexpr std::string_view Prefix = "AFTERGLOW_ORIGINAL_";
     constexpr std::string_view SetSuffix = "_SET";
     auto& environment = launch.environment;
     const auto valueOf = [&environment](const std::string& name) -> const std::string* {
@@ -835,6 +835,7 @@ void Daemon::forget(const IpcServerConnection* connection)
     // below (out of memory) leaves no pointer to it behind.
     m_selected.erase(connection);
     m_closing.erase(connection);
+    m_callerEnvironments.erase(connection);
     forgetWatches(connection);
     std::optional<std::uint64_t> client;
     if (const auto it = m_clients.find(connection); it != m_clients.end()) {

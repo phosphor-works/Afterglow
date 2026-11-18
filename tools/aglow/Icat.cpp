@@ -23,6 +23,7 @@
 #include <AfterglowProto/Graphics.h>
 #include <AfterglowProto/Placeholder.h>
 #include <AfterglowProto/Random.h>
+#include <AfterglowProto/Socket.h>
 #include <AfterglowProto/Text.h>
 #include <AfterglowProto/Zlib.h>
 
@@ -1027,7 +1028,7 @@ std::optional<std::string> fileUri(std::string_view arg)
                 && std::equal(host.begin(), host.end(), name.begin(),
                               [](char a, char b) { return std::tolower(std::uint8_t(a)) == std::tolower(std::uint8_t(b)); });
         };
-        char own[HOST_NAME_MAX + 2] = {};
+        char own[AfterglowProto::MaxHostNameBytes + 2] = {};
         if (!host.empty() && (sameName("localhost") || (::gethostname(own, sizeof own - 1) == 0 && sameName(own)))) {
             rest = slash == std::string_view::npos ? std::string_view() : rest.substr(slash);
         }

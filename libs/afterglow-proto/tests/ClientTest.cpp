@@ -63,6 +63,20 @@ struct TempDir
         path = pattern;
     }
     ~TempDir() { std::filesystem::remove_all(path); }
+    /// Whether the system lets this user make a hard link here: FreeBSD
+    /// with security.bsd.hardlink_check_gid=1 refuses one to a file of a
+    /// group that the user is not in, and a file in /tmp takes its group.
+    bool hardLinksAllowed() const
+    {
+        const auto file = path / ".link-probe";
+        const auto link = path / ".link-probe-2";
+        { std::ofstream(file.string()) << "x"; }
+        const bool allowed = ::link(file.c_str(), link.c_str()) == 0 || errno != EPERM;
+        std::error_code ignored;
+        std::filesystem::remove(link, ignored);
+        std::filesystem::remove(file, ignored);
+        return allowed;
+    }
     std::string write(const std::string& name, const std::string& bytes) const
     {
         const auto file = path / name;
@@ -117,6 +131,9 @@ TEST(Client, AWakeEndsAWriteThatASignalCutShort)
 {
     // A pipe of one page takes half of the bytes, and the write blocks. The
     // signal then makes write(2) return the half that went, not EINTR.
+#ifndef F_SETPIPE_SZ
+    GTEST_SKIP() << "needs a pipe of a known size (F_SETPIPE_SZ, Linux)";
+#else
     int pipeFds[2];
     int wakeFds[2];
     ASSERT_EQ(::pipe2(pipeFds, O_CLOEXEC), 0);
@@ -159,6 +176,7 @@ TEST(Client, AWakeEndsAWriteThatASignalCutShort)
     }
     EXPECT_FALSE(wrote);
     EXPECT_EQ(failure, EINTR);
+#endif
 }
 
 TEST(Client, FdSourceStopsAtItsLimit)
@@ -411,6 +429,7 @@ TEST(Client, SenderMapsATreeAsKittenDoes)
     dir.write("tree/a.txt", noise(5000, 4));
     dir.write("tree/sub/b", "b");
     ASSERT_EQ(::symlink("a.txt", (dir.path / "tree/link").c_str()), 0);
+    if (!dir.hardLinksAllowed()) GTEST_SKIP() << "the system refuses hard links here (security.bsd.hardlink_check_gid)";
     ASSERT_EQ(::link((dir.path / "tree/a.txt").c_str(), (dir.path / "tree/hard").c_str()), 0);
     std::string error;
     auto sender = makeTransferSender(optionsIn(dir), { "tree", "/dest/" }, error);
@@ -1287,6 +1306,7 @@ TEST_F(Hostile, ReceivedModesFollowTheUmask)
 
 TEST_F(Hostile, ATreeArrivesWithItsMetadata)
 {
+    if (!dir.hardLinksAllowed()) GTEST_SKIP() << "the system refuses hard links here (security.bsd.hardlink_check_gid)";
     const std::int64_t modified = 1600000000LL * 1000000000LL + 5;
     auto client = receiver({ "/r/tree", (dir.path / "dest").string() + "/" });
     FakeTerminal terminal { *client, "/home/r" };

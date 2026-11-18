@@ -150,8 +150,9 @@ std::optional<std::string> readToEnd(int fd, std::chrono::milliseconds wait)
 }
 
 /// A socket at @p path that plays a daemon of this protocol for one client:
-/// it answers the client's version call, and then leaves the connection to
-/// the test, which reads it when it wants.
+/// it answers the client's version call, and a proxy's callerEnvironment
+/// call, and then leaves the connection to the test, which reads it when it
+/// wants.
 struct FakeDaemon
 {
     explicit FakeDaemon(const std::string& path)
@@ -165,14 +166,21 @@ struct FakeDaemon
     }
     FakeDaemon(const FakeDaemon&) = delete;
     FakeDaemon& operator=(const FakeDaemon&) = delete;
-    /// Takes the next client and answers its version call.
-    bool answer()
+    /// Takes the next client and answers its version call, and with
+    /// @p proxy the callerEnvironment call that a proxy makes next.
+    bool answer(bool proxy = true)
     {
         client = acceptOne(listener);
         if (client < 0) return false;
         const auto request = Json::parse(lineOf(client));
         if (!request || (*request)["fn"].toString() != Fn::Version) return false;
-        return sendAll(client, AfterglowProto::ipcReply((*request)["id"].toInteger().value_or(0), Json::Object{{"protocol", ProtocolVersion}}));
+        if (!sendAll(client, AfterglowProto::ipcReply((*request)["id"].toInteger().value_or(0), Json::Object{{"protocol", ProtocolVersion}})))
+            return false;
+        if (!proxy) return true;
+        const auto sent = Json::parse(lineOf(client));
+        if (!sent || (*sent)["fn"].toString() != Fn::CallerEnvironment) return false;
+        environment = environmentFrom((*sent)["args"].toArray().at(1), nullptr).value_or(environment);
+        return sendAll(client, AfterglowProto::ipcReply((*sent)["id"].toInteger().value_or(0), nullptr));
     }
     void closeClient()
     {
@@ -181,6 +189,8 @@ struct FakeDaemon
     }
     int listener = -1;
     int client = -1;
+    /// What the proxy's callerEnvironment call sent.
+    std::vector<std::pair<std::string, std::string>> environment;
 };
 
 /// `aglow-mux proxy` in the environment of @p daemon: it finds the sockets of
@@ -385,6 +395,24 @@ TEST(MuxProxy, TheDaemonsCloseEndsTheProxyAfterItsLastBytes)
     fake.closeClient();
     EXPECT_EQ(readToEnd(proxy.output, 5s), std::optional<std::string>("last\n"));
     EXPECT_EQ(proxy.exitStatus(), 0) << proxy.errors();
+}
+
+// The proxy sends its own environment, that of the user's ssh login, before
+// it carries the client: the daemon reads no other process's.
+TEST(MuxProxy, TheProxySendsItsEnvironmentFirst)
+{
+    TestDaemon daemon;
+    FakeDaemon fake(daemon.socket());
+    ASSERT_GE(fake.listener, 0);
+    ProxyRun proxy(daemon);
+    ASSERT_GT(proxy.pid, 0);
+    ASSERT_TRUE(fake.answer()) << proxy.errors();
+    auto sent = fake.environment;
+    auto expected = daemon.cleanEnvironment();
+    std::sort(sent.begin(), sent.end());
+    std::sort(expected.begin(), expected.end());
+    EXPECT_TRUE(sent == expected);
+    ASSERT_TRUE(relays(proxy, fake)) << proxy.errors();
 }
 
 // A client that no longer reads ends the proxy at the daemon's next bytes.

@@ -13,7 +13,9 @@
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#if defined(__linux__)
 #include <sys/sysmacros.h>
+#endif
 #include <unistd.h>
 
 namespace AfterglowProto {
@@ -64,6 +66,27 @@ void unlockFile(const std::string& path, int fd)
     if (names(path, fd)) ::unlink(path.c_str());
     ::close(fd);
 }
+
+#if defined(__FreeBSD__)
+
+// FreeBSD keeps flock() and fcntl() locks in one list per file, so F_GETLK
+// sees an flock that another open file holds, in this process or another,
+// and takes nothing. Closing the probe's descriptor drops no flock.
+bool lockFileHeld(const std::string& path)
+{
+    struct stat file{};
+    if (::lstat(path.c_str(), &file) != 0) return false;
+    const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return true;
+    struct flock query{};
+    query.l_type = F_WRLCK;
+    query.l_whence = SEEK_SET;
+    const bool held = ::fcntl(fd, F_GETLK, &query) != 0 || query.l_type != F_UNLCK;
+    ::close(fd);
+    return held;
+}
+
+#else
 
 namespace {
 
@@ -121,5 +144,7 @@ bool lockFileHeld(const std::string& path)
     }
     return false;
 }
+
+#endif
 
 } // namespace AfterglowProto

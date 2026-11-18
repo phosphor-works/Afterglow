@@ -169,6 +169,12 @@ It compiles zlib-ng, xxHash, libpng, libjpeg-turbo, libwebp and Little CMS from 
 | PCRE2 with 32-bit code units (`libpcre2-32`), and `pkg-config` | The terminal core, which `aglow-mux` uses, links it for regular expression search |
 | The pinned phosphor-libs archive, which the configuration downloads | Gives phosphor-channel, which carries the frames of a session to its window. The build uses no other library of phosphor-libs. |
 
+This build also works on FreeBSD 15 with the clang of the base system.
+The packages are `cmake-core`, `ninja`, `pkgconf`, `pcre2` and `nasm`, and `googletest` and `qt6-base` for the tests.
+The base system has the static C and C++ libraries.
+On FreeBSD, `aglow` is static but does not load at a random address, because the C library has no start file for `-static-pie`.
+The image decoders of `aglow` and `aglow-mux` run in Capsicum capability mode, where Linux uses a seccomp filter.
+
 To build `aglow` without `aglow-mux`, add `-DAFTERGLOW_BUILD_MUX=OFF` to the configuration command.
 That build does not need PCRE2 or phosphor-libs.
 

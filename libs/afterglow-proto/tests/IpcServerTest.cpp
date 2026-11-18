@@ -394,6 +394,9 @@ TEST(IpcServer, ALockFileIsHeldOnTheFileSystemOfTheTests)
     // give on a btrfs subvolume. /tmp is often tmpfs, where the two agree:
     // this test makes its file beside its executable, in the build
     // directory, and never in a source tree that it runs from by hand.
+#if !defined(__linux__)
+    GTEST_SKIP() << "the device names of /proc/locks (Linux)";
+#endif
     std::error_code noPath;
     const std::filesystem::path executable = std::filesystem::read_symlink("/proc/self/exe", noPath);
     ASSERT_FALSE(noPath) << noPath.message();

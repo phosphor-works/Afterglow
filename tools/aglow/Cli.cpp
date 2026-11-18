@@ -4,6 +4,8 @@
 #include "Cli.h"
 #include "Tty.h"
 
+#include <AfterglowProto/FromChars.h>
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -145,7 +147,7 @@ bool checkValue(const Option& option, const std::string& name, const std::string
     } else if (option.kind == Option::Kind::Float) {
         // from_chars, not strtod: the locale cannot change the decimal point,
         // and "inf", "nan" and hex floats are no numbers here.
-        const auto [end, ec] = std::from_chars(value.data(), value.data() + value.size(), number, std::chars_format::fixed);
+        const auto [end, ec] = AfterglowProto::fromChars(value.data(), value.data() + value.size(), number, std::chars_format::fixed);
         if (ec != std::errc() || end != value.data() + value.size() || !std::isfinite(number)) {
             error = "Not a number for " + name + ": " + value;
             return false;

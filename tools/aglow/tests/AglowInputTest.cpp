@@ -14,7 +14,11 @@
 #include <fcntl.h>
 #include <functional>
 #include <poll.h>
+#if defined(__FreeBSD__)
+#include <libutil.h>
+#else
 #include <pty.h>
+#endif
 #include <string>
 #include <sys/ioctl.h>
 #include <sys/wait.h>

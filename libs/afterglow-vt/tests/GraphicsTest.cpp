@@ -136,6 +136,14 @@ struct ShmName
     ~ShmName() { shm_unlink(name.c_str()); }
 };
 
+/// Fills a new shared memory object as a sender does: sized first. A write()
+/// past its end grows it on Linux (a tmpfs file), not on FreeBSD.
+ssize_t writeShm(int fd, const char* bytes, std::size_t size)
+{
+    if (ftruncate(fd, off_t(size)) != 0) return -1;
+    return pwrite(fd, bytes, size, 0);
+}
+
 /// A file in the test's temporary directory (or @p directory), removed when
 /// the test ends. mkstemp picks a name nobody could have planted a link at;
 /// the stem keeps the protocol's tag in it.
@@ -1015,7 +1023,7 @@ TEST(Graphics, SharedMemoryOffsetWithoutSizeReadsRemainingBytes)
     const ShmName shm{"/afterglow-graphics-test-" + std::to_string(getpid())};
     const int fd = shm_open(shm.name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
     ASSERT_GE(fd, 0);
-    ASSERT_EQ(write(fd, "skipRGBA", 8), 8);
+    ASSERT_EQ(writeShm(fd, "skipRGBA", 8), 8);
     close(fd);
     Term t(20, 10);
     t.t.feed(apc("a=t,t=s,f=32,s=1,v=1,O=4,i=7", base64Encode(shm.name)));
@@ -1032,7 +1040,7 @@ TEST(Graphics, SharedMemoryIsDeletedWhateverItsName)
     for (const ShmName* shm : {&plain, &tagged}) {
         const int fd = shm_open(shm->name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
         ASSERT_GE(fd, 0);
-        ASSERT_EQ(write(fd, "victim", 6), 6);
+        ASSERT_EQ(writeShm(fd, "victim", 6), 6);
         close(fd);
     }
     Term t(20, 10);
@@ -1899,7 +1907,7 @@ TEST(Graphics, IdWithNumberStillDeletesItsTemporaryMedium)
     const ShmName shm{"/afterglow-tty-graphics-protocol-both-" + std::to_string(getpid())};
     const int fd = shm_open(shm.name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
     ASSERT_GE(fd, 0);
-    ASSERT_EQ(write(fd, "RGBA", 4), 4);
+    ASSERT_EQ(writeShm(fd, "RGBA", 4), 4);
     close(fd);
     Term t(20, 10);
     t.t.feed(apc("a=t,t=t,f=32,s=1,v=1,i=1,I=2", base64Encode(file.path)));
@@ -1947,7 +1955,7 @@ TEST(Graphics, ReadOverTheWorkBudgetIsBusy)
     // no retry.
     const auto object = [](const std::string& name) {
         const int fd = shm_open(name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
-        const bool written = fd >= 0 && write(fd, "RGBA", 4) == 4;
+        const bool written = fd >= 0 && writeShm(fd, "RGBA", 4) == 4;
         if (fd >= 0) close(fd);
         return written;
     };

@@ -13,7 +13,12 @@
 #include <cstdlib>
 
 #include <limits.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#if __has_include(<sys/ucred.h>)
+#include <sys/ucred.h>
+#endif
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -68,9 +73,9 @@ std::string stateDirectory(const EnvironmentLookup& env)
 
 std::string hostName()
 {
-    // Room for a name of HOST_NAME_MAX bytes and its NUL, and one NUL more
+    // Room for a name of MaxHostNameBytes and its NUL, and one NUL more
     // that gethostname never writes: POSIX leaves a cut name unterminated.
-    char host[HOST_NAME_MAX + 2] = {};
+    char host[MaxHostNameBytes + 2] = {};
     if (::gethostname(host, sizeof host - 1) != 0) return {};
     return host;
 }
@@ -84,9 +89,26 @@ std::string display(const EnvironmentLookup& env, std::string_view runtime)
     return displayName(display);
 }
 
-static_assert(MaxSocketPathBytes + 1 == sizeof(sockaddr_un::sun_path));
-
 } // namespace
+
+bool peerCredentials(int socket, PeerCredentials& out)
+{
+#if defined(SO_PEERCRED)
+    ucred peer{};
+    socklen_t size = sizeof peer;
+    if (::getsockopt(socket, SOL_SOCKET, SO_PEERCRED, &peer, &size) != 0) return false;
+    out = {peer.uid, peer.pid};
+    return true;
+#elif defined(LOCAL_PEERCRED)
+    xucred peer{};
+    socklen_t size = sizeof peer;
+    if (::getsockopt(socket, SOL_LOCAL, LOCAL_PEERCRED, &peer, &size) != 0 || peer.cr_version != XUCRED_VERSION) return false;
+    out = {peer.cr_uid, peer.cr_pid};
+    return true;
+#else
+#error "no way to read the credentials of a socket's peer"
+#endif
+}
 
 const char* systemEnvironment(const char* name)
 {

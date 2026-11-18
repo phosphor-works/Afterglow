@@ -1118,6 +1118,7 @@ TEST(MuxAttach, APaneThatTheWindowDoesNotShowGetsNoScreens)
 
 TEST(MuxAttach, ThePaneDirectoryIsThatOfTheForegroundProgram)
 {
+    if (!MuxTest::processDirectoriesShown()) GTEST_SKIP() << "the kernel tells no directory of another process (security.bsd.unprivileged_proc_debug=0)";
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(shellSession(daemon, "sh")) << daemon.lastError();
@@ -1275,7 +1276,7 @@ namespace {
 std::vector<std::string> downloads(const std::vector<std::string>& files, const std::string& tail)
 {
     std::vector<std::string> argv{"/bin/sh", "-c",
-                                  "read -r _; for f in \"$@\"; do printf '\\033]1337;File=name=Z290LmJpbg==;size=%s:' \"$(stat -c %s \"$f\")\"; "
+                                  "read -r _; for f in \"$@\"; do printf '\\033]1337;File=name=Z290LmJpbg==;size=%s:' \"$(wc -c < \"$f\" | tr -d ' ')\"; "
                                   "base64 -w 0 \"$f\"; printf '\\007'; done; printf '" + tail + "'; exec cat",
                                   "sh"};
     argv.insert(argv.end(), files.begin(), files.end());
@@ -3166,6 +3167,7 @@ TEST(MuxAttach, TheNextWindowGetsTheBellAndTheNewestNotificationsOfADetachedSess
 // of this machine.
 TEST(MuxControl, TheDirectoryOfAShellIsAPathOfThisMachine)
 {
+    if (!MuxTest::processDirectoriesShown()) GTEST_SKIP() << "the kernel tells no directory of another process (security.bsd.unprivileged_proc_debug=0)";
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
     ASSERT_TRUE(readableShell(daemon, "d")) << daemon.lastError();
@@ -3279,7 +3281,7 @@ TEST(MuxControl, TheDaemonTypesKeysAndTellsThePanesFacts)
     EXPECT_EQ(ctl.error.message, "sendKeys sends at most " + std::to_string(AfterglowVt::MaxKeysAtOnce) + " keys at once");
     // In the program's keyboard mode: Up is ESC O A with application cursor
     // keys (DECCKM), not ESC [ A.
-    ASSERT_TRUE(ctl.call("sendText", Json::Array{std::int64_t(first), "stty raw -echo; printf '\\033[?1hre''ady'; head -c3 | od -An -tx1; "
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{std::int64_t(first), "stty raw -echo; printf '\\033[?1hre''ady'; head -c3 | od -An -tx1 | tr -s ' '; "
                                                                        "printf '\\033[?1l'; stty sane\n"}));
     ASSERT_TRUE(screen("ready"));
     ASSERT_TRUE(ctl.call("sendKeys", Json::Array{std::int64_t(first), Json::Array{"Up"}})) << ctl.error.message;
@@ -3343,7 +3345,7 @@ TEST(MuxAttach, AnUploadRequestGoesToTheWindowOrGetsNothing)
     // raw mode a line feed returns no carriage: "end" can follow spaces.
     const auto request = [](const std::string& seconds) {
         return "stty raw -echo; printf '\\033]1337;RequestUpload=format=tgz\\a'; timeout " + seconds
-            + " head -c1 | od -An -tx1; stty sane; echo en''d\n";
+            + " head -c1 | od -An -tx1 | tr -s ' '; stty sane; echo en''d\n";
     };
     // The screen of the last request goes: its text does not count again.
     const std::string clear = "printf '\\033[H\\033[2J'\n";
@@ -3399,7 +3401,7 @@ TEST(MuxAttach, TheNextWindowAsksForAnUploadThatTheLastOneDidNotAnswer)
     // reads shows in hexadecimal, then "end" (the quotes keep it off the
     // command line). It still holds the terminal after: an answer, not the
     // end of the job, is why the last window does not ask.
-    ASSERT_TRUE(first->type("stty raw -echo; (printf '\\033]1337;RequestUpload=format=tgz\\a'; head -c1 | od -An -tx1; echo en''d; sleep 60)\n"));
+    ASSERT_TRUE(first->type("stty raw -echo; (printf '\\033]1337;RequestUpload=format=tgz\\a'; head -c1 | od -An -tx1 | tr -s ' '; echo en''d; sleep 60)\n"));
     ASSERT_TRUE(first->until([&] { return asks(*first) == 1; }));
     ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"q"})) << daemon.lastError();
     first.reset();
@@ -3465,7 +3467,7 @@ TEST(MuxAttach, AResetKeepsTheQuestionOfAnUpload)
     ASSERT_TRUE(first->until([&] { return first->pane != 0; }));
     // The job asks, resets the terminal, then reads a byte and shows it in
     // hexadecimal, then "end".
-    ASSERT_TRUE(first->type("stty raw -echo; (printf '\\033]1337;RequestUpload=format=tgz\\a\\033c'; head -c1 | od -An -tx1; echo en''d; sleep 60)\n"));
+    ASSERT_TRUE(first->type("stty raw -echo; (printf '\\033]1337;RequestUpload=format=tgz\\a\\033c'; head -c1 | od -An -tx1 | tr -s ' '; echo en''d; sleep 60)\n"));
     ASSERT_TRUE(first->until([&] { return uploadAsks(*first) == 1; }));
     // The reset reached the terminal: the screen is clear of the command.
     ASSERT_TRUE(waitFor([&] {
@@ -3499,7 +3501,7 @@ TEST(MuxAttach, OnlyTheWindowAskedLastAnswersAnUpload)
     ASSERT_EQ(first.attach(daemon, "q"), "");
     ASSERT_TRUE(first.until([&] { return first.pane != 0; }));
     // The job reads two bytes and shows them in hexadecimal, then "end".
-    ASSERT_TRUE(first.type("stty raw -echo; (printf '\\033]1337;RequestUpload=format=tgz\\a'; head -c2 | od -An -tx1; echo en''d; sleep 60)\n"));
+    ASSERT_TRUE(first.type("stty raw -echo; (printf '\\033]1337;RequestUpload=format=tgz\\a'; head -c2 | od -An -tx1 | tr -s ' '; echo en''d; sleep 60)\n"));
     ASSERT_TRUE(first.until([&] { return uploadAsks(first) == 1; }));
     Window second;
     ASSERT_EQ(second.attach(daemon, "q"), "");
@@ -5944,6 +5946,7 @@ TEST(MuxControl, TheDaemonChecksTheArgumentsOfItsControlCalls)
     const auto tab = ctl.call("newTab", Json::Array{pane, directory, Json::Array{}});
     ASSERT_TRUE(tab) << ctl.error.message;
     ASSERT_TRUE(tab->toInteger()) << Json::write(*tab);
+    if (!MuxTest::processDirectoriesShown()) GTEST_SKIP() << "the kernel tells no directory of another process (security.bsd.unprivileged_proc_debug=0)";
     EXPECT_TRUE(waitFor([&] {
         const auto listed = ctl.call("listPanes", {});
         if (!listed) return false;
@@ -5960,7 +5963,10 @@ TEST(MuxControl, TextForAProgramThatReadsNothingStopsAtItsQueue)
 {
     TestDaemon daemon;
     ASSERT_TRUE(daemon.start()) << daemon.errors();
-    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "q"))) << daemon.lastError();
+    // Raw and without echo: a terminal in canonical mode takes, and drops,
+    // the input past a full line (Linux and FreeBSD), as fast as it comes.
+    const std::vector<std::string> readsNothing = {"/bin/sh", "-c", "stty raw -echo; exec sleep 3600"};
+    ASSERT_TRUE(daemon.newSession(daemon.options(readsNothing, "q"))) << daemon.lastError();
     ControlClient ctl(daemon);
     ASSERT_EQ(ctl.select("q"), "");
     // Below the limit of a request (IpcConnection::MaxRequestBytes): the

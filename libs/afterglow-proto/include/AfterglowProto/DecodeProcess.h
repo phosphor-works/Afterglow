@@ -12,7 +12,11 @@
 
 #include <fcntl.h>
 #include <signal.h>
+#if defined(__linux__)
 #include <sys/prctl.h>
+#elif defined(__FreeBSD__)
+#include <sys/procctl.h>
+#endif
 #include <sys/resource.h>
 #include <unistd.h>
 
@@ -35,17 +39,22 @@ namespace AfterglowProto {
 ///   @p output is descriptor 2: then it stays the parent's. Every other
 ///   descriptor closes: it holds none of the parent's (a terminal, a
 ///   socket);
-/// - the kernel's OOM killer takes it before the parent;
+/// - the kernel's OOM killer takes it before the parent (Linux);
 /// - it writes no core file, and no other process of the user can trace it
 ///   or read its memory.
 /// False when it cannot: the caller exits at once.
 [[nodiscard]] inline bool startDecodingProcess(pid_t parent, int input, int output, bool keepStandardError)
 {
+#if defined(__linux__)
     ::prctl(PR_SET_PDEATHSIG, SIGKILL);
+#elif defined(__FreeBSD__)
+    int deathSignal = SIGKILL;
+    ::procctl(P_PID, 0, PROC_PDEATHSIG_CTL, &deathSignal);
+#endif
     if (::getppid() != parent) return false;
 
-    // aglow-mux's server blocks SIGCHLD for its signalfd: the signals of the
-    // limits must arrive here.
+    // A parent may block signals (the daemon those of its signal
+    // descriptor): the signals of the limits must arrive here.
     sigset_t none;
     ::sigemptyset(&none);
     ::sigprocmask(SIG_SETMASK, &none, nullptr);
@@ -75,15 +84,22 @@ namespace AfterglowProto {
     }
     AfterglowPty::closeFrom(STDERR_FILENO + 1);
 
+#if defined(__linux__)
     // Before PR_SET_DUMPABLE, which gives /proc/self to root.
     if (const int adjust = ::open("/proc/self/oom_score_adj", O_WRONLY | O_CLOEXEC); adjust >= 0) {
         (void)!::write(adjust, "1000", 4);
         ::close(adjust);
     }
+#endif
     // No core file, also where systemd-coredump takes cores through a pipe,
     // which RLIMIT_CORE does not stop.
     limit(RLIMIT_CORE, 0, 0);
+#if defined(__linux__)
     ::prctl(PR_SET_DUMPABLE, 0);
+#elif defined(__FreeBSD__)
+    int tracing = PROC_TRACE_CTL_DISABLE;
+    ::procctl(P_PID, 0, PROC_TRACE_CTL, &tracing);
+#endif
     return true;
 }
 
