@@ -152,6 +152,17 @@ To use a phosphor-libs checkout instead, add this option to the configuration co
 
 Use this option to build against a change to phosphor-libs before the pin moves to it.
 
+## Build with Nix
+
+The flake builds Afterglow on `x86_64-linux` and `aarch64-linux`.
+It fetches the archives that `cmake/AfterglowDependencies.cmake` pins, and the archives of the pinned phosphor-libs commit.
+
+| Command | Result |
+| --- | --- |
+| `nix build .#default` | Builds the package into `result` |
+| `nix flake check` | Builds the package and runs the tests in the sandbox. The sandbox has no Wayland display, so the tests that draw with Vulkan report Skipped. |
+| `nix develop` | Opens a shell with the build dependencies, `ccache` and `clang-tools` |
+
 ## Build aglow and aglow-mux alone
 
 Build `aglow` and the [mux daemon](MUX.md) `aglow-mux` alone on a computer that does not run Afterglow, for example a remote host.

@@ -96,6 +96,8 @@ wrong, and points to the skills that hold the procedures.
   callbacks are the exception: they let the lock go while the decoder runs (`Pane::decodeOutsideLock`).
 - Logging uses categories named `afterglow.<area>`.
 - Match the surrounding code: its comment density, naming and idiom. A comment says why, not what.
+- Format C++ with `clang-format -i` (the `.clang-format` of phosphor-libs) and QML with `qmlformat -i`. CI checks
+  the files that a change touches.
 
 ## Text
 
