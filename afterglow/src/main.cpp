@@ -260,6 +260,7 @@ int main(int argc, char** argv)
     // It ends before a quit signal is raised again, as at a return.
     std::optional<QApplication> app;
     app.emplace(argc, argv);
+    Afterglow::restoreEnvironment();
     QGuiApplication::setWindowIcon(QIcon::fromTheme(QStringLiteral(AFTERGLOW_APP_ID)));
     parser.process(*app);
 

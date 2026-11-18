@@ -542,6 +542,7 @@ A variable that `Terminal.env` sets stays.
 | `AFTERGLOW_RESULT`, `OLDPWD`, `SHLVL` | They belong to the shell that ran the command |
 
 `PWD` stays. `SSH_TTY`, `SSH_CONNECTION`, `SSH_CLIENT` and `GPG_TTY` stay too, because they describe the login, not a terminal.
+Afterglow sets `QT_WAYLAND_SHELL_INTEGRATION` for its own windows only. A pane gets the value that Afterglow got when it started, or none.
 
 The daemon sets these variables in each session pane:
 
