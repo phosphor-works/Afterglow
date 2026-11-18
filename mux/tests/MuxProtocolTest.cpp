@@ -25,7 +25,8 @@ namespace {
 std::vector<std::string> keys(const Json::Value& object)
 {
     std::vector<std::string> list;
-    for (const auto& [key, value] : object.toObject()) list.push_back(key);
+    for (const auto& [key, value] : object.toObject())
+        list.push_back(key);
     return list;
 }
 
@@ -46,7 +47,9 @@ Json::Value with(const Json::Value& object, std::string_view key, Json::Value va
 Json::Value without(const Json::Value& object, std::string_view key)
 {
     Json::Object copy = object.toObject();
-    std::erase_if(copy, [&](const auto& entry) { return entry.first == key; });
+    std::erase_if(copy, [&](const auto& entry) {
+        return entry.first == key;
+    });
     return Json::Value(std::move(copy));
 }
 
@@ -54,9 +57,11 @@ Json::Value without(const Json::Value& object, std::string_view key)
 
 TEST(MuxProtocol, SessionNames)
 {
-    for (const char* name : {"1", "work", "a_b-C9", "x", "_x", "a-", "a--b"}) EXPECT_TRUE(validSessionName(name)) << name;
+    for (const char* name : {"1", "work", "a_b-C9", "x", "_x", "a-", "a--b"})
+        EXPECT_TRUE(validSessionName(name)) << name;
     // A name that starts with '-' would read as an option of `afterglow mux kill`.
-    for (const char* name : {"", "a b", "a/b", "é", "a.b", "-\n", "-", "--", "-a", "--force"}) EXPECT_FALSE(validSessionName(name)) << name;
+    for (const char* name : {"", "a b", "a/b", "é", "a.b", "-\n", "-", "--", "-a", "--force"})
+        EXPECT_FALSE(validSessionName(name)) << name;
     EXPECT_TRUE(validSessionName(std::string(MaxSessionName, 'a')));
     EXPECT_FALSE(validSessionName(std::string(MaxSessionName + 1, 'a')));
     EXPECT_NE(std::string(SessionNameRule).find("ASCII letters"), std::string::npos);
@@ -115,13 +120,15 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
         variables.environment = {{"SSH_AUTH_SOCK", "/run/a"}, {"DISPLAY", std::nullopt}};
         EXPECT_EQ(Json::write(toJson(variables)["environment"]), R"([["SSH_AUTH_SOCK","/run/a"],["DISPLAY",null]])");
         std::string variablesError;
-        const auto variablesBack = sessionSettings(Json::parse(Json::write(toJson(variables))).value(), &variablesError);
+        const auto variablesBack =
+            sessionSettings(Json::parse(Json::write(toJson(variables))).value(), &variablesError);
         ASSERT_TRUE(variablesBack) << variablesError;
         EXPECT_TRUE(*variablesBack == variables);
         for (const char* bad : {R"([["A=B","x"]])", R"([["A",1]])", R"([["A"]])", R"(["A"])", R"([["","x"]])"}) {
             Json::Object object = toJson(variables).toObject();
             for (auto& [key, value] : object) {
-                if (key == "environment") value = Json::parse(bad).value();
+                if (key == "environment")
+                    value = Json::parse(bad).value();
             }
             EXPECT_FALSE(sessionSettings(Json::Value(object), &variablesError)) << bad;
         }
@@ -137,9 +144,12 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     followed.keptNotifications = 3;
     followed.notificationCapabilities = "p=title";
     EXPECT_EQ(keys(toJson(followed)),
-              (std::vector<std::string>{"terminal", "control", "environment", "keptNotifications", "notificationCapabilities"}));
-    EXPECT_EQ(keys(toJson(followed)["control"]), (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff", "eventInterval"}));
-    [[maybe_unused]] auto& [followedTerminal, followedControl, followedEnvironment, followedKept, followedCapabilities] = followed;
+              (std::vector<std::string>{"terminal", "control", "environment", "keptNotifications",
+                                        "notificationCapabilities"}));
+    EXPECT_EQ(keys(toJson(followed)["control"]),
+              (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff", "eventInterval"}));
+    [[maybe_unused]] auto& [followedTerminal, followedControl, followedEnvironment, followedKept,
+                            followedCapabilities] = followed;
     std::string settingsError;
     const auto settingsBack = sessionSettings(Json::parse(Json::write(toJson(followed))).value(), &settingsError);
     ASSERT_TRUE(settingsBack) << settingsError;
@@ -149,17 +159,20 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     for (const Json::Value& kept : {Json::Value(-1), Json::Value(MaxKeptNotifications + 1), Json::Value("8")}) {
         Json::Object object = toJson(followed).toObject();
         for (auto& [key, value] : object) {
-            if (key == "keptNotifications") value = kept;
+            if (key == "keptNotifications")
+                value = kept;
         }
         settingsError.clear();
         EXPECT_FALSE(sessionSettings(Json::Value(object), &settingsError)) << Json::write(kept);
         EXPECT_NE(settingsError.find("keptNotifications"), std::string::npos) << settingsError;
     }
     // The answer to OSC 99's query is text.
-    for (const Json::Value& capabilities : {Json::Value(3), Json::Value(nullptr), Json::Value(Json::Array{"p=title"})}) {
+    for (const Json::Value& capabilities :
+         {Json::Value(3), Json::Value(nullptr), Json::Value(Json::Array{"p=title"})}) {
         Json::Object object = toJson(followed).toObject();
         for (auto& [key, value] : object) {
-            if (key == "notificationCapabilities") value = capabilities;
+            if (key == "notificationCapabilities")
+                value = capabilities;
         }
         settingsError.clear();
         EXPECT_FALSE(sessionSettings(Json::Value(object), &settingsError)) << Json::write(capabilities);
@@ -251,15 +264,18 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     // waits behind the input of a program, and nor does the answer to a
     // download, whose program reads no input until it comes. Each of the
     // sixteen input types is on one channel or the other.
-    for (const auto type : {Attach::InputType::Kill, Attach::InputType::ClosePane, Attach::InputType::Visible, Attach::InputType::Refresh,
-                            Attach::InputType::PaneForgotten, Attach::InputType::DownloadAnswer})
+    for (const auto type :
+         {Attach::InputType::Kill, Attach::InputType::ClosePane, Attach::InputType::Visible, Attach::InputType::Refresh,
+          Attach::InputType::PaneForgotten, Attach::InputType::DownloadAnswer})
         EXPECT_TRUE(Attach::isAction(type)) << int(type);
-    for (const auto type : {Attach::InputType::Bytes, Attach::InputType::Resize, Attach::InputType::Reset, Attach::InputType::Clear,
-                            Attach::InputType::Layout, Attach::InputType::ControlReply, Attach::InputType::Settings,
-                            Attach::InputType::ControlReplyPart, Attach::InputType::UploadAnswerPart, Attach::InputType::UploadAnswer})
+    for (const auto type :
+         {Attach::InputType::Bytes, Attach::InputType::Resize, Attach::InputType::Reset, Attach::InputType::Clear,
+          Attach::InputType::Layout, Attach::InputType::ControlReply, Attach::InputType::Settings,
+          Attach::InputType::ControlReplyPart, Attach::InputType::UploadAnswerPart, Attach::InputType::UploadAnswer})
         EXPECT_FALSE(Attach::isAction(type)) << int(type);
     // Version 27: the answer to a download's question, or its stop, a byte.
-    for (const auto reply : {Attach::DownloadReply::Refuse, Attach::DownloadReply::Accept, Attach::DownloadReply::Stop}) {
+    for (const auto reply :
+         {Attach::DownloadReply::Refuse, Attach::DownloadReply::Accept, Attach::DownloadReply::Stop}) {
         Attach::Input answer;
         answer.type = Attach::InputType::DownloadAnswer;
         answer.pane = 3;
@@ -297,7 +313,8 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     layout.addTab(4);
     layout.values[4] = {"t", {"htop"}};
     EXPECT_EQ(keys(toJson(layout)), (std::vector<std::string>{"tabs", "current", "values"}));
-    EXPECT_EQ(keys(toJson(layout)["tabs"].toArray()[0]), (std::vector<std::string>{"tree", "focused", "zoomed", "title"}));
+    EXPECT_EQ(keys(toJson(layout)["tabs"].toArray()[0]),
+              (std::vector<std::string>{"tree", "focused", "zoomed", "title"}));
     EXPECT_EQ(keys(toJson(layout)["values"].toArray()[0]), (std::vector<std::string>{"id", "title", "command"}));
     // A window that does not know a pane's command sends none, and the
     // daemon keeps its own.
@@ -340,22 +357,41 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     EXPECT_EQ(Attach::encode(bell), std::string("\x06\x01\x00\x02\xac\x02\x01", 7));
     EXPECT_EQ(Attach::HostPartBytes, std::size_t(1) << 20);
     // The number of each kind.
-    for (const auto& [kind, number] : std::vector<std::pair<Host::Kind, int>>{
-             {Host::Kind::Bell, 1}, {Host::Kind::Flash, 2}, {Host::Kind::Notify, 3}, {Host::Kind::DesktopNotification, 4},
-             {Host::Kind::ClipboardWrite, 5}, {Host::Kind::ClipboardRequest, 6}, {Host::Kind::TerminalProtocol, 7},
-             {Host::Kind::PointerShape, 8}, {Host::Kind::UserVar, 9}, {Host::Kind::CommandStarted, 10},
-             {Host::Kind::CommandFinished, 11}, {Host::Kind::DownloadBegin, 12}, {Host::Kind::Report, 13}, {Host::Kind::ProtocolLost, 14},
-             {Host::Kind::DownloadData, 15}, {Host::Kind::DownloadEnd, 16}, {Host::Kind::UploadRequest, 17}}) {
+    for (const auto& [kind, number] : std::vector<std::pair<Host::Kind, int>>{{Host::Kind::Bell, 1},
+                                                                              {Host::Kind::Flash, 2},
+                                                                              {Host::Kind::Notify, 3},
+                                                                              {Host::Kind::DesktopNotification, 4},
+                                                                              {Host::Kind::ClipboardWrite, 5},
+                                                                              {Host::Kind::ClipboardRequest, 6},
+                                                                              {Host::Kind::TerminalProtocol, 7},
+                                                                              {Host::Kind::PointerShape, 8},
+                                                                              {Host::Kind::UserVar, 9},
+                                                                              {Host::Kind::CommandStarted, 10},
+                                                                              {Host::Kind::CommandFinished, 11},
+                                                                              {Host::Kind::DownloadBegin, 12},
+                                                                              {Host::Kind::Report, 13},
+                                                                              {Host::Kind::ProtocolLost, 14},
+                                                                              {Host::Kind::DownloadData, 15},
+                                                                              {Host::Kind::DownloadEnd, 16},
+                                                                              {Host::Kind::UploadRequest, 17}}) {
         EXPECT_EQ(int(kind), number);
     }
-    EXPECT_EQ(Host::encode(Host::make(Host::Kind::Notify, "t", "b")), std::string("\x03\x01t\x01" "b\x00", 6));
+    EXPECT_EQ(Host::encode(Host::make(Host::Kind::Notify, "t", "b")),
+              std::string("\x03\x01t\x01"
+                          "b\x00",
+                          6));
     Host::Call missed = Host::make(Host::Kind::Notify, "t", "b");
     missed.missed = true;
-    EXPECT_EQ(Host::encode(missed), std::string("\x03\x01t\x01" "b\x01", 6));
+    EXPECT_EQ(Host::encode(missed),
+              std::string("\x03\x01t\x01"
+                          "b\x01",
+                          6));
     EXPECT_EQ(Host::encode(Host::make(Host::Kind::UserVar, "n", "v")), std::string("\x09\x01n\x01v"));
     EXPECT_EQ(Host::encode(Host::make(Host::Kind::UploadRequest)), std::string("\x11"));
     // The daemon encodes a download's data without a Call.
-    EXPECT_EQ(Host::encodeDownloadData("ab"), std::string("\x0f\x02" "ab"));
+    EXPECT_EQ(Host::encodeDownloadData("ab"),
+              std::string("\x0f\x02"
+                          "ab"));
     EXPECT_EQ(Host::encode(Host::make(Host::Kind::DownloadData, {}, "ab")), Host::encodeDownloadData("ab"));
     EXPECT_EQ(Host::encode(Host::make(Host::Kind::TerminalProtocol, {}, "x", 5113)), std::string("\x07\xf2\x4f\x01x"));
     EXPECT_EQ(Host::encode(Host::make(Host::Kind::Report, {}, "\x1b[?62c")), std::string("\x0d\x06\x1b[?62c"));
@@ -368,7 +404,11 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     Host::Call alive = Host::make(Host::Kind::DesktopNotification);
     alive.notification.kind = AfterglowVt::NotificationRequest::Kind::Alive;
     alive.notification.id = "a";
-    EXPECT_EQ(Host::encode(alive), std::string("\x04\x02\x01" "a" "\x00\x00\x00\x00\x00\x00\x00\x00\x06system\x01\x00\x00\x00\x02\x01\x00", 26));
+    EXPECT_EQ(Host::encode(alive),
+              std::string("\x04\x02\x01"
+                          "a"
+                          "\x00\x00\x00\x00\x00\x00\x00\x00\x06system\x01\x00\x00\x00\x02\x01\x00",
+                          26));
     Host::Call read = Host::make(Host::Kind::ClipboardRequest);
     read.clipboard.id = "r";
     read.clipboard.mimes = {"text/plain"};
@@ -377,9 +417,11 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     // test compiling until MuxHost.cpp carries it and the version changes.
     Host::Call call;
     [[maybe_unused]] auto& [callKind, title, text, number, value, notification, clipboard, callMissed] = call;
-    [[maybe_unused]] auto& [nKind, nId, nTitle, nBody, buttons, iconNames, iconData, iconCacheId, appName, types, sound, focusOnActivate,
-                            reportActivation, reportClose, occasion, urgency, expireMs] = call.notification;
-    [[maybe_unused]] auto& [cKind, primary, cId, password, cName, mimes, data, aliases, osc52, osc52Bel, osc52Selection] = call.clipboard;
+    [[maybe_unused]] auto& [nKind, nId, nTitle, nBody, buttons, iconNames, iconData, iconCacheId, appName, types, sound,
+                            focusOnActivate, reportActivation, reportClose, occasion, urgency, expireMs] =
+        call.notification;
+    [[maybe_unused]] auto& [cKind, primary, cId, password, cName, mimes, data, aliases, osc52, osc52Bel,
+                            osc52Selection] = call.clipboard;
     // The options of the attach call, which the daemon refuses others of.
     EXPECT_EQ(std::string(AttachOption::Takeover), "takeover");
     EXPECT_EQ(std::string(AttachOption::EventQueue), "eventQueue");
@@ -418,7 +460,10 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     Attach::Input typed;
     typed.pane = 2;
     typed.bytes = "ab";
-    EXPECT_EQ(Attach::encode(typed), std::string("\x01\x02" "ab", 4));
+    EXPECT_EQ(Attach::encode(typed),
+              std::string("\x01\x02"
+                          "ab",
+                          4));
     for (const auto& [type, bytes] : std::vector<std::pair<Attach::InputType, std::string>>{
              {Attach::InputType::Reset, std::string("\x03\x05", 2)},
              {Attach::InputType::Clear, std::string("\x04\x05", 2)},
@@ -432,29 +477,33 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     // bindings name every field, so a new field stops this test compiling
     // until it has its key, its place in the round trip and a new version.
     SessionOptions fields;
-    [[maybe_unused]] auto& [name, sessionEnvironment, callerEnvironment, umask, launch, size, terminal, notificationCapabilities,
-                            controlOptions, keptNotifications] = fields;
+    [[maybe_unused]] auto& [name, sessionEnvironment, callerEnvironment, umask, launch, size, terminal,
+                            notificationCapabilities, controlOptions, keptNotifications] = fields;
     [[maybe_unused]] auto& [controlEnabled, allowReadText, remoteCommandsOff, eventInterval] = fields.control;
     [[maybe_unused]] auto& [argv, cwd, environment, unset, launchedProgram, command] = fields.launch;
     [[maybe_unused]] auto& [cols, rows, cellWidth, cellHeight] = fields.size;
-    [[maybe_unused]] auto& [scrollback, foreground, background, palette, cursorColor, cursorTextColor, selectionForeground,
-                            selectionBackground, boldIsBright, minimumContrast, wordBoundaries, ambiguousWide, bidi, cursorShape,
-                            cursorBlink, allowScreenReadback, graphicsQuota, graphicsFileTransfer] = fields.terminal;
+    [[maybe_unused]] auto& [scrollback, foreground, background, palette, cursorColor, cursorTextColor,
+                            selectionForeground, selectionBackground, boldIsBright, minimumContrast, wordBoundaries,
+                            ambiguousWide, bidi, cursorShape, cursorBlink, allowScreenReadback, graphicsQuota,
+                            graphicsFileTransfer] = fields.terminal;
     SessionInfo info;
     [[maybe_unused]] auto& [infoName, attached, panes, jobs] = info;
 
     const Json::Value options = toJson(SessionOptions{});
     EXPECT_EQ(keys(options),
-              (std::vector<std::string>{"name", "environment", "callerEnvironment", "umask", "launch", "size", "terminal",
-                                        "notificationCapabilities", "control", "keptNotifications"}));
-    EXPECT_EQ(keys(options["control"]), (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff", "eventInterval"}));
-    EXPECT_EQ(keys(options["launch"]), (std::vector<std::string>{"argv", "cwd", "environment", "unset", "launchedProgram", "command"}));
+              (std::vector<std::string>{"name", "environment", "callerEnvironment", "umask", "launch", "size",
+                                        "terminal", "notificationCapabilities", "control", "keptNotifications"}));
+    EXPECT_EQ(keys(options["control"]),
+              (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff", "eventInterval"}));
+    EXPECT_EQ(keys(options["launch"]),
+              (std::vector<std::string>{"argv", "cwd", "environment", "unset", "launchedProgram", "command"}));
     EXPECT_EQ(keys(options["size"]), (std::vector<std::string>{"cols", "rows", "cellWidth", "cellHeight"}));
-    EXPECT_EQ(keys(options["terminal"]),
-              (std::vector<std::string>{"scrollback", "foreground", "background", "palette", "cursorColor", "cursorTextColor",
-                                        "selectionForeground", "selectionBackground", "boldIsBright", "minimumContrast", "wordBoundaries",
-                                        "ambiguousWide", "bidi", "cursorShape", "cursorBlink", "allowScreenReadback", "graphicsQuota",
-                                        "graphicsFileTransfer"}));
+    EXPECT_EQ(
+        keys(options["terminal"]),
+        (std::vector<std::string>{"scrollback", "foreground", "background", "palette", "cursorColor", "cursorTextColor",
+                                  "selectionForeground", "selectionBackground", "boldIsBright", "minimumContrast",
+                                  "wordBoundaries", "ambiguousWide", "bidi", "cursorShape", "cursorBlink",
+                                  "allowScreenReadback", "graphicsQuota", "graphicsFileTransfer"}));
     EXPECT_EQ(keys(toJson(SessionInfo{})), (std::vector<std::string>{"name", "attached", "panes", "jobs"}));
 }
 
@@ -463,8 +512,9 @@ namespace {
 /// Every field of a notification, to compare two.
 auto fieldsOf(const AfterglowVt::NotificationRequest& n)
 {
-    return std::tie(n.kind, n.id, n.title, n.body, n.buttons, n.iconNames, n.iconData, n.iconCacheId, n.appName, n.types, n.sound,
-                    n.focusOnActivate, n.reportActivation, n.reportClose, n.occasion, n.urgency, n.expireMs);
+    return std::tie(n.kind, n.id, n.title, n.body, n.buttons, n.iconNames, n.iconData, n.iconCacheId, n.appName,
+                    n.types, n.sound, n.focusOnActivate, n.reportActivation, n.reportClose, n.occasion, n.urgency,
+                    n.expireMs);
 }
 
 } // namespace
@@ -492,7 +542,8 @@ TEST(MuxProtocol, HostCallsRoundTrip)
     }
     // A declared size of 9 bytes (the data below), of 0 bytes, of the most
     // that the terminal gives (INT64_MAX), and none.
-    for (const std::uint64_t value : {std::uint64_t(10), std::uint64_t(1), std::uint64_t(INT64_MAX) + 1, std::uint64_t(0)}) {
+    for (const std::uint64_t value :
+         {std::uint64_t(10), std::uint64_t(1), std::uint64_t(INT64_MAX) + 1, std::uint64_t(0)}) {
         Host::Call begin = Host::make(Host::Kind::DownloadBegin, "file.txt");
         begin.value = value;
         calls.push_back(begin);
@@ -573,7 +624,8 @@ TEST(MuxProtocol, HostCallsRoundTrip)
         EXPECT_TRUE(back->clipboard == call.clipboard) << int(call.kind);
         EXPECT_TRUE(Host::encode(*back) == bytes) << int(call.kind);
         // Cut short anywhere, a call does not decode.
-        for (std::size_t n = 0; n < bytes.size(); ++n) EXPECT_FALSE(Host::decode(bytes.substr(0, n))) << int(call.kind) << " " << n;
+        for (std::size_t n = 0; n < bytes.size(); ++n)
+            EXPECT_FALSE(Host::decode(bytes.substr(0, n))) << int(call.kind) << " " << n;
         EXPECT_FALSE(Host::decode(bytes + "x")) << int(call.kind);
     }
 }
@@ -584,10 +636,13 @@ TEST(MuxProtocol, HostCallsThatTheParserNeverMakesAreRefused)
 {
     // No kind, kind 0, and the first kind after the last.
     const std::string after(1, char(std::uint8_t(Host::Kind::UploadRequest) + 1));
-    for (const std::string_view kind : {std::string_view("", 0), std::string_view("\x00", 1), std::string_view(after)}) {
+    for (const std::string_view kind :
+         {std::string_view("", 0), std::string_view("\x00", 1), std::string_view(after)}) {
         EXPECT_FALSE(Host::decode(kind)) << testing::PrintToString(std::string(kind));
     }
-    const auto refused = [](const Host::Call& call) { return !Host::decode(Host::encode(call)); };
+    const auto refused = [](const Host::Call& call) {
+        return !Host::decode(Host::encode(call));
+    };
     EXPECT_TRUE(refused(Host::make(Host::Kind::TerminalProtocol, {}, "x", 99)));
     // A download's end is whole or not, and its size is the terminal's.
     EXPECT_TRUE(refused(Host::make(Host::Kind::DownloadEnd, {}, {}, 2)));
@@ -614,15 +669,33 @@ TEST(MuxProtocol, HostCallsThatTheParserNeverMakesAreRefused)
         return call;
     };
     using Request = AfterglowVt::NotificationRequest;
-    EXPECT_TRUE(refused(with([](Request& n) { n.kind = Request::Kind(3); })));
-    EXPECT_TRUE(refused(with([](Request& n) { n.occasion = Request::Occasion(3); })));
-    EXPECT_TRUE(refused(with([](Request& n) { n.urgency = 3; })));
-    EXPECT_TRUE(refused(with([](Request& n) { n.id = "a b"; })));
-    EXPECT_TRUE(refused(with([](Request& n) { n.iconCacheId = "a;b"; })));
-    EXPECT_TRUE(refused(with([](Request& n) { n.title = "\x07"; })));
-    EXPECT_TRUE(refused(with([](Request& n) { n.buttons = {""}; })));
-    EXPECT_TRUE(refused(with([](Request& n) { n.iconNames.assign(Request::MaxNames + 1, "icon"); })));
-    EXPECT_TRUE(refused(with([](Request& n) { n.body.assign(Request::MaxText + 1, 'x'); })));
+    EXPECT_TRUE(refused(with([](Request& n) {
+        n.kind = Request::Kind(3);
+    })));
+    EXPECT_TRUE(refused(with([](Request& n) {
+        n.occasion = Request::Occasion(3);
+    })));
+    EXPECT_TRUE(refused(with([](Request& n) {
+        n.urgency = 3;
+    })));
+    EXPECT_TRUE(refused(with([](Request& n) {
+        n.id = "a b";
+    })));
+    EXPECT_TRUE(refused(with([](Request& n) {
+        n.iconCacheId = "a;b";
+    })));
+    EXPECT_TRUE(refused(with([](Request& n) {
+        n.title = "\x07";
+    })));
+    EXPECT_TRUE(refused(with([](Request& n) {
+        n.buttons = {""};
+    })));
+    EXPECT_TRUE(refused(with([](Request& n) {
+        n.iconNames.assign(Request::MaxNames + 1, "icon");
+    })));
+    EXPECT_TRUE(refused(with([](Request& n) {
+        n.body.assign(Request::MaxText + 1, 'x');
+    })));
     // A flag of 2, in the byte that a flag changes.
     std::string flag = Host::encode(good);
     Host::Call flipped = good;
@@ -631,7 +704,8 @@ TEST(MuxProtocol, HostCallsThatTheParserNeverMakesAreRefused)
     ASSERT_EQ(flag.size(), other.size());
     std::vector<std::size_t> differ;
     for (std::size_t i = 0; i < flag.size(); ++i) {
-        if (flag[i] != other[i]) differ.push_back(i);
+        if (flag[i] != other[i])
+            differ.push_back(i);
     }
     ASSERT_EQ(differ.size(), 1u);
     ASSERT_LE(int(std::uint8_t(flag[differ[0]])), 1);
@@ -794,8 +868,8 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
         EXPECT_FALSE(sessionOptions(with(good, key, value), &error)) << key << " " << Json::write(value);
         EXPECT_NE(error.find(std::string("'") + key + "'"), std::string::npos) << key << ": " << error;
     }
-    for (const char* key : {"name", "environment", "callerEnvironment", "umask", "launch", "size", "terminal", "notificationCapabilities", "control",
-                            "keptNotifications"}) {
+    for (const char* key : {"name", "environment", "callerEnvironment", "umask", "launch", "size", "terminal",
+                            "notificationCapabilities", "control", "keptNotifications"}) {
         error.clear();
         EXPECT_FALSE(sessionOptions(without(good, key), &error)) << key;
         EXPECT_NE(error.find(std::string("'") + key + "'"), std::string::npos) << key << ": " << error;
@@ -805,10 +879,18 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
     for (const auto& [value, key] : std::vector<std::pair<Json::Value, std::string>>{
              {Json::Object{{"enabled", true}}, "'control.allowReadText'"},
              {Json::Object{{"enabled", 1}, {"allowReadText", false}}, "'control.enabled'"},
-             {Json::Object{{"enabled", true}, {"allowReadText", false}, {"remoteCommandsOff", 1}}, "'control.remoteCommandsOff'"},
-             {Json::Object{{"enabled", true}, {"allowReadText", false}, {"remoteCommandsOff", ""}, {"eventInterval", MaxEventInterval + 1}},
+             {Json::Object{{"enabled", true}, {"allowReadText", false}, {"remoteCommandsOff", 1}},
+              "'control.remoteCommandsOff'"},
+             {Json::Object{{"enabled", true},
+                           {"allowReadText", false},
+                           {"remoteCommandsOff", ""},
+                           {"eventInterval", MaxEventInterval + 1}},
               "'control.eventInterval'"},
-             {Json::Object{{"enabled", true}, {"allowReadText", false}, {"remoteCommandsOff", ""}, {"eventInterval", 0}, {"other", 1}},
+             {Json::Object{{"enabled", true},
+                           {"allowReadText", false},
+                           {"remoteCommandsOff", ""},
+                           {"eventInterval", 0},
+                           {"other", 1}},
               "'control.other'"}}) {
         error.clear();
         EXPECT_FALSE(sessionOptions(with(good, "control", value), &error)) << Json::write(value);
@@ -836,7 +918,8 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
     };
     for (const auto& [key, value] : badLaunch) {
         error.clear();
-        EXPECT_FALSE(sessionOptions(with(good, "launch", with(good["launch"], key, value)), &error)) << key << " " << Json::write(value);
+        EXPECT_FALSE(sessionOptions(with(good, "launch", with(good["launch"], key, value)), &error))
+            << key << " " << Json::write(value);
         EXPECT_NE(error.find(std::string("'launch.") + key + "'"), std::string::npos) << key << ": " << error;
         error.clear();
         EXPECT_FALSE(launchFrom(with(good["launch"], key, value), &error)) << key;
@@ -855,7 +938,8 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
     };
     for (const auto& [key, value] : badSize) {
         error.clear();
-        EXPECT_FALSE(sessionOptions(with(good, "size", with(good["size"], key, value)), &error)) << key << " " << Json::write(value);
+        EXPECT_FALSE(sessionOptions(with(good, "size", with(good["size"], key, value)), &error))
+            << key << " " << Json::write(value);
         EXPECT_NE(error.find(std::string("'size.") + key + "'"), std::string::npos) << key << ": " << error;
         error.clear();
         EXPECT_FALSE(paneSizeFrom(with(good["size"], key, value), &error)) << key;
@@ -863,7 +947,8 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
     }
     // A size past what a terminal can be is the largest terminal, as for a
     // Resize: the window measured it.
-    const auto large = paneSizeFrom(Json::Object{{"cols", 5000}, {"rows", 100000}, {"cellWidth", 70000}, {"cellHeight", 16}}, &error);
+    const auto large =
+        paneSizeFrom(Json::Object{{"cols", 5000}, {"rows", 100000}, {"cellWidth", 70000}, {"cellHeight", 16}}, &error);
     ASSERT_TRUE(large) << error;
     EXPECT_EQ(large->cols, AfterglowVt::Screen::MaxColumns);
     EXPECT_EQ(large->rows, int(AfterglowVt::Screen::MaxCells) / AfterglowVt::Screen::MaxColumns);
@@ -939,8 +1024,10 @@ TEST(MuxProtocol, TerminalValuesOutsideTheirBoundsAreRefusedByName)
         EXPECT_NE(error.find(std::string("'terminal.") + key + "'"), std::string::npos) << key << ": " << error;
     }
     // The bounds themselves pass.
-    for (const auto& [key, value] : {std::pair<const char*, Json::Value>{"scrollback", MaxScrollback}, {"minimumContrast", MinContrast},
-                                     {"minimumContrast", MaxContrast}, {"graphicsQuota", MaxGraphicsQuota}}) {
+    for (const auto& [key, value] : {std::pair<const char*, Json::Value>{"scrollback", MaxScrollback},
+                                     {"minimumContrast", MinContrast},
+                                     {"minimumContrast", MaxContrast},
+                                     {"graphicsQuota", MaxGraphicsQuota}}) {
         error.clear();
         EXPECT_TRUE(sessionOptions(with(good, "terminal", with(terminal, key, value)), &error)) << key << ": " << error;
     }
@@ -974,7 +1061,8 @@ TEST(MuxProtocol, SessionInfoRoundTrip)
     EXPECT_FALSE(sessionInfo(with(toJson(info), "windows", 1)));
     // The name comes from a daemon, maybe of another host: a client prints
     // it and passes it on, so it follows the rule of a session's name.
-    for (const std::string& name : {std::string("-x"), std::string("a\x1b[2Jb"), std::string(MaxSessionName + 1, 'a')}) {
+    for (const std::string& name :
+         {std::string("-x"), std::string("a\x1b[2Jb"), std::string(MaxSessionName + 1, 'a')}) {
         EXPECT_FALSE(sessionInfo(with(toJson(info), "name", name))) << testing::PrintToString(name);
     }
     EXPECT_TRUE(sessionInfo(with(toJson(info), "name", std::string(MaxSessionName, 'a'))));
@@ -997,7 +1085,8 @@ TEST(MuxProtocol, AttachEventsRoundTrip)
         // -1 is the status that is unknown, and stays so.
         EXPECT_EQ(back->status, status) << status;
     }
-    for (const auto type : {Attach::EventType::SessionEnded, Attach::EventType::TakenOver, Attach::EventType::Detached}) {
+    for (const auto type :
+         {Attach::EventType::SessionEnded, Attach::EventType::TakenOver, Attach::EventType::Detached}) {
         Attach::Event event;
         event.type = type;
         const auto back = Attach::decodeEvent(Attach::encode(event));
@@ -1031,7 +1120,8 @@ TEST(MuxProtocol, AttachEventsRoundTrip)
         EXPECT_EQ(back->frames, frames);
     }
     // The layout takes the rest of the frame too.
-    for (const std::string& payload : {std::string(), std::string(R"({"tabs":[],"current":0})"), std::string("\x80\x00\xff", 3)}) {
+    for (const std::string& payload :
+         {std::string(), std::string(R"({"tabs":[],"current":0})"), std::string("\x80\x00\xff", 3)}) {
         Attach::Event layout;
         layout.type = Attach::EventType::Layout;
         layout.payload = payload;
@@ -1048,7 +1138,8 @@ TEST(MuxProtocol, AttachEventsRoundTrip)
     }
     // A host call takes the rest of the frame, whatever its bytes look like.
     for (const int status : {-1, Attach::HostPart}) {
-        for (const std::string& payload : {std::string(), Host::encode(Host::make(Host::Kind::Notify, "t", "b")), std::string("\x80\x00\xff", 3)}) {
+        for (const std::string& payload :
+             {std::string(), Host::encode(Host::make(Host::Kind::Notify, "t", "b")), std::string("\x80\x00\xff", 3)}) {
             Attach::Event host;
             host.type = Attach::EventType::Host;
             host.pane = 3;
@@ -1073,7 +1164,7 @@ TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
 {
     static_assert(Attach::MaxChannelId == 257, "the frame of PaneOpened below names MaxChannelId");
     const std::string_view bad[] = {
-        {},                         // empty
+        {}, // empty
         std::string_view("\x0b\x00\x00\x00", 4), // the type after Commands
         std::string_view("\x0a\x01\x00\x00", 4), // Commands of a pane
         std::string_view("\x09\x01\x00\x00", 4), // Control of a pane
@@ -1084,7 +1175,7 @@ TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
         std::string_view("\x08\x01\x00\x01\x01", 5), // Refreshed with a status
         std::string_view("\x00\x01\x00\x00", 4), // type 0
         std::string_view("\x02\x01\x00\x00\x00", 5), // a byte after the event
-        std::string_view("\x02\x81", 2),         // a varint that does not end
+        std::string_view("\x02\x81", 2), // a varint that does not end
         std::string_view("\x02\x81\x00\x00\x00", 5), // a varint in a longer form than needed
         std::string_view("\x02\xff\xff\xff\xff\x10\x00\x00", 8), // a pane id past 32 bits
         std::string_view("\x01\x00\x01\x00", 4), // PaneOpened of pane 0
@@ -1099,7 +1190,8 @@ TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
         std::string_view("\x06\x01\x00\x01\x01", 5), // Host with status 0
         std::string_view("\x06\x01\x00\x04\x01", 5), // Host with status 3
     };
-    for (const std::string_view frame : bad) EXPECT_FALSE(Attach::decodeEvent(frame)) << testing::PrintToString(std::string(frame));
+    for (const std::string_view frame : bad)
+        EXPECT_FALSE(Attach::decodeEvent(frame)) << testing::PrintToString(std::string(frame));
     // A program's end names its pane, and the end of the link names
     // nothing: no pane, no channel and no status.
     const auto event = [](Attach::EventType type, std::uint32_t pane, std::uint32_t channel, int status) {
@@ -1120,7 +1212,8 @@ TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
 TEST(MuxProtocol, RelayFramesRoundTrip)
 {
     for (const std::uint64_t relay : {std::uint64_t(1), std::uint64_t(300), ~std::uint64_t(0)}) {
-        const auto open = Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Open, {}, 0xffffffffu}));
+        const auto open =
+            Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Open, {}, 0xffffffffu}));
         if (!open) {
             ADD_FAILURE() << "Open of relay " << relay << " does not decode";
             continue;
@@ -1132,8 +1225,8 @@ TEST(MuxProtocol, RelayFramesRoundTrip)
         EXPECT_TRUE(open->host.empty());
         // The host of an ssh session, whatever its bytes look like.
         const std::string host("h\x00\xff", 3);
-        const auto remote =
-            Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Open, {}, 4, Attach::RelayKind::Remote, host}));
+        const auto remote = Attach::decodeRelay(
+            Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Open, {}, 4, Attach::RelayKind::Remote, host}));
         if (!remote) {
             ADD_FAILURE() << "the Open of a remote client of relay " << relay << " does not decode";
             continue;
@@ -1143,7 +1236,8 @@ TEST(MuxProtocol, RelayFramesRoundTrip)
         EXPECT_TRUE(remote->host == host);
         // The bytes of a connection, whatever they look like.
         const std::string bytes("\x00\xff\n\x80", 4);
-        const auto data = Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Bytes, bytes}));
+        const auto data =
+            Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Bytes, bytes}));
         if (!data) {
             ADD_FAILURE() << "Bytes of relay " << relay << " does not decode";
             continue;
@@ -1172,21 +1266,22 @@ TEST(MuxProtocol, RelayFramesRoundTrip)
 TEST(MuxProtocol, RelayFramesThatDoNotDecodeAreRefused)
 {
     const std::string_view bad[] = {
-        {},                                   // empty
-        std::string_view("\x00\x01", 2),      // part 0
-        std::string_view("\x04\x01", 2),      // the part after End
-        std::string_view("\x01\x00\x01", 3),  // relay 0
-        std::string_view("\x01\x01", 2),      // Open without its pane
-        std::string_view("\x01\x01\x01", 3),  // Open without its kind
+        {}, // empty
+        std::string_view("\x00\x01", 2), // part 0
+        std::string_view("\x04\x01", 2), // the part after End
+        std::string_view("\x01\x00\x01", 3), // relay 0
+        std::string_view("\x01\x01", 2), // Open without its pane
+        std::string_view("\x01\x01\x01", 3), // Open without its kind
         std::string_view("\x01\x01\x00\x00", 4), // Open of pane 0
         std::string_view("\x01\x01\x01\x02", 4), // the kind after Remote
         std::string_view("\x01\x01\x01\x00h", 5), // a byte after the Open of a client of the commands target
         std::string_view("\x01\x01\x01\x01", 4), // the Open of a client of an ssh session without its host
-        std::string_view("\x02\x01", 2),      // Bytes without bytes
-        std::string_view("\x03\x01\x00", 3),  // a byte after End
-        std::string_view("\x03\x81", 2),      // a varint that does not end
+        std::string_view("\x02\x01", 2), // Bytes without bytes
+        std::string_view("\x03\x01\x00", 3), // a byte after End
+        std::string_view("\x03\x81", 2), // a varint that does not end
     };
-    for (const std::string_view frame : bad) EXPECT_FALSE(Attach::decodeRelay(frame)) << testing::PrintToString(std::string(frame));
+    for (const std::string_view frame : bad)
+        EXPECT_FALSE(Attach::decodeRelay(frame)) << testing::PrintToString(std::string(frame));
 }
 
 TEST(MuxProtocol, AttachInputRoundTripsAndClampsOnlyTheCellSize)
@@ -1198,8 +1293,9 @@ TEST(MuxProtocol, AttachInputRoundTripsAndClampsOnlyTheCellSize)
     ASSERT_TRUE(back);
     EXPECT_EQ(back->type, Attach::InputType::Bytes);
     EXPECT_EQ(back->bytes, bytes.bytes);
-    for (const auto type : {Attach::InputType::Reset, Attach::InputType::Clear, Attach::InputType::Kill, Attach::InputType::ClosePane,
-                            Attach::InputType::Refresh, Attach::InputType::PaneForgotten}) {
+    for (const auto type :
+         {Attach::InputType::Reset, Attach::InputType::Clear, Attach::InputType::Kill, Attach::InputType::ClosePane,
+          Attach::InputType::Refresh, Attach::InputType::PaneForgotten}) {
         for (const std::uint32_t pane : {2u, 0xffffffffu}) {
             Attach::Input action;
             action.type = type;
@@ -1214,7 +1310,8 @@ TEST(MuxProtocol, AttachInputRoundTripsAndClampsOnlyTheCellSize)
         }
     }
     // The layout takes the rest of the frame, as the bytes do.
-    for (const std::string& json : {std::string(), std::string(R"({"tabs":[],"current":0})"), std::string("\x80\x00\xff", 3)}) {
+    for (const std::string& json :
+         {std::string(), std::string(R"({"tabs":[],"current":0})"), std::string("\x80\x00\xff", 3)}) {
         Attach::Input layout;
         layout.type = Attach::InputType::Layout;
         layout.bytes = json;
@@ -1261,23 +1358,24 @@ TEST(MuxProtocol, AttachInputThatDoesNotDecodeIsRefused)
 {
     const std::string_view bad[] = {
         {},
-        std::string_view("\x11\x01", 2),         // the type after UploadAnswer
-        std::string_view("\x0e\x01", 2),         // a DownloadAnswer without its byte
-        std::string_view("\x0d\x01\x00", 3),     // a byte after a PaneForgotten
-        std::string_view("\x0a\x01", 2),         // ControlReply of a pane
-        std::string_view("\x0b\x01", 2),         // Settings of a pane
-        std::string_view("\x0c\x01", 2),         // ControlReplyPart of a pane
-        std::string_view("\x09\x01\x00", 3),     // a byte after a Refresh
-        std::string_view("\x08\x01\x00", 3),     // a byte after a ClosePane
-        std::string_view("\x07\x01{}", 4),        // a Layout of a pane
-        std::string_view("\x01", 1),             // no pane
+        std::string_view("\x11\x01", 2), // the type after UploadAnswer
+        std::string_view("\x0e\x01", 2), // a DownloadAnswer without its byte
+        std::string_view("\x0d\x01\x00", 3), // a byte after a PaneForgotten
+        std::string_view("\x0a\x01", 2), // ControlReply of a pane
+        std::string_view("\x0b\x01", 2), // Settings of a pane
+        std::string_view("\x0c\x01", 2), // ControlReplyPart of a pane
+        std::string_view("\x09\x01\x00", 3), // a byte after a Refresh
+        std::string_view("\x08\x01\x00", 3), // a byte after a ClosePane
+        std::string_view("\x07\x01{}", 4), // a Layout of a pane
+        std::string_view("\x01", 1), // no pane
         std::string_view("\x02\x01\x50\x18\x08", 5), // a Resize that ends early
         std::string_view("\x02\x01\x50\x18\x08\x10\x00", 7), // a byte after the Resize
-        std::string_view("\x03\x01\x00", 3),     // a byte after a Reset
-        std::string_view("\x06\x01", 2),         // a Visible without its value
-        std::string_view("\x06\x01\x02", 3),     // a Visible that is neither
+        std::string_view("\x03\x01\x00", 3), // a byte after a Reset
+        std::string_view("\x06\x01", 2), // a Visible without its value
+        std::string_view("\x06\x01\x02", 3), // a Visible that is neither
         std::string_view("\x06\x01\x01\x00", 4), // a byte after a Visible
         std::string_view("\x02\x01\x80\x00\x18\x08\x10", 7), // a varint in a longer form than needed
     };
-    for (const std::string_view frame : bad) EXPECT_FALSE(Attach::decodeInput(frame)) << testing::PrintToString(std::string(frame));
+    for (const std::string_view frame : bad)
+        EXPECT_FALSE(Attach::decodeInput(frame)) << testing::PrintToString(std::string(frame));
 }

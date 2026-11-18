@@ -53,7 +53,9 @@ public:
     explicit ChromeIncubation(QQmlEngine& engine)
     {
         m_timer.setInterval(0);
-        connect(&m_timer, &QTimer::timeout, this, [this] { incubateFor(IncubationSliceMs); });
+        connect(&m_timer, &QTimer::timeout, this, [this] {
+            incubateFor(IncubationSliceMs);
+        });
         connect(&engine, &QObject::destroyed, this, &QObject::deleteLater);
         engine.setIncubationController(this);
     }
@@ -61,8 +63,10 @@ public:
 protected:
     void incubatingObjectCountChanged(int count) override
     {
-        if (count > 0) m_timer.start();
-        else m_timer.stop();
+        if (count > 0)
+            m_timer.start();
+        else
+            m_timer.stop();
     }
 
 private:
@@ -98,11 +102,15 @@ public:
     }
 
 protected:
-    void setInitialState(QObject* object) override { m_partial = object; }
+    void setInitialState(QObject* object) override
+    {
+        m_partial = object;
+    }
 
     void statusChanged(Status status) override
     {
-        if (status == Ready || status == Error) m_done(status == Ready);
+        if (status == Ready || status == Error)
+            m_done(status == Ready);
     }
 
 private:
@@ -140,7 +148,8 @@ ChromeLayer::ChromeLayer(AfterglowRender::GpuDevice& device, QWindow* host, QQml
     , m_engine(*component.engine())
     , m_controller(controller)
 {
-    if (!m_engine.incubationController()) new ChromeIncubation(m_engine);
+    if (!m_engine.incubationController())
+        new ChromeIncubation(m_engine);
     // The application started loading the type; it may be ready already.
     connect(&m_component, &QQmlComponent::statusChanged, this, &ChromeLayer::componentStatusChanged);
     componentStatusChanged();
@@ -148,7 +157,8 @@ ChromeLayer::ChromeLayer(AfterglowRender::GpuDevice& device, QWindow* host, QQml
     // Quick ignores the focus while another window has it: focus it again
     // when the host gets the focus.
     connect(qGuiApp, &QGuiApplication::focusWindowChanged, this, [this](QWindow* window) {
-        if (window == m_host) focusScene();
+        if (window == m_host)
+            focusScene();
     });
 }
 
@@ -163,10 +173,12 @@ ChromeLayer::~ChromeLayer()
 {
     // The scene graph and render control still refer to our render target.
     // Invalidate them before releasing it, while the shared QRhi is alive.
-    if (m_control) m_control->invalidate();
+    if (m_control)
+        m_control->invalidate();
     releaseResources();
     // A scene still incubating is abandoned with its objects; a made one is ours.
-    if (m_incubator) m_incubator->abandon();
+    if (m_incubator)
+        m_incubator->abandon();
     m_incubator.reset();
     delete m_root;
     m_root = nullptr;
@@ -188,7 +200,9 @@ void ChromeLayer::componentStatusChanged()
     if (!m_component.isReady()) {
         return;
     }
-    m_incubator = std::make_unique<ChromeIncubator>([this](bool ready) { sceneCreated(ready); });
+    m_incubator = std::make_unique<ChromeIncubator>([this](bool ready) {
+        sceneCreated(ready);
+    });
     m_incubator->setInitialProperties({{QStringLiteral("controller"), QVariant::fromValue(m_controller)}});
     m_component.create(*m_incubator);
     if (m_wanted && m_incubator->isLoading()) {
@@ -202,8 +216,10 @@ void ChromeLayer::sceneCreated(bool ready)
     m_root = qobject_cast<QQuickItem*>(obj);
     if (!m_root) {
         QStringList errors;
-        for (const auto& error : m_incubator->errors()) errors << error.toString();
-        if (obj) errors << QStringLiteral("the root object is not an Item");
+        for (const auto& error : m_incubator->errors())
+            errors << error.toString();
+        if (obj)
+            errors << QStringLiteral("the root object is not an Item");
         qCWarning(lcChrome).noquote() << "chrome QML failed to load:" << errors.join(QLatin1Char('\n'));
         delete obj;
         m_failed = true;
@@ -381,7 +397,9 @@ bool cursorUnder(const QQuickItem* item, const QPointF& scenePos, QCursor& out)
         return false;
     }
     QList<QQuickItem*> children = item->childItems();
-    std::stable_sort(children.begin(), children.end(), [](const QQuickItem* a, const QQuickItem* b) { return a->z() < b->z(); });
+    std::stable_sort(children.begin(), children.end(), [](const QQuickItem* a, const QQuickItem* b) {
+        return a->z() < b->z();
+    });
     for (auto it = children.crbegin(); it != children.crend(); ++it) {
         if (cursorUnder(*it, scenePos, out)) {
             return true;
@@ -414,7 +432,8 @@ QCursor ChromeLayer::cursorAt(const QPointF& pos) const
 
 void ChromeLayer::releaseResources()
 {
-    if (m_window) m_window->setRenderTarget(QQuickRenderTarget());
+    if (m_window)
+        m_window->setRenderTarget(QQuickRenderTarget());
     m_target.reset();
     m_renderPass.reset();
     m_texture.reset();
@@ -426,10 +445,15 @@ void ChromeLayer::releaseResources()
 void Afterglow::ChromeLayer::queryInputMethod(QInputMethodQueryEvent* event) const
 {
     auto* focus = focusedItem();
-    if (!focus) { event->setValue(Qt::ImEnabled, false); event->accept(); return; }
+    if (!focus) {
+        event->setValue(Qt::ImEnabled, false);
+        event->accept();
+        return;
+    }
     for (unsigned bit = 1; bit != 0; bit <<= 1) {
         const auto query = static_cast<Qt::InputMethodQuery>(bit);
-        if (!(event->queries() & query)) continue;
+        if (!(event->queries() & query))
+            continue;
         QVariant value = focus->inputMethodQuery(query);
         if (query == Qt::ImCursorRectangle || query == Qt::ImAnchorRectangle || query == Qt::ImInputItemClipRectangle)
             value = focus->mapRectToScene(value.toRectF());
@@ -440,21 +464,29 @@ void Afterglow::ChromeLayer::queryInputMethod(QInputMethodQueryEvent* event) con
 
 QQuickItem* Afterglow::ChromeLayer::focusedItem() const
 {
-    if (!m_window) return nullptr;
+    if (!m_window)
+        return nullptr;
     auto* item = m_window->activeFocusItem();
-    if (!item) item = m_window->contentItem();
+    if (!item)
+        item = m_window->contentItem();
     while (auto* child = item->scopedFocusItem()) {
-        if (child == item) break;
+        if (child == item)
+            break;
         item = child;
     }
-    if (item->flags().testFlag(QQuickItem::ItemAcceptsInputMethod)) return item;
+    if (item->flags().testFlag(QQuickItem::ItemAcceptsInputMethod))
+        return item;
     // Render-control windows have no platform focus object. A visible focus
     // scope can retain its editor focus while the offscreen root is active.
     const auto find = [](auto&& self, QQuickItem* parent) -> QQuickItem* {
-        if (!parent->isVisible() || !parent->isEnabled()) return nullptr;
-        for (auto* child : parent->childItems()) if (auto* focus = self(self, child)) return focus;
+        if (!parent->isVisible() || !parent->isEnabled())
+            return nullptr;
+        for (auto* child : parent->childItems())
+            if (auto* focus = self(self, child))
+                return focus;
         return parent->hasFocus() && parent->flags().testFlag(QQuickItem::ItemAcceptsInputMethod) ? parent : nullptr;
     };
-    if (auto* editor = find(find, m_window->contentItem())) return editor;
+    if (auto* editor = find(find, m_window->contentItem()))
+        return editor;
     return item;
 }

@@ -62,13 +62,15 @@ std::uint32_t crc32Update(std::uint32_t crc, std::string_view data)
         std::array<std::uint32_t, 256> t{};
         for (std::uint32_t i = 0; i < 256; ++i) {
             std::uint32_t c = i;
-            for (int k = 0; k < 8; ++k) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            for (int k = 0; k < 8; ++k)
+                c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
             t[i] = c;
         }
         return t;
     }();
     crc = ~crc;
-    for (const char b : data) crc = table[(crc ^ static_cast<unsigned char>(b)) & 0xff] ^ (crc >> 8);
+    for (const char b : data)
+        crc = table[(crc ^ static_cast<unsigned char>(b)) & 0xff] ^ (crc >> 8);
     return ~crc;
 }
 
@@ -92,7 +94,8 @@ public:
         m_stream.setInput(bytes);
         // Without finish, zlib keeps what it cannot write yet for the next step.
         while (m_stream.inputLeft() > 0) {
-            if (!step(false)) return false;
+            if (!step(false))
+                return false;
         }
         return true;
     }
@@ -109,15 +112,19 @@ public:
     {
         for (;;) {
             const auto result = stepResult(true);
-            if (!result) return std::nullopt;
-            if (*result == AfterglowProto::ZlibStream::Result::End) break;
+            if (!result)
+                return std::nullopt;
+            if (*result == AfterglowProto::ZlibStream::Result::End)
+                break;
         }
         // The zlib stream ends with its Adler-32: gzip has the CRC-32 and the
         // size instead.
-        if (m_out.size() < 10 + 4) return std::nullopt;
+        if (m_out.size() < 10 + 4)
+            return std::nullopt;
         m_out.resize(m_out.size() - 4);
         const auto le32 = [this](std::uint32_t v) {
-            for (int i = 0; i < 4; ++i) m_out += char((v >> (8 * i)) & 0xff);
+            for (int i = 0; i < 4; ++i)
+                m_out += char((v >> (8 * i)) & 0xff);
         };
         le32(m_crc);
         le32(std::uint32_t(m_size));
@@ -129,17 +136,27 @@ public:
     }
 
     /// Whether the last failure was the limit, not zlib.
-    bool tooLarge() const { return m_tooLarge; }
-    std::uint64_t size() const { return m_size; }
+    bool tooLarge() const
+    {
+        return m_tooLarge;
+    }
+    std::uint64_t size() const
+    {
+        return m_size;
+    }
 
 private:
-    bool step(bool finish) { return stepResult(finish).has_value(); }
+    bool step(bool finish)
+    {
+        return stepResult(finish).has_value();
+    }
 
     std::optional<AfterglowProto::ZlibStream::Result> stepResult(bool finish)
     {
         std::size_t produced = 0;
         const auto result = m_stream.step(m_buffer.data(), m_buffer.size(), produced, finish);
-        if (result == AfterglowProto::ZlibStream::Result::Error) return std::nullopt;
+        if (result == AfterglowProto::ZlibStream::Result::Error)
+            return std::nullopt;
         // The two bytes of the zlib header are not part of gzip data.
         const std::size_t skip = std::min(m_headerLeft, produced);
         m_headerLeft -= skip;
@@ -180,7 +197,8 @@ std::string paxRecord(std::string_view key, std::string_view value)
 {
     const std::size_t body = key.size() + value.size() + 3; // ' ', '=', '\n'
     std::size_t length = body + 1;
-    while (std::to_string(length).size() + body != length) ++length;
+    while (std::to_string(length).size() + body != length)
+        ++length;
     return std::to_string(length) + " " + std::string(key) + "=" + std::string(value) + "\n";
 }
 
@@ -202,7 +220,8 @@ bool header(Gzip& out, std::string_view name, char type, std::uint32_t mode, std
     // The checksum counts its own field as spaces.
     std::memset(block + 148, ' ', 8);
     unsigned sum = 0;
-    for (const char c : block) sum += static_cast<unsigned char>(c);
+    for (const char c : block)
+        sum += static_cast<unsigned char>(c);
     // Six digits, a NUL and a space.
     octal(block + 148, 7, sum);
     block[155] = ' ';
@@ -213,10 +232,14 @@ bool header(Gzip& out, std::string_view name, char type, std::uint32_t mode, std
 std::string paxRecords(const Entry& entry)
 {
     std::string records;
-    if (entry.name.size() > 100) records += paxRecord("path", entry.name);
-    if (entry.link.size() > 100) records += paxRecord("linkpath", entry.link);
-    if (entry.size > MaxOctal11) records += paxRecord("size", std::to_string(entry.size));
-    if (entry.mtime < 0 || std::uint64_t(entry.mtime) > MaxOctal11) records += paxRecord("mtime", std::to_string(entry.mtime));
+    if (entry.name.size() > 100)
+        records += paxRecord("path", entry.name);
+    if (entry.link.size() > 100)
+        records += paxRecord("linkpath", entry.link);
+    if (entry.size > MaxOctal11)
+        records += paxRecord("size", std::to_string(entry.size));
+    if (entry.mtime < 0 || std::uint64_t(entry.mtime) > MaxOctal11)
+        records += paxRecord("mtime", std::to_string(entry.mtime));
     return records;
 }
 
@@ -269,11 +292,15 @@ bool writeData(Gzip& out, const Entry& entry, QString& error)
         return false;
     };
     const int fd = ::open(entry.path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
-    if (fd < 0) return cannotRead();
+    if (fd < 0)
+        return cannotRead();
     struct Closer
     {
         int fd;
-        ~Closer() { ::close(fd); }
+        ~Closer()
+        {
+            ::close(fd);
+        }
     } closer{fd};
     struct stat st{};
     if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_dev != entry.device || st.st_ino != entry.inode) {
@@ -284,14 +311,17 @@ bool writeData(Gzip& out, const Entry& entry, QString& error)
     std::uint64_t left = entry.size;
     while (left > 0) {
         const ssize_t got = ::read(fd, buffer.data(), std::size_t(std::min<std::uint64_t>(left, buffer.size())));
-        if (got < 0 && errno == EINTR) continue;
-        if (got < 0) return cannotRead();
+        if (got < 0 && errno == EINTR)
+            continue;
+        if (got < 0)
+            return cannotRead();
         // The header holds the size: a file that became shorter cannot be sent.
         if (got == 0) {
             error = tr("%1 changed while it was read.").arg(shown(entry.path));
             return false;
         }
-        if (!out.write(std::string_view(buffer.data(), std::size_t(got)))) return false;
+        if (!out.write(std::string_view(buffer.data(), std::size_t(got))))
+            return false;
         left -= std::uint64_t(got);
     }
     return out.pad();
@@ -302,17 +332,21 @@ bool writeData(Gzip& out, const Entry& entry, QString& error)
 bool writeTree(Gzip& out, const Entry& entry, QString& error)
 {
     if (const std::string records = paxRecords(entry); !records.empty()) {
-        if (!header(out, "./PaxHeaders/entry", 'x', 0644, records.size(), entry.mtime, {})
-            || !out.write(records) || !out.pad()) {
+        if (!header(out, "./PaxHeaders/entry", 'x', 0644, records.size(), entry.mtime, {}) || !out.write(records)
+            || !out.pad()) {
             return false;
         }
     }
-    if (!header(out, entry.name, entry.type, entry.mode, entry.size, entry.mtime, entry.link)) return false;
-    if (entry.type == '0') return writeData(out, entry, error);
-    if (entry.type != '5') return true;
+    if (!header(out, entry.name, entry.type, entry.mode, entry.size, entry.mtime, entry.link))
+        return false;
+    if (entry.type == '0')
+        return writeData(out, entry, error);
+    if (entry.type != '5')
+        return true;
     std::error_code ec;
     std::vector<fs::path> children;
-    for (fs::directory_iterator it(entry.path, ec), end; !ec && it != end; it.increment(ec)) children.push_back(it->path());
+    for (fs::directory_iterator it(entry.path, ec), end; !ec && it != end; it.increment(ec))
+        children.push_back(it->path());
     if (ec) {
         error = tr("Cannot read %1: %2.").arg(shown(entry.path), QString::fromStdString(ec.message()));
         return false;
@@ -321,10 +355,12 @@ bool writeTree(Gzip& out, const Entry& entry, QString& error)
     for (const fs::path& child : children) {
         auto childEntry = entryOf(child, entry.name + child.filename().string(), error);
         if (!childEntry) {
-            if (!error.isEmpty()) return false;
+            if (!error.isEmpty())
+                return false;
             continue;
         }
-        if (!writeTree(out, *childEntry, error)) return false;
+        if (!writeTree(out, *childEntry, error))
+            return false;
     }
     return true;
 }
@@ -336,7 +372,8 @@ fs::path commonAncestor(const std::vector<fs::path>& dirs)
     for (const fs::path& dir : dirs) {
         fs::path shared;
         auto a = common.begin(), b = dir.begin();
-        for (; a != common.end() && b != dir.end() && *a == *b; ++a, ++b) shared /= *a;
+        for (; a != common.end() && b != dir.end() && *a == *b; ++a, ++b)
+            shared /= *a;
         common = shared;
     }
     return common;
@@ -372,30 +409,41 @@ std::optional<std::string> build(const QStringList& paths, std::size_t maxBytes,
     for (const QString& p : paths) {
         fs::path path = fs::absolute(fs::path(QFile::encodeName(p).toStdString())).lexically_normal();
         // "dir/" is "dir": its name is in the archive, not ".".
-        while (!path.has_filename() && path.has_relative_path()) path = path.parent_path();
+        while (!path.has_filename() && path.has_relative_path())
+            path = path.parent_path();
         std::error_code ec;
         const fs::path real = fs::canonical(path, ec);
         if (ec) {
             error = tr("%1 does not exist.").arg(p);
             return std::nullopt;
         }
-        if (std::ranges::any_of(chosen, [&](const Chosen& c) { return c.path == path; })) continue;
+        if (std::ranges::any_of(chosen, [&](const Chosen& c) {
+                return c.path == path;
+            }))
+            continue;
         chosen.push_back({path, real, fs::is_directory(real, ec)});
     }
     // A path in a chosen directory comes with it. The directories first:
     // erase_if moves the elements that the predicate would read.
     std::vector<fs::path> chosenDirs;
     for (const Chosen& c : chosen) {
-        if (c.directory) chosenDirs.push_back(c.path);
+        if (c.directory)
+            chosenDirs.push_back(c.path);
     }
     std::erase_if(chosen, [&](const Chosen& c) {
-        return std::ranges::any_of(chosenDirs, [&](const fs::path& d) { return inside(c.path, d); });
+        return std::ranges::any_of(chosenDirs, [&](const fs::path& d) {
+            return inside(c.path, d);
+        });
     });
     std::vector<fs::path> dirs;
-    for (const Chosen& c : chosen) dirs.push_back(c.directory ? c.path : c.path.parent_path());
+    for (const Chosen& c : chosen)
+        dirs.push_back(c.directory ? c.path : c.path.parent_path());
     fs::path base = commonAncestor(dirs);
     // A chosen directory goes below its parent, with its name.
-    if (std::ranges::any_of(chosen, [&](const Chosen& c) { return c.path == base; })) base = base.parent_path();
+    if (std::ranges::any_of(chosen, [&](const Chosen& c) {
+            return c.path == base;
+        }))
+        base = base.parent_path();
 
     Gzip out(maxBytes);
     const auto failed = [&] {
@@ -409,16 +457,20 @@ std::optional<std::string> build(const QStringList& paths, std::size_t maxBytes,
     for (const Chosen& c : chosen) {
         auto entry = entryOf(c.real, "./" + c.path.lexically_relative(base).string(), error);
         if (!entry) {
-            if (error.isEmpty()) error = tr("%1 is not a file, a directory or a link.").arg(shown(c.path));
+            if (error.isEmpty())
+                error = tr("%1 is not a file, a directory or a link.").arg(shown(c.path));
             return std::nullopt;
         }
-        if (!writeTree(out, *entry, error)) return failed();
+        if (!writeTree(out, *entry, error))
+            return failed();
     }
     // The end: two blocks of zeros.
     static constexpr char end[2 * Block] = {};
-    if (!out.write(std::string_view(end, sizeof end))) return failed();
+    if (!out.write(std::string_view(end, sizeof end)))
+        return failed();
     std::optional<std::string> archive = out.finish();
-    if (!archive) return failed();
+    if (!archive)
+        return failed();
     return archive;
 }
 
@@ -428,7 +480,8 @@ std::string answer(std::string_view archive)
     std::string out = "ok\n";
     out.reserve(answerSize(archive.size()));
     for (std::size_t at = 0; at < encoded.size(); at += 76) {
-        if (at) out += '\r';
+        if (at)
+            out += '\r';
         out.append(encoded, at, 76);
     }
     out += "\n\n";

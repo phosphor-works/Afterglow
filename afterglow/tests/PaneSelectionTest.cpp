@@ -14,11 +14,14 @@ namespace {
 
 /// The cells that a press inside the selection finds (Pane::selectionContains),
 /// against the selection as it is drawn.
-class PaneSelection : public ::testing::Test {
+class PaneSelection : public ::testing::Test
+{
 protected:
     void feed(const std::string& bytes)
     {
-        pane.withTerminal([&](AfterglowVt::Terminal& terminal) { terminal.feed(bytes); });
+        pane.withTerminal([&](AfterglowVt::Terminal& terminal) {
+            terminal.feed(bytes);
+        });
     }
     void select(int fromCol, int fromRow, int toCol, int toRow, SelectionMode mode = SelectionMode::Normal)
     {
@@ -26,7 +29,7 @@ protected:
         pane.extendSelection(pane.selectionPointAt(toCol, toRow));
     }
 
-    Pane pane { AfterglowVt::TerminalOptions {} };
+    Pane pane{AfterglowVt::TerminalOptions{}};
 };
 
 TEST_F(PaneSelection, AWordOrALineHoldsTheCellsThatItExpandsTo)
@@ -45,7 +48,9 @@ TEST_F(PaneSelection, AWideCharacterIsSelectedWhole)
 {
     // The wide character takes columns 2 and 3: a selection that starts on
     // its right half holds its left half too.
-    feed("ab\xe6\xbc\xa2" "cd");
+    feed(
+        "ab\xe6\xbc\xa2"
+        "cd");
     select(3, 0, 4, 0);
     EXPECT_TRUE(pane.selectionContains(2, 0));
     EXPECT_TRUE(pane.selectionContains(4, 0));
@@ -67,13 +72,18 @@ TEST_F(PaneSelection, ABlockHoldsItsColumnsOnly)
 TEST_F(PaneSelection, TheCellsAreThoseOfTheRowsShown)
 {
     std::string lines;
-    for (int i = 0; i < pane.rows() * 2; ++i) lines += "line " + std::to_string(i) + "\r\n";
+    for (int i = 0; i < pane.rows() * 2; ++i)
+        lines += "line " + std::to_string(i) + "\r\n";
     feed(lines);
-    pane.withTerminal([](AfterglowVt::Terminal& terminal) { terminal.scrollViewport(5); });
+    pane.withTerminal([](AfterglowVt::Terminal& terminal) {
+        terminal.scrollViewport(5);
+    });
     select(0, 0, 3, 0);
     EXPECT_TRUE(pane.selectionContains(1, 0));
     // The same cell of the view is another row once the view is back at the bottom.
-    pane.withTerminal([](AfterglowVt::Terminal& terminal) { terminal.scrollViewport(-5); });
+    pane.withTerminal([](AfterglowVt::Terminal& terminal) {
+        terminal.scrollViewport(-5);
+    });
     EXPECT_FALSE(pane.selectionContains(1, 0));
 }
 
@@ -92,7 +102,9 @@ TEST_F(PaneSelection, TheCopyCursorIsNoSelection)
 {
     feed("copy mode");
     pane.beginCopyMode();
-    const int cursor = pane.withTerminal([](AfterglowVt::Terminal& terminal) { return terminal.screen().cursor.x; });
+    const int cursor = pane.withTerminal([](AfterglowVt::Terminal& terminal) {
+        return terminal.screen().cursor.x;
+    });
     EXPECT_FALSE(pane.selectionContains(cursor, 0));
     // A selection made in copy mode is one.
     pane.toggleCopySelection(SelectionMode::Normal);

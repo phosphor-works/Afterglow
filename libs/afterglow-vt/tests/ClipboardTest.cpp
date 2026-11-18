@@ -34,7 +34,10 @@ struct Term
 {
     ClipHost host;
     Terminal t{20, 5, host};
-    void feed(std::string_view s) { t.feed(s); }
+    void feed(std::string_view s)
+    {
+        t.feed(s);
+    }
 };
 
 } // namespace
@@ -262,7 +265,9 @@ TEST(Clipboard, ResetDropsAWriteInProgress)
 {
     Term t;
     t.feed("\x1b]5522;type=write:id=w\x1b\\\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;aGk=\x1b\\");
-    t.feed("\x1b" "c\x1b]5522;type=wdata\x1b\\");
+    t.feed(
+        "\x1b"
+        "c\x1b]5522;type=wdata\x1b\\");
     EXPECT_TRUE(t.host.requests.empty());
 }
 
@@ -271,7 +276,8 @@ TEST(Clipboard, AWriteHoldsAtMost64Types)
     Term t;
     t.feed("\x1b]5522;type=write:id=w\x1b\\");
     for (int i = 0; i <= 64; ++i) {
-        t.feed("\x1b]5522;type=wdata:mime=" + AfterglowProto::base64Encode("type/" + std::to_string(i)) + ";aGk=\x1b\\");
+        t.feed("\x1b]5522;type=wdata:mime=" + AfterglowProto::base64Encode("type/" + std::to_string(i))
+               + ";aGk=\x1b\\");
     }
     EXPECT_TRUE(t.host.written.empty());
     t.feed("\x1b]5522;type=wdata\x1b\\"); // the end reports the 65th type

@@ -50,7 +50,8 @@ class ChromeLayer : public QObject
 public:
     /// @p component is the chrome type, shared by every window of the
     /// engine, which the application loads.
-    ChromeLayer(AfterglowRender::GpuDevice& device, QWindow* host, QQmlComponent& component, ChromeController* controller);
+    ChromeLayer(AfterglowRender::GpuDevice& device, QWindow* host, QQmlComponent& component,
+                ChromeController* controller);
     ~ChromeLayer() override;
 
     /// The chrome scene, by its URL in the module's resources. A component
@@ -65,7 +66,10 @@ public:
 
     QRhiTexture* texture() const;
     /// Changes whenever the texture object is replaced.
-    std::uint64_t serial() const noexcept { return m_serial; }
+    std::uint64_t serial() const noexcept
+    {
+        return m_serial;
+    }
 
     /// True if the chrome handles the pointer at @p pos (window coordinates).
     /// @p event, when given, lets the chrome leave wheel events to the panes
@@ -74,7 +78,10 @@ public:
     /// Sends an input event to the QML scene.
     void deliver(QEvent* event);
     void queryInputMethod(QInputMethodQueryEvent* event) const;
-    QQuickItem* rootItem() const { return m_root; }
+    QQuickItem* rootItem() const
+    {
+        return m_root;
+    }
     QQuickItem* focusedItem() const;
     /// The pointer the chrome asks for at @p pos (logical pixels): the
     /// cursor of the topmost item there that sets one, an arrow otherwise.

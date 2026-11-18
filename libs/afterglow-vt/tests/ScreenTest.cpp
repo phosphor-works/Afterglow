@@ -61,11 +61,15 @@ TEST(Reflow, HardLineBreaksStay)
 TEST(Reflow, WideCharMovesToNextRow)
 {
     Term t(6, 3);
-    t.t.feed("abc\xE4\xB8\xAD" "d");
+    t.t.feed(
+        "abc\xE4\xB8\xAD"
+        "d");
     t.t.resize(4, 3, 8, 16);
     EXPECT_EQ(rowText(t.t, 0), "abc");
     EXPECT_TRUE(t.t.screen().row(0).cells[3].isSpacerHead());
-    EXPECT_EQ(rowText(t.t, 1), "\xE4\xB8\xAD" "d");
+    EXPECT_EQ(rowText(t.t, 1),
+              "\xE4\xB8\xAD"
+              "d");
 }
 
 TEST(Reflow, OverflowGoesToHistory)
@@ -170,20 +174,26 @@ TEST(Reflow, PromptSurvivesResizeWithoutShellRepaint)
 TEST(Reflow, PreservedPromptClipsWideGlyphsAndRetainsStyles)
 {
     Term t(12, 6);
-    t.t.feed("\x1b]133;A\x1b\\\x1b[31me\xCC\x81" "ab\xE4\xB8\xAD\xCC\x81"
-             "\x1b[32mtail\x1b[0m\r\n> \x1b]133;B\x1b\\");
+    t.t.feed(
+        "\x1b]133;A\x1b\\\x1b[31me\xCC\x81"
+        "ab\xE4\xB8\xAD\xCC\x81"
+        "\x1b[32mtail\x1b[0m\r\n> \x1b]133;B\x1b\\");
     const auto style = t.t.screen().styles().get(t.t.screen().row(0).at(0).styleId());
     ASSERT_EQ(t.t.screen().styles().liveCount(), 3u);
     // The new last column bisects the wide character and its combining mark.
     t.t.resize(4, 6, 8, 16);
-    EXPECT_EQ(rowText(t.t, 0), "e\xCC\x81" "ab");
+    EXPECT_EQ(rowText(t.t, 0),
+              "e\xCC\x81"
+              "ab");
     EXPECT_EQ(rowText(t.t, 1), ">");
     EXPECT_TRUE(t.t.screen().row(0).at(3).isEmpty());
     EXPECT_FALSE(t.t.screen().row(0).at(3).hasGrapheme());
     EXPECT_EQ(t.t.screen().graphemeExtra(t.t.screen().row(0), 3), U"");
     EXPECT_EQ(t.t.screen().styles().liveCount(), 2u); // green clipped, red retained
     t.t.resize(16, 6, 8, 16);
-    EXPECT_EQ(rowText(t.t, 0), "e\xCC\x81" "ab");
+    EXPECT_EQ(rowText(t.t, 0),
+              "e\xCC\x81"
+              "ab");
     // Reuse the released style slot; the surviving prompt must stay red.
     t.t.feed("\x1b[34mnew\x1b[0m");
     EXPECT_EQ(t.t.screen().styles().get(t.t.screen().row(0).at(0).styleId()), style);
@@ -282,7 +292,8 @@ TEST(Reflow, FittingHistoryRetainsCellsStylesAndTrackedPositions)
 
     // Growing height pulls the retained row back into the writable grid.
     s.resize(12, 6, true);
-    for (int y = 0; y < s.rows(); ++y) EXPECT_EQ(s.row(y).cells.size(), 12u);
+    for (int y = 0; y < s.rows(); ++y)
+        EXPECT_EQ(s.row(y).cells.size(), 12u);
     EXPECT_EQ(rowText(s, s.row(0)), "A\xcc\x81\xe7\x95\x8c");
     s.writeCell(s.row(0), 11, U'!', StyleTable::DefaultId, 1);
     EXPECT_EQ(s.row(0).at(11).codepoint(), U'!');

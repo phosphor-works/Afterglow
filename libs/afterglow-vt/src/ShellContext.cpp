@@ -24,7 +24,9 @@ std::string field(std::string_view value)
 /// The OSC 3008 context with @p id; never the iTerm2 entry.
 auto findContext(std::vector<ShellContext>& stack, std::string_view id)
 {
-    return std::find_if(stack.begin(), stack.end(), [&](const ShellContext& c) { return !c.iterm2RemoteHost && c.id == id; });
+    return std::find_if(stack.begin(), stack.end(), [&](const ShellContext& c) {
+        return !c.iterm2RemoteHost && c.id == id;
+    });
 }
 
 void push(std::vector<ShellContext>& stack, ShellContext c)
@@ -89,7 +91,9 @@ bool ShellContexts::apply(std::string_view payload)
     // Starting an open context again updates it in place, and ends the
     // contexts opened inside it (the spec). The iTerm2 entry is not one.
     if (it != m_stack.end()) {
-        const auto inner = std::remove_if(it + 1, m_stack.end(), [](const ShellContext& s) { return !s.iterm2RemoteHost; });
+        const auto inner = std::remove_if(it + 1, m_stack.end(), [](const ShellContext& s) {
+            return !s.iterm2RemoteHost;
+        });
         const bool ended = inner != m_stack.end();
         m_stack.erase(inner, m_stack.end());
         if (*it == c) {
@@ -116,7 +120,9 @@ bool ShellContexts::setRemoteHost(std::string_view userAtHost)
         c.hostname = field(at == std::string_view::npos ? userAtHost : userAtHost.substr(at + 1));
         c.targetHost = c.hostname;
     }
-    const auto it = std::find_if(m_stack.begin(), m_stack.end(), [](const ShellContext& s) { return s.iterm2RemoteHost; });
+    const auto it = std::find_if(m_stack.begin(), m_stack.end(), [](const ShellContext& s) {
+        return s.iterm2RemoteHost;
+    });
     if (it != m_stack.end() && *it == c) {
         return false; // shell integration repeats it at every prompt
     }

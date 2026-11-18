@@ -51,32 +51,39 @@ namespace Json = AfterglowProto::Json;
 void hostCall(std::string_view bytes)
 {
     const auto call = Host::decode(bytes);
-    if (!call) return;
+    if (!call)
+        return;
     const std::string again = Host::encode(*call);
     const auto back = Host::decode(again);
     // What decodes is what the window takes: it writes the same bytes again.
-    if (!back || Host::encode(*back) != again) std::abort();
+    if (!back || Host::encode(*back) != again)
+        std::abort();
 }
 
 void relayFrame(std::string_view bytes)
 {
     const auto frame = Attach::decodeRelay(bytes);
-    if (!frame) return;
+    if (!frame)
+        return;
     const std::string again = Attach::encode(*frame);
     const auto back = Attach::decodeRelay(again);
-    if (!back || Attach::encode(*back) != again) std::abort();
+    if (!back || Attach::encode(*back) != again)
+        std::abort();
 }
 
 void environment(std::string_view bytes)
 {
     const auto json = Json::parse(bytes);
-    if (!json) return;
+    if (!json)
+        return;
     const auto read = AfterglowMux::environmentFrom(*json, nullptr);
-    if (!read) return;
+    if (!read)
+        return;
     const std::string text = Json::write(AfterglowMux::environmentJson(*read));
     const auto again = Json::parse(text);
     const auto back = again ? AfterglowMux::environmentFrom(*again, nullptr) : std::nullopt;
-    if (!back || Json::write(AfterglowMux::environmentJson(*back)) != text) std::abort();
+    if (!back || Json::write(AfterglowMux::environmentJson(*back)) != text)
+        std::abort();
 }
 
 /// What a window or the daemon would send again of @p layout reads as it
@@ -84,7 +91,8 @@ void environment(std::string_view bytes)
 /// without tabs is the end of a session, which nobody sends.
 bool stillALayout(const AfterglowMux::Layout& layout)
 {
-    if (layout.tabs.empty()) return true;
+    if (layout.tabs.empty())
+        return true;
     const std::string text = Json::write(AfterglowMux::toJson(layout));
     const auto json = Json::parse(text);
     const auto back = json ? AfterglowMux::layoutFrom(*json, nullptr) : std::nullopt;
@@ -94,44 +102,56 @@ bool stillALayout(const AfterglowMux::Layout& layout)
 void layout(std::string_view bytes)
 {
     const auto json = Json::parse(bytes);
-    if (!json) return;
+    if (!json)
+        return;
     auto read = AfterglowMux::layoutFrom(*json, nullptr);
-    if (!read) return;
-    if (!stillALayout(*read)) std::abort();
+    if (!read)
+        return;
+    if (!stillALayout(*read))
+        std::abort();
     const std::vector<std::uint32_t> panes = read->panes();
     std::vector<std::uint32_t> kept;
-    for (std::size_t i = 0; i < panes.size(); i += 2) kept.push_back(panes[i]);
+    for (std::size_t i = 0; i < panes.size(); i += 2)
+        kept.push_back(panes[i]);
     read->reconcile(kept);
-    if (read->panes() != kept || !stillALayout(*read)) std::abort();
+    if (read->panes() != kept || !stillALayout(*read))
+        std::abort();
     for (const std::uint32_t pane : kept) {
-        if (!read->remove(pane) || read->contains(pane) || !stillALayout(*read)) std::abort();
+        if (!read->remove(pane) || read->contains(pane) || !stillALayout(*read))
+            std::abort();
     }
-    if (!read->tabs.empty()) std::abort();
+    if (!read->tabs.empty())
+        std::abort();
 }
 
 template<typename T, typename From>
 void roundTrip(std::string_view bytes, From from)
 {
     const auto json = Json::parse(bytes);
-    if (!json) return;
+    if (!json)
+        return;
     const std::optional<T> read = from(*json, nullptr);
-    if (!read) return;
+    if (!read)
+        return;
     const auto back = from(AfterglowMux::toJson(*read), nullptr);
-    if (!back || Json::write(AfterglowMux::toJson(*back)) != Json::write(AfterglowMux::toJson(*read))) std::abort();
+    if (!back || Json::write(AfterglowMux::toJson(*back)) != Json::write(AfterglowMux::toJson(*read)))
+        std::abort();
 }
 
 } // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size)
 {
-    if (size == 0) return 0;
+    if (size == 0)
+        return 0;
     const std::string_view bytes(reinterpret_cast<const char*>(data) + 1, size - 1);
     switch (data[0] % 11) {
     case 0:
         hostCall(bytes);
         break;
     case 1:
-        if (const auto event = Attach::decodeEvent(bytes); event && event->type == Attach::EventType::Host) hostCall(event->payload);
+        if (const auto event = Attach::decodeEvent(bytes); event && event->type == Attach::EventType::Host)
+            hostCall(event->payload);
         break;
     case 2:
         (void)Attach::decodeInput(bytes);
@@ -158,7 +178,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         environment(bytes);
         break;
     default:
-        roundTrip<AfterglowMux::SessionInfo>(bytes, [](const Json::Value& value, std::string*) { return AfterglowMux::sessionInfo(value); });
+        roundTrip<AfterglowMux::SessionInfo>(bytes, [](const Json::Value& value, std::string*) {
+            return AfterglowMux::sessionInfo(value);
+        });
         break;
     }
     return 0;

@@ -19,7 +19,9 @@ constexpr std::size_t MaxPaint = 4 * SixelMaxPixels;
 
 std::uint32_t percentRgb(int r, int g, int b)
 {
-    auto c = [](int v) { return std::uint32_t(std::lround(std::clamp(v, 0, 100) * 255.0 / 100.0)); };
+    auto c = [](int v) {
+        return std::uint32_t(std::lround(std::clamp(v, 0, 100) * 255.0 / 100.0));
+    };
     return (c(r) << 16) | (c(g) << 8) | c(b);
 }
 
@@ -46,7 +48,9 @@ std::uint32_t hlsRgb(int h, int l, int s)
     } else {
         r = c, b = x;
     }
-    auto v = [m](double ch) { return std::uint32_t(std::lround(std::clamp(ch + m, 0.0, 1.0) * 255.0)); };
+    auto v = [m](double ch) {
+        return std::uint32_t(std::lround(std::clamp(ch + m, 0.0, 1.0) * 255.0));
+    };
     return (v(r) << 16) | (v(g) << 8) | v(b);
 }
 
@@ -88,7 +92,7 @@ SixelPalette defaultSixelPalette()
 {
     SixelPalette p{};
     static constexpr int Vt340[16][3] = {
-        {0, 0, 0}, {20, 20, 80}, {80, 13, 13}, {20, 80, 20}, {80, 20, 80}, {20, 80, 80}, {80, 80, 20}, {53, 53, 53},
+        {0, 0, 0},    {20, 20, 80}, {80, 13, 13}, {20, 80, 20}, {80, 20, 80}, {20, 80, 80}, {80, 80, 20}, {53, 53, 53},
         {26, 26, 26}, {33, 33, 60}, {60, 26, 26}, {33, 60, 33}, {60, 33, 60}, {33, 60, 60}, {60, 60, 33}, {80, 80, 80},
     };
     for (int i = 0; i < 16; ++i) {
@@ -167,7 +171,8 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
     while (i < data.size()) {
         const char c = data[i];
         if (c >= '?' && c <= '~') {
-            if (x >= SixelMaxSide) return false;
+            if (x >= SixelMaxSide)
+                return false;
             const int bits = c - '?';
             if (bits != 0 && !paint(bits, 1)) {
                 return false;
@@ -182,7 +187,8 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
             if (i < data.size() && data[i] >= '?' && data[i] <= '~') {
                 const int bits = data[i] - '?';
                 n = std::max(n, 1);
-                if (n > SixelMaxSide - x) return false;
+                if (n > SixelMaxSide - x)
+                    return false;
                 if (bits != 0 && !paint(bits, n)) {
                     return false;
                 }
@@ -218,7 +224,8 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
             // One line feed past the last paintable band is harmless (many
             // encoders end with one); more would only run up the counter.
             x = 0;
-            if (band >= SixelMaxSide) return false;
+            if (band >= SixelMaxSide)
+                return false;
             band += 6;
             ++i;
         } else {
@@ -241,7 +248,8 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
     const int cols = transparent ? std::min(width, usedW) : width;
     for (int y = 0; y < rows; ++y) {
         for (int px = 0; px < cols; ++px) {
-            std::uint32_t v = y < allocH && px < allocW ? pixels[std::size_t(y) * std::size_t(allocW) + std::size_t(px)] : 0;
+            std::uint32_t v =
+                y < allocH && px < allocW ? pixels[std::size_t(y) * std::size_t(allocW) + std::size_t(px)] : 0;
             if (v == 0) {
                 if (transparent) {
                     continue;

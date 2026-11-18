@@ -72,18 +72,22 @@ inline bool allowOnlyDecoding()
 {
 #if defined(__FreeBSD__)
     int noNewPrivileges = PROC_NO_NEW_PRIVS_ENABLE;
-    if (::procctl(P_PID, 0, PROC_NO_NEW_PRIVS_CTL, &noNewPrivileges) != 0) return false;
+    if (::procctl(P_PID, 0, PROC_NO_NEW_PRIVS_CTL, &noNewPrivileges) != 0)
+        return false;
     const auto restrict = [](int fd, cap_rights_t& rights) {
-        return ::cap_rights_limit(fd, &rights) == 0 && ::cap_ioctls_limit(fd, nullptr, 0) == 0 && ::cap_fcntls_limit(fd, 0) == 0;
+        return ::cap_rights_limit(fd, &rights) == 0 && ::cap_ioctls_limit(fd, nullptr, 0) == 0
+            && ::cap_fcntls_limit(fd, 0) == 0;
     };
     cap_rights_t reading;
     cap_rights_t writing;
     ::cap_rights_init(&reading, CAP_READ, CAP_FSTAT);
     ::cap_rights_init(&writing, CAP_WRITE, CAP_FSTAT);
-    if (!restrict(STDIN_FILENO, reading) || !restrict(STDOUT_FILENO, writing) || !restrict(STDERR_FILENO, writing)) return false;
+    if (!restrict(STDIN_FILENO, reading) || !restrict(STDOUT_FILENO, writing) || !restrict(STDERR_FILENO, writing))
+        return false;
     return ::cap_enter() == 0;
 #else
-    if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return false;
+    if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0)
+        return false;
 #ifndef AFTERGLOW_DECODE_FILTER_ARCH
     return false;
 #else
@@ -124,8 +128,9 @@ inline bool allowOnlyDecoding()
         filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
     }
 #endif
-    for (const long call : {SYS_close, SYS_mmap, SYS_munmap, SYS_mremap, SYS_mprotect, SYS_madvise, SYS_brk, SYS_futex,
-                            SYS_getrandom, SYS_clock_gettime, SYS_rt_sigreturn, SYS_sigaltstack, SYS_exit, SYS_exit_group}) {
+    for (const long call :
+         {SYS_close, SYS_mmap, SYS_munmap, SYS_mremap, SYS_mprotect, SYS_madvise, SYS_brk, SYS_futex, SYS_getrandom,
+          SYS_clock_gettime, SYS_rt_sigreturn, SYS_sigaltstack, SYS_exit, SYS_exit_group}) {
         filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, std::uint32_t(call), 0, 1));
         filter.push_back(BPF_STMT(BPF_RET | BPF_K, Allow));
     }

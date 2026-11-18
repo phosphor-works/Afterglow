@@ -112,9 +112,9 @@ TEST(WideGamutColor, AHugeChromaIsBounded)
 TEST(WideGamutColor, ReadsTheSpellingsOfKittyAndCss)
 {
     const Rgb want{113, 100, 11};
-    for (const char* spec : {"OKLCH(0.5 0.1 100)", "Oklch(0.5,0.1,100)", "oklch( 0.5  0.1  100 )", "  oklch(0.5 0.1 100)\t",
-                             "oklch(.5 .1 1e2)", "oklch(+0.5 0.1 100)", "oklch(50% 0.1 100)", "oklch(0.5, 0.1, 100)",
-                             "oklch(0.5 0.1 100deg)", "oklch(0.5 0.1 100DEG)",
+    for (const char* spec : {"OKLCH(0.5 0.1 100)", "Oklch(0.5,0.1,100)", "oklch( 0.5  0.1  100 )",
+                             "  oklch(0.5 0.1 100)\t", "oklch(.5 .1 1e2)", "oklch(+0.5 0.1 100)", "oklch(50% 0.1 100)",
+                             "oklch(0.5, 0.1, 100)", "oklch(0.5 0.1 100deg)", "oklch(0.5 0.1 100DEG)",
                              // Empty fields between commas, as kitty reads them.
                              "oklch(,0.5,,0.1 100,)"}) {
         EXPECT_EQ(parsed(spec), want) << spec;
@@ -151,13 +151,34 @@ TEST(WideGamutColor, AnAlphaIsReadAndIgnored)
 
 TEST(WideGamutColor, RefusesWhatIsNoColor)
 {
-    for (const char* spec :
-         {"oklch(0.7 0.25)", "oklch(0.7 0.25 25 /)", "oklch(0.7 0.25 / 25)", "oklch(0.7 0.25 25 / 0.5 / 1)",
-          "oklch(0.7 0.25 25 0.5 0.5)", "oklch(0.7 0.25 25 / 1deg)", "oklch(0.7 0.25 25 / x)", "oklch(/ 0.7 0.25 25)",
-          "oklch(0.7 0.25 +-25)", "oklch(0.7 0.25 25)x", "oklch(0.7 0.25 25", "oklch()", "oklch", "oklch (0.7 0.25 25)", "oklab(0.5 0.1 0.1)",
-          "lch(50 30 20)", "oklch(0.7 0.25 25%)", "oklch(0.7deg 0.25 25)", "oklch(0.7 0.25deg 25)", "lab(50 60deg 40)",
-          "oklch(0.7 0.25 25px)", "oklch(nan 0 0)", "oklch(inf 0 0)", "oklch(1e999 0 0)",
-          "oklch(0.7 0.25 --25)", "oklch(0.7 0.25 ++25)", "lab(a b c)", "(0.7 0.25 25)"}) {
+    for (const char* spec : {"oklch(0.7 0.25)",
+                             "oklch(0.7 0.25 25 /)",
+                             "oklch(0.7 0.25 / 25)",
+                             "oklch(0.7 0.25 25 / 0.5 / 1)",
+                             "oklch(0.7 0.25 25 0.5 0.5)",
+                             "oklch(0.7 0.25 25 / 1deg)",
+                             "oklch(0.7 0.25 25 / x)",
+                             "oklch(/ 0.7 0.25 25)",
+                             "oklch(0.7 0.25 +-25)",
+                             "oklch(0.7 0.25 25)x",
+                             "oklch(0.7 0.25 25",
+                             "oklch()",
+                             "oklch",
+                             "oklch (0.7 0.25 25)",
+                             "oklab(0.5 0.1 0.1)",
+                             "lch(50 30 20)",
+                             "oklch(0.7 0.25 25%)",
+                             "oklch(0.7deg 0.25 25)",
+                             "oklch(0.7 0.25deg 25)",
+                             "lab(50 60deg 40)",
+                             "oklch(0.7 0.25 25px)",
+                             "oklch(nan 0 0)",
+                             "oklch(inf 0 0)",
+                             "oklch(1e999 0 0)",
+                             "oklch(0.7 0.25 --25)",
+                             "oklch(0.7 0.25 ++25)",
+                             "lab(a b c)",
+                             "(0.7 0.25 25)"}) {
         EXPECT_EQ(parsed(spec), Refused) << spec;
     }
     EXPECT_EQ(parsed("oklch(" + std::string(300, ' ') + "0.5 0.1 100)"), Refused) << "longer than any colour";

@@ -78,10 +78,19 @@ enum class Action {
     ShowFirstOutputOnScreen,
     ShowLastVisitedOutput,
     ShowHints,
-    SwapLeft, SwapRight, SwapUp, SwapDown,
-    RotatePanesClockwise, RotatePanesCounterclockwise, PaneOverview, UsePackageShaders,
-    MovePaneToTab, MovePaneToWindow, DetachTab,
-    SaveProject, SwitchProject,
+    SwapLeft,
+    SwapRight,
+    SwapUp,
+    SwapDown,
+    RotatePanesClockwise,
+    RotatePanesCounterclockwise,
+    PaneOverview,
+    UsePackageShaders,
+    MovePaneToTab,
+    MovePaneToWindow,
+    DetachTab,
+    SaveProject,
+    SwitchProject,
     EndScriptKeyMode, ///< always ends a script's key mode, so a script cannot keep the keyboard
     CancelOverlay, ///< ends the focused pane's overlay, whose result is cancelled
     Count, ///< not an action: the number of the values before it, for a test that goes through them
@@ -166,7 +175,10 @@ public:
     /// (bindingBaseKey in KeyMapping.h): the config layer follows no
     /// keyboard state of its own.
     static QList<int> combinations(const QKeyEvent* event, char32_t base = 0);
-    bool isBound(int key) const { return m_byKey.contains(key) || m_scriptByKey.contains(key) || m_textByKey.contains(key); }
+    bool isBound(int key) const
+    {
+        return m_byKey.contains(key) || m_scriptByKey.contains(key) || m_textByKey.contains(key);
+    }
     /// The script command ("<script id>.<command>") bound to a key press, or empty.
     QString matchScript(const QKeyEvent* event, char32_t base = 0) const;
     /// The bytes a "text:" binding sends for a key press, or empty.

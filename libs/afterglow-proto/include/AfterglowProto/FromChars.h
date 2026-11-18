@@ -21,15 +21,19 @@ namespace AfterglowProto {
 
 namespace detail {
 
-template <typename T>
+template<typename T>
 inline constexpr bool HasFloatFromChars = requires(const char* p, T& value) { std::from_chars(p, p, value); };
 
-inline bool isDigit(char c) { return c >= '0' && c <= '9'; }
+inline bool isDigit(char c)
+{
+    return c >= '0' && c <= '9';
+}
 
 inline bool startsWithNoCase(const char* p, const char* last, const char* word)
 {
     for (; *word; ++p, ++word) {
-        if (p == last || (*p | 0x20) != *word) return false;
+        if (p == last || (*p | 0x20) != *word)
+            return false;
     }
     return true;
 }
@@ -39,36 +43,46 @@ inline bool startsWithNoCase(const char* p, const char* last, const char* word)
 inline const char* scanFloat(const char* first, const char* last, std::chars_format format)
 {
     const char* p = first;
-    if (p != last && *p == '-') ++p;
-    if (startsWithNoCase(p, last, "infinity")) return p + 8;
-    if (startsWithNoCase(p, last, "inf")) return p + 3;
+    if (p != last && *p == '-')
+        ++p;
+    if (startsWithNoCase(p, last, "infinity"))
+        return p + 8;
+    if (startsWithNoCase(p, last, "inf"))
+        return p + 3;
     if (startsWithNoCase(p, last, "nan")) {
         p += 3;
         // "nan(chars)": the parenthesis counts only when it closes.
         const char* q = p;
         if (q != last && *q == '(') {
             ++q;
-            while (q != last && (isDigit(*q) || ((*q | 0x20) >= 'a' && (*q | 0x20) <= 'z') || *q == '_')) ++q;
-            if (q != last && *q == ')') return q + 1;
+            while (q != last && (isDigit(*q) || ((*q | 0x20) >= 'a' && (*q | 0x20) <= 'z') || *q == '_'))
+                ++q;
+            if (q != last && *q == ')')
+                return q + 1;
         }
         return p;
     }
     const char* digits = p;
-    while (p != last && isDigit(*p)) ++p;
+    while (p != last && isDigit(*p))
+        ++p;
     bool any = p != digits;
     if (p != last && *p == '.') {
         const char* fraction = ++p;
-        while (p != last && isDigit(*p)) ++p;
+        while (p != last && isDigit(*p))
+            ++p;
         any = any || p != fraction;
     }
-    if (!any) return first;
+    if (!any)
+        return first;
     const bool exponentAllowed = (format & std::chars_format::scientific) == std::chars_format::scientific;
     const bool exponentRequired = format == std::chars_format::scientific;
     if (exponentAllowed && p != last && (*p == 'e' || *p == 'E')) {
         const char* q = p + 1;
-        if (q != last && (*q == '+' || *q == '-')) ++q;
+        if (q != last && (*q == '+' || *q == '-'))
+            ++q;
         if (q != last && isDigit(*q)) {
-            while (q != last && isDigit(*q)) ++q;
+            while (q != last && isDigit(*q))
+                ++q;
             return q;
         }
     }
@@ -86,7 +100,7 @@ inline locale_t cLocale()
 /// As std::from_chars for float and double: the same grammar (no leading
 /// space, no '+', a '.' whatever the locale), the same results.
 /// std::chars_format::hex is not supported where the library lacks them.
-template <typename T>
+template<typename T>
 std::from_chars_result fromChars(const char* first, const char* last, T& value,
                                  std::chars_format format = std::chars_format::general)
 {
@@ -95,7 +109,8 @@ std::from_chars_result fromChars(const char* first, const char* last, T& value,
     } else {
         static_assert(std::is_same_v<T, double> || std::is_same_v<T, float>);
         const char* end = format == std::chars_format::hex ? first : detail::scanFloat(first, last, format);
-        if (end == first) return {first, std::errc::invalid_argument};
+        if (end == first)
+            return {first, std::errc::invalid_argument};
         // strtod needs a terminated string, and reads in the C locale here.
         const std::string text(first, end);
         char* stop = nullptr;
@@ -106,8 +121,10 @@ std::from_chars_result fromChars(const char* first, const char* last, T& value,
         } else {
             parsed = ::strtod_l(text.c_str(), &stop, detail::cLocale());
         }
-        if (stop != text.c_str() + text.size()) return {first, std::errc::invalid_argument};
-        if (errno == ERANGE) return {end, std::errc::result_out_of_range};
+        if (stop != text.c_str() + text.size())
+            return {first, std::errc::invalid_argument};
+        if (errno == ERANGE)
+            return {end, std::errc::result_out_of_range};
         value = parsed;
         return {end, std::errc{}};
     }

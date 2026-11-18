@@ -24,7 +24,8 @@
 
 namespace AfterglowMux::decoding {
 
-static_assert(AfterglowImage::MaxSide == int(AfterglowProto::GraphicsMaxSide), "the decoders and the store bound a side alike");
+static_assert(AfterglowImage::MaxSide == int(AfterglowProto::GraphicsMaxSide),
+              "the decoders and the store bound a side alike");
 
 inline constexpr std::size_t MaxBytes = ImageDecoder::MaxBytes;
 /// The exit status of a server whose client is of another version.
@@ -36,8 +37,8 @@ inline constexpr int UsageStatus = 2;
 
 inline bool fits(std::uint64_t width, std::uint64_t height)
 {
-    return width > 0 && height > 0 && width <= AfterglowProto::GraphicsMaxSide && height <= AfterglowProto::GraphicsMaxSide
-        && width * height * 4 <= MaxBytes;
+    return width > 0 && height > 0 && width <= AfterglowProto::GraphicsMaxSide
+        && height <= AfterglowProto::GraphicsMaxSide && width * height * 4 <= MaxBytes;
 }
 
 // The formats of @p formats, by their signatures: the client checks them
@@ -45,7 +46,8 @@ inline bool fits(std::uint64_t width, std::uint64_t height)
 inline bool allowed(std::string_view data, ImageFormats formats)
 {
     const AfterglowImage::Format format = AfterglowImage::format(data);
-    if (formats == ImageFormats::Png) return format == AfterglowImage::Format::Png;
+    if (formats == ImageFormats::Png)
+        return format == AfterglowImage::Format::Png;
     return format != AfterglowImage::Format::Unknown;
 }
 
@@ -55,7 +57,8 @@ inline bool allowed(std::string_view data, ImageFormats formats)
 inline bool reportDue(std::chrono::steady_clock::time_point& last)
 {
     const auto now = std::chrono::steady_clock::now();
-    if (last != std::chrono::steady_clock::time_point{} && now - last < std::chrono::minutes(1)) return false;
+    if (last != std::chrono::steady_clock::time_point{} && now - last < std::chrono::minutes(1))
+        return false;
     last = now;
     return true;
 }

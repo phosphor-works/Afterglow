@@ -71,7 +71,8 @@ inline constexpr bool isControl(char32_t cp)
 /// U+2069). Shown as they are, they reorder the text around them.
 inline constexpr bool isBidiControl(char32_t cp)
 {
-    return cp == 0x061C || cp == 0x200E || cp == 0x200F || (cp >= 0x202A && cp <= 0x202E) || (cp >= 0x2066 && cp <= 0x2069);
+    return cp == 0x061C || cp == 0x200E || cp == 0x200F || (cp >= 0x202A && cp <= 0x202E)
+        || (cp >= 0x2066 && cp <= 0x2069);
 }
 
 /// @p text, safe to print on a terminal: each byte that is not UTF-8, each

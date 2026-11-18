@@ -22,7 +22,8 @@ struct ShellContext
     /// The entry iTerm2's RemoteHost (OSC 1337) keeps, apart from the OSC 3008
     /// ids, so that no OSC 3008 sequence can end or replace it.
     bool iterm2RemoteHost = false;
-    std::string type; ///< boot, container, vm, elevate, chpriv, subcontext, remote, shell, command, app, service, session
+    std::string
+        type; ///< boot, container, vm, elevate, chpriv, subcontext, remote, shell, command, app, service, session
     std::string user;
     std::string hostname;
     std::string targetUser; ///< elevate, chpriv: who the context becomes
@@ -51,9 +52,15 @@ public:
     /// context; an identical repeat changes nothing. A value that is not clean
     /// text is ignored. Returns true if the contexts changed.
     bool setRemoteHost(std::string_view userAtHost);
-    void clear() { m_stack.clear(); }
+    void clear()
+    {
+        m_stack.clear();
+    }
 
-    const std::vector<ShellContext>& stack() const noexcept { return m_stack; }
+    const std::vector<ShellContext>& stack() const noexcept
+    {
+        return m_stack;
+    }
 
 private:
     friend class StateReader; ///< a replica takes the contexts of the terminal that it mirrors

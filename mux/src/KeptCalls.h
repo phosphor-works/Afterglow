@@ -45,23 +45,53 @@ public:
     /// The program waits for files that the window that went never gave:
     /// the next window asks again. Nobody answers for the user meanwhile,
     /// not even with Ctrl+C (ITerminalHost::uploadRequested).
-    void askUpload() { m_upload = true; }
+    void askUpload()
+    {
+        m_upload = true;
+    }
     /// The command that asked ended, or an answer came after all: no window
     /// asks.
-    void dropUpload() { m_upload = false; }
+    void dropUpload()
+    {
+        m_upload = false;
+    }
 
     /// What the next window gets, in its order: the bell, the flash, the
     /// notifications, then the upload's question. Each take leaves what is
     /// kept once the caller queued it.
-    bool bell() const { return m_bell; }
-    void takeBell() { m_bell = false; }
-    bool flash() const { return m_flash; }
-    void takeFlash() { m_flash = false; }
-    bool empty() const { return m_calls.empty(); }
-    const Call& front() const { return m_calls.front(); }
+    bool bell() const
+    {
+        return m_bell;
+    }
+    void takeBell()
+    {
+        m_bell = false;
+    }
+    bool flash() const
+    {
+        return m_flash;
+    }
+    void takeFlash()
+    {
+        m_flash = false;
+    }
+    bool empty() const
+    {
+        return m_calls.empty();
+    }
+    const Call& front() const
+    {
+        return m_calls.front();
+    }
     void popFront();
-    bool upload() const { return m_upload; }
-    void takeUpload() { m_upload = false; }
+    bool upload() const
+    {
+        return m_upload;
+    }
+    void takeUpload()
+    {
+        m_upload = false;
+    }
 
 private:
     std::size_t m_limit = std::size_t(DefaultKeptNotifications);

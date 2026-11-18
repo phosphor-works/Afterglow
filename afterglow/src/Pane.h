@@ -109,18 +109,30 @@ public:
     /// daemon. Closing the pane ends its program in the daemon, unless the
     /// window says otherwise (setSessionRelease).
     void showSession(std::shared_ptr<MuxClient> session, std::uint32_t id);
-    bool isSessionPane() const { return m_session != nullptr; }
+    bool isSessionPane() const
+    {
+        return m_session != nullptr;
+    }
     /// The link to the session of a session pane, else null.
-    const MuxClient* session() const { return m_session.get(); }
+    const MuxClient* session() const
+    {
+        return m_session.get();
+    }
     /// The pane's ID in the daemon, 0 for a pane that is no session pane.
-    std::uint32_t sessionPaneId() const { return m_sessionPane; }
+    std::uint32_t sessionPaneId() const
+    {
+        return m_sessionPane;
+    }
     /// The pane shows mux session @p name of @p host (empty: this computer),
     /// and has not lost it.
     bool showsSession(const QString& name, const QString& host = {}) const;
     /// What closing the session pane ends: the window sets it as it closes
     /// the pane, by what the close is (the pane alone, or the window), or as
     /// the pane moves to a session of its own (MuxRelease::Nothing).
-    void setSessionRelease(MuxRelease release) { m_sessionRelease = release; }
+    void setSessionRelease(MuxRelease release)
+    {
+        m_sessionRelease = release;
+    }
     /// Closing the pane ends its program: always for a program of its own,
     /// and for a session pane unless its release ends nothing.
     bool closeEndsProgram() const;
@@ -142,7 +154,10 @@ public:
     /// The daemon may hold the screens of this session pane: it was not
     /// visible at some time since the answer to a Refresh that it asked
     /// after its last change of sight (sessionRefreshed()). GUI thread.
-    bool sessionScreensHeld() const { return m_session && !m_sessionGone && m_sessionHeld; }
+    bool sessionScreensHeld() const
+    {
+        return m_session && !m_sessionGone && m_sessionHeld;
+    }
     /// Asks for the screens and the history that the daemon may hold of this
     /// session pane (MuxClient::askRefresh), and waits for nothing: the
     /// window does so when the pane shows again, and it shows the older
@@ -170,14 +185,23 @@ public:
     /// False for a session pane until its first frame applied: until then
     /// its replica is a blank terminal, whose cursor, context and status
     /// are none of the program's. GUI thread.
-    bool sessionSynced() const { return !m_session || m_sessionSynced; }
+    bool sessionSynced() const
+    {
+        return !m_session || m_sessionSynced;
+    }
     /// sessionSynced for the snapshot (snapshot()): a frame that the window
     /// holds (a synchronized update, a prompt redraw) leaves the blank one.
-    bool snapshotSynced() const { return !m_session || m_snapshotSynced; }
+    bool snapshotSynced() const
+    {
+        return !m_session || m_snapshotSynced;
+    }
     /// The serial of the newest status record that a session pane's first
     /// frame brought, 0 for none and for other panes: the window showed those
     /// records before (or none did), so they are no news to tell the user.
-    quint64 statusBaseline() const { return m_statusBaseline; }
+    quint64 statusBaseline() const
+    {
+        return m_statusBaseline;
+    }
     /// A call of the session's terminal to its host (MuxHost.h, MuxClient,
     /// GUI thread): the pane answers it as it answers its own terminal.
     void applySessionHostCall(const AfterglowMux::Host::Call& call);
@@ -190,7 +214,10 @@ public:
     /// exited), and said nothing.
     bool sessionLost(MuxLoss loss, bool notice);
     /// sessionLost() closed the pane: not its program's exit.
-    bool leftSession() const { return m_leftSession; }
+    bool leftSession() const
+    {
+        return m_leftSession;
+    }
     int cols() const;
     int rows() const;
 
@@ -205,14 +232,23 @@ public:
     /// Creates the protocol handlers on first use.
     FileTransfer* fileTransfers();
     DragDrop* dragDrop();
-    bool hasFileTransfers() const noexcept { return m_fileTransfers != nullptr; }
-    bool hasDragDrop() const noexcept { return m_dragDrop != nullptr; }
+    bool hasFileTransfers() const noexcept
+    {
+        return m_fileTransfers != nullptr;
+    }
+    bool hasDragDrop() const noexcept
+    {
+        return m_dragDrop != nullptr;
+    }
     /// Terminal.dragAnswerWait, for the drag and drop handler now and later.
     void setDragAnswerWait(int ms);
     /// Notifications.enabled: without it, OSC 99's query gets no answer, as
     /// from a terminal without the protocol, so that a program does not
     /// count on notifications that the window will not show.
-    void setNotificationsEnabled(bool on) { m_notificationsEnabled = on; }
+    void setNotificationsEnabled(bool on)
+    {
+        m_notificationsEnabled = on;
+    }
     /// The window's answer to downloadRequested() @p serial (0: the one that
     /// waits): the file to save the download as, which it streams to
     /// ("name.part", or "name.N.part" when that is taken, until it is
@@ -246,26 +282,50 @@ public:
     /// The program that runs over this pane (an overlay), or null. It
     /// takes the pane's place on screen and its input while it runs. The
     /// overlay sets and clears it.
-    PaneOverlay* overlay() const noexcept { return m_overlay; }
-    void setOverlay(PaneOverlay* overlay) noexcept { m_overlay = overlay; }
+    PaneOverlay* overlay() const noexcept
+    {
+        return m_overlay;
+    }
+    void setOverlay(PaneOverlay* overlay) noexcept
+    {
+        m_overlay = overlay;
+    }
     /// For an overlay's own pane: the pane it runs over. It is no pane of
     /// its own for scripts and afterglow ctl, and its program gets the
     /// host's AFTERGLOW_PANE_ID. Set before start().
-    Pane* overlayHost() const noexcept { return m_overlayHost; }
-    void setOverlayHost(Pane* host) noexcept { m_overlayHost = host; }
+    Pane* overlayHost() const noexcept
+    {
+        return m_overlayHost;
+    }
+    void setOverlayHost(Pane* host) noexcept
+    {
+        m_overlayHost = host;
+    }
     /// Keeps at most @p limit bytes of what the program writes to a
     /// captured standard output (SpawnOptions::captureOutput). Set before start().
-    void setOutputLimit(std::size_t limit) { m_outputLimit = limit; }
+    void setOutputLimit(std::size_t limit)
+    {
+        m_outputLimit = limit;
+    }
     /// What the program wrote to its captured standard output, and whether
     /// it wrote more than the limit. Complete once closed() came.
     std::string takeOutput(bool* truncated);
     /// The program's exit status once closed() came: its exit code, 128
     /// plus the signal that ended it, or -1 when it is unknown.
-    int exitCode() const noexcept { return m_exitCode.load(); }
+    int exitCode() const noexcept
+    {
+        return m_exitCode.load();
+    }
     /// The areas that scripts dock at the pane's edges. The window lays them
     /// out and draws them. They go where the pane goes, and close with it.
-    std::vector<std::unique_ptr<DockArea>>& docks() noexcept { return m_docks; }
-    const std::vector<std::unique_ptr<DockArea>>& docks() const noexcept { return m_docks; }
+    std::vector<std::unique_ptr<DockArea>>& docks() noexcept
+    {
+        return m_docks;
+    }
+    const std::vector<std::unique_ptr<DockArea>>& docks() const noexcept
+    {
+        return m_docks;
+    }
     /// Changes when what assistive technology reads changes: the terminal's
     /// text generation (textGeneration) and the selection serial.
     std::pair<std::uint64_t, std::uint64_t> accessibleSerial() const;
@@ -297,14 +357,20 @@ public:
     /// that hold times out, when a frame must be drawn whatever the program
     /// does. 0 when the last refresh held nothing.
     qint64 holdRemaining() const;
-    const AfterglowRender::PaneSnapshot& snapshot() const noexcept { return m_snapshot; }
+    const AfterglowRender::PaneSnapshot& snapshot() const noexcept
+    {
+        return m_snapshot;
+    }
     /// Hands the snapshot out with its identity, for the last frame of a
     /// pane that draws no more (an overlay that ended, fading out). The next
     /// refresh captures a new one.
     AfterglowRender::PaneSnapshot takeSnapshot();
 
     /// Unique for the life of the process; scripts and afterglow ctl use it.
-    quint32 id() const noexcept { return m_id; }
+    quint32 id() const noexcept
+    {
+        return m_id;
+    }
     /// The program's title, or the one set through the control interface.
     QString title() const;
     /// Overrides the title; empty returns to the program's.
@@ -353,7 +419,8 @@ public:
     /// @p arriving, when given, says that a session pane's rows of the
     /// scope are still on their way from the daemon: the text has blank
     /// lines in their place.
-    QString text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::TextFormat& format = {}, bool* arriving = nullptr);
+    QString text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::TextFormat& format = {},
+                 bool* arriving = nullptr);
     static constexpr std::size_t MaxText = 1024 * 1024;
     /// The events of one budget that wait for the GUI thread (queueEvent()).
     static constexpr std::size_t MaxQueuedEvents = 256;
@@ -363,11 +430,15 @@ public:
     QString regionText(std::uint64_t id, const AfterglowVt::TextFormat& format = {}) const;
     /// The output regions that a read names by where they are: kitty's
     /// first_cmd_output_on_screen and last_visited_cmd_output.
-    enum class OutputRegion : std::uint8_t { FirstOnScreen, LastVisited };
+    enum class OutputRegion : std::uint8_t {
+        FirstOnScreen,
+        LastVisited
+    };
     /// readRegion() of the output region @p which, with one look at the
     /// session and one lock: not available when there is none. @p format as
     /// for regionText().
-    QVariantMap readOutputRegion(OutputRegion which, std::size_t limit, const AfterglowVt::TextFormat& format = {}) const;
+    QVariantMap readOutputRegion(OutputRegion which, std::size_t limit,
+                                 const AfterglowVt::TextFormat& format = {}) const;
     /// At most `limit` bytes of text. The caller bounds the limit: scripts
     /// to their max_bytes range, show_last_output to Terminal.pagerOutputLimit.
     /// Not available while a session pane's rows of the scope (its last
@@ -392,23 +463,48 @@ public:
     /// afterglow ctl, a project), even when a fallback shell runs in its
     /// place. Empty for a shell, and for a tab whose program does not
     /// outlive it (show_last_output).
-    const QStringList& launchCommand() const { return m_launchCommand; }
-    const QString& launchDirectory() const { return m_launchDirectory; }
-    void setLaunch(const QString& cwd, const QStringList& command) { m_launchDirectory = cwd; m_launchCommand = command; }
+    const QStringList& launchCommand() const
+    {
+        return m_launchCommand;
+    }
+    const QString& launchDirectory() const
+    {
+        return m_launchDirectory;
+    }
+    void setLaunch(const QString& cwd, const QStringList& command)
+    {
+        m_launchDirectory = cwd;
+        m_launchCommand = command;
+    }
     /// The command that a project saves, for a session pane that another
     /// window or the daemon started.
-    void setLaunchCommand(const QStringList& command) { m_launchCommand = command; }
-    void setLaunchedProgram(const QString& name) { m_launchedProgram = name; }
+    void setLaunchCommand(const QStringList& command)
+    {
+        m_launchCommand = command;
+    }
+    void setLaunchedProgram(const QString& name)
+    {
+        m_launchedProgram = name;
+    }
     /// Keeps the pane open after an unsuccessful exit, until a key is
     /// pressed (the fallback panes of a restored project).
-    void setHoldOnFailure(bool hold) { m_holdOnFailure = hold; }
+    void setHoldOnFailure(bool hold)
+    {
+        m_holdOnFailure = hold;
+    }
     /// Keeps the pane open whenever its program exits, until a key is
     /// pressed (afterglow --hold).
-    void setHold(bool hold) { m_hold = hold; }
+    void setHold(bool hold)
+    {
+        m_hold = hold;
+    }
     /// No process could start: shows a notice and holds the pane open until
     /// a key is pressed.
     void holdStartFailure();
-    bool isHeld() const { return m_held.load(); }
+    bool isHeld() const
+    {
+        return m_held.load();
+    }
     /// Whether output and input jump a scrolled-back pane to the bottom.
     void setScrollPolicy(bool onOutput, bool onInput)
     {
@@ -437,7 +533,10 @@ public:
     static constexpr int SignalCount = int(std::tuple_size_v<Signals>);
     void setSignal(int channel, float value);
     void setSignals(const QList<QPair<int, float>>& values, std::chrono::steady_clock::time_point time);
-    const Signals& shaderSignals() const noexcept { return m_signals; }
+    const Signals& shaderSignals() const noexcept
+    {
+        return m_signals;
+    }
 
     // Search (GUI thread).
     /// Runs or steps a search and scrolls the match into view. A new query
@@ -583,7 +682,7 @@ Q_SIGNALS:
     void terminalProtocolLost(DragDrop::Lost lost, bool reset);
     /// @p paths holds at most the first 100 of @p total paths: see FileTransfer::permissionRequested.
     void fileTransferPermissionRequested(const QString& token, bool writing, const QStringList& paths, int total,
-        bool othersRefused);
+                                         bool othersRefused);
     void closed();
     /// The window lost the session of this session pane (sessionLost): the
     /// pane closes, as do the others that lost it in the same pass.
@@ -775,7 +874,10 @@ private:
                            std::vector<std::uint32_t>& delays) override;
     void desktopNotification(const AfterglowVt::NotificationRequest& request) override;
     std::string notificationCapabilities() override;
-    std::optional<AfterglowProto::Remote::Answer> remoteSocket() override { return m_remoteSocket; }
+    std::optional<AfterglowProto::Remote::Answer> remoteSocket() override
+    {
+        return m_remoteSocket;
+    }
     bool clipboardRequest(const AfterglowVt::ClipboardRequest& request) override;
     bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,
                    std::vector<std::uint8_t>& rgba) override;
@@ -868,7 +970,11 @@ private:
     /// What became of the start of m_command: its end goes the same way.
     /// The window, the scripts and afterglow ctl pair the two. Guarded by
     /// m_mutex.
-    enum class CommandStart : std::uint8_t { None, Queued, Dropped };
+    enum class CommandStart : std::uint8_t {
+        None,
+        Queued,
+        Dropped
+    };
     CommandStart m_commandStartEvent = CommandStart::None;
     AfterglowProto::Remote::Answer m_remoteSocket; ///< guarded by m_mutex
     std::chrono::steady_clock::time_point m_commandStart;
@@ -895,7 +1001,8 @@ private:
     std::uint64_t m_selectionSerial = 0;
     std::optional<std::uint64_t> m_lastVisitedOutput; ///< under m_mutex
 
-    struct SearchJob {
+    struct SearchJob
+    {
         AfterglowVt::TextSnapshot text;
         std::atomic<bool> cancelled{false};
         std::uint64_t epoch = 0, nextRow = 0, lastRow = 0;

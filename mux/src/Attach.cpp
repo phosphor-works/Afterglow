@@ -28,10 +28,12 @@ std::uint64_t lastSerial = 0;
 
 // The largest Host event, a part and its header, fits a frame of the window's
 // channel: its grant is the default window (MuxClient).
-static_assert(Attach::HostPartBytes + 32 <= PhosphorChannel::Stream::Options{}.window - PhosphorChannel::Stream::FrameCost);
+static_assert(Attach::HostPartBytes + 32
+              <= PhosphorChannel::Stream::Options{}.window - PhosphorChannel::Stream::FrameCost);
 // And the largest part of a reply of the window, which the daemon grants the
 // window's input channel.
-static_assert(Attach::ControlReplyPartBytes + 32 <= PhosphorChannel::Stream::Options{}.window - PhosphorChannel::Stream::FrameCost);
+static_assert(Attach::ControlReplyPartBytes + 32
+              <= PhosphorChannel::Stream::Options{}.window - PhosphorChannel::Stream::FrameCost);
 
 } // namespace
 
@@ -45,7 +47,8 @@ Attachment::Attachment(std::string session)
 Attachment::~Attachment()
 {
     // The stream closes the connection once it has it.
-    if (m_fd >= 0) ::close(m_fd);
+    if (m_fd >= 0)
+        ::close(m_fd);
 }
 
 void Attachment::adopt(int fd, std::string unsent)
@@ -55,7 +58,8 @@ void Attachment::adopt(int fd, std::string unsent)
     // The daemon never blocks on a window: a connection that cannot be made
     // non-blocking ends the attachment.
     const int flags = ::fcntl(m_fd, F_GETFL);
-    if (flags < 0 || ::fcntl(m_fd, F_SETFL, flags | O_NONBLOCK) < 0) m_failed = true;
+    if (flags < 0 || ::fcntl(m_fd, F_SETFL, flags | O_NONBLOCK) < 0)
+        m_failed = true;
 }
 
 Attachment::Late Attachment::takeLate()
@@ -71,14 +75,17 @@ pollfd Attachment::pollFd() const
     // Before adopt(): nothing to wait for but the deadline. Then the end of
     // the attach answer waits for room, and after it the window's first
     // bytes start the stream; a hangup shows either way.
-    if (!m_stream) return {m_fd, short(m_fd < 0 ? 0 : (m_unsent.empty() ? POLLIN : POLLOUT)), 0};
+    if (!m_stream)
+        return {m_fd, short(m_fd < 0 ? 0 : (m_unsent.empty() ? POLLIN : POLLOUT)), 0};
     return {m_stream->readFd(), short(POLLIN | (m_stream->wantsWrite() ? POLLOUT : 0)), 0};
 }
 
 int Attachment::timeoutMs() const
 {
-    if (m_stream && !m_finish) return -1;
-    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(m_deadline - std::chrono::steady_clock::now());
+    if (m_stream && !m_finish)
+        return -1;
+    const auto left =
+        std::chrono::duration_cast<std::chrono::milliseconds>(m_deadline - std::chrono::steady_clock::now());
     return left.count() > 0 ? int(left.count()) : 0;
 }
 
@@ -95,16 +102,19 @@ void Attachment::startStream()
     m_stream = std::make_unique<PhosphorChannel::Stream>(fd, fd, options);
     std::string error;
     m_events = m_stream->openWriter(Attach::ControlChannel, Attach::EventCodec, &error);
-    if (!m_events) m_failed = true;
+    if (!m_events)
+        m_failed = true;
     // A finished attachment whose window starts only now: the window still
     // learns why the session does not show.
-    if (m_finish) m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(FinishWaitMs);
+    if (m_finish)
+        m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(FinishWaitMs);
 }
 
 void Attachment::sendEvent(const Attach::Event& event, std::shared_ptr<const std::string> call)
 {
     const bool part = event.type == Attach::EventType::Host && event.status == Attach::HostPart;
-    WaitingEvent waiting{Attach::encode(event), event.pane, std::move(call), !part, event.type == Attach::EventType::Control};
+    WaitingEvent waiting{Attach::encode(event), event.pane, std::move(call), !part,
+                         event.type == Attach::EventType::Control};
     const std::size_t cost = waiting.encoded.size() + Host::CallCost;
     // Counted once it waits: a push that runs out of memory counts nothing.
     m_waitingEvents.push_back(std::move(waiting));
@@ -118,7 +128,8 @@ void Attachment::flushEvents()
         // They wait for the window to grant the channel its window, at the
         // start, and while host calls fill it.
         const WriteResult result = m_events->tryWrite(m_waitingEvents.front().encoded);
-        if (result == WriteResult::WouldBlock) break;
+        if (result == WriteResult::WouldBlock)
+            break;
         if (result != WriteResult::Written) {
             // No event is larger than a frame (the parts of host calls): the
             // stream failed.
@@ -133,7 +144,8 @@ void Attachment::flushEvents()
 
 void Attachment::sendHostCalls(const PaneLink& link, MuxPane& pane, std::size_t budget)
 {
-    if (m_waitingBytes >= m_eventQueue) return;
+    if (m_waitingBytes >= m_eventQueue)
+        return;
     for (std::string& encoded : pane.takeHostCalls(m_serial, std::min(budget, m_eventQueue - m_waitingBytes))) {
         auto call = std::make_shared<const std::string>(std::move(encoded));
         Attach::Event host;
@@ -145,7 +157,8 @@ void Attachment::sendHostCalls(const PaneLink& link, MuxPane& pane, std::size_t 
             host.payload.assign(*call, at, Attach::HostPartBytes);
             host.status = last ? -1 : Attach::HostPart;
             sendEvent(host, call);
-            if (last) break;
+            if (last)
+                break;
         }
     }
 }
@@ -158,8 +171,10 @@ void Attachment::returnHostCalls(Session* session, bool windowGone)
     // without a link is one of those: only a linked pane sends calls, and
     // its link goes once its PaneClosed waits behind them.
     const auto returned = [&](const WaitingEvent& waiting) {
-        if (!waiting.call) return false;
-        if (windowGone) return true;
+        if (!waiting.call)
+            return false;
+        if (windowGone)
+            return true;
         const auto link = m_panes.find(waiting.pane);
         return link != m_panes.end() && !link->second.closed;
     };
@@ -170,30 +185,38 @@ void Attachment::returnHostCalls(Session* session, bool windowGone)
     // would join the parts of the next call to it. The window answers it
     // before it reads the last event, and the daemon still reads that
     // answer (readLate()).
-    const auto goesWhole = [&](const WaitingEvent& waiting) { return waiting.call == m_partSent && !windowGone; };
+    const auto goesWhole = [&](const WaitingEvent& waiting) {
+        return waiting.call == m_partSent && !windowGone;
+    };
     for (const WaitingEvent& waiting : m_waitingEvents) {
-        if (!returned(waiting) || goesWhole(waiting)) continue;
+        if (!returned(waiting) || goesWhole(waiting))
+            continue;
         // The parts of one call wait in a row.
-        if (calls.empty() || calls.back().second != waiting.call) calls.emplace_back(waiting.pane, waiting.call);
+        if (calls.empty() || calls.back().second != waiting.call)
+            calls.emplace_back(waiting.pane, waiting.call);
     }
     std::size_t bytes = 0;
     const auto kept = std::remove_if(m_waitingEvents.begin(), m_waitingEvents.end(), [&](const WaitingEvent& waiting) {
-        if (!returned(waiting) || goesWhole(waiting)) return false;
+        if (!returned(waiting) || goesWhole(waiting))
+            return false;
         bytes += waiting.encoded.size() + Host::CallCost;
         return true;
     });
     m_waitingEvents.erase(kept, m_waitingEvents.end());
     m_waitingBytes -= bytes;
-    if (!session) return;
+    if (!session)
+        return;
     for (const auto& [id, call] : calls) {
-        if (MuxPane* pane = session->pane(id)) pane->answerWithoutWindow(*call);
+        if (MuxPane* pane = session->pane(id))
+            pane->answerWithoutWindow(*call);
     }
 }
 
 void Attachment::paneClosed(std::unique_ptr<MuxPane> pane)
 {
     // A window that never connected has nothing to learn of the pane.
-    if (!m_stream || m_failed) return;
+    if (!m_stream || m_failed)
+        return;
     if (PaneLink* l = link(*pane)) {
         l->closed = std::move(pane);
         return;
@@ -223,14 +246,16 @@ void Attachment::panesRemoved(const std::vector<std::pair<std::uint32_t, MuxPane
 {
     std::map<std::uint32_t, MuxPane*> moved;
     for (const auto& [id, pane] : panes) {
-        if (pane) moved.emplace(id, pane);
+        if (pane)
+            moved.emplace(id, pane);
     }
     if (!moved.empty()) {
         // A call whose first parts went is answered too: the window drops
         // its parts with the pane. What goes first, then the queue in one
         // pass that allocates nothing, as in returnHostCalls().
         const auto movedPane = [&moved](const WaitingEvent& waiting) -> MuxPane* {
-            if (!waiting.call) return nullptr;
+            if (!waiting.call)
+                return nullptr;
             const auto it = moved.find(waiting.pane);
             return it == moved.end() ? nullptr : it->second;
         };
@@ -242,17 +267,21 @@ void Attachment::panesRemoved(const std::vector<std::pair<std::uint32_t, MuxPane
             }
         }
         std::size_t bytes = 0;
-        const auto kept = std::remove_if(m_waitingEvents.begin(), m_waitingEvents.end(), [&](const WaitingEvent& waiting) {
-            if (!movedPane(waiting)) return false;
-            bytes += waiting.encoded.size() + Host::CallCost;
-            return true;
-        });
+        const auto kept =
+            std::remove_if(m_waitingEvents.begin(), m_waitingEvents.end(), [&](const WaitingEvent& waiting) {
+                if (!movedPane(waiting))
+                    return false;
+                bytes += waiting.encoded.size() + Host::CallCost;
+                return true;
+            });
         m_waitingEvents.erase(kept, m_waitingEvents.end());
         m_waitingBytes -= bytes;
-        for (const auto& [pane, call] : calls) pane->answerWithoutWindow(*call);
+        for (const auto& [pane, call] : calls)
+            pane->answerWithoutWindow(*call);
     }
     for (const auto& [id, pane] : panes) {
-        if (pane) m_movedPanes.insert(id);
+        if (pane)
+            m_movedPanes.insert(id);
         m_visible.erase(id);
         if (const auto held = m_heldInput.find(id); held != m_heldInput.end()) {
             // The program of a pane that went to another session runs on:
@@ -260,11 +289,14 @@ void Attachment::panesRemoved(const std::vector<std::pair<std::uint32_t, MuxPane
             // (deliver() finds the pane). Its size and the rest are this
             // window's. A pane that the window closed takes nothing.
             std::erase_if(held->second, [&](const Attach::Input& message) {
-                if (pane && (message.type == Attach::InputType::Bytes || message.type == Attach::InputType::UploadAnswer)) return false;
+                if (pane
+                    && (message.type == Attach::InputType::Bytes || message.type == Attach::InputType::UploadAnswer))
+                    return false;
                 m_heldBytes -= message.bytes.size() + PhosphorChannel::Stream::FrameCost;
                 return true;
             });
-            if (held->second.empty()) m_heldInput.erase(held);
+            if (held->second.empty())
+                m_heldInput.erase(held);
         }
         // The parts of an answer for a pane that the window closed go
         // nowhere. Those of a pane that went on wait for the rest.
@@ -273,9 +305,11 @@ void Attachment::panesRemoved(const std::vector<std::pair<std::uint32_t, MuxPane
             m_uploads.erase(parts);
         }
         const auto it = m_panes.find(id);
-        if (it == m_panes.end()) continue;
+        if (it == m_panes.end())
+            continue;
         // The window knows its ID until it says that it let it go.
-        if (pane) m_leftPanes.insert(id);
+        if (pane)
+            m_leftPanes.insert(id);
         it->second.writer->close();
         m_panes.erase(it);
         Attach::Event closed;
@@ -287,7 +321,8 @@ void Attachment::panesRemoved(const std::vector<std::pair<std::uint32_t, MuxPane
 
 void Attachment::finish(Attach::EventType type, Session* session)
 {
-    if (m_finish) return;
+    if (m_finish)
+        return;
     // The last event does not wait behind calls that the window would answer
     // after it no longer shows the session.
     returnHostCalls(session);
@@ -295,11 +330,13 @@ void Attachment::finish(Attach::EventType type, Session* session)
     // fails them (Daemon::answerForwarded), and the window must not run them.
     // In one pass that allocates nothing, as in returnHostCalls().
     std::size_t bytes = 0;
-    const auto kept = std::remove_if(m_waitingEvents.begin(), m_waitingEvents.end(), [&bytes](const WaitingEvent& waiting) {
-        if (!waiting.control) return false;
-        bytes += waiting.encoded.size() + Host::CallCost;
-        return true;
-    });
+    const auto kept =
+        std::remove_if(m_waitingEvents.begin(), m_waitingEvents.end(), [&bytes](const WaitingEvent& waiting) {
+            if (!waiting.control)
+                return false;
+            bytes += waiting.encoded.size() + Host::CallCost;
+            return true;
+        });
     m_waitingEvents.erase(kept, m_waitingEvents.end());
     m_waitingBytes -= bytes;
     // The input that waits for a PTY is for a session that no longer shows
@@ -315,14 +352,17 @@ void Attachment::finish(Attach::EventType type, Session* session)
             const Attach::Input message = std::move(waiting.front());
             waiting.pop_front();
             m_heldBytes -= message.bytes.size() + PhosphorChannel::Stream::FrameCost;
-            if (message.type != Attach::InputType::Resize) deliver(session, message, true);
+            if (message.type != Attach::InputType::Resize)
+                deliver(session, message, true);
         }
         m_heldInput.erase(m_heldInput.begin());
     }
-    if (session) m_late.layoutChanges = session->layoutChanges();
+    if (session)
+        m_late.layoutChanges = session->layoutChanges();
     m_finish = type;
     // A window that did not connect yet keeps its connect deadline.
-    if (m_stream) m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(FinishWaitMs);
+    if (m_stream)
+        m_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(FinishWaitMs);
 }
 
 bool Attachment::finished() const
@@ -340,18 +380,21 @@ bool Attachment::deliver(Session* session, const Attach::Input& message, bool wi
     if (!pane && bytes && m_findPane && m_movedPanes.contains(message.pane)) {
         pane = m_findPane(message.pane);
         // Its program ended there: the window's bytes for it go nowhere.
-        if (!pane) m_movedPanes.erase(message.pane);
+        if (!pane)
+            m_movedPanes.erase(message.pane);
     }
     // A pane that exited since the window wrote: its input is lost, as a
     // window's input to a program that ended.
-    if (!pane) return true;
+    if (!pane)
+        return true;
     switch (message.type) {
     case Attach::InputType::Bytes:
     case Attach::InputType::UploadAnswer: {
         // A window that left waits for nothing: once a pane refused its
         // bytes, the rest of them go nowhere, as a cut paste must not run
         // with its Enter.
-        if (windowLeft && m_cutPanes.contains(message.pane)) return true;
+        if (windowLeft && m_cutPanes.contains(message.pane))
+            return true;
         // Only the answer of the window that the pane asked last, to a
         // question that is still open: another one would be a second answer,
         // or reach the shell. The check and the write are not one step: a
@@ -359,15 +402,19 @@ bool Attachment::deliver(Session* session, const Attach::Input& message, bool wi
         // as in a window. One lock over both would take m_hostMutex around
         // the pane's m_mutex, which the reader thread takes the other way.
         std::optional<std::uint64_t> question;
-        if (message.type == Attach::InputType::UploadAnswer && !(question = pane->uploadAnswer(m_serial))) return true;
+        if (message.type == Attach::InputType::UploadAnswer && !(question = pane->uploadAnswer(m_serial)))
+            return true;
         // The program reads slowly, or the pane's input that waits behind a
         // decode reached its bound: the input waits for room, and the pane's
         // input after it waits behind it. An answer counts once it went: one
         // that is lost leaves the question to the next window.
         const MuxPane::Input written = pane->input(message.bytes);
-        if (question && written == MuxPane::Input::Written) pane->uploadAnswered(*question);
-        if (written != MuxPane::Input::Full) return true;
-        if (windowLeft) m_cutPanes.insert(message.pane);
+        if (question && written == MuxPane::Input::Written)
+            pane->uploadAnswered(*question);
+        if (written != MuxPane::Input::Full)
+            return true;
+        if (windowLeft)
+            m_cutPanes.insert(message.pane);
         return windowLeft;
     }
     case Attach::InputType::Resize:
@@ -390,14 +437,16 @@ bool Attachment::deliver(Session* session, const Attach::Input& message, bool wi
         // The screens that waited go in this pass (sendFrame). The window
         // says it once: a pane that links later starts with it.
         m_visible[message.pane] = message.visible;
-        if (const auto link = m_panes.find(message.pane); link != m_panes.end()) link->second.shown = message.visible;
+        if (const auto link = m_panes.find(message.pane); link != m_panes.end())
+            link->second.shown = message.visible;
         break;
     case Attach::InputType::Refresh:
         // The window asks only for a pane whose frames it reads: one without
         // a channel yet has nothing to read, and one whose program exited
         // (reap() closed its link, which still sends its last frames) reads
         // nothing new. Each other gets its answer: the window counts them.
-        if (const auto link = m_panes.find(message.pane); link != m_panes.end() && !link->second.closed) ++link->second.refreshes;
+        if (const auto link = m_panes.find(message.pane); link != m_panes.end() && !link->second.closed)
+            ++link->second.refreshes;
         break;
     case Attach::InputType::Kill:
     case Attach::InputType::ClosePane:
@@ -417,8 +466,10 @@ std::optional<Attach::Input> Attachment::takeUpload(Attach::Input message)
     const bool part = message.type == Attach::InputType::UploadAnswerPart;
     const auto parts = m_uploads.find(message.pane);
     if (!part && message.type != Attach::InputType::UploadAnswer) {
-        if (parts == m_uploads.end() || message.type != Attach::InputType::Bytes) return message;
-        std::fprintf(stderr, "aglow-mux: the window of session %s sent input in the middle of an upload's answer\n", m_session.c_str());
+        if (parts == m_uploads.end() || message.type != Attach::InputType::Bytes)
+            return message;
+        std::fprintf(stderr, "aglow-mux: the window of session %s sent input in the middle of an upload's answer\n",
+                     m_session.c_str());
         m_failed = true;
         return std::nullopt;
     }
@@ -426,8 +477,8 @@ std::optional<Attach::Input> Attachment::takeUpload(Attach::Input message)
     // It queues the parts of an answer together, so the parts of all panes
     // together are bounded as one answer.
     if (message.bytes.size() > AfterglowPty::Pty::MaxPendingInput - m_uploadBytes) {
-        std::fprintf(stderr, "aglow-mux: the window of session %s sent an upload's answer of more than %zu bytes\n", m_session.c_str(),
-                     AfterglowPty::Pty::MaxPendingInput);
+        std::fprintf(stderr, "aglow-mux: the window of session %s sent an upload's answer of more than %zu bytes\n",
+                     m_session.c_str(), AfterglowPty::Pty::MaxPendingInput);
         m_failed = true;
         return std::nullopt;
     }
@@ -519,15 +570,19 @@ void Attachment::readInput(Session& session)
             }
             // A pane whose program exited since the window closed it is gone
             // already.
-            if (session.closePane(action->pane)) paneRemoved(action->pane);
+            if (session.closePane(action->pane))
+                paneRemoved(action->pane);
         }
-        if (m_kill) return;
+        if (m_kill)
+            return;
     }
     // Apart from the input, which waits while a PTY is full: the client of a
     // run can be what keeps it full, and waits for its output.
-    if (!readCommands()) return;
+    if (!readCommands())
+        return;
     PhosphorChannel::StreamReader* input = m_stream->reader(Attach::ControlChannel);
-    if (!input) return;
+    if (!input)
+        return;
     if (input->codec() != Attach::InputCodec) {
         m_failed = true;
         return;
@@ -548,13 +603,14 @@ void Attachment::readInput(Session& session)
         }
         if (message->type == Attach::InputType::ControlReplyPart || message->type == Attach::InputType::ControlReply) {
             if (m_controlReplyParts.size() + message->bytes.size() > Attach::MaxControlReply) {
-                std::fprintf(stderr, "aglow-mux: the window of session %s sent a reply of more than %zu bytes\n", m_session.c_str(),
-                             Attach::MaxControlReply);
+                std::fprintf(stderr, "aglow-mux: the window of session %s sent a reply of more than %zu bytes\n",
+                             m_session.c_str(), Attach::MaxControlReply);
                 m_failed = true;
                 return;
             }
             m_controlReplyParts += message->bytes;
-            if (message->type == Attach::InputType::ControlReply) m_controlReplies.push_back(std::exchange(m_controlReplyParts, {}));
+            if (message->type == Attach::InputType::ControlReply)
+                m_controlReplies.push_back(std::exchange(m_controlReplyParts, {}));
             continue;
         }
         if (message->type == Attach::InputType::Layout) {
@@ -562,8 +618,8 @@ void Attachment::readInput(Session& session)
             const auto json = AfterglowProto::Json::parse(message->bytes, &error);
             auto layout = json ? layoutFrom(*json, &error) : std::nullopt;
             if (!layout) {
-                std::fprintf(stderr, "aglow-mux: the window of session %s sent a layout that is not valid: %s\n", m_session.c_str(),
-                             error.c_str());
+                std::fprintf(stderr, "aglow-mux: the window of session %s sent a layout that is not valid: %s\n",
+                             m_session.c_str(), error.c_str());
                 m_failed = true;
                 return;
             }
@@ -575,30 +631,35 @@ void Attachment::readInput(Session& session)
             const auto json = AfterglowProto::Json::parse(message->bytes, &error);
             auto settings = json ? sessionSettings(*json, &error) : std::nullopt;
             if (!settings) {
-                std::fprintf(stderr, "aglow-mux: the window of session %s sent settings that are not valid: %s\n", m_session.c_str(),
-                             error.c_str());
+                std::fprintf(stderr, "aglow-mux: the window of session %s sent settings that are not valid: %s\n",
+                             m_session.c_str(), error.c_str());
                 m_failed = true;
                 return;
             }
             session.applySettings(*settings);
             // The window keeps as much history as its new scrollback.
             m_replicaHistory = settings->terminal.maxScrollback;
-            for (auto& [id, link] : m_panes) link.state.setReplicaHistory(m_replicaHistory);
+            for (auto& [id, link] : m_panes)
+                link.state.setReplicaHistory(m_replicaHistory);
             continue;
         }
         message = takeUpload(std::move(*message));
-        if (m_failed) return;
-        if (!message) continue;
+        if (m_failed)
+            return;
+        if (!message)
+            continue;
         // Behind the input that waits for the pane, in order. The input of
         // the other panes goes meanwhile.
-        if (m_heldInput.contains(message->pane) || !deliver(&session, *message, windowLeft)) hold(std::move(*message));
+        if (m_heldInput.contains(message->pane) || !deliver(&session, *message, windowLeft))
+            hold(std::move(*message));
     }
 }
 
 bool Attachment::readCommands()
 {
     PhosphorChannel::StreamReader* commands = m_stream->reader(Attach::CommandsChannel);
-    if (!commands) return true;
+    if (!commands)
+        return true;
     if (commands->codec() != Attach::CommandsCodec) {
         m_failed = true;
         return false;
@@ -634,14 +695,17 @@ void Attachment::readLate(Session* session)
             // the daemon closes the pane for the window that shows it now.
             // The sight, the reads and the download answers of a window that
             // went are nothing: its downloads ended when it went.
-            if (action->type == Attach::InputType::ClosePane) m_late.closedPanes.push_back(action->pane);
+            if (action->type == Attach::InputType::ClosePane)
+                m_late.closedPanes.push_back(action->pane);
         }
     }
     // What the window sent its command clients before it heard, the end of
     // a run, still reaches them (Daemon::deliverRelayFrames).
-    if (!readCommands()) return;
+    if (!readCommands())
+        return;
     PhosphorChannel::StreamReader* input = m_stream->reader(Attach::ControlChannel);
-    if (!input) return;
+    if (!input)
+        return;
     if (input->codec() != Attach::InputCodec) {
         m_failed = true;
         return;
@@ -655,13 +719,16 @@ void Attachment::readLate(Session* session)
         // An answer to an upload that the window sent whole before it heard
         // still goes, while no other window has the question (deliver()).
         message = takeUpload(std::move(*message));
-        if (m_failed) return;
-        if (!message) continue;
+        if (m_failed)
+            return;
+        if (!message)
+            continue;
         switch (message->type) {
         case Attach::InputType::Layout: {
             std::string error;
             const auto json = AfterglowProto::Json::parse(message->bytes, &error);
-            if (auto layout = json ? layoutFrom(*json, &error) : std::nullopt) m_late.layout = std::move(*layout);
+            if (auto layout = json ? layoutFrom(*json, &error) : std::nullopt)
+                m_late.layout = std::move(*layout);
             break;
         }
         case Attach::InputType::Bytes:
@@ -695,22 +762,28 @@ void Attachment::readLate(Session* session)
 
 void Attachment::catchUp(Session& session)
 {
-    if (!m_stream || m_failed || m_finish || !m_stream->open()) return;
+    if (!m_stream || m_failed || m_finish || !m_stream->open())
+        return;
     // What the socket holds now, without a wait.
     (void)m_stream->readable();
-    if (m_stream->ready()) readInput(session);
+    if (m_stream->ready())
+        readInput(session);
 }
 
 bool Attachment::handle(short revents, Session* session)
 {
     if (!m_stream) {
-        if (m_fd < 0) return timeoutMs() > 0;
+        if (m_fd < 0)
+            return timeoutMs() > 0;
         // The end of the answer to the attach call goes first.
         while (!m_unsent.empty()) {
             const ssize_t n = ::send(m_fd, m_unsent.data(), m_unsent.size(), MSG_NOSIGNAL);
-            if (n < 0 && errno == EINTR) continue;
-            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
-            if (n <= 0) return false;
+            if (n < 0 && errno == EINTR)
+                continue;
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+                break;
+            if (n <= 0)
+                return false;
             m_unsent.erase(0, std::size_t(n));
         }
         // The window's first bytes, or its end: the stream reads them.
@@ -718,24 +791,33 @@ bool Attachment::handle(short revents, Session* session)
             startStream();
             m_stream->readable();
         }
-        if (m_failed) return false;
-        if (!m_stream) return timeoutMs() > 0;
+        if (m_failed)
+            return false;
+        if (!m_stream)
+            return timeoutMs() > 0;
     } else {
-        if (revents & (POLLIN | POLLHUP | POLLERR)) m_stream->readable();
-        if (revents & POLLOUT) m_stream->writable();
+        if (revents & (POLLIN | POLLHUP | POLLERR))
+            m_stream->readable();
+        if (revents & POLLOUT)
+            m_stream->writable();
     }
     m_inputDue = false;
     // A finished attachment of a session that ended still reads what the
     // window sent before it heard: the bytes of the panes that went to
     // another session reach their programs.
     if (m_stream->ready()) {
-        if (session) readInput(*session);
-        else if (m_finish) readLate(nullptr);
+        if (session)
+            readInput(*session);
+        else if (m_finish)
+            readLate(nullptr);
     }
-    if (m_failed || !m_stream->open()) return false;
+    if (m_failed || !m_stream->open())
+        return false;
     pump(m_finish ? nullptr : session);
-    if (m_failed || !m_stream->open()) return false;
-    if (!m_finish) return true;
+    if (m_failed || !m_stream->open())
+        return false;
+    if (!m_finish)
+        return true;
     if (finished() && !m_outputEnded) {
         // Only the output ends, and the window reads to its end. A close
         // would fail the window's next write (credit, input), and a stream
@@ -749,7 +831,8 @@ bool Attachment::handle(short revents, Session* session)
 
 Attachment::PaneLink* Attachment::link(MuxPane& pane)
 {
-    if (const auto it = m_panes.find(pane.id()); it != m_panes.end()) return &it->second;
+    if (const auto it = m_panes.find(pane.id()); it != m_panes.end())
+        return &it->second;
     // Refused once in this pump: a channel frees only when the window reads
     // one that closed to its end, which wakes the poll. Before the window's
     // hello, its limits are unknown, and a channel past them would fail the
@@ -762,12 +845,15 @@ Attachment::PaneLink* Attachment::link(MuxPane& pane)
     // the next one is tried.
     std::vector<bool> taken(Attach::MaxChannelId, false);
     for (const auto& [id, other] : m_panes) {
-        if (other.channel < taken.size()) taken[other.channel] = true;
+        if (other.channel < taken.size())
+            taken[other.channel] = true;
     }
     std::string error;
     for (std::uint32_t channel = Attach::ControlChannel + 1; channel < Attach::MaxChannelId; ++channel) {
-        if (taken[channel]) continue;
-        PhosphorChannel::StreamWriter* writer = m_stream->openWriter(channel, std::string(AfterglowVt::StateCodec), &error);
+        if (taken[channel])
+            continue;
+        PhosphorChannel::StreamWriter* writer =
+            m_stream->openWriter(channel, std::string(AfterglowVt::StateCodec), &error);
         if (!writer) {
             if (!m_stream->open()) {
                 m_failed = true;
@@ -778,7 +864,8 @@ Attachment::PaneLink* Attachment::link(MuxPane& pane)
         PaneLink& l = m_panes[pane.id()];
         l.channel = channel;
         l.writer = writer;
-        if (const auto visible = m_visible.find(pane.id()); visible != m_visible.end()) l.shown = visible->second;
+        if (const auto visible = m_visible.find(pane.id()); visible != m_visible.end())
+            l.shown = visible->second;
         l.state.setReplicaHistory(m_replicaHistory);
         Attach::Event opened;
         opened.type = Attach::EventType::PaneOpened;
@@ -797,10 +884,12 @@ Attachment::PaneLink* Attachment::link(MuxPane& pane)
 bool Attachment::sendFrame(PaneLink& l, MuxPane& pane)
 {
     // No window granted yet: the first frame waits for it.
-    if (l.writer->maxFrame() == 0) return false;
+    if (l.writer->maxFrame() == 0)
+        return false;
     if (!l.waiting.empty()) {
         const WriteResult result = l.writer->tryWrite(l.waiting);
-        if (result == WriteResult::WouldBlock) return false;
+        if (result == WriteResult::WouldBlock)
+            return false;
         l.waiting.clear();
         if (result != WriteResult::Written) {
             m_failed = true;
@@ -826,7 +915,8 @@ bool Attachment::sendFrame(PaneLink& l, MuxPane& pane)
         l.marked += std::exchange(l.refreshes, 0);
     }
     const bool changed = pane.takeChanged();
-    if (!changed && !marking && l.started && !(l.screens && (l.state.pending() || l.state.screensHeld()))) return true;
+    if (!changed && !marking && l.started && !(l.screens && (l.state.pending() || l.state.screensHeld())))
+        return true;
     // History past half the window waits for later frames, and so do rows
     // past it, so that every frame fits.
     std::optional<std::string> next = pane.frame(l.state, l.writer->maxFrame() / 2, l.screens);
@@ -857,8 +947,10 @@ void Attachment::sendClosed()
     // Those that waited for a channel.
     for (auto it = m_closedUnlinked.begin(); it != m_closedUnlinked.end();) {
         PaneLink* l = link(**it);
-        if (m_failed) return;
-        if (!l) break;
+        if (m_failed)
+            return;
+        if (!l)
+            break;
         l->closed = std::move(*it);
         it = m_closedUnlinked.erase(it);
     }
@@ -872,14 +964,16 @@ void Attachment::sendClosed()
             continue;
         }
         if (!sendFrame(l, *l.closed)) {
-            if (m_failed) return;
+            if (m_failed)
+                return;
             ++it;
             continue;
         }
         // The calls that the program made before it exited, after its last
         // frame and before PaneClosed.
         sendHostCalls(l, *l.closed, m_eventQueue);
-        if (m_failed) return;
+        if (m_failed)
+            return;
         if (l.closed->hasHostCalls(m_serial)) {
             ++it;
             continue;
@@ -897,11 +991,13 @@ void Attachment::sendClosed()
 
 void Attachment::pump(Session* session)
 {
-    if (!m_stream || m_failed || !m_stream->open()) return;
+    if (!m_stream || m_failed || !m_stream->open())
+        return;
     m_noChannel = false;
     // The events that waited for the window to grant the channel.
     flushEvents();
-    if (m_failed) return;
+    if (m_failed)
+        return;
     if (session && !m_finish && !m_layoutSent) {
         // The window lays out the session's tabs and splits before it makes
         // the panes that PaneOpened names.
@@ -914,11 +1010,13 @@ void Attachment::pump(Session* session)
     // The panes that exited first: their last calls and their PaneClosed do
     // not wait behind the calls of the live ones.
     sendClosed();
-    if (m_failed) return;
+    if (m_failed)
+        return;
     if (session && !m_finish) {
         // Input that went now leaves the frames behind it in the channel's
         // reader, which only readInput() reads: the next pass does, at once.
-        if (sendHeldInput(*session, false)) m_inputDue = true;
+        if (sendHeldInput(*session, false))
+            m_inputDue = true;
         // Each pump starts with the next pane, and each pane's calls take its
         // share of what is left of the queue: a pane whose program floods
         // calls does not keep the calls of the others waiting.
@@ -927,10 +1025,13 @@ void Attachment::pump(Session* session)
         for (std::size_t i = 0; i < count; ++i) {
             MuxPane& pane = *panes[(m_turn + i) % count];
             PaneLink* l = link(pane);
-            if (m_failed) return;
-            if (!l) continue;
+            if (m_failed)
+                return;
+            if (!l)
+                continue;
             sendFrame(*l, pane);
-            if (m_failed) return;
+            if (m_failed)
+                return;
             if (l->started && !l->deferred) {
                 // A read of the pane's text waits for the frames that hold
                 // its rows and its history as they were at the Refresh, not
@@ -946,8 +1047,10 @@ void Attachment::pump(Session* session)
                     refreshed.type = Attach::EventType::Refreshed;
                     refreshed.pane = pane.id();
                     refreshed.frames = l->frames + (l->waiting.empty() ? 0 : 1);
-                    for (; l->marked > 0 && !m_failed && m_waitingBytes < m_eventQueue; --l->marked) sendEvent(refreshed);
-                    if (m_failed) return;
+                    for (; l->marked > 0 && !m_failed && m_waitingBytes < m_eventQueue; --l->marked)
+                        sendEvent(refreshed);
+                    if (m_failed)
+                        return;
                 }
                 // The calls of the pane's terminal follow its frame, which
                 // went: a bell after the text that rang it. The window reads
@@ -958,13 +1061,16 @@ void Attachment::pump(Session* session)
                     sendHostCalls(*l, pane, left / (count - i));
                 }
             }
-            if (m_failed) return;
+            if (m_failed)
+                return;
         }
-        if (count > 0) m_turn = (m_turn + 1) % count;
+        if (count > 0)
+            m_turn = (m_turn + 1) % count;
     }
     if (m_finish && !m_finishSent) {
         bool closing = !m_closedUnlinked.empty();
-        for (const auto& [id, l] : m_panes) closing = closing || l.closed;
+        for (const auto& [id, l] : m_panes)
+            closing = closing || l.closed;
         if (!closing) {
             Attach::Event last;
             last.type = *m_finish;
@@ -976,26 +1082,34 @@ void Attachment::pump(Session* session)
 
 bool Attachment::busy() const
 {
-    if (!m_stream || m_failed) return false;
-    if (m_inputDue) return true;
+    if (!m_stream || m_failed)
+        return false;
+    if (m_inputDue)
+        return true;
     // A finished attachment sends no more of its live panes: only the last
     // frames of closed ones, then its last event, which can go at once when
     // no pane closes (a finish from a call: the next pass sends it).
     bool closing = !m_closedUnlinked.empty();
-    for (const auto& [id, l] : m_panes) closing = closing || l.closed;
-    if (m_finish && !m_finishSent && !closing && m_stream->open()) return true;
+    for (const auto& [id, l] : m_panes)
+        closing = closing || l.closed;
+    if (m_finish && !m_finishSent && !closing && m_stream->open())
+        return true;
     for (const auto& [id, l] : m_panes) {
-        if (!l.waiting.empty() || !l.writer || l.writer->maxFrame() == 0) continue;
+        if (!l.waiting.empty() || !l.writer || l.writer->maxFrame() == 0)
+            continue;
         // A closed pane whose calls wait for room in the queue waits for the
         // window's credit, which wakes the poll.
-        if (l.closed && !(l.closed->hasHostCalls(m_serial) && m_waitingBytes >= m_eventQueue)) return true;
+        if (l.closed && !(l.closed->hasHostCalls(m_serial) && m_waitingBytes >= m_eventQueue))
+            return true;
         // A frame that waits for a decode is no work: the pane wakes the
         // daemon when the decode's feed ends. Neither are the history and
         // the images of a pane that the window does not show: they wait for
         // its screens.
-        if (!l.closed && !m_finish && !l.deferred && l.screens && l.state.pending()) return true;
+        if (!l.closed && !m_finish && !l.deferred && l.screens && l.state.pending())
+            return true;
         // A pane that shows now: its screens catch up.
-        if (!l.closed && !m_finish && !l.deferred && l.shown && l.state.screensHeld()) return true;
+        if (!l.closed && !m_finish && !l.deferred && l.shown && l.state.screensHeld())
+            return true;
     }
     return false;
 }

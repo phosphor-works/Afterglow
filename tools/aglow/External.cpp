@@ -50,7 +50,7 @@ std::string findProgram(std::string_view name)
         // name must not come from.
         if (!dir.empty() && dir.front() == '/') {
             std::string candidate = dir + '/' + std::string(name);
-            struct stat st { };
+            struct stat st{};
             if (::stat(candidate.c_str(), &st) == 0 && S_ISREG(st.st_mode) && ::access(candidate.c_str(), X_OK) == 0) {
                 return candidate;
             }
@@ -86,7 +86,10 @@ struct Result
     std::string err; ///< its first MaxErrorOutput bytes
 };
 
-void setNonBlocking(int fd) { ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL) | O_NONBLOCK); }
+void setNonBlocking(int fd)
+{
+    ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL) | O_NONBLOCK);
+}
 
 /// Writes errno to @p report, for the parent, and ends the child.
 [[noreturn]] void failChild(int report)
@@ -104,12 +107,14 @@ void setNonBlocking(int fd) { ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL) | O_NONB
 {
 #if defined(__linux__)
     ::prctl(PR_SET_PDEATHSIG, SIGKILL);
-    if (::getppid() != parent) ::_exit(127);
+    if (::getppid() != parent)
+        ::_exit(127);
     ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 #elif defined(__FreeBSD__)
     int deathSignal = SIGKILL;
     ::procctl(P_PID, 0, PROC_PDEATHSIG_CTL, &deathSignal);
-    if (::getppid() != parent) ::_exit(127);
+    if (::getppid() != parent)
+        ::_exit(127);
     int noNewPrivileges = PROC_NO_NEW_PRIVS_ENABLE;
     ::procctl(P_PID, 0, PROC_NO_NEW_PRIVS_CTL, &noNewPrivileges);
 #endif
@@ -130,20 +135,24 @@ void setNonBlocking(int fd) { ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL) | O_NONB
     // overwritten by the next dup2(), or keep O_CLOEXEC through a dup2() to
     // itself.
     report = ::fcntl(report, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
-    if (report < 0) ::_exit(127);
+    if (report < 0)
+        ::_exit(127);
     int moved[3];
     for (int i = 0; i < 3; ++i) {
         moved[i] = ::fcntl(ends[i], F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
-        if (moved[i] < 0) failChild(report);
+        if (moved[i] < 0)
+            failChild(report);
     }
     for (int i = 0; i < 3; ++i) {
-        if (::dup2(moved[i], i) < 0) failChild(report);
+        if (::dup2(moved[i], i) < 0)
+            failChild(report);
     }
     // The report on the first descriptor past standard error, and nothing
     // else of aglow: the terminal that it opened, its sockets.
     constexpr int ReportFd = STDERR_FILENO + 1;
     if (report != ReportFd) {
-        if (::dup3(report, ReportFd, O_CLOEXEC) < 0) failChild(report);
+        if (::dup3(report, ReportFd, O_CLOEXEC) < 0)
+            failChild(report);
         report = ReportFd;
     }
     AfterglowPty::closeFrom(ReportFd + 1);
@@ -154,16 +163,19 @@ void setNonBlocking(int fd) { ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL) | O_NONB
 /// Runs @p program with @p args and @p environment, @p input on its standard
 /// input, its standard output and error read back. The child ends with
 /// aglow, has no core file, and cannot gain privileges.
-Result run(const std::string& program, const std::vector<std::string>& args, const std::vector<std::string>& environment,
-           std::string_view input, const Limits& limits, const std::function<bool()>& stop)
+Result run(const std::string& program, const std::vector<std::string>& args,
+           const std::vector<std::string>& environment, std::string_view input, const Limits& limits,
+           const std::function<bool()>& stop)
 {
     Result result;
     std::vector<char*> argv;
     argv.push_back(const_cast<char*>(program.c_str()));
-    for (const auto& arg : args) argv.push_back(const_cast<char*>(arg.c_str()));
+    for (const auto& arg : args)
+        argv.push_back(const_cast<char*>(arg.c_str()));
     argv.push_back(nullptr);
     std::vector<char*> envp;
-    for (const auto& entry : environment) envp.push_back(const_cast<char*>(entry.c_str()));
+    for (const auto& entry : environment)
+        envp.push_back(const_cast<char*>(entry.c_str()));
     envp.push_back(nullptr);
 
     // Standard input, output and error of the child, and the pipe that
@@ -183,12 +195,14 @@ Result run(const std::string& program, const std::vector<std::string>& args, con
     const int ends[3] = {theirs[0].get(), theirs[1].get(), theirs[2].get()};
     const pid_t parent = ::getpid();
     const pid_t pid = ::fork();
-    if (pid == 0) startChild(program, argv.data(), envp.data(), ends, theirs[3].get(), limits, parent);
+    if (pid == 0)
+        startChild(program, argv.data(), envp.data(), ends, theirs[3].get(), limits, parent);
     if (pid < 0) {
         result.startError = errno;
         return result;
     }
-    for (auto& fd : theirs) fd.reset();
+    for (auto& fd : theirs)
+        fd.reset();
     // EOF once exec() closed the report, else the errno of the step that
     // failed.
     int code = 0;
@@ -199,22 +213,24 @@ Result run(const std::string& program, const std::vector<std::string>& args, con
     ours[3].reset();
     if (n == ssize_t(sizeof code)) {
         result.startError = code;
-        while (::waitpid(pid, &result.status, 0) < 0 && errno == EINTR) {
-        }
+        while (::waitpid(pid, &result.status, 0) < 0 && errno == EINTR) { }
         return result;
     }
     result.started = true;
-    for (std::size_t i = 0; i < 3; ++i) setNonBlocking(ours[i].get());
+    for (std::size_t i = 0; i < 3; ++i)
+        setNonBlocking(ours[i].get());
     // aglow ignores SIGPIPE (Tty.cpp): a child that exits before it reads
     // its input gives EPIPE here.
-    if (input.empty()) ours[0].reset();
+    if (input.empty())
+        ours[0].reset();
     std::size_t written = 0;
     bool killed = false;
     bool reaped = false;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(limits.wallSeconds);
     // Kills the child once: on Ctrl+C, at the deadline, or past the output's limit.
     const auto check = [&] {
-        if (killed) return;
+        if (killed)
+            return;
         if (stop && stop()) {
             result.interrupted = killed = true;
         } else if (std::chrono::steady_clock::now() >= deadline) {
@@ -227,7 +243,7 @@ Result run(const std::string& program, const std::vector<std::string>& args, con
             ours[0].reset();
         }
     };
-    std::array<char, 65536> buffer {};
+    std::array<char, 65536> buffer{};
     while (ours[1].valid() || ours[2].valid()) {
         check();
         // A process that the program left behind (a wrapper script's) can
@@ -239,21 +255,27 @@ Result run(const std::string& program, const std::vector<std::string>& args, con
         }
         std::vector<pollfd> fds;
         for (const auto& fd : ours) {
-            if (fd.valid()) fds.push_back({fd.get(), short(&fd == &ours[0] ? POLLOUT : POLLIN), 0});
+            if (fd.valid())
+                fds.push_back({fd.get(), short(&fd == &ours[0] ? POLLOUT : POLLIN), 0});
         }
         if (::poll(fds.data(), fds.size(), 100) < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR)
+                continue;
             result.waitError = errno;
             ::kill(pid, SIGKILL);
             killed = true;
             break;
         }
         for (const pollfd& p : fds) {
-            if (p.revents == 0) continue;
+            if (p.revents == 0)
+                continue;
             if (p.fd == ours[0].get()) {
-                const ssize_t sent = ::write(p.fd, input.data() + written, std::min<std::size_t>(input.size() - written, buffer.size()));
-                if (sent > 0) written += std::size_t(sent);
-                if ((sent < 0 && errno != EAGAIN && errno != EINTR) || written == input.size()) ours[0].reset();
+                const ssize_t sent =
+                    ::write(p.fd, input.data() + written, std::min<std::size_t>(input.size() - written, buffer.size()));
+                if (sent > 0)
+                    written += std::size_t(sent);
+                if ((sent < 0 && errno != EAGAIN && errno != EINTR) || written == input.size())
+                    ours[0].reset();
                 continue;
             }
             const bool output = p.fd == ours[1].get();
@@ -264,27 +286,33 @@ Result run(const std::string& program, const std::vector<std::string>& args, con
                 } else if (output) {
                     result.out.append(buffer.data(), std::size_t(got));
                 } else {
-                    result.err.append(buffer.data(), std::min(std::size_t(got), MaxErrorOutput - std::min(result.err.size(), MaxErrorOutput)));
+                    result.err.append(
+                        buffer.data(),
+                        std::min(std::size_t(got), MaxErrorOutput - std::min(result.err.size(), MaxErrorOutput)));
                 }
             } else if (got == 0 || (errno != EAGAIN && errno != EINTR)) {
                 ours[output ? 1 : 2].reset();
             }
         }
     }
-    for (auto& fd : ours) fd.reset();
+    for (auto& fd : ours)
+        fd.reset();
     // A child that closed its output can still run: the same deadline and
     // Ctrl+C end it.
     while (!reaped) {
         const pid_t done = ::waitpid(pid, &result.status, killed ? 0 : WNOHANG);
-        if (done == pid || (done < 0 && errno != EINTR)) break;
+        if (done == pid || (done < 0 && errno != EINTR))
+            break;
         if (done == 0) {
             check();
-            if (!killed) ::poll(nullptr, 0, 10);
+            if (!killed)
+                ::poll(nullptr, 0, 10);
         }
     }
     // Ctrl+C reaches the child too, which can end before aglow's own check
     // saw the signal: the ends of its pipes then end the loop above.
-    if (!result.interrupted && !result.timedOut && stop && stop()) result.interrupted = true;
+    if (!result.interrupted && !result.timedOut && stop && stop())
+        result.interrupted = true;
     if (WIFSIGNALED(result.status) && !killed) {
         const int number = WTERMSIG(result.status);
         result.interrupted |= number == SIGINT || number == SIGTERM || number == SIGHUP;
@@ -298,16 +326,20 @@ std::string message(std::string_view text)
 {
     text = text.substr(0, text.find('\n'));
     for (const std::string_view prefix : {"magick: ", "curl: "}) {
-        if (text.starts_with(prefix)) text.remove_prefix(prefix.size());
+        if (text.starts_with(prefix))
+            text.remove_prefix(prefix.size());
     }
     if (text.starts_with('(')) {
         const std::size_t close = text.find(") ");
-        if (close != std::string_view::npos) text.remove_prefix(close + 2);
+        if (close != std::string_view::npos)
+            text.remove_prefix(close + 2);
     }
-    if (const std::size_t place = text.find(" @ "); place != std::string_view::npos) text = text.substr(0, place);
+    if (const std::size_t place = text.find(" @ "); place != std::string_view::npos)
+        text = text.substr(0, place);
     std::string out(text.substr(0, 300));
     for (char& c : out) {
-        if (std::uint8_t(c) < 0x20 || c == 0x7f) c = '?';
+        if (std::uint8_t(c) < 0x20 || c == 0x7f)
+            c = '?';
     }
     return out;
 }
@@ -328,15 +360,18 @@ std::vector<std::string> currentEnvironment(std::initializer_list<std::string_vi
 
 bool lowerEndsWith(std::string_view text, std::string_view suffix)
 {
-    if (text.size() < suffix.size()) return false;
-    return std::equal(suffix.begin(), suffix.end(), text.end() - std::ptrdiff_t(suffix.size()),
-                      [](char a, char b) { return a == char(std::tolower(std::uint8_t(b))); });
+    if (text.size() < suffix.size())
+        return false;
+    return std::equal(suffix.begin(), suffix.end(), text.end() - std::ptrdiff_t(suffix.size()), [](char a, char b) {
+        return a == char(std::tolower(std::uint8_t(b)));
+    });
 }
 
 std::uint32_t little(std::string_view bytes, std::size_t at, int count)
 {
     std::uint32_t value = 0;
-    for (int i = count; i-- > 0;) value = value << 8 | std::uint8_t(bytes[at + std::size_t(i)]);
+    for (int i = count; i-- > 0;)
+        value = value << 8 | std::uint8_t(bytes[at + std::size_t(i)]);
     return value;
 }
 
@@ -344,8 +379,10 @@ std::uint32_t little(std::string_view bytes, std::size_t at, int count)
 /// checks its policy for each of them too.
 std::vector<std::string_view> innerCoders(std::string_view coder)
 {
-    if (coder == "ICO" || coder == "CUR") return {"PNG"};
-    if (coder == "BMP") return {"PNG", "JPEG"};
+    if (coder == "ICO" || coder == "CUR")
+        return {"PNG"};
+    if (coder == "BMP")
+        return {"PNG", "JPEG"};
     return {};
 }
 
@@ -358,17 +395,20 @@ public:
     {
         const char* base = std::getenv("TMPDIR");
         std::string pattern = std::string(base && *base == '/' ? base : "/tmp") + "/aglow-magick-XXXXXX";
-        if (::mkdtemp(pattern.data())) m_path = pattern;
+        if (::mkdtemp(pattern.data()))
+            m_path = pattern;
     }
     ~MagickHome()
     {
-        if (m_path.empty()) return;
+        if (m_path.empty())
+            return;
         // Only plain files: magick writes its pixel cache and temporary
         // copies here.
         if (DIR* dir = ::opendir(m_path.c_str())) {
             while (const dirent* entry = ::readdir(dir)) {
                 const std::string_view name(entry->d_name);
-                if (name != "." && name != "..") ::unlinkat(::dirfd(dir), entry->d_name, 0);
+                if (name != "." && name != "..")
+                    ::unlinkat(::dirfd(dir), entry->d_name, 0);
             }
             ::closedir(dir);
         }
@@ -376,7 +416,10 @@ public:
     }
     MagickHome(const MagickHome&) = delete;
     MagickHome& operator=(const MagickHome&) = delete;
-    const std::string& path() const { return m_path; }
+    const std::string& path() const
+    {
+        return m_path;
+    }
 
 private:
     std::string m_path;
@@ -388,27 +431,33 @@ std::string magickCoder(std::string_view bytes, std::string_view name)
 {
     // ISO base media files (HEIF): the brands of their ftyp box.
     if (bytes.size() >= 16 && bytes.substr(4, 4) == "ftyp") {
-        const std::size_t box = std::min<std::size_t>(std::max<std::uint32_t>(std::uint32_t(std::uint8_t(bytes[0])) << 24
-                                                                               | std::uint32_t(std::uint8_t(bytes[1])) << 16
-                                                                               | std::uint32_t(std::uint8_t(bytes[2])) << 8
-                                                                               | std::uint8_t(bytes[3]), 16),
-                                                      std::min<std::size_t>(bytes.size(), 256));
-        std::vector<std::string_view> brands { bytes.substr(8, 4) };
-        for (std::size_t at = 16; at + 4 <= box; at += 4) brands.push_back(bytes.substr(at, 4));
+        const std::size_t box = std::min<std::size_t>(
+            std::max<std::uint32_t>(std::uint32_t(std::uint8_t(bytes[0])) << 24
+                                        | std::uint32_t(std::uint8_t(bytes[1])) << 16
+                                        | std::uint32_t(std::uint8_t(bytes[2])) << 8 | std::uint8_t(bytes[3]),
+                                    16),
+            std::min<std::size_t>(bytes.size(), 256));
+        std::vector<std::string_view> brands{bytes.substr(8, 4)};
+        for (std::size_t at = 16; at + 4 <= box; at += 4)
+            brands.push_back(bytes.substr(at, 4));
         const auto any = [&](std::initializer_list<std::string_view> wanted) {
             return std::any_of(brands.begin(), brands.end(), [&](std::string_view b) {
                 return std::find(wanted.begin(), wanted.end(), b) != wanted.end();
             });
         };
-        if (any({"avif", "avis"})) return "AVIF";
-        if (any({"heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1"})) return "HEIC";
+        if (any({"avif", "avis"}))
+            return "AVIF";
+        if (any({"heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1"}))
+            return "HEIC";
         return {};
     }
-    if (bytes.starts_with("\xff\x0a") || bytes.starts_with(std::string_view("\0\0\0\x0cJXL \r\n\x87\n", 12))) return "JXL";
-    if (bytes.starts_with("qoif")) return "QOI";
+    if (bytes.starts_with("\xff\x0a") || bytes.starts_with(std::string_view("\0\0\0\x0cJXL \r\n\x87\n", 12)))
+        return "JXL";
+    if (bytes.starts_with("qoif"))
+        return "QOI";
     // ICO and CUR: a reserved 0, the kind, and at least one image.
-    if (bytes.size() >= 6 && bytes.starts_with(std::string_view("\0\0", 2)) && bytes[3] == 0 && (bytes[2] == 1 || bytes[2] == 2)
-        && little(bytes, 4, 2) > 0) {
+    if (bytes.size() >= 6 && bytes.starts_with(std::string_view("\0\0", 2)) && bytes[3] == 0
+        && (bytes[2] == 1 || bytes[2] == 2) && little(bytes, 4, 2) > 0) {
         return bytes[2] == 1 ? "ICO" : "CUR";
     }
     // A BMP that aglow's reader refuses: JPEG or PNG data in a BMP, or a
@@ -417,16 +466,20 @@ std::string magickCoder(std::string_view bytes, std::string_view name)
     if (bytes.size() >= 34 && bytes.starts_with("BM") && little(bytes, 14, 4) >= 40) {
         const std::uint32_t compression = little(bytes, 30, 4);
         const std::uint32_t bits = little(bytes, 28, 2);
-        if (compression == 4 || compression == 5 || (compression == 1 && bits != 8) || (compression == 2 && bits != 4)) return "BMP";
+        if (compression == 4 || compression == 5 || (compression == 1 && bits != 8) || (compression == 2 && bits != 4))
+            return "BMP";
     }
     // SVG: XML whose first element is svg, in the first 4 KiB.
     std::string_view head = bytes.substr(0, 4096);
-    if (head.starts_with("\xef\xbb\xbf")) head.remove_prefix(3);
-    while (!head.empty() && (head.front() == ' ' || head.front() == '\t' || head.front() == '\r' || head.front() == '\n')) {
+    if (head.starts_with("\xef\xbb\xbf"))
+        head.remove_prefix(3);
+    while (!head.empty()
+           && (head.front() == ' ' || head.front() == '\t' || head.front() == '\r' || head.front() == '\n')) {
         head.remove_prefix(1);
     }
-    if (head.starts_with("<svg") || ((head.starts_with("<?xml") || head.starts_with("<!--") || head.starts_with("<!DOCTYPE"))
-                                     && head.find("<svg") != std::string_view::npos)) {
+    if (head.starts_with("<svg")
+        || ((head.starts_with("<?xml") || head.starts_with("<!--") || head.starts_with("<!DOCTYPE"))
+            && head.find("<svg") != std::string_view::npos)) {
         return "RSVG";
     }
     // TGA has no signature: its footer in version 2, else its name.
@@ -435,27 +488,35 @@ std::string magickCoder(std::string_view bytes, std::string_view name)
         // The image types of TGA: colour-mapped, true-colour and grey,
         // raw or run-length encoded.
         const std::uint8_t type = bytes.size() >= 18 ? std::uint8_t(bytes[2]) : 0;
-        if (type == 1 || type == 2 || type == 3 || type == 9 || type == 10 || type == 11) return "TGA";
+        if (type == 1 || type == 2 || type == 3 || type == 9 || type == 10 || type == 11)
+            return "TGA";
     }
     return {};
 }
 
 std::string_view magickFormat(std::string_view coder)
 {
-    if (coder == "RSVG") return "SVG";
-    if (coder == "JXL") return "JPEG XL";
-    if (coder == "BMP") return "compressed BMP";
+    if (coder == "RSVG")
+        return "SVG";
+    if (coder == "JXL")
+        return "JPEG XL";
+    if (coder == "BMP")
+        return "compressed BMP";
     return coder;
 }
 
-bool magickInstalled() { return !findProgram("magick").empty(); }
+bool magickInstalled()
+{
+    return !findProgram("magick").empty();
+}
 
 bool magickToPng(std::string_view bytes, const std::string& coder, std::string& png, std::string& error,
                  const std::function<bool()>& stop)
 {
     const std::string program = findProgram("magick");
     if (program.empty()) {
-        error = "aglow reads " + std::string(magickFormat(coder)) + " images with ImageMagick, and magick is not installed";
+        error =
+            "aglow reads " + std::string(magickFormat(coder)) + " images with ImageMagick, and magick is not installed";
         return false;
     }
     MagickHome home;
@@ -491,12 +552,14 @@ bool magickToPng(std::string_view bytes, const std::string& coder, std::string& 
     const std::string policyPath = home.path() + "/policy.xml";
     const int fd = ::open(policyPath.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
     const bool saved = fd >= 0 && ::write(fd, policy.data(), policy.size()) == ssize_t(policy.size());
-    if (fd >= 0) ::close(fd);
+    if (fd >= 0)
+        ::close(fd);
     if (!saved) {
         error = "cannot write the policy of ImageMagick";
         return false;
     }
-    std::vector<std::string> environment = currentEnvironment({"MAGICK_CONFIGURE_PATH", "MAGICK_TEMPORARY_PATH", "MAGICK_TMPDIR"});
+    std::vector<std::string> environment =
+        currentEnvironment({"MAGICK_CONFIGURE_PATH", "MAGICK_TEMPORARY_PATH", "MAGICK_TMPDIR"});
     environment.push_back("MAGICK_CONFIGURE_PATH=" + home.path());
     environment.push_back("MAGICK_TEMPORARY_PATH=" + home.path());
     // The data on standard input, read by the coder that its signature
@@ -513,7 +576,8 @@ bool magickToPng(std::string_view bytes, const std::string& coder, std::string& 
     // an orientation outside EXIF (a JPEG XL's own) would reach aglow only
     // in a chunk of ImageMagick's that it does not read. The PNG then says
     // orientation 1, so that aglow does not turn it again.
-    Result result = run(program, {"-background", "none", coder + ":-[0]", "-auto-orient", "PNG32:-"}, environment, bytes, limits, stop);
+    Result result = run(program, {"-background", "none", coder + ":-[0]", "-auto-orient", "PNG32:-"}, environment,
+                        bytes, limits, stop);
     if (!result.started) {
         error = std::string("cannot run magick: ") + std::strerror(result.startError);
         return false;
@@ -538,12 +602,14 @@ bool magickToPng(std::string_view bytes, const std::string& coder, std::string& 
         // A build of ImageMagick without the coder: its librsvg for SVG,
         // libheif for AVIF and HEIC, libjxl for JPEG XL.
         if (result.err.find("no decode delegate for this image format") != std::string::npos) {
-            error = coder == "RSVG" ? "aglow reads SVG images with ImageMagick's librsvg coder (RSVG), which this ImageMagick does not have"
-                                    : "this ImageMagick cannot read " + std::string(magickFormat(coder)) + " images";
+            error = coder == "RSVG"
+                ? "aglow reads SVG images with ImageMagick's librsvg coder (RSVG), which this ImageMagick does not have"
+                : "this ImageMagick cannot read " + std::string(magickFormat(coder)) + " images";
             return false;
         }
         const std::string why = message(result.err);
-        error = "ImageMagick cannot read this " + std::string(magickFormat(coder)) + " image" + (why.empty() ? "" : ": " + why);
+        error = "ImageMagick cannot read this " + std::string(magickFormat(coder)) + " image"
+            + (why.empty() ? "" : ": " + why);
         return false;
     }
     png = std::move(result.out);
@@ -553,8 +619,10 @@ bool magickToPng(std::string_view bytes, const std::string& coder, std::string& 
 bool isRemoteUrl(std::string_view text)
 {
     const auto scheme = [&](std::string_view prefix) {
-        return text.size() > prefix.size() && std::equal(prefix.begin(), prefix.end(), text.begin(),
-                                                         [](char a, char b) { return a == char(std::tolower(std::uint8_t(b))); });
+        return text.size() > prefix.size()
+            && std::equal(prefix.begin(), prefix.end(), text.begin(), [](char a, char b) {
+                   return a == char(std::tolower(std::uint8_t(b)));
+               });
     };
     return scheme("http://") || scheme("https://") || scheme("ftp://");
 }
@@ -563,10 +631,12 @@ std::string urlFileName(std::string_view url)
 {
     url = url.substr(0, url.find_first_of("?#"));
     const std::size_t scheme = url.find("://");
-    if (scheme == std::string_view::npos) return {};
+    if (scheme == std::string_view::npos)
+        return {};
     url.remove_prefix(scheme + 3);
     const std::size_t path = url.find('/');
-    if (path == std::string_view::npos) return {};
+    if (path == std::string_view::npos)
+        return {};
     url.remove_prefix(path);
     const std::string_view name = url.substr(url.rfind('/') + 1);
     // The server's file is the decoded name. A name with an escaped NUL
@@ -585,9 +655,26 @@ bool download(const std::string& url, std::uint64_t maxBytes, std::string& out, 
     // -q first: no .curlrc. Only http, https and ftp, also after a
     // redirect, no globbing of [] and {}, and the URL after --, so that it
     // is never an option.
-    const std::vector<std::string> args { "-q", "--silent", "--show-error", "--fail", "--location", "--max-redirs", "10",
-        "--proto", "=http,https,ftp", "--proto-redir", "=http,https,ftp", "--globoff",
-        "--max-filesize", std::to_string(maxBytes), "--connect-timeout", "30", "--max-time", "300", "--", url };
+    const std::vector<std::string> args{"-q",
+                                        "--silent",
+                                        "--show-error",
+                                        "--fail",
+                                        "--location",
+                                        "--max-redirs",
+                                        "10",
+                                        "--proto",
+                                        "=http,https,ftp",
+                                        "--proto-redir",
+                                        "=http,https,ftp",
+                                        "--globoff",
+                                        "--max-filesize",
+                                        std::to_string(maxBytes),
+                                        "--connect-timeout",
+                                        "30",
+                                        "--max-time",
+                                        "300",
+                                        "--",
+                                        url};
     Limits limits;
     limits.cpuSeconds = 300;
     limits.wallSeconds = 310;

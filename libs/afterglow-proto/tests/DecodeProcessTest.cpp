@@ -43,7 +43,10 @@ struct Pipe
 };
 
 bool g_stop = false;
-bool stopRequested() { return g_stop; }
+bool stopRequested()
+{
+    return g_stop;
+}
 
 } // namespace
 
@@ -145,7 +148,7 @@ TEST(DecodeProcess, TheProcessHoldsOnlyItsInputItsOutputAndNullAndIsNotDumpable)
     // A handler of the parent that the child must not run.
     struct sigaction previous{};
     struct sigaction caught{};
-    caught.sa_handler = [](int) {};
+    caught.sa_handler = [](int) { };
     ::sigemptyset(&caught.sa_mask);
     ASSERT_EQ(::sigaction(SIGINT, &caught, &previous), 0);
     sigset_t blocked;
@@ -158,10 +161,12 @@ TEST(DecodeProcess, TheProcessHoldsOnlyItsInputItsOutputAndNullAndIsNotDumpable)
     const pid_t pid = ::fork();
     ASSERT_GE(pid, 0);
     if (pid == 0) {
-        if (!startDecodingProcess(parent, input.get(), output.writer.get(), false)) ::_exit(2);
+        if (!startDecodingProcess(parent, input.get(), output.writer.get(), false))
+            ::_exit(2);
         Found found;
         struct stat file{};
-        found.input = ::fstat(STDIN_FILENO, &file) == 0 && file.st_ino == inputFile.st_ino && file.st_dev == inputFile.st_dev;
+        found.input =
+            ::fstat(STDIN_FILENO, &file) == 0 && file.st_ino == inputFile.st_ino && file.st_dev == inputFile.st_dev;
         found.nullError = ::fstat(STDERR_FILENO, &file) == 0 && S_ISCHR(file.st_mode) && file.st_rdev == null.st_rdev;
         found.othersClosed = ::fcntl(held.get(), F_GETFD) < 0 && ::fcntl(STDERR_FILENO + 1, F_GETFD) < 0;
         sigset_t now;
@@ -179,7 +184,8 @@ TEST(DecodeProcess, TheProcessHoldsOnlyItsInputItsOutputAndNullAndIsNotDumpable)
         found.oomScoreAdj = -1;
         if (const int fd = ::open("/proc/self/oom_score_adj", O_RDONLY); fd >= 0) {
             char text[16] = {};
-            if (::read(fd, text, sizeof text - 1) > 0) found.oomScoreAdj = std::atoi(text);
+            if (::read(fd, text, sizeof text - 1) > 0)
+                found.oomScoreAdj = std::atoi(text);
             ::close(fd);
         }
         (void)!::write(STDOUT_FILENO, &found, sizeof found);
@@ -210,15 +216,18 @@ TEST(DecodeProcess, TheProcessHoldsOnlyItsInputItsOutputAndNullAndIsNotDumpable)
 // Capsicum on FreeBSD), and still writes its standard output and ends.
 TEST(DecodeProcess, PastTheFilterNothingOpensAndTheOutputStillGoes)
 {
-    if (!DecodeFilterKnown) GTEST_SKIP() << "the filter does not know the system calls of this processor";
+    if (!DecodeFilterKnown)
+        GTEST_SKIP() << "the filter does not know the system calls of this processor";
     Pipe output;
     ASSERT_TRUE(output.reader.valid());
     const pid_t parent = ::getpid();
     const pid_t pid = ::fork();
     ASSERT_GE(pid, 0);
     if (pid == 0) {
-        if (!startDecodingProcess(parent, -1, output.writer.get(), false)) ::_exit(2);
-        if (!allowOnlyDecoding()) ::_exit(3);
+        if (!startDecodingProcess(parent, -1, output.writer.get(), false))
+            ::_exit(2);
+        if (!allowOnlyDecoding())
+            ::_exit(3);
         const char opened = ::open("/dev/null", O_RDONLY | O_CLOEXEC) >= 0 ? 'o' : 'n';
         ::_exit(::write(STDOUT_FILENO, &opened, 1) == 1 ? 0 : 4);
     }
@@ -244,10 +253,13 @@ TEST(DecodeProcess, AnOutputInStandardErrorLeavesNoStandardErrorThere)
     const pid_t pid = ::fork();
     ASSERT_GE(pid, 0);
     if (pid == 0) {
-        if (::dup2(output.writer.get(), STDERR_FILENO) < 0) ::_exit(3);
-        if (!startDecodingProcess(parent, -1, STDERR_FILENO, true)) ::_exit(2);
+        if (::dup2(output.writer.get(), STDERR_FILENO) < 0)
+            ::_exit(3);
+        if (!startDecodingProcess(parent, -1, STDERR_FILENO, true))
+            ::_exit(2);
         struct stat file{};
-        const bool nullError = ::fstat(STDERR_FILENO, &file) == 0 && S_ISCHR(file.st_mode) && file.st_rdev == null.st_rdev;
+        const bool nullError =
+            ::fstat(STDERR_FILENO, &file) == 0 && S_ISCHR(file.st_mode) && file.st_rdev == null.st_rdev;
         (void)!::write(STDOUT_FILENO, &nullError, sizeof nullError);
         ::_exit(0);
     }

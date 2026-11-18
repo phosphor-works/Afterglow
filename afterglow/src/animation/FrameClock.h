@@ -22,7 +22,10 @@ public:
     std::chrono::nanoseconds now() const override;
     qreal refreshRate() const override;
     void requestFrame() override;
-    const void* epochIdentity() const override { return steadyClockEpoch(); }
+    const void* epochIdentity() const override
+    {
+        return steadyClockEpoch();
+    }
 
 private:
     QWindow* m_window;

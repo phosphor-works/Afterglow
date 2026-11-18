@@ -104,9 +104,12 @@ constexpr std::size_t HistoryRows = 200;
 std::uint32_t colorKey(const Color& c)
 {
     switch (c.kind()) {
-    case Color::Kind::Default: return 0;
-    case Color::Kind::Palette: return std::uint32_t(c.index()) + 1;
-    case Color::Kind::Rgb: return 0x1000000u | (std::uint32_t(c.r()) << 16) | (std::uint32_t(c.g()) << 8) | c.b();
+    case Color::Kind::Default:
+        return 0;
+    case Color::Kind::Palette:
+        return std::uint32_t(c.index()) + 1;
+    case Color::Kind::Rgb:
+        return 0x1000000u | (std::uint32_t(c.r()) << 16) | (std::uint32_t(c.g()) << 8) | c.b();
     }
     return 0;
 }
@@ -114,10 +117,12 @@ std::uint32_t colorKey(const Color& c)
 std::uint32_t colorKey(const GhosttyStyleColor& c)
 {
     switch (c.tag) {
-    case GHOSTTY_STYLE_COLOR_PALETTE: return std::uint32_t(c.value.palette) + 1;
+    case GHOSTTY_STYLE_COLOR_PALETTE:
+        return std::uint32_t(c.value.palette) + 1;
     case GHOSTTY_STYLE_COLOR_RGB:
         return 0x1000000u | (std::uint32_t(c.value.rgb.r) << 16) | (std::uint32_t(c.value.rgb.g) << 8) | c.value.rgb.b;
-    default: return 0;
+    default:
+        return 0;
     }
 }
 
@@ -125,10 +130,15 @@ std::string utf8(std::u32string_view text)
 {
     std::string out;
     for (char32_t c : text) {
-        if (c < 0x80) out += char(c);
-        else if (c < 0x800) out += {char(0xC0 | (c >> 6)), char(0x80 | (c & 0x3F))};
-        else if (c < 0x10000) out += {char(0xE0 | (c >> 12)), char(0x80 | ((c >> 6) & 0x3F)), char(0x80 | (c & 0x3F))};
-        else out += {char(0xF0 | (c >> 18)), char(0x80 | ((c >> 12) & 0x3F)), char(0x80 | ((c >> 6) & 0x3F)), char(0x80 | (c & 0x3F))};
+        if (c < 0x80)
+            out += char(c);
+        else if (c < 0x800)
+            out += {char(0xC0 | (c >> 6)), char(0x80 | (c & 0x3F))};
+        else if (c < 0x10000)
+            out += {char(0xE0 | (c >> 12)), char(0x80 | ((c >> 6) & 0x3F)), char(0x80 | (c & 0x3F))};
+        else
+            out += {char(0xF0 | (c >> 18)), char(0x80 | ((c >> 12) & 0x3F)), char(0x80 | ((c >> 6) & 0x3F)),
+                    char(0x80 | (c & 0x3F))};
     }
     return out;
 }
@@ -138,7 +148,10 @@ std::string utf8(std::u32string_view text)
 struct Host : AfterglowVt::ITerminalHost
 {
     std::string written;
-    void writeToPty(std::string_view bytes) override { written.append(bytes); }
+    void writeToPty(std::string_view bytes) override
+    {
+        written.append(bytes);
+    }
 };
 
 class AfterglowSide
@@ -148,8 +161,14 @@ public:
         : m_terminal(cols, rows, m_host)
     {
     }
-    void feed(std::string_view bytes) { m_terminal.feed(bytes); }
-    const std::string& replies() const { return m_host.written; }
+    void feed(std::string_view bytes)
+    {
+        m_terminal.feed(bytes);
+    }
+    const std::string& replies() const
+    {
+        return m_host.written;
+    }
 
     State state() const
     {
@@ -160,7 +179,8 @@ public:
         for (int y = 0; y < s.rows; ++y) {
             const AfterglowVt::Row& row = scr.row(y);
             std::vector<CellView> line;
-            for (int x = 0; x < s.cols; ++x) line.push_back(cell(scr, row, x));
+            for (int x = 0; x < s.cols; ++x)
+                line.push_back(cell(scr, row, x));
             s.screen.push_back(std::move(line));
         }
         const std::size_t history = scr.historySize();
@@ -197,14 +217,17 @@ private:
         std::u32string out;
         for (int x = 0; x < scr.cols(); ++x) {
             const AfterglowVt::Cell& c = row.at(x);
-            if (c.isTail()) continue;
-            if (c.isEmpty() || c.isSpacerHead()) out += U' ';
+            if (c.isTail())
+                continue;
+            if (c.isEmpty() || c.isSpacerHead())
+                out += U' ';
             else {
                 out += c.codepoint();
                 out += scr.graphemeExtra(row, x);
             }
         }
-        while (!out.empty() && out.back() == U' ') out.pop_back();
+        while (!out.empty() && out.back() == U' ')
+            out.pop_back();
         return out;
     }
 
@@ -224,12 +247,16 @@ public:
             std::exit(2);
         }
         ghostty_terminal_set(m_terminal, GHOSTTY_TERMINAL_OPT_USERDATA, this);
-        ghostty_terminal_set(m_terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, reinterpret_cast<const void*>(&GhosttySide::written));
+        ghostty_terminal_set(m_terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY,
+                             reinterpret_cast<const void*>(&GhosttySide::written));
         // Grapheme clusters (mode 2027): Afterglow joins them by default, as
         // kitty does, and libghostty only when the mode is set.
         feed("\x1b[?2027h");
     }
-    ~GhosttySide() { ghostty_terminal_free(m_terminal); }
+    ~GhosttySide()
+    {
+        ghostty_terminal_free(m_terminal);
+    }
     GhosttySide(const GhosttySide&) = delete;
     GhosttySide& operator=(const GhosttySide&) = delete;
 
@@ -237,7 +264,10 @@ public:
     {
         ghostty_terminal_vt_write(m_terminal, reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
     }
-    const std::string& replies() const { return m_replies; }
+    const std::string& replies() const
+    {
+        return m_replies;
+    }
 
     State state() const
     {
@@ -263,17 +293,20 @@ public:
         s.alternate = active == GHOSTTY_TERMINAL_SCREEN_ALTERNATE;
         for (int row = 0; row < s.rows; ++row) {
             std::vector<CellView> line;
-            for (int col = 0; col < s.cols; ++col) line.push_back(cell(GHOSTTY_POINT_TAG_ACTIVE, col, std::uint32_t(row)));
+            for (int col = 0; col < s.cols; ++col)
+                line.push_back(cell(GHOSTTY_POINT_TAG_ACTIVE, col, std::uint32_t(row)));
             s.screen.push_back(std::move(line));
         }
         for (std::size_t i = history - std::min(history, HistoryRows); i < history; ++i) {
             std::u32string text;
             for (int col = 0; col < s.cols; ++col) {
                 const CellView v = cell(GHOSTTY_POINT_TAG_HISTORY, col, std::uint32_t(i));
-                if (v.width == 0) continue;
+                if (v.width == 0)
+                    continue;
                 text += v.text.empty() ? std::u32string(U" ") : v.text;
             }
-            while (!text.empty() && text.back() == U' ') text.pop_back();
+            while (!text.empty() && text.back() == U' ')
+                text.pop_back();
             s.history.push_back(std::move(text));
         }
         return s;
@@ -293,7 +326,8 @@ private:
         point.value.coordinate.x = std::uint16_t(col);
         point.value.coordinate.y = row;
         GhosttyGridRef ref{};
-        if (ghostty_terminal_grid_ref(m_terminal, point, &ref) != GHOSTTY_SUCCESS) return v;
+        if (ghostty_terminal_grid_ref(m_terminal, point, &ref) != GHOSTTY_SUCCESS)
+            return v;
         GhosttyCell cell{};
         ghostty_grid_ref_cell(&ref, &cell);
         GhosttyCellWide wide = GHOSTTY_CELL_WIDE_NARROW;
@@ -306,7 +340,8 @@ private:
             std::uint32_t buf[64];
             std::size_t n = 0;
             if (ghostty_grid_ref_graphemes(&ref, buf, std::size(buf), &n) == GHOSTTY_SUCCESS)
-                for (std::size_t i = 0; i < n; ++i) v.text += char32_t(buf[i]);
+                for (std::size_t i = 0; i < n; ++i)
+                    v.text += char32_t(buf[i]);
         }
         GhosttyStyle style{};
         ghostty_grid_ref_style(&ref, &style);
@@ -316,9 +351,11 @@ private:
         // GhosttyStyleFlags in Afterglow's Attr order.
         const std::uint16_t f = style.flags;
         using namespace AfterglowVt;
-        v.attrs = std::uint16_t(((f & GHOSTTY_STYLE_FLAG_BOLD) ? Attr::Bold : 0) | ((f & GHOSTTY_STYLE_FLAG_FAINT) ? Attr::Faint : 0)
+        v.attrs = std::uint16_t(
+            ((f & GHOSTTY_STYLE_FLAG_BOLD) ? Attr::Bold : 0) | ((f & GHOSTTY_STYLE_FLAG_FAINT) ? Attr::Faint : 0)
             | ((f & GHOSTTY_STYLE_FLAG_ITALIC) ? Attr::Italic : 0) | ((f & GHOSTTY_STYLE_FLAG_BLINK) ? Attr::Blink : 0)
-            | ((f & GHOSTTY_STYLE_FLAG_INVERSE) ? Attr::Inverse : 0) | ((f & GHOSTTY_STYLE_FLAG_INVISIBLE) ? Attr::Invisible : 0)
+            | ((f & GHOSTTY_STYLE_FLAG_INVERSE) ? Attr::Inverse : 0)
+            | ((f & GHOSTTY_STYLE_FLAG_INVISIBLE) ? Attr::Invisible : 0)
             | ((f & GHOSTTY_STYLE_FLAG_STRIKETHROUGH) ? Attr::Strikethrough : 0)
             | ((f & GHOSTTY_STYLE_FLAG_OVERLINE) ? Attr::Overline : 0));
         v.underline = (f & GHOSTTY_STYLE_UNDERLINE_MASK) >> GHOSTTY_STYLE_UNDERLINE_SHIFT;
@@ -346,11 +383,16 @@ std::string describe(const CellView& c)
 {
     std::ostringstream out;
     out << '"' << utf8(c.text) << "\" w" << c.width;
-    if (c.fg) out << " fg" << std::hex << c.fg << std::dec;
-    if (c.bg) out << " bg" << std::hex << c.bg << std::dec;
-    if (c.underlineColor) out << " ul" << std::hex << c.underlineColor << std::dec;
-    if (c.attrs) out << " attrs" << c.attrs;
-    if (c.underline) out << " underline" << c.underline;
+    if (c.fg)
+        out << " fg" << std::hex << c.fg << std::dec;
+    if (c.bg)
+        out << " bg" << std::hex << c.bg << std::dec;
+    if (c.underlineColor)
+        out << " ul" << std::hex << c.underlineColor << std::dec;
+    if (c.attrs)
+        out << " attrs" << c.attrs;
+    if (c.underline)
+        out << " underline" << c.underline;
     return out.str();
 }
 
@@ -358,10 +400,12 @@ std::string rowString(const std::vector<CellView>& row)
 {
     std::u32string text;
     for (const CellView& c : row) {
-        if (c.width == 0) continue;
+        if (c.width == 0)
+            continue;
         text += c.text.empty() ? std::u32string(U" ") : c.text;
     }
-    while (!text.empty() && text.back() == U' ') text.pop_back();
+    while (!text.empty() && text.back() == U' ')
+        text.pop_back();
     return utf8(text);
 }
 
@@ -373,14 +417,17 @@ std::optional<std::string> compare(const State& a, const State& g)
         out << "size " << a.cols << "x" << a.rows << " / " << g.cols << "x" << g.rows;
         return out.str();
     }
-    if (a.alternate != g.alternate) return std::string("active screen ") + (a.alternate ? "alternate" : "primary") + " / "
-        + (g.alternate ? "alternate" : "primary");
+    if (a.alternate != g.alternate)
+        return std::string("active screen ") + (a.alternate ? "alternate" : "primary") + " / "
+            + (g.alternate ? "alternate" : "primary");
     for (int y = 0; y < a.rows; ++y) {
         for (int x = 0; x < a.cols; ++x) {
-            if (a.screen[std::size_t(y)][std::size_t(x)] == g.screen[std::size_t(y)][std::size_t(x)]) continue;
+            if (a.screen[std::size_t(y)][std::size_t(x)] == g.screen[std::size_t(y)][std::size_t(x)])
+                continue;
             out << "cell " << x << "," << y << ": " << describe(a.screen[std::size_t(y)][std::size_t(x)]) << " / "
-                << describe(g.screen[std::size_t(y)][std::size_t(x)]) << "\n  afterglow row: "
-                << rowString(a.screen[std::size_t(y)]) << "\n  libghostty row: " << rowString(g.screen[std::size_t(y)]);
+                << describe(g.screen[std::size_t(y)][std::size_t(x)])
+                << "\n  afterglow row: " << rowString(a.screen[std::size_t(y)])
+                << "\n  libghostty row: " << rowString(g.screen[std::size_t(y)]);
             return out.str();
         }
     }
@@ -390,13 +437,15 @@ std::optional<std::string> compare(const State& a, const State& g)
         return out.str();
     }
     if (a.cursorVisible != g.cursorVisible)
-        return std::string("cursor ") + (a.cursorVisible ? "shown" : "hidden") + " / " + (g.cursorVisible ? "shown" : "hidden");
+        return std::string("cursor ") + (a.cursorVisible ? "shown" : "hidden") + " / "
+            + (g.cursorVisible ? "shown" : "hidden");
     // The scrollback may keep a different number of rows: its last rows match.
     const std::size_t n = std::min(a.history.size(), g.history.size());
     for (std::size_t i = 1; i <= n; ++i) {
         const auto& ra = a.history[a.history.size() - i];
         const auto& rg = g.history[g.history.size() - i];
-        if (ra == rg) continue;
+        if (ra == rg)
+            continue;
         out << "scrollback row -" << i << ": \"" << utf8(ra) << "\" / \"" << utf8(rg) << '"';
         return out.str();
     }
@@ -417,15 +466,18 @@ std::optional<Divergence> run(const std::string& input, const Options& o)
         const std::string_view part = std::string_view(input).substr(pos, o.chunk);
         a.feed(part);
         g.feed(part);
-        if (auto what = compare(a.state(), g.state())) return Divergence{pos + part.size(), *what};
+        if (auto what = compare(a.state(), g.state()))
+            return Divergence{pos + part.size(), *what};
     }
     if (input.empty())
-        if (auto what = compare(a.state(), g.state())) return Divergence{0, *what};
+        if (auto what = compare(a.state(), g.state()))
+            return Divergence{0, *what};
     if (o.replies && a.replies() != g.replies()) {
         auto shown = [](const std::string& s) {
             std::string out;
             for (unsigned char c : s) {
-                if (c >= 0x20 && c < 0x7F) out += char(c);
+                if (c >= 0x20 && c < 0x7F)
+                    out += char(c);
                 else {
                     char buf[8];
                     std::snprintf(buf, sizeof buf, "\\x%02x", c);
@@ -444,9 +496,11 @@ bool validUtf8(std::string_view s)
     for (std::size_t i = 0; i < s.size();) {
         const auto c = static_cast<unsigned char>(s[i]);
         const std::size_t n = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 0;
-        if (n == 0 || i + n > s.size()) return false;
+        if (n == 0 || i + n > s.size())
+            return false;
         for (std::size_t k = 1; k < n; ++k)
-            if ((static_cast<unsigned char>(s[i + k]) & 0xC0) != 0x80) return false;
+            if ((static_cast<unsigned char>(s[i + k]) & 0xC0) != 0x80)
+                return false;
         i += n;
     }
     return true;
@@ -484,7 +538,8 @@ std::string minimize(const std::string& input, const Options& o)
     one.chunk = std::max<std::size_t>(input.size(), 1);
     const bool keepUtf8 = validUtf8(input);
     const auto first = run(input, one);
-    if (!first) return input; // it differs only where a chunk ends
+    if (!first)
+        return input; // it differs only where a chunk ends
     const std::string kind = kindOf(*first);
     std::vector<std::string_view> units;
     for (std::size_t i = 0; i < input.size();) {
@@ -495,7 +550,8 @@ std::string minimize(const std::string& input, const Options& o)
     }
     const auto joined = [](const std::vector<std::string_view>& parts) {
         std::string out;
-        for (auto part : parts) out += part;
+        for (auto part : parts)
+            out += part;
         return out;
     };
     for (std::size_t piece = units.size() / 2; piece >= 1; piece /= 2) {
@@ -503,8 +559,10 @@ std::string minimize(const std::string& input, const Options& o)
             std::vector<std::string_view> shorter(units.begin(), units.begin() + std::ptrdiff_t(at));
             shorter.insert(shorter.end(), units.begin() + std::ptrdiff_t(at + piece), units.end());
             const auto d = run(joined(shorter), one);
-            if (d && kindOf(*d) == kind) units = std::move(shorter);
-            else at += piece;
+            if (d && kindOf(*d) == kind)
+                units = std::move(shorter);
+            else
+                at += piece;
         }
     }
     return joined(units);
@@ -514,8 +572,10 @@ std::string escaped(const std::string& s)
 {
     std::string out;
     for (unsigned char c : s) {
-        if (c == '\\') out += "\\\\";
-        else if (c >= 0x20 && c < 0x7F) out += char(c);
+        if (c == '\\')
+            out += "\\\\";
+        else if (c >= 0x20 && c < 0x7F)
+            out += char(c);
         else {
             char buf[8];
             std::snprintf(buf, sizeof buf, "\\x%02x", c);
@@ -530,30 +590,41 @@ std::string escaped(const std::string& s)
 std::string randomInput(std::uint64_t seed, int length)
 {
     std::mt19937_64 rng(seed);
-    auto pick = [&](int n) { return int(rng() % std::uint64_t(n)); };
-    auto num = [&] { return std::to_string(pick(4) == 0 ? pick(200) : pick(12)); };
+    auto pick = [&](int n) {
+        return int(rng() % std::uint64_t(n));
+    };
+    auto num = [&] {
+        return std::to_string(pick(4) == 0 ? pick(200) : pick(12));
+    };
     static const char* const csiFinals = "@ABCDEFGHIJKLMPSTXZ`abcdefghlmnrsu";
     static const char* const privateModes[] = {"1", "6", "7", "25", "47", "69", "1047", "1048", "1049", "2004", "2026"};
-    static const char* const texts[] = {"a", "hello ", "x", "é", "é", "中", "\U0001f600", "\U0001f468‍\U0001f469",
-                                        "─", "  ", "א", "​", "abcdefghij"};
+    static const char* const texts[] = {
+        "a", "hello ", "x", "é",   "é",         "中", "\U0001f600", "\U0001f468‍\U0001f469",
+        "─", "  ",     "א", "​", "abcdefghij"};
     std::string out;
     for (int i = 0; i < length; ++i) {
         switch (pick(12)) {
         case 0:
         case 1:
         case 2:
-        case 3: out += texts[pick(int(std::size(texts)))]; break;
-        case 4: out += "\r\n\t\b\x0b\x0c"[pick(6)]; break;
+        case 3:
+            out += texts[pick(int(std::size(texts)))];
+            break;
+        case 4:
+            out += "\r\n\t\b\x0b\x0c"[pick(6)];
+            break;
         case 5: { // CSI with up to three parameters
             out += "\x1b[";
             const int params = pick(4);
-            for (int p = 0; p < params; ++p) out += (p ? ";" : "") + num();
+            for (int p = 0; p < params; ++p)
+                out += (p ? ";" : "") + num();
             out += csiFinals[pick(int(std::strlen(csiFinals)))];
             break;
         }
         case 6: { // SGR
-            static const char* const sgr[] = {"0", "1", "2", "3", "4", "4:3", "5", "7", "8", "9", "21", "22", "23", "24", "27",
-                                              "53", "31", "42", "38;5;196", "48;2;10;20;30", "58;5;3", "39", "49", "91", "107"};
+            static const char* const sgr[] = {
+                "0",  "1",  "2",  "3",  "4",        "4:3",           "5",      "7",  "8",  "9",  "21", "22", "23", "24",
+                "27", "53", "31", "42", "38;5;196", "48;2;10;20;30", "58;5;3", "39", "49", "91", "107"};
             out += "\x1b[";
             out += sgr[pick(int(std::size(sgr)))];
             out += 'm';
@@ -583,8 +654,10 @@ std::string randomInput(std::uint64_t seed, int length)
 
 void usage()
 {
-    std::fprintf(stderr, "Usage: afterglow_vtdiff [--cols N] [--rows N] [--chunk N] [--replies] [--expected FILE] [--minimize]\n"
-                         "                        FILE|DIR... | --random SEED [--count N] [--length N]\n");
+    std::fprintf(
+        stderr,
+        "Usage: afterglow_vtdiff [--cols N] [--rows N] [--chunk N] [--replies] [--expected FILE] [--minimize]\n"
+        "                        FILE|DIR... | --random SEED [--count N] [--length N]\n");
 }
 
 } // namespace
@@ -602,19 +675,29 @@ int main(int argc, char** argv)
             }
             return argv[++i];
         };
-        if (arg == "--cols") o.cols = std::atoi(value());
-        else if (arg == "--rows") o.rows = std::atoi(value());
-        else if (arg == "--chunk") o.chunk = std::size_t(std::max(1, std::atoi(value())));
-        else if (arg == "--replies") o.replies = true;
-        else if (arg == "--minimize") o.minimize = true;
-        else if (arg == "--expected") o.expected = value();
-        else if (arg == "--random") o.seed = std::strtoull(value(), nullptr, 10);
-        else if (arg == "--count") o.count = std::max(1, std::atoi(value()));
-        else if (arg == "--length") o.length = std::max(1, std::atoi(value()));
+        if (arg == "--cols")
+            o.cols = std::atoi(value());
+        else if (arg == "--rows")
+            o.rows = std::atoi(value());
+        else if (arg == "--chunk")
+            o.chunk = std::size_t(std::max(1, std::atoi(value())));
+        else if (arg == "--replies")
+            o.replies = true;
+        else if (arg == "--minimize")
+            o.minimize = true;
+        else if (arg == "--expected")
+            o.expected = value();
+        else if (arg == "--random")
+            o.seed = std::strtoull(value(), nullptr, 10);
+        else if (arg == "--count")
+            o.count = std::max(1, std::atoi(value()));
+        else if (arg == "--length")
+            o.length = std::max(1, std::atoi(value()));
         else if (arg.starts_with("--")) {
             usage();
             return 2;
-        } else paths.emplace_back(arg);
+        } else
+            paths.emplace_back(arg);
     }
     if (o.cols < 2 || o.rows < 2 || o.cols > 1000 || o.rows > 1000 || (paths.empty() && !o.seed)) {
         usage();
@@ -631,10 +714,13 @@ int main(int argc, char** argv)
     std::vector<Pattern> patterns;
     // "/REGEX/" from @p at: the regex, and where the text after it starts.
     // A "/" in the regex is escaped as "\/".
-    const auto slashed = [](const std::string& line, std::size_t at) -> std::optional<std::pair<std::string, std::size_t>> {
-        if (at >= line.size() || line[at] != '/') return std::nullopt;
+    const auto slashed = [](const std::string& line,
+                            std::size_t at) -> std::optional<std::pair<std::string, std::size_t>> {
+        if (at >= line.size() || line[at] != '/')
+            return std::nullopt;
         for (std::size_t i = at + 1; i < line.size(); ++i) {
-            if (line[i] == '\\') ++i;
+            if (line[i] == '\\')
+                ++i;
             else if (line[i] == '/' && (i + 1 == line.size() || line[i + 1] == ' '))
                 return std::pair{line.substr(at + 1, i - at - 1), std::min(i + 2, line.size())};
         }
@@ -647,7 +733,8 @@ int main(int argc, char** argv)
             return 2;
         }
         for (std::string line; std::getline(file, line);) {
-            if (line.empty() || line[0] == '#') continue;
+            if (line.empty() || line[0] == '#')
+                continue;
             if (line[0] == '/') {
                 const auto input = slashed(line, 0);
                 const auto difference = input ? slashed(line, input->second) : std::nullopt;
@@ -658,7 +745,8 @@ int main(int argc, char** argv)
                 const std::string text = '/' + input->first + '/' + (difference ? " /" + difference->first + '/' : "");
                 try {
                     patterns.push_back({std::regex(input->first),
-                                        difference ? std::optional(std::regex(difference->first)) : std::nullopt, text});
+                                        difference ? std::optional(std::regex(difference->first)) : std::nullopt,
+                                        text});
                 } catch (const std::regex_error&) {
                     std::fprintf(stderr, "afterglow_vtdiff: bad pattern %s\n", text.c_str());
                     return 2;
@@ -675,7 +763,8 @@ int main(int argc, char** argv)
         std::vector<std::filesystem::path> files;
         if (std::filesystem::is_directory(path)) {
             for (const auto& entry : std::filesystem::directory_iterator(path))
-                if (entry.is_regular_file()) files.push_back(entry.path());
+                if (entry.is_regular_file())
+                    files.push_back(entry.path());
             std::sort(files.begin(), files.end());
         } else {
             files.emplace_back(path);
@@ -691,7 +780,8 @@ int main(int argc, char** argv)
     }
     if (o.seed)
         for (int i = 0; i < o.count; ++i)
-            inputs.emplace_back("random-" + std::to_string(*o.seed + std::uint64_t(i)), randomInput(*o.seed + std::uint64_t(i), o.length));
+            inputs.emplace_back("random-" + std::to_string(*o.seed + std::uint64_t(i)),
+                                randomInput(*o.seed + std::uint64_t(i), o.length));
 
     int unexpected = 0, same = 0, known = 0;
     std::map<std::string, int> matched; // pattern -> inputs
@@ -727,7 +817,8 @@ int main(int argc, char** argv)
             shortestWhat = d ? d->what : difference->what;
         }
         const auto pattern = std::find_if(patterns.begin(), patterns.end(), [&](const Pattern& p) {
-            return std::regex_search(shortest, p.input) && (!p.difference || std::regex_search(shortestWhat, *p.difference));
+            return std::regex_search(shortest, p.input)
+                && (!p.difference || std::regex_search(shortestWhat, *p.difference));
         });
         if (pattern != patterns.end()) {
             ++known;
@@ -739,7 +830,8 @@ int main(int argc, char** argv)
         if (!shortest.empty())
             std::printf("  shortest input: \"%s\"\n  its difference: %s\n", shortest.c_str(), shortestWhat.c_str());
     }
-    for (const auto& [pattern, n] : matched) std::printf("expected %s: %d\n", pattern.c_str(), n);
+    for (const auto& [pattern, n] : matched)
+        std::printf("expected %s: %d\n", pattern.c_str(), n);
     std::printf("afterglow_vtdiff: %d same, %d expected differences, %d unexpected\n", same, known, unexpected);
     return unexpected ? 1 : 0;
 }

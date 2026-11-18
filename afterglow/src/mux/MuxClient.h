@@ -79,8 +79,9 @@ struct SessionLink
 /// off the GUI thread passes a copy taken there
 /// (AfterglowMux::currentEnvironment()). Nothing, with @p error, when they
 /// fail.
-std::optional<SessionLink> attachSession(const QString& name, bool takeover, QString* error, const AfterglowMux::Route& route,
-                                         std::size_t eventQueue, std::size_t history, int signInWaitMs = AfterglowMux::CallTimeoutMs,
+std::optional<SessionLink> attachSession(const QString& name, bool takeover, QString* error,
+                                         const AfterglowMux::Route& route, std::size_t eventQueue, std::size_t history,
+                                         int signInWaitMs = AfterglowMux::CallTimeoutMs,
                                          const AfterglowMux::Environment* environment = nullptr);
 
 class Pane;
@@ -136,34 +137,57 @@ public:
     /// attachSession() takes it. The later calls of the window share the
     /// connection that the stream's ssh signed in, and wait no longer than
     /// a call.
-    static std::shared_ptr<MuxClient> attach(const QString& name, bool takeover, QString* error, const AfterglowMux::Route& route,
-                                             std::size_t eventQueue, std::size_t history, int signInWaitMs = AfterglowMux::CallTimeoutMs);
+    static std::shared_ptr<MuxClient> attach(const QString& name, bool takeover, QString* error,
+                                             const AfterglowMux::Route& route, std::size_t eventQueue,
+                                             std::size_t history, int signInWaitMs = AfterglowMux::CallTimeoutMs);
     /// The client of the connection of @p link, which answered the attach
     /// call of session @p name (attachSession), over the link's route: the
     /// second half of attach(), on the GUI thread. Waits until the daemon
     /// names the layout.
-    static std::shared_ptr<MuxClient> adopt(const QString& name, SessionLink link, QString* error, std::size_t eventQueue);
+    static std::shared_ptr<MuxClient> adopt(const QString& name, SessionLink link, QString* error,
+                                            std::size_t eventQueue);
     ~MuxClient() override;
 
-    const QString& session() const { return m_session; }
+    const QString& session() const
+    {
+        return m_session;
+    }
     /// The ssh destination of the session's daemon, empty for this computer.
-    QString host() const { return QString::fromStdString(m_route.host); }
+    QString host() const
+    {
+        return QString::fromStdString(m_route.host);
+    }
     /// The session runs on another host: its paths are not this computer's.
-    bool remote() const { return !m_route.proxy.empty(); }
+    bool remote() const
+    {
+        return !m_route.proxy.empty();
+    }
     /// The Mux.eventQueue that the attach passed, in bytes.
-    std::size_t eventQueue() const { return m_eventQueue; }
+    std::size_t eventQueue() const
+    {
+        return m_eventQueue;
+    }
     /// The environment that the session's panes start from, which a new
     /// pane's launch changes as the first pane's did: the one of the client
     /// that made the session (`afterglow mux new`), of the Afterglow that
     /// opened a project into it, or for a session that a break out made, the
     /// one of the session that the panes left. Not this process's.
-    const std::vector<std::pair<std::string, std::string>>& environment() const { return m_environment; }
+    const std::vector<std::pair<std::string, std::string>>& environment() const
+    {
+        return m_environment;
+    }
     /// The session's tabs and splits when the window attached: the daemon
     /// sends them first.
-    const AfterglowMux::Layout& layout() const { return m_layout; }
+    const AfterglowMux::Layout& layout() const
+    {
+        return m_layout;
+    }
     /// The window still shows the session: no end event came, and the
     /// stream works.
-    bool showing() const { return !m_ended && m_stream; }
+    bool showing() const
+    {
+        return !m_ended && m_stream;
+    }
     /// What the stream told of session pane @p id so far: its PaneOpened,
     /// its PaneClosed and the end of its channel. A test orders these
     /// against the answer of a call (newPaneLater, breakOutLater) with it.
@@ -173,7 +197,10 @@ public:
         bool exited = false;
         bool channelEnded = false;
     };
-    Heard heard(std::uint32_t id) const { return {m_channels.contains(id), m_exits.contains(id), m_closedChannels.contains(id)}; }
+    Heard heard(std::uint32_t id) const
+    {
+        return {m_channels.contains(id), m_exits.contains(id), m_closedChannels.contains(id)};
+    }
 
     /// @p pane shows session pane @p id from now on: its frames go to it.
     void bind(std::uint32_t id, Pane& pane);
@@ -191,7 +218,8 @@ public:
     /// answer, as the start of a program of the window waits for its exec. A
     /// pane that the daemon names, and that the window neither asked for nor
     /// binds (a call that timed out after the daemon started it), ends.
-    std::optional<std::uint32_t> newPane(const AfterglowMux::Launch& launch, const AfterglowMux::PaneSize& size, QString* error);
+    std::optional<std::uint32_t> newPane(const AfterglowMux::Launch& launch, const AfterglowMux::PaneSize& size,
+                                         QString* error);
     /// The end of newPaneLater(): the daemon's ID of the new pane, which the
     /// window binds a pane to at once, or nothing with @p error.
     using PaneStarted = std::function<void(std::optional<std::uint32_t> pane, const QString& error)>;
@@ -354,13 +382,20 @@ public:
     /// after the frames and events that came first. Calls that come while
     /// the window no longer shows the session go unanswered: the daemon
     /// answered them when the window went.
-    using ControlHandler = std::function<void(const QString& fn, const QJsonArray& args, qint64 client, ControlReply reply)>;
-    void setControlHandler(ControlHandler handler) { m_controlHandler = std::move(handler); }
+    using ControlHandler =
+        std::function<void(const QString& fn, const QJsonArray& args, qint64 client, ControlReply reply)>;
+    void setControlHandler(ControlHandler handler)
+    {
+        m_controlHandler = std::move(handler);
+    }
     /// Sends the window's layout that waits to go (TerminalWindow's delay),
     /// before each answer to a control call: the daemon reads the layout
     /// that the call changed before the answer, as `afterglow ctl ls`
     /// after `move-pane` expects.
-    void setLayoutFlush(std::function<void()> flush) { m_flushLayout = std::move(flush); }
+    void setLayoutFlush(std::function<void()> flush)
+    {
+        m_flushLayout = std::move(flush);
+    }
     /// Serves the command clients of the session's panes (`aglow run`) with
     /// @p host: the socket of the Afterglow whose commands answer them, and
     /// the window's IDs of the panes, which this client also finds for a
@@ -456,8 +491,10 @@ private:
     /// gives nothing, with the daemon's words in @p error, and
     /// @p unanswered set when the call went but no answer came within
     /// @p timeoutMs: the daemon may have done it.
-    std::optional<AfterglowProto::Json::Value> callDaemon(const char* fn, AfterglowProto::Json::Array args, QString* error = nullptr,
-                                                          int timeoutMs = AfterglowMux::CallTimeoutMs, bool* unanswered = nullptr) const;
+    std::optional<AfterglowProto::Json::Value> callDaemon(const char* fn, AfterglowProto::Json::Array args,
+                                                          QString* error = nullptr,
+                                                          int timeoutMs = AfterglowMux::CallTimeoutMs,
+                                                          bool* unanswered = nullptr) const;
     /// What a call of the daemon brought: its result, or nothing with the
     /// daemon's words in error (never empty then), and unanswered set when
     /// the call went but no answer came in time.
@@ -470,8 +507,9 @@ private:
     /// callDaemon() of session @p session over @p route, for any thread:
     /// with no Qt object, and a proxy runs in @p environment, which a
     /// caller off the GUI thread takes there.
-    static DaemonAnswer callRoute(const AfterglowMux::Route& route, const QString& session, const char* fn, AfterglowProto::Json::Array args,
-                                  int timeoutMs, const AfterglowMux::Environment& environment);
+    static DaemonAnswer callRoute(const AfterglowMux::Route& route, const QString& session, const char* fn,
+                                  AfterglowProto::Json::Array args, int timeoutMs,
+                                  const AfterglowMux::Environment& environment);
     /// A call of callLater() that waits for its answer: finish takes it on
     /// the GUI thread, and abandon tells its caller why it never comes when
     /// this object goes first.
@@ -492,13 +530,15 @@ private:
     void callAnswered(quint64 id, DaemonAnswer& answer);
     /// The arguments of Fn::BreakOut for @p layout, cut to fit a request,
     /// or nothing with @p error.
-    std::optional<AfterglowProto::Json::Array> breakOutArguments(const AfterglowMux::Layout& layout, QString* error) const;
+    std::optional<AfterglowProto::Json::Array> breakOutArguments(const AfterglowMux::Layout& layout,
+                                                                 QString* error) const;
     /// What a breakOutLater() of @p layout makes of @p answer: the name of
     /// the new session, or nothing with @p error.
     std::optional<QString> brokeOut(const AfterglowMux::Layout& layout, const DaemonAnswer& answer, QString* error);
     /// breakOutLater() and joinLater(): the call @p fn with @p args, which
     /// moves the panes of @p layout out of the session.
-    QString leaveLater(const AfterglowMux::Layout& layout, const char* fn, AfterglowProto::Json::Array args, BrokenOut done);
+    QString leaveLater(const AfterglowMux::Layout& layout, const char* fn, AfterglowProto::Json::Array args,
+                       BrokenOut done);
     /// The panes of m_unclaimed end: no newPaneLater() waits any more, so
     /// none of them is the window's.
     void releaseUnclaimed();
@@ -615,7 +655,8 @@ private:
     /// The most bytes of calls that wait for panes: what the daemon holds
     /// for the window at most, and those that left it and wait for frames on
     /// their way, which the windows of the channels bound.
-    static constexpr std::size_t MaxWaitingHostCalls = std::size_t(AfterglowMux::MaxEventQueue) * 2 + AfterglowMux::Host::MaxCall;
+    static constexpr std::size_t MaxWaitingHostCalls =
+        std::size_t(AfterglowMux::MaxEventQueue) * 2 + AfterglowMux::Host::MaxCall;
     std::map<std::uint32_t, std::string> m_hostParts; ///< the parts of a call that came, by pane
     /// The pane's channel was read to Closed: its ID may be the channel of
     /// another pane now, so it is never read again. A bound pane whose exit

@@ -36,7 +36,8 @@ int run(int argc, char** argv)
 {
     // 127, as a shell answers for a command that it cannot find.
     if (!built()) {
-        std::fprintf(stderr, "afterglow %s: this build of Afterglow has no aglow (AFTERGLOW_BUILD_AGLOW=OFF)\n", argv[1]);
+        std::fprintf(stderr, "afterglow %s: this build of Afterglow has no aglow (AFTERGLOW_BUILD_AGLOW=OFF)\n",
+                     argv[1]);
         return 127;
     }
     std::string error;
@@ -48,7 +49,7 @@ int run(int argc, char** argv)
     // argv[0] names the program in aglow's usage and messages: "afterglow
     // icat", not "aglow icat". It is "afterglow" whatever the name that
     // started this executable, as the commands in afterglow --help say.
-    std::vector<char*> args { const_cast<char*>("afterglow") };
+    std::vector<char*> args{const_cast<char*>("afterglow")};
     for (int i = 1; i < argc; ++i) {
         args.push_back(argv[i]);
     }

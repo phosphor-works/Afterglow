@@ -12,24 +12,27 @@ Item {
 
     property string filter: ""
     readonly property int rowHeight: Math.max(36, Math.ceil(metrics.height) + 16)
-    FontMetrics { id: metrics; font: input.font }
+    FontMetrics {
+        id: metrics
+        font: input.font
+    }
     readonly property var matches: {
-        const words = filter.toLowerCase().split(/\s+/).filter(w => w.length > 0)
+        const words = filter.toLowerCase().split(/\s+/).filter(w => w.length > 0);
         return controller.actions.filter(a => {
-            const t = a.title.toLowerCase()
-            return words.every(w => t.includes(w))
-        })
+            const t = a.title.toLowerCase();
+            return words.every(w => t.includes(w));
+        });
     }
 
     function syncVisibility() {
         if (visible) {
-            input.text = ""
-            list.currentIndex = 0
+            input.text = "";
+            list.currentIndex = 0;
         }
     }
 
     function takeFocus() {
-        input.forceActiveFocus()
+        input.forceActiveFocus();
     }
 
     onVisibleChanged: syncVisibility()
@@ -37,7 +40,7 @@ Item {
 
     function run(index: int) {
         if (index >= 0 && index < matches.length)
-            controller.runAction(matches[index].id)
+            controller.runAction(matches[index].id);
     }
 
     Scrim {
@@ -72,8 +75,8 @@ Item {
                 Accessible.name: placeholderText
                 selectByMouse: true
                 onTextChanged: {
-                    commandPalette.filter = text
-                    list.currentIndex = 0
+                    commandPalette.filter = text;
+                    list.currentIndex = 0;
                 }
                 Keys.onEscapePressed: commandPalette.controller.paletteOpen = false
                 Keys.onUpPressed: list.currentIndex = Math.max(0, list.currentIndex - 1)
@@ -93,7 +96,8 @@ Item {
                 highlightMoveDuration: 0
                 boundsBehavior: Flickable.StopAtBounds
                 onCurrentIndexChanged: {
-                    if (currentIndex >= 0) positionViewAtIndex(currentIndex, ListView.Contain)
+                    if (currentIndex >= 0)
+                        positionViewAtIndex(currentIndex, ListView.Contain);
                 }
                 ScrollBar.vertical: ScrollBar {
                     id: scrollBar
@@ -107,14 +111,14 @@ Item {
                     id: pointer
                     property point last: Qt.point(-1, -1)
                     onPointChanged: {
-                        const at = point.scenePosition
+                        const at = point.scenePosition;
                         if (!hovered || (at.x === last.x && at.y === last.y))
-                            return
-                        last = at
-                        const p = list.mapFromItem(null, at.x, at.y)
-                        const row = list.indexAt(p.x + list.contentX, p.y + list.contentY)
+                            return;
+                        last = at;
+                        const p = list.mapFromItem(null, at.x, at.y);
+                        const row = list.indexAt(p.x + list.contentX, p.y + list.contentY);
                         if (row >= 0)
-                            list.currentIndex = row
+                            list.currentIndex = row;
                     }
                 }
 

@@ -23,31 +23,33 @@ namespace Afterglow::Ssh {
 /// Where the destination is in ssh's arguments, and what kind of run it is.
 /// ssh reads options before and after the destination, up to the remote
 /// command or a "--".
-struct Arguments {
-    int destination = -1;     ///< index of the destination, -1 when there is none
-    int command = -1;         ///< index of the remote command's first word, -1 when there is none
-    QList<int> options;       ///< indexes of the option words and their values, in order
+struct Arguments
+{
+    int destination = -1; ///< index of the destination, -1 when there is none
+    int command = -1; ///< index of the remote command's first word, -1 when there is none
+    QList<int> options; ///< indexes of the option words and their values, in order
     bool passThrough = false; ///< -G, -V, -Q or -O: ssh does not open a session
-    bool noSession = false;   ///< -N, -W, -f or -s: no remote command runs in the foreground
+    bool noSession = false; ///< -N, -W, -f or -s: no remote command runs in the foreground
 };
 Arguments parseArguments(const QStringList& args);
 
 /// The parts of `ssh -G` the helper uses.
-struct Config {
-    QString host;     ///< the name as typed, or its Host alias
+struct Config
+{
+    QString host; ///< the name as typed, or its Host alias
     QString hostname; ///< what it resolves to
     QString user;
     QString port;
     QString proxyJump;
     QString proxyCommand;
-    bool setEnv = false;         ///< the user's config already sets environment variables
-    bool controlPath = false;    ///< the user's config already multiplexes connections
-    bool controlMaster = false;  ///< ControlMaster auto or autoask: a run may become the master
+    bool setEnv = false; ///< the user's config already sets environment variables
+    bool controlPath = false; ///< the user's config already multiplexes connections
+    bool controlMaster = false; ///< ControlMaster auto or autoask: a run may become the master
     bool controlPersist = false; ///< the master outlives its first session
-    bool remoteCommand = false;  ///< the config runs a command in place of one on the command line
-    bool noSession = false;      ///< SessionType none or subsystem, or ForkAfterAuthentication: like -N, -s or -f
-    bool stdinNull = false;      ///< StdinNull: like -n
-    QString requestTty;          ///< ssh -G's word for RequestTTY and -t, -T: auto, true, false or force
+    bool remoteCommand = false; ///< the config runs a command in place of one on the command line
+    bool noSession = false; ///< SessionType none or subsystem, or ForkAfterAuthentication: like -N, -s or -f
+    bool stdinNull = false; ///< StdinNull: like -n
+    QString requestTty; ///< ssh -G's word for RequestTTY and -t, -T: auto, true, false or force
 };
 Config parseConfig(const QByteArray& resolved);
 
@@ -56,10 +58,11 @@ QByteArray contextStart(const QString& id, const Config& config);
 QByteArray contextEnd(const QString& id);
 
 /// What the probe for remote commands found on the host.
-struct Probe {
-    bool ran = false;  ///< the script ran there: its first line came, whatever its exit status
+struct Probe
+{
+    bool ran = false; ///< the script ran there: its first line came, whatever its exit status
     bool aglow = false; ///< `aglow --version` ran
-    QString version;   ///< its line
+    QString version; ///< its line
     int protocol = -1; ///< the protocol in that line, -1 when it names none
     /// The remote directory, made with mode 0700: $XDG_RUNTIME_DIR/afterglow
     /// when that is an absolute path, else ~/.local/state/afterglow/run/HOST
@@ -79,7 +82,8 @@ Probe parseProbe(const QByteArray& output);
 /// daemon for a session pane (remote-ID-TOKEN.sock in its directory), with
 /// no ':' or '\', where ssh splits and escapes. @p remote is
 /// DIRECTORY/TOKEN.sock in the @p directory of the probe.
-bool forwardPair(const std::string& local, const std::string& remote, const std::string& token, const std::string& directory);
+bool forwardPair(const std::string& local, const std::string& remote, const std::string& token,
+                 const std::string& directory);
 
 /// What `ssh -G -- DESTINATION` says of @p destination, or nothing with
 /// @p error. It runs with posix_spawn and a plain wait, as the window's
@@ -102,8 +106,8 @@ std::optional<Config> resolve(const QString& destination, const std::vector<std:
 /// (resolve()). Empty, with @p error, when ssh cannot read the destination
 /// (ssh -G), or there is no private XDG_RUNTIME_DIR for that connection.
 /// The form in one step; muxRoute() resolves first, and keeps the Config.
-QByteArrayList sharedCommand(const QString& destination, int controlPersist, const std::vector<std::string>& environment,
-                             QString* error);
+QByteArrayList sharedCommand(const QString& destination, int controlPersist,
+                             const std::vector<std::string>& environment, QString* error);
 /// sharedCommand() with @p config, which resolve() read for @p destination
 /// already: no ssh -G runs.
 QByteArrayList sharedCommand(const QString& destination, const Config& config, int controlPersist, QString* error);
@@ -112,16 +116,18 @@ QByteArrayList sharedCommand(const QString& destination, const Config& config, i
 /// that go to a session of another host: all but TERMINFO_DIRS, which names
 /// directories of this computer. The host finds the entry that
 /// installTerminfo() put in its own database.
-std::vector<std::pair<std::string, std::string>> remoteVariables(std::vector<std::pair<std::string, std::string>> environment);
+std::vector<std::pair<std::string, std::string>>
+remoteVariables(std::vector<std::pair<std::string, std::string>> environment);
 
 /// How a terminfo install ended.
 enum class Install {
     Installed,
-    Unavailable,      ///< no entry to send, or the host cannot take it
+    Unavailable, ///< no entry to send, or the host cannot take it
     ConnectionFailed, ///< ssh could not connect: the session would fail the same way
-    Ended,            ///< ssh died from a signal, such as Ctrl+C at a password prompt
+    Ended, ///< ssh died from a signal, such as Ctrl+C at a password prompt
 };
-struct InstallResult {
+struct InstallResult
+{
     Install result = Install::Unavailable;
     int status = 0; ///< the install's wait status, for Install::Ended
     /// Why, for Install::ConnectionFailed when ssh did not run, and for
@@ -138,7 +144,8 @@ struct InstallResult {
 /// this process's. ssh can ask for a password on the terminal meanwhile: an
 /// interrupt there ends ssh and not this process, which then ends with
 /// endAs().
-InstallResult installTerminfo(const QString& destination, const Config& config, int controlPersist, const QByteArray& terminfoDirs);
+InstallResult installTerminfo(const QString& destination, const Config& config, int controlPersist,
+                              const QByteArray& terminfoDirs);
 
 /// Ends this process the way a run with wait status @p status ended: by the
 /// same signal when an interrupt, a hang-up, a termination, SIGPIPE or

@@ -52,7 +52,10 @@ class ChromeController : public QObject
 
 public:
     using QObject::QObject;
-    QVariantMap scriptDialog() const { return m_scriptDialog; }
+    QVariantMap scriptDialog() const
+    {
+        return m_scriptDialog;
+    }
     void setScriptDialog(const QVariantMap& value)
     {
         if (m_scriptDialog != value) {
@@ -60,43 +63,116 @@ public:
             Q_EMIT scriptDialogChanged();
         }
     }
-    Q_INVOKABLE void answerScriptDialog(bool accepted, const QString& value) { Q_EMIT scriptDialogAnswered(accepted, value); }
-    QString scriptStatus() const { return m_scriptStatus; }
-    void setScriptStatus(const QString& value) { if (m_scriptStatus != value) { m_scriptStatus = value; Q_EMIT scriptStatusChanged(); } }
-    QVariantMap history() const { return m_history; }
-    void setHistory(const QVariantMap& value) { if (m_history != value) { m_history = value; Q_EMIT historyChanged(); } }
-    Q_INVOKABLE void scrollHistory(double value) { Q_EMIT historyRequested(value); }
-    bool searchRegex() const { return m_searchRegex; }
-    void setSearchRegex(bool value) { if (m_searchRegex != value) { m_searchRegex = value; Q_EMIT searchRegexChanged(); } }
-    QString keyMode() const { return m_keyMode; }
-    void setKeyMode(const QString& value) {
-        if (m_keyMode != value) { m_keyMode = value; Q_EMIT keyModeChanged(); }
+    Q_INVOKABLE void answerScriptDialog(bool accepted, const QString& value)
+    {
+        Q_EMIT scriptDialogAnswered(accepted, value);
+    }
+    QString scriptStatus() const
+    {
+        return m_scriptStatus;
+    }
+    void setScriptStatus(const QString& value)
+    {
+        if (m_scriptStatus != value) {
+            m_scriptStatus = value;
+            Q_EMIT scriptStatusChanged();
+        }
+    }
+    QVariantMap history() const
+    {
+        return m_history;
+    }
+    void setHistory(const QVariantMap& value)
+    {
+        if (m_history != value) {
+            m_history = value;
+            Q_EMIT historyChanged();
+        }
+    }
+    Q_INVOKABLE void scrollHistory(double value)
+    {
+        Q_EMIT historyRequested(value);
+    }
+    bool searchRegex() const
+    {
+        return m_searchRegex;
+    }
+    void setSearchRegex(bool value)
+    {
+        if (m_searchRegex != value) {
+            m_searchRegex = value;
+            Q_EMIT searchRegexChanged();
+        }
+    }
+    QString keyMode() const
+    {
+        return m_keyMode;
+    }
+    void setKeyMode(const QString& value)
+    {
+        if (m_keyMode != value) {
+            m_keyMode = value;
+            Q_EMIT keyModeChanged();
+        }
     }
 
-    QStringList tabTitles() const { return m_tabTitles; }
-    int currentTab() const { return m_currentTab; }
-    int tabBarHeight() const { return m_tabBarHeight; }
+    QStringList tabTitles() const
+    {
+        return m_tabTitles;
+    }
+    int currentTab() const
+    {
+        return m_currentTab;
+    }
+    int tabBarHeight() const
+    {
+        return m_tabBarHeight;
+    }
     void setTabs(const QStringList& titles, int current, int barHeight);
     /// The tabs changed order. A drag in the tab bar, which counts tabs by
     /// place, stops.
-    void notifyTabsMoved() { Q_EMIT tabsMoved(); }
+    void notifyTabsMoved()
+    {
+        Q_EMIT tabsMoved();
+    }
     /// Where the panes are, in logical pixels: the window less the tab bar
     /// and the scripts' docks.
-    QRectF paneArea() const { return m_paneArea; }
-    void setPaneArea(const QRectF& area) { if (m_paneArea != area) { m_paneArea = area; Q_EMIT paneAreaChanged(); } }
+    QRectF paneArea() const
+    {
+        return m_paneArea;
+    }
+    void setPaneArea(const QRectF& area)
+    {
+        if (m_paneArea != area) {
+            m_paneArea = area;
+            Q_EMIT paneAreaChanged();
+        }
+    }
     /// Per tab: { state, progress, text, priority } of its most pressing
     /// program status, or an empty map.
-    QVariantList tabStatus() const { return m_tabStatus; }
+    QVariantList tabStatus() const
+    {
+        return m_tabStatus;
+    }
     /// URL mode: [{ x, y (logical pixels), label, typed (characters matched) }].
-    QVariantList urlHints() const { return m_urlHints; }
+    QVariantList urlHints() const
+    {
+        return m_urlHints;
+    }
     void setUrlHints(const QVariantList& hints);
     /// Unicode input: { active, text (hex typed), preview, x, y (below the
     /// cursor), top (the cursor's top) }.
-    QVariantMap unicodeInput() const { return m_unicodeInput; }
+    QVariantMap unicodeInput() const
+    {
+        return m_unicodeInput;
+    }
     void setUnicodeInput(const QVariantMap& state);
     void setTabStatus(const QVariantList& status);
     /// Per tab: { label, kind } of where its shell runs (see Pane::contextLabel).
-    QVariantList tabContexts() const { return m_tabContexts; }
+    QVariantList tabContexts() const
+    {
+        return m_tabContexts;
+    }
     void setTabContexts(const QVariantList& contexts)
     {
         if (contexts != m_tabContexts) {
@@ -105,64 +181,130 @@ public:
         }
     }
 
-    QColor goodColor() const { return m_goodColor; }
-    QColor warnColor() const { return m_warnColor; }
-    QColor badColor() const { return m_badColor; }
+    QColor goodColor() const
+    {
+        return m_goodColor;
+    }
+    QColor warnColor() const
+    {
+        return m_warnColor;
+    }
+    QColor badColor() const
+    {
+        return m_badColor;
+    }
     void setStatusColors(const QColor& good, const QColor& warn, const QColor& bad);
 
     /// [{ id: int, title: string, shortcut: string }]
-    QVariantList actions() const { return m_actions; }
+    QVariantList actions() const
+    {
+        return m_actions;
+    }
     void setActions(const QVariantList& actions);
 
-    bool paletteOpen() const { return m_paletteOpen; }
+    bool paletteOpen() const
+    {
+        return m_paletteOpen;
+    }
     void setPaletteOpen(bool open);
-    bool searchOpen() const { return m_searchOpen; }
+    bool searchOpen() const
+    {
+        return m_searchOpen;
+    }
     void setSearchOpen(bool open);
-    QString searchStatus() const { return m_searchStatus; }
+    QString searchStatus() const
+    {
+        return m_searchStatus;
+    }
     void setSearchStatus(const QString& status);
 
     /// [{ x, y, width, height (logical pixels), title, focused, status,
     /// context, contextKind }] per split.
-    QVariantList paneTitles() const { return m_paneTitles; }
+    QVariantList paneTitles() const
+    {
+        return m_paneTitles;
+    }
     void setPaneTitles(const QVariantList& titles);
 
-    bool pasteConfirmOpen() const { return m_pasteConfirmOpen; }
-    QString pastePreview() const { return m_pastePreview; }
-    int pasteLines() const { return m_pasteLines; }
+    bool pasteConfirmOpen() const
+    {
+        return m_pasteConfirmOpen;
+    }
+    QString pastePreview() const
+    {
+        return m_pastePreview;
+    }
+    int pasteLines() const
+    {
+        return m_pasteLines;
+    }
     /// The bytes of the paste that the preview leaves out.
-    int pasteHiddenBytes() const { return m_pasteHiddenBytes; }
+    int pasteHiddenBytes() const
+    {
+        return m_pasteHiddenBytes;
+    }
     /// Asks whether to paste text a shell would run line by line.
     void askPaste(const QString& preview, int lines, int hiddenBytes = 0);
 
     /// The colour that dims the window behind a prompt.
-    QColor scrimColor() const { return QColor(0, 0, 0, 0x59); }
+    QColor scrimColor() const
+    {
+        return QColor(0, 0, 0, 0x59);
+    }
 
-    bool clipboardPromptOpen() const { return m_clipboardPromptOpen; }
-    QString clipboardPromptText() const { return m_clipboardPromptText; }
+    bool clipboardPromptOpen() const
+    {
+        return m_clipboardPromptOpen;
+    }
+    QString clipboardPromptText() const
+    {
+        return m_clipboardPromptText;
+    }
     /// The program's name when it can be remembered, else empty.
-    QString clipboardPromptName() const { return m_clipboardPromptName; }
+    QString clipboardPromptName() const
+    {
+        return m_clipboardPromptName;
+    }
     /// Asks whether a program may read the clipboard.
     void askClipboard(const QString& text, const QString& name);
     /// The context menu: { open, x, y (logical pixels, where it was asked
     /// for), items: [{ id, title, shortcut, enabled } or { separator: true }] }.
-    QVariantMap contextMenu() const { return m_contextMenu; }
-    bool contextMenuOpen() const { return m_contextMenu.value(QStringLiteral("open")).toBool(); }
+    QVariantMap contextMenu() const
+    {
+        return m_contextMenu;
+    }
+    bool contextMenuOpen() const
+    {
+        return m_contextMenu.value(QStringLiteral("open")).toBool();
+    }
     void openContextMenu(const QPointF& at, const QVariantList& items);
     Q_INVOKABLE void closeContextMenu();
     /// Runs a menu item and closes the menu.
     Q_INVOKABLE void activateMenuItem(int id);
 
     /// Asks for a title: { open, heading, text (the current one) }.
-    QVariantMap titlePrompt() const { return m_titlePrompt; }
-    bool titlePromptOpen() const { return m_titlePrompt.value(QStringLiteral("open")).toBool(); }
+    QVariantMap titlePrompt() const
+    {
+        return m_titlePrompt;
+    }
+    bool titlePromptOpen() const
+    {
+        return m_titlePrompt.value(QStringLiteral("open")).toBool();
+    }
     void askTitle(const QString& heading, const QString& current);
     /// Empty returns to the program's title.
     Q_INVOKABLE void answerTitle(const QString& title);
     Q_INVOKABLE void cancelTitle();
 
     /// Asks to go ahead with something: { open, heading, body, accept (the button's words) }.
-    QVariantMap confirmPrompt() const { return m_confirmPrompt; }
-    bool confirmPromptOpen() const { return m_confirmPrompt.value(QStringLiteral("open")).toBool(); }
+    QVariantMap confirmPrompt() const
+    {
+        return m_confirmPrompt;
+    }
+    bool confirmPromptOpen() const
+    {
+        return m_confirmPrompt.value(QStringLiteral("open")).toBool();
+    }
     void askConfirm(const QString& heading, const QString& body, const QString& accept);
     Q_INVOKABLE void answerConfirm(bool accepted);
 
@@ -173,19 +315,43 @@ public:
             || titlePromptOpen() || confirmPromptOpen() || m_scriptDialog.value(QStringLiteral("open")).toBool();
     }
 
-    Q_INVOKABLE void activateTab(int index) { Q_EMIT activateTabRequested(index); }
-    Q_INVOKABLE void closeTab(int index) { Q_EMIT closeTabRequested(index); }
-    Q_INVOKABLE void newTab() { Q_EMIT newTabRequested(); }
-    Q_INVOKABLE void detachTab(int index) { Q_EMIT detachTabRequested(index); }
+    Q_INVOKABLE void activateTab(int index)
+    {
+        Q_EMIT activateTabRequested(index);
+    }
+    Q_INVOKABLE void closeTab(int index)
+    {
+        Q_EMIT closeTabRequested(index);
+    }
+    Q_INVOKABLE void newTab()
+    {
+        Q_EMIT newTabRequested();
+    }
+    Q_INVOKABLE void detachTab(int index)
+    {
+        Q_EMIT detachTabRequested(index);
+    }
     /// Moves the tab at @p from to @p to (the indexes as shown).
-    Q_INVOKABLE void moveTab(int from, int to) { Q_EMIT moveTabRequested(from, to); }
-    Q_INVOKABLE void renameTab(int index) { Q_EMIT renameTabRequested(index); }
+    Q_INVOKABLE void moveTab(int from, int to)
+    {
+        Q_EMIT moveTabRequested(from, to);
+    }
+    Q_INVOKABLE void renameTab(int index)
+    {
+        Q_EMIT renameTabRequested(index);
+    }
     /// The tab's menu, at @p x, @p y (logical pixels).
-    Q_INVOKABLE void tabMenu(int index, qreal x, qreal y) { Q_EMIT tabMenuRequested(index, QPointF(x, y)); }
+    Q_INVOKABLE void tabMenu(int index, qreal x, qreal y)
+    {
+        Q_EMIT tabMenuRequested(index, QPointF(x, y));
+    }
     Q_INVOKABLE void runAction(int id);
     /// @p direction: 1 next, -1 previous, 0 search. A new query selects the last
     /// match in the buffer; direction 0 with the same query stays on the current match.
-    Q_INVOKABLE void search(const QString& query, int direction) { Q_EMIT searchRequested(query, direction); }
+    Q_INVOKABLE void search(const QString& query, int direction)
+    {
+        Q_EMIT searchRequested(query, direction);
+    }
     Q_INVOKABLE void answerPaste(bool paste);
     /// 0 deny, 1 allow once, 2 always allow this program.
     Q_INVOKABLE void answerClipboard(int answer);

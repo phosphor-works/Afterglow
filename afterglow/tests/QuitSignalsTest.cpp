@@ -34,7 +34,9 @@ TEST(QuitSignals, ASignalQuitsTheEventLoopOnce)
         // The fallback ends a loop that the signal did not quit.
         QObject guard;
         bool timedOut = false;
-        QTimer::singleShot(0, &guard, [sig] { raise(sig); });
+        QTimer::singleShot(0, &guard, [sig] {
+            raise(sig);
+        });
         QTimer::singleShot(3000, &guard, [&timedOut] {
             timedOut = true;
             QCoreApplication::quit();
@@ -43,7 +45,8 @@ TEST(QuitSignals, ASignalQuitsTheEventLoopOnce)
         EXPECT_FALSE(timedOut) << sig;
         EXPECT_EQ(quit.signal(), sig);
         // A second signal would take the earlier action: a hung shutdown still ends.
-        for (const int other : {SIGTERM, SIGINT, SIGHUP}) EXPECT_TRUE(isDefault(other)) << other;
+        for (const int other : {SIGTERM, SIGINT, SIGHUP})
+            EXPECT_TRUE(isDefault(other)) << other;
     }
 }
 
@@ -53,7 +56,8 @@ TEST(QuitSignals, DestructorRestoresTheDefaults)
         QuitSignals quit;
         EXPECT_FALSE(isDefault(SIGTERM));
     }
-    for (const int sig : {SIGTERM, SIGINT, SIGHUP}) EXPECT_TRUE(isDefault(sig)) << sig;
+    for (const int sig : {SIGTERM, SIGINT, SIGHUP})
+        EXPECT_TRUE(isDefault(sig)) << sig;
 }
 
 TEST(QuitSignals, AnIgnoredSignalStaysIgnored)
@@ -70,7 +74,8 @@ TEST(QuitSignals, AnIgnoredSignalStaysIgnored)
         raise(SIGHUP);
         QElapsedTimer clock;
         clock.start();
-        while (clock.elapsed() < 100) QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        while (clock.elapsed() < 100)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
         EXPECT_EQ(quit.signal(), 0);
     }
     struct sigaction after{};
@@ -96,7 +101,8 @@ TEST(QuitSignals, AForkedChildDiesAsWithoutTheHandler)
     // Nothing reached this process's event loop.
     QElapsedTimer clock;
     clock.start();
-    while (clock.elapsed() < 100) QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    while (clock.elapsed() < 100)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
     EXPECT_EQ(quit.signal(), 0);
     EXPECT_FALSE(isDefault(SIGTERM));
 }
@@ -107,7 +113,8 @@ int main(int argc, char** argv)
 {
     // The tests expect the default actions: a run under nohup, or as a
     // background job of a script, starts with some of them ignored.
-    for (const int sig : {SIGTERM, SIGINT, SIGHUP}) std::signal(sig, SIG_DFL);
+    for (const int sig : {SIGTERM, SIGINT, SIGHUP})
+        std::signal(sig, SIG_DFL);
     QCoreApplication app(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();

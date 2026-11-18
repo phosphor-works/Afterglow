@@ -11,23 +11,28 @@ namespace Afterglow {
 /// a drop that waits for its data from a program. Events go on meanwhile, so
 /// the window can be asked to close, but it must not be deleted before the
 /// handler returns: deleteWhenIdle() waits for the last loop. GUI thread only.
-class NestedLoop {
+class NestedLoop
+{
 public:
     explicit NestedLoop(QWindow* window)
         : m_window(window)
         , m_key(window)
     {
-        if (m_key) ++entry(window).count;
+        if (m_key)
+            ++entry(window).count;
     }
     ~NestedLoop()
     {
-        if (!m_key) return;
+        if (!m_key)
+            return;
         const auto it = loops().find(m_key);
-        if (it == loops().end() || --it->count > 0) return;
+        if (it == loops().end() || --it->count > 0)
+            return;
         const bool deletePending = it->deletePending;
         loops().erase(it);
         // Here the handler has returned from its loop: the window can go.
-        if (deletePending && m_window) m_window->deleteLater();
+        if (deletePending && m_window)
+            m_window->deleteLater();
     }
     NestedLoop(const NestedLoop&) = delete;
     NestedLoop& operator=(const NestedLoop&) = delete;
@@ -43,7 +48,8 @@ public:
     }
 
 private:
-    struct Loops {
+    struct Loops
+    {
         QPointer<QWindow> window;
         int count = 0;
         bool deletePending = false;
@@ -53,7 +59,8 @@ private:
     static Loops& entry(QWindow* window)
     {
         Loops& loops = NestedLoop::loops()[window];
-        if (!loops.window) loops = {window, 0, false};
+        if (!loops.window)
+            loops = {window, 0, false};
         return loops;
     }
     static QHash<const QWindow*, Loops>& loops()

@@ -61,14 +61,16 @@ constexpr Matrix D50ToD65{{{0.955473421488075, -0.02309845494876471, 0.063259243
 Vec3 oklabToLinear(const Vec3& lab)
 {
     Vec3 lms = multiply(OklabToLms, lab);
-    for (double& v : lms) v = v * v * v;
+    for (double& v : lms)
+        v = v * v * v;
     return multiply(XyzToLinearSrgb, multiply(LmsToXyz, lms));
 }
 
 Vec3 linearToOklab(const Vec3& rgb)
 {
     Vec3 lms = multiply(XyzToLms, multiply(LinearSrgbToXyz, rgb));
-    for (double& v : lms) v = std::cbrt(v);
+    for (double& v : lms)
+        v = std::cbrt(v);
     return multiply(LmsToOklab, lms);
 }
 
@@ -105,14 +107,16 @@ bool inGamut(const Vec3& srgb)
     constexpr double Tolerance = 1e-9;
     for (double v : srgb) {
         // Written so that NaN is outside.
-        if (!(v >= -Tolerance && v <= 1 + Tolerance)) return false;
+        if (!(v >= -Tolerance && v <= 1 + Tolerance))
+            return false;
     }
     return true;
 }
 
 Vec3 clip(Vec3 srgb)
 {
-    for (double& v : srgb) v = std::clamp(v, 0.0, 1.0);
+    for (double& v : srgb)
+        v = std::clamp(v, 0.0, 1.0);
     return srgb;
 }
 
@@ -124,19 +128,25 @@ double deltaEOK(const Vec3& a, const Vec3& b)
 /// CSS Color 4 gamut mapping of an OKLCH colour into sRGB (encoded, 0-1).
 Vec3 gamutMap(double l, double c, double h)
 {
-    if (l >= 1) return {1, 1, 1};
-    if (l <= 0) return {0, 0, 0};
-    const auto srgbAt = [&](double chroma) { return encode(oklabToLinear(oklchToOklab(l, chroma, h))); };
+    if (l >= 1)
+        return {1, 1, 1};
+    if (l <= 0)
+        return {0, 0, 0};
+    const auto srgbAt = [&](double chroma) {
+        return encode(oklabToLinear(oklchToOklab(l, chroma, h)));
+    };
     const auto clippedDistance = [&](double chroma, const Vec3& current, Vec3& clipped) {
         clipped = clip(current);
         return deltaEOK(linearToOklab(decode(clipped)), oklchToOklab(l, chroma, h));
     };
     const Vec3 origin = srgbAt(c);
-    if (inGamut(origin)) return clip(origin);
+    if (inGamut(origin))
+        return clip(origin);
     constexpr double Jnd = 0.02;
     constexpr double Epsilon = 0.0001;
     Vec3 clipped;
-    if (clippedDistance(c, origin, clipped) < Jnd) return clipped;
+    if (clippedDistance(c, origin, clipped) < Jnd)
+        return clipped;
     double low = 0;
     double high = c;
     bool lowInGamut = true;
@@ -149,7 +159,8 @@ Vec3 gamutMap(double l, double c, double h)
         }
         const double distance = clippedDistance(chroma, current, clipped);
         if (distance < Jnd) {
-            if (Jnd - distance < Epsilon) return clipped;
+            if (Jnd - distance < Epsilon)
+                return clipped;
             lowInGamut = false;
             low = chroma;
         } else {
@@ -161,7 +172,9 @@ Vec3 gamutMap(double l, double c, double h)
 
 void store(const Vec3& srgb, std::uint8_t& r, std::uint8_t& g, std::uint8_t& b)
 {
-    const auto byte = [](double v) { return std::uint8_t(std::lround(std::clamp(v, 0.0, 1.0) * 255.0)); };
+    const auto byte = [](double v) {
+        return std::uint8_t(std::lround(std::clamp(v, 0.0, 1.0) * 255.0));
+    };
     r = byte(srgb[0]);
     g = byte(srgb[1]);
     b = byte(srgb[2]);
@@ -179,14 +192,20 @@ char lower(char c)
 
 bool equalsLower(std::string_view text, std::string_view lowercase)
 {
-    if (text.size() != lowercase.size()) return false;
+    if (text.size() != lowercase.size())
+        return false;
     for (std::size_t i = 0; i < text.size(); ++i) {
-        if (lower(text[i]) != lowercase[i]) return false;
+        if (lower(text[i]) != lowercase[i])
+            return false;
     }
     return true;
 }
 
-enum class Unit { Number, Percent, Angle };
+enum class Unit {
+    Number,
+    Percent,
+    Angle
+};
 
 /// One value: a CSS number, with "%" or an angle unit after it, or "none".
 bool parseValue(std::string_view token, double& value, Unit& unit)
@@ -199,23 +218,31 @@ bool parseValue(std::string_view token, double& value, Unit& unit)
     if (token.starts_with('+')) {
         token.remove_prefix(1);
         // from_chars would take the '-' of "+-1".
-        if (token.starts_with('-')) return false;
+        if (token.starts_with('-'))
+            return false;
     }
     const auto parsed = fromChars(token.data(), token.data() + token.size(), value);
-    if (parsed.ec != std::errc{} || parsed.ptr == token.data() || !std::isfinite(value)) return false;
+    if (parsed.ec != std::errc{} || parsed.ptr == token.data() || !std::isfinite(value))
+        return false;
     const std::string_view suffix(parsed.ptr, std::size_t(token.data() + token.size() - parsed.ptr));
     unit = Unit::Number;
-    if (suffix.empty()) return true;
+    if (suffix.empty())
+        return true;
     if (suffix == "%") {
         unit = Unit::Percent;
         return true;
     }
     unit = Unit::Angle;
-    if (equalsLower(suffix, "deg")) return true;
-    if (equalsLower(suffix, "grad")) value *= 0.9;
-    else if (equalsLower(suffix, "rad")) value *= 180.0 / std::numbers::pi;
-    else if (equalsLower(suffix, "turn")) value *= 360.0;
-    else return false;
+    if (equalsLower(suffix, "deg"))
+        return true;
+    if (equalsLower(suffix, "grad"))
+        value *= 0.9;
+    else if (equalsLower(suffix, "rad"))
+        value *= 180.0 / std::numbers::pi;
+    else if (equalsLower(suffix, "turn"))
+        value *= 360.0;
+    else
+        return false;
     return std::isfinite(value);
 }
 
@@ -229,7 +256,8 @@ void oklchToSrgb(double l, double c, double h, std::uint8_t& r, std::uint8_t& g,
     // +-125 comes near it.
     constexpr double MaxChroma = 4;
     h = std::fmod(h, 360.0);
-    if (h < 0) h += 360.0;
+    if (h < 0)
+        h += 360.0;
     store(gamutMap(std::clamp(l, 0.0, 1.0), std::clamp(c, 0.0, MaxChroma), h), r, g, b);
 }
 
@@ -275,14 +303,19 @@ void labToSrgb(double l, double a, double bAxis, std::uint8_t& r, std::uint8_t& 
 bool parseWideGamutColor(std::string_view spec, std::uint8_t& r, std::uint8_t& g, std::uint8_t& b)
 {
     // Long enough for any spelling with spaces; a longer spec is no colour.
-    if (spec.size() > 256) return false;
-    while (!spec.empty() && isSpace(spec.front())) spec.remove_prefix(1);
-    while (!spec.empty() && isSpace(spec.back())) spec.remove_suffix(1);
+    if (spec.size() > 256)
+        return false;
+    while (!spec.empty() && isSpace(spec.front()))
+        spec.remove_prefix(1);
+    while (!spec.empty() && isSpace(spec.back()))
+        spec.remove_suffix(1);
     const auto open = spec.find('(');
-    if (open == std::string_view::npos || !spec.ends_with(')')) return false;
+    if (open == std::string_view::npos || !spec.ends_with(')'))
+        return false;
     const std::string_view name = spec.substr(0, open);
     const bool oklch = equalsLower(name, "oklch");
-    if (!oklch && !equalsLower(name, "lab")) return false;
+    if (!oklch && !equalsLower(name, "lab"))
+        return false;
     const std::string_view body = spec.substr(open + 1, spec.size() - open - 2);
     // Three values apart by spaces or commas, as kitty reads them, then an
     // alpha as "/ 0.5" or a fourth value, which kitty ignores: terminal
@@ -298,21 +331,26 @@ bool parseWideGamutColor(std::string_view spec, std::uint8_t& r, std::uint8_t& g
             continue;
         }
         if (body[at] == '/') {
-            if (count != 3 || slash) return false;
+            if (count != 3 || slash)
+                return false;
             slash = true;
             ++at;
             continue;
         }
         std::size_t end = at;
-        while (end < body.size() && !isSpace(body[end]) && body[end] != ',' && body[end] != '/') ++end;
-        if (count == 4 || !parseValue(body.substr(at, end - at), values[count], units[count])) return false;
+        while (end < body.size() && !isSpace(body[end]) && body[end] != ',' && body[end] != '/')
+            ++end;
+        if (count == 4 || !parseValue(body.substr(at, end - at), values[count], units[count]))
+            return false;
         ++count;
         at = end;
     }
-    if (count == 4 ? units[3] == Unit::Angle : (count != 3 || slash)) return false;
+    if (count == 4 ? units[3] == Unit::Angle : (count != 3 || slash))
+        return false;
     if (oklch) {
         // CSS: 100% of L is 1 and 100% of C is 0.4. A hue takes no percentage.
-        if (units[0] == Unit::Angle || units[1] == Unit::Angle || units[2] == Unit::Percent) return false;
+        if (units[0] == Unit::Angle || units[1] == Unit::Angle || units[2] == Unit::Percent)
+            return false;
         const double l = units[0] == Unit::Percent ? values[0] / 100 : values[0];
         const double c = units[1] == Unit::Percent ? values[1] * 0.4 / 100 : values[1];
         oklchToSrgb(l, c, values[2], r, g, b);
@@ -320,7 +358,8 @@ bool parseWideGamutColor(std::string_view spec, std::uint8_t& r, std::uint8_t& g
     }
     // CSS: 100% of L is 100, and 100% of a and b is 125.
     for (Unit unit : units) {
-        if (unit == Unit::Angle) return false;
+        if (unit == Unit::Angle)
+            return false;
     }
     labToSrgb(values[0], units[1] == Unit::Percent ? values[1] * 1.25 : values[1],
               units[2] == Unit::Percent ? values[2] * 1.25 : values[2], r, g, b);
@@ -331,22 +370,29 @@ bool parseSettingColor(std::string_view spec, std::uint8_t& r, std::uint8_t& g, 
 {
     constexpr std::string_view Blank = " \t\n\v\f\r";
     const std::size_t first = spec.find_first_not_of(Blank);
-    if (first == std::string_view::npos) return false;
+    if (first == std::string_view::npos)
+        return false;
     spec = spec.substr(first, spec.find_last_not_of(Blank) - first + 1);
-    if (!spec.starts_with('#')) return parseColorSpec(spec, r, g, b);
+    if (!spec.starts_with('#'))
+        return parseColorSpec(spec, r, g, b);
     const std::string_view digits = spec.substr(1);
     const std::size_t each = digits.size() % 3 == 0 && digits.size() <= 12 ? digits.size() / 3 : 0;
-    if (each == 0) return false;
+    if (each == 0)
+        return false;
     std::array<std::uint8_t, 3> out{};
     for (std::size_t i = 0; i < out.size(); ++i) {
         unsigned value = 0;
         for (const char c : digits.substr(i * each, each)) {
             const int digit = detail::colorHexDigit(c);
-            if (digit < 0) return false;
+            if (digit < 0)
+                return false;
             value = value * 16 + unsigned(digit);
         }
         // Widened to 16 bits and back to 8 as QColor does (qt_div_257).
-        const unsigned wide = each == 1 ? value * 0x1111 : each == 2 ? value * 0x101 : each == 3 ? (value << 4) | (value >> 8) : value;
+        const unsigned wide = each == 1 ? value * 0x1111
+            : each == 2                 ? value * 0x101
+            : each == 3                 ? (value << 4) | (value >> 8)
+                                        : value;
         out[i] = std::uint8_t((wide - (wide >> 8) + 0x80) >> 8);
     }
     r = out[0];

@@ -21,7 +21,9 @@ namespace Afterglow {
 
 namespace {
 
-void onRepeatInfo(void*, wl_keyboard*, std::int32_t, std::int32_t) { }
+void onRepeatInfo(void*, wl_keyboard*, std::int32_t, std::int32_t)
+{
+}
 
 } // namespace
 
@@ -37,7 +39,8 @@ XkbKeyboard::XkbKeyboard()
     // compositor's: compiled meanwhile, as the first key would wait for it.
     m_baseKeymapReady = std::async(std::launch::async, [] {
         xkb_context* context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-        if (!context) return static_cast<xkb_keymap*>(nullptr);
+        if (!context)
+            return static_cast<xkb_keymap*>(nullptr);
         const xkb_rule_names names{"evdev", "pc105", "us", "", ""};
         xkb_keymap* keymap = xkb_keymap_new_from_names(context, &names, XKB_KEYMAP_COMPILE_NO_FLAGS);
         xkb_context_unref(context); // the keymap keeps its own reference
@@ -51,37 +54,45 @@ XkbKeyboard::XkbKeyboard()
         m_wayland = nullptr;
         return;
     }
-    if (!m_wayland->keyboard()) qCWarning(lcXkb) << "the Wayland seat has no keyboard; kitty keyboard reports use Qt's key codes";
+    if (!m_wayland->keyboard())
+        qCWarning(lcXkb) << "the Wayland seat has no keyboard; kitty keyboard reports use Qt's key codes";
     // The seat, its capabilities and the keymap arrive through Qt's own
     // event dispatch shortly after; a roundtrip here would race Qt's Wayland
     // event thread.
     static const wl_registry_listener registryListener = {&XkbKeyboard::onGlobal, &XkbKeyboard::onGlobalRemove};
     m_registry = wl_display_get_registry(m_wayland->display());
-    if (m_registry) wl_registry_add_listener(m_registry, &registryListener, this);
+    if (m_registry)
+        wl_registry_add_listener(m_registry, &registryListener, this);
 }
 
-void XkbKeyboard::onGlobal(void* data, wl_registry* registry, std::uint32_t name, const char* interface, std::uint32_t version)
+void XkbKeyboard::onGlobal(void* data, wl_registry* registry, std::uint32_t name, const char* interface,
+                           std::uint32_t version)
 {
     auto* self = static_cast<XkbKeyboard*>(data);
-    if (self->m_seat || std::strcmp(interface, wl_seat_interface.name) != 0) return;
+    if (self->m_seat || std::strcmp(interface, wl_seat_interface.name) != 0)
+        return;
     // The version of Qt's seat: our keyboard gets the events that Qt's gets
     // (repeated keys from version 10).
     const std::uint32_t qt = wl_proxy_get_version(reinterpret_cast<wl_proxy*>(self->m_wayland->seat()));
     const std::uint32_t bound = std::min({version, qt, std::uint32_t(wl_seat_interface.version)});
     self->m_seat = static_cast<wl_seat*>(wl_registry_bind(registry, name, &wl_seat_interface, bound));
-    if (!self->m_seat) return;
+    if (!self->m_seat)
+        return;
     self->m_seatName = name;
-    static const wl_seat_listener seatListener = {&XkbKeyboard::onCapabilities, [](void*, wl_seat*, const char*) {}};
+    static const wl_seat_listener seatListener = {&XkbKeyboard::onCapabilities, [](void*, wl_seat*, const char*) { }};
     wl_seat_add_listener(self->m_seat, &seatListener, self);
 }
 
 void XkbKeyboard::onGlobalRemove(void* data, wl_registry*, std::uint32_t name)
 {
     auto* self = static_cast<XkbKeyboard*>(data);
-    if (!self->m_seat || name != self->m_seatName) return;
+    if (!self->m_seat || name != self->m_seatName)
+        return;
     self->setKeyboardCapability(false);
-    if (wl_seat_get_version(self->m_seat) >= WL_SEAT_RELEASE_SINCE_VERSION) wl_seat_release(self->m_seat);
-    else wl_seat_destroy(self->m_seat);
+    if (wl_seat_get_version(self->m_seat) >= WL_SEAT_RELEASE_SINCE_VERSION)
+        wl_seat_release(self->m_seat);
+    else
+        wl_seat_destroy(self->m_seat);
     self->m_seat = nullptr;
 }
 
@@ -94,19 +105,23 @@ void XkbKeyboard::setKeyboardCapability(bool keyboard)
 {
     // A keyboard that goes and comes back is another: the old one gets no
     // events any more. Each change of the capability comes as an event.
-    if (keyboard == (m_keyboard != nullptr)) return;
+    if (keyboard == (m_keyboard != nullptr))
+        return;
     if (m_keyboard) {
-        if (wl_keyboard_get_version(m_keyboard) >= WL_KEYBOARD_RELEASE_SINCE_VERSION) wl_keyboard_release(m_keyboard);
-        else wl_keyboard_destroy(m_keyboard);
+        if (wl_keyboard_get_version(m_keyboard) >= WL_KEYBOARD_RELEASE_SINCE_VERSION)
+            wl_keyboard_release(m_keyboard);
+        else
+            wl_keyboard_destroy(m_keyboard);
         m_keyboard = nullptr;
         m_held.clear();
         return;
     }
-    if (!m_context && !(m_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS))) return;
+    if (!m_context && !(m_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS)))
+        return;
     m_keyboard = wl_seat_get_keyboard(m_seat);
     static const wl_keyboard_listener listener = {
-        &XkbKeyboard::onKeymap, &XkbKeyboard::onEnter, &XkbKeyboard::onLeave, &XkbKeyboard::onKey,
-        &XkbKeyboard::onModifiers, onRepeatInfo,
+        &XkbKeyboard::onKeymap, &XkbKeyboard::onEnter,     &XkbKeyboard::onLeave,
+        &XkbKeyboard::onKey,    &XkbKeyboard::onModifiers, onRepeatInfo,
     };
     wl_keyboard_add_listener(m_keyboard, &listener, this);
 }
@@ -115,7 +130,8 @@ XkbKeyboard::~XkbKeyboard()
 {
     // The Wayland connection is torn down with QGuiApplication, after which
     // releasing the proxy would touch freed memory; only the xkb side is ours.
-    if (m_baseKeymapReady.valid()) m_baseKeymap = m_baseKeymapReady.get();
+    if (m_baseKeymapReady.valid())
+        m_baseKeymap = m_baseKeymapReady.get();
     if (m_scratch) {
         xkb_state_unref(m_scratch);
     }
@@ -160,7 +176,8 @@ void XkbKeyboard::onKeymap(void* data, wl_keyboard*, std::uint32_t format, int f
     }
     if (self->m_testKeymap) {
         // A test's keymap is in use: it stays until the test puts this back.
-        if (self->m_compositorKeymap) xkb_keymap_unref(self->m_compositorKeymap);
+        if (self->m_compositorKeymap)
+            xkb_keymap_unref(self->m_compositorKeymap);
         self->m_compositorKeymap = keymap;
         return;
     }
@@ -215,14 +232,17 @@ void XkbKeyboard::onKey(void* data, wl_keyboard*, std::uint32_t, std::uint32_t t
     // Pressed, or repeated (version 10): down either way.
     const bool pressed = state != WL_KEYBOARD_KEY_STATE_RELEASED;
     std::erase(self->m_held, keycode);
-    if (pressed) self->m_held.push_back(keycode);
+    if (pressed)
+        self->m_held.push_back(keycode);
     // Enough for the events of one read, which Qt delivers after it.
     constexpr std::size_t Kept = 32;
-    if (self->m_recent.size() == Kept) self->m_recent.erase(self->m_recent.begin());
+    if (self->m_recent.size() == Kept)
+        self->m_recent.erase(self->m_recent.begin());
     // The state before the key's own modifiers event, which the compositor
     // sends after it: the one that the key's layout and levels come from.
     KeyRecord record{time, keycode, pressed, self->m_held, self->m_state != nullptr, {}};
-    if (self->m_state) record.masks = masksOf(self->m_state);
+    if (self->m_state)
+        record.masks = masksOf(self->m_state);
     self->m_recent.push_back(std::move(record));
 }
 
@@ -231,7 +251,8 @@ const XkbKeyboard::KeyRecord* XkbKeyboard::recordOf(const Event& event) const
     // The oldest match: Qt delivers the events in their order, and two of
     // the same key and state within one millisecond do not come from hands.
     for (const KeyRecord& record : m_recent) {
-        if (record.time == event.time && record.keycode == event.keycode && record.pressed == event.pressed) return &record;
+        if (record.time == event.time && record.keycode == event.keycode && record.pressed == event.pressed)
+            return &record;
     }
     return nullptr;
 }
@@ -244,9 +265,12 @@ std::vector<std::uint32_t> XkbKeyboard::heldKeysAfter(std::uint32_t time, std::u
 
 XkbKeyboard::Masks XkbKeyboard::masksOf(xkb_state* state)
 {
-    return {xkb_state_serialize_mods(state, XKB_STATE_MODS_DEPRESSED), xkb_state_serialize_mods(state, XKB_STATE_MODS_LATCHED),
-            xkb_state_serialize_mods(state, XKB_STATE_MODS_LOCKED), xkb_state_serialize_layout(state, XKB_STATE_LAYOUT_DEPRESSED),
-            xkb_state_serialize_layout(state, XKB_STATE_LAYOUT_LATCHED), xkb_state_serialize_layout(state, XKB_STATE_LAYOUT_LOCKED)};
+    return {xkb_state_serialize_mods(state, XKB_STATE_MODS_DEPRESSED),
+            xkb_state_serialize_mods(state, XKB_STATE_MODS_LATCHED),
+            xkb_state_serialize_mods(state, XKB_STATE_MODS_LOCKED),
+            xkb_state_serialize_layout(state, XKB_STATE_LAYOUT_DEPRESSED),
+            xkb_state_serialize_layout(state, XKB_STATE_LAYOUT_LATCHED),
+            xkb_state_serialize_layout(state, XKB_STATE_LAYOUT_LOCKED)};
 }
 
 void XkbKeyboard::applyMasks(xkb_state* state, const Masks& m)
@@ -256,10 +280,13 @@ void XkbKeyboard::applyMasks(xkb_state* state, const Masks& m)
 
 xkb_state* XkbKeyboard::stateAt(const Event& event) const
 {
-    if (!m_state) return nullptr;
+    if (!m_state)
+        return nullptr;
     const KeyRecord* record = recordOf(event);
-    if (!record || !record->hasMasks) return m_state;
-    if (!m_eventState && !(m_eventState = xkb_state_new(m_keymap))) return m_state;
+    if (!record || !record->hasMasks)
+        return m_state;
+    if (!m_eventState && !(m_eventState = xkb_state_new(m_keymap)))
+        return m_state;
     applyMasks(m_eventState, record->masks);
     return m_eventState;
 }
@@ -271,14 +298,17 @@ bool XkbKeyboard::useLayoutsForTest(const char* layouts, std::uint32_t group)
             install(m_compositorKeymap);
             m_compositorKeymap = nullptr;
             m_testKeymap = false;
-            if (m_state) applyMasks(m_state, m_compositorMasks);
+            if (m_state)
+                applyMasks(m_state, m_compositorMasks);
         }
         return true;
     }
-    if (!m_context && !(m_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS))) return false;
+    if (!m_context && !(m_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS)))
+        return false;
     const xkb_rule_names names{"evdev", "pc105", layouts, "", ""};
     xkb_keymap* keymap = xkb_keymap_new_from_names(m_context, &names, XKB_KEYMAP_COMPILE_NO_FLAGS);
-    if (!keymap) return false;
+    if (!keymap)
+        return false;
     if (!m_testKeymap) {
         m_compositorKeymap = m_keymap ? xkb_keymap_ref(m_keymap) : nullptr;
         m_testKeymap = true;
@@ -292,7 +322,8 @@ char32_t XkbKeyboard::baseLayoutCodepoint(std::uint32_t keycode) const
 {
     if (m_baseKeymapReady.valid()) {
         m_baseKeymap = m_baseKeymapReady.get();
-        if (!m_baseKeymap) qCWarning(lcXkb) << "no US keymap from xkeyboard-config: no base layout keys";
+        if (!m_baseKeymap)
+            qCWarning(lcXkb) << "no US keymap from xkeyboard-config: no base layout keys";
     }
     const xkb_keysym_t* syms = nullptr;
     if (!m_baseKeymap || xkb_keymap_key_get_syms_by_level(m_baseKeymap, keycode, 0, 0, &syms) < 1) {
@@ -301,15 +332,16 @@ char32_t XkbKeyboard::baseLayoutCodepoint(std::uint32_t keycode) const
     return char32_t(xkb_keysym_to_utf32(syms[0]));
 }
 
-void XkbKeyboard::onModifiers(void* data, wl_keyboard*, std::uint32_t, std::uint32_t depressed,
-                              std::uint32_t latched, std::uint32_t locked, std::uint32_t group)
+void XkbKeyboard::onModifiers(void* data, wl_keyboard*, std::uint32_t, std::uint32_t depressed, std::uint32_t latched,
+                              std::uint32_t locked, std::uint32_t group)
 {
     auto* self = static_cast<XkbKeyboard*>(data);
     // wl_keyboard sends the effective layout as the locked one.
     self->m_compositorMasks = {depressed, latched, locked, 0, 0, group};
     // A test's keymap has modifiers of its own: the compositor's get theirs
     // back with its keymap (useLayoutsForTest).
-    if (self->m_state && !self->m_testKeymap) applyMasks(self->m_state, self->m_compositorMasks);
+    if (self->m_state && !self->m_testKeymap)
+        applyMasks(self->m_state, self->m_compositorMasks);
 }
 
 char32_t XkbKeyboard::codepoint(std::uint32_t keycode, std::uint32_t layout, std::uint32_t level) const
@@ -349,7 +381,8 @@ std::pair<char32_t, char32_t> XkbKeyboard::latinCodepoints(std::uint32_t keycode
     const xkb_layout_index_t layouts = xkb_keymap_num_layouts_for_key(m_keymap, keycode);
     for (xkb_layout_index_t layout = 0; layout < layouts; ++layout) {
         const char32_t base = codepoint(keycode, layout, 0);
-        if (base >= 0x20 && base < 0x7F) return {base, codepoint(keycode, layout, 1)};
+        if (base >= 0x20 && base < 0x7F)
+            return {base, codepoint(keycode, layout, 1)};
     }
     return {0, 0};
 }
@@ -393,9 +426,11 @@ xkb_state* XkbKeyboard::stateWith(HeldModifiers held) const
                                                  {XKB_MOD_NAME_LOGO, held.super}};
     for (const auto& [name, on] : mods) {
         const xkb_mod_index_t index = xkb_keymap_mod_get_index(m_keymap, name);
-        if (index == XKB_MOD_INVALID) continue;
+        if (index == XKB_MOD_INVALID)
+            continue;
         four |= xkb_mod_mask_t(1) << index;
-        if (on) down |= xkb_mod_mask_t(1) << index;
+        if (on)
+            down |= xkb_mod_mask_t(1) << index;
     }
     xkb_state_update_mask(m_scratch, (xkb_state_serialize_mods(m_state, XKB_STATE_MODS_DEPRESSED) & ~four) | down,
                           xkb_state_serialize_mods(m_state, XKB_STATE_MODS_LATCHED) & ~four,

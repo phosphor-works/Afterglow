@@ -27,7 +27,10 @@
 
 using namespace AfterglowPty;
 namespace {
-QString root() { return QString::fromUtf8(AFTERGLOW_TEST_SHELL_DIR); }
+QString root()
+{
+    return QString::fromUtf8(AFTERGLOW_TEST_SHELL_DIR);
+}
 bool prepare(SpawnOptions& o, const QString& switches, const QString& scripts = {},
              const Afterglow::InheritedEnvironment* inherited = nullptr, bool promptCursorBlinks = true)
 {
@@ -44,7 +47,8 @@ void file(const QString& name, const QByteArray& data)
     ASSERT_TRUE(f.open(QIODevice::WriteOnly));
     ASSERT_EQ(f.write(data), data.size());
 }
-struct Output : IPtyListener, AfterglowVt::ITerminalHost {
+struct Output : IPtyListener, AfterglowVt::ITerminalHost
+{
     std::mutex mutex;
     std::condition_variable changed;
     std::string text;
@@ -55,10 +59,17 @@ struct Output : IPtyListener, AfterglowVt::ITerminalHost {
     std::optional<int> closed;
     /// Set before the test ends the shell: a reply after that may find it gone.
     std::atomic<bool> exiting{false};
-    void commandStarted(std::string_view value) override { command = value; }
-    void commandFinished(int value) override { lastExit = value; }
+    void commandStarted(std::string_view value) override
+    {
+        command = value;
+    }
+    void commandFinished(int value) override
+    {
+        lastExit = value;
+    }
     AfterglowVt::Terminal terminal{80, 24, *this};
-    void writeToPty(std::string_view bytes) override {
+    void writeToPty(std::string_view bytes) override
+    {
         // The terminal's answers to the shell's queries. One can come after
         // the shell left (fish asks as it exits): it goes nowhere then, as
         // in a terminal, and the write fails.
@@ -68,61 +79,100 @@ struct Output : IPtyListener, AfterglowVt::ITerminalHost {
             EXPECT_TRUE(exiting.load()) << "the shell refused a reply while it ran";
         }
     }
-    void attach(Pty* value) {
-        std::lock_guard lock(mutex); pty = value; EXPECT_TRUE(pty->write(std::exchange(pending, {})));
+    void attach(Pty* value)
+    {
+        std::lock_guard lock(mutex);
+        pty = value;
+        EXPECT_TRUE(pty->write(std::exchange(pending, {})));
     }
-    void resize(int cols, int rows) {
-        std::lock_guard lock(mutex); terminal.resize(cols, rows, 8, 16); pty->resize(cols, rows, 0, 0);
+    void resize(int cols, int rows)
+    {
+        std::lock_guard lock(mutex);
+        terminal.resize(cols, rows, 8, 16);
+        pty->resize(cols, rows, 0, 0);
     }
-    void ptyData(std::string_view bytes) override {
-        std::lock_guard lock(mutex); text += bytes; terminal.feed(bytes); changed.notify_all();
+    void ptyData(std::string_view bytes) override
+    {
+        std::lock_guard lock(mutex);
+        text += bytes;
+        terminal.feed(bytes);
+        changed.notify_all();
     }
-    void ptyClosed(int status) override { std::lock_guard lock(mutex); closed = status; changed.notify_all(); }
-    bool wait(std::string_view needle) {
+    void ptyClosed(int status) override
+    {
+        std::lock_guard lock(mutex);
+        closed = status;
+        changed.notify_all();
+    }
+    bool wait(std::string_view needle)
+    {
         std::unique_lock lock(mutex);
-        return changed.wait_for(lock, std::chrono::seconds(8), [&] { return text.find(needle) != std::string::npos; });
+        return changed.wait_for(lock, std::chrono::seconds(8), [&] {
+            return text.find(needle) != std::string::npos;
+        });
     }
-    std::optional<int> waitClosed(std::chrono::milliseconds limit) {
+    std::optional<int> waitClosed(std::chrono::milliseconds limit)
+    {
         std::unique_lock lock(mutex);
-        changed.wait_for(lock, limit, [&] { return closed.has_value(); });
+        changed.wait_for(lock, limit, [&] {
+            return closed.has_value();
+        });
         return closed;
     }
-    std::string take() { std::lock_guard lock(mutex); return std::exchange(text, {}); }
+    std::string take()
+    {
+        std::lock_guard lock(mutex);
+        return std::exchange(text, {});
+    }
     /// Runs @p line, and gives everything since the last take(), up to the
     /// prompt that follows the command. What came before the command's line,
     /// the whole prompt that it was typed at, is in it.
-    std::string run(const std::string& line, std::string_view prompt = "AG_READY>") {
+    std::string run(const std::string& line, std::string_view prompt = "AG_READY>")
+    {
         std::unique_lock lock(mutex);
         const auto count = [&] {
             std::size_t n = 0;
-            for (auto at = text.find(prompt); at != std::string::npos; at = text.find(prompt, at + prompt.size())) ++n;
+            for (auto at = text.find(prompt); at != std::string::npos; at = text.find(prompt, at + prompt.size()))
+                ++n;
             return n;
         };
         const std::size_t before = count();
         EXPECT_TRUE(pty->write(line + "\r"));
-        EXPECT_TRUE(changed.wait_for(lock, std::chrono::seconds(8), [&] { return count() > before; })) << line << ": " << text;
+        EXPECT_TRUE(changed.wait_for(lock, std::chrono::seconds(8),
+                                     [&] {
+                                         return count() > before;
+                                     }))
+            << line << ": " << text;
         return std::exchange(text, {});
     }
-    void exit() {
+    void exit()
+    {
         exiting = true;
         EXPECT_TRUE(pty->write("exit\r"));
     }
 };
 /// A shell of these tests: startup files, history and state in @p home,
 /// never the user's, and @p home/bin first in PATH.
-SpawnOptions isolatedShell(const QString& executable, const QString& home, std::vector<std::pair<std::string, std::string>> extra = {})
+SpawnOptions isolatedShell(const QString& executable, const QString& home,
+                           std::vector<std::pair<std::string, std::string>> extra = {})
 {
     SpawnOptions o;
     o.argv = {executable.toStdString(), "-i"};
-    o.environment = {{"HOME", home.toStdString()}, {"XDG_CONFIG_HOME", home.toStdString()},
-        {"XDG_DATA_HOME", (home + "/data").toStdString()}, {"XDG_STATE_HOME", (home + "/state").toStdString()},
-        {"XDG_CACHE_HOME", (home + "/cache").toStdString()}, {"ZDOTDIR", home.toStdString()},
-        {"PATH", (home + "/bin:" + qEnvironmentVariable("PATH")).toStdString()},
-        {"TERM", "xterm-256color"}, {"AFTERGLOW_SHELL_INTEGRATION", "1"}};
-    for (auto& e : extra) AfterglowPty::setVariable(o, std::move(e.first), std::move(e.second));
+    o.environment = {{"HOME", home.toStdString()},
+                     {"XDG_CONFIG_HOME", home.toStdString()},
+                     {"XDG_DATA_HOME", (home + "/data").toStdString()},
+                     {"XDG_STATE_HOME", (home + "/state").toStdString()},
+                     {"XDG_CACHE_HOME", (home + "/cache").toStdString()},
+                     {"ZDOTDIR", home.toStdString()},
+                     {"PATH", (home + "/bin:" + qEnvironmentVariable("PATH")).toStdString()},
+                     {"TERM", "xterm-256color"},
+                     {"AFTERGLOW_SHELL_INTEGRATION", "1"}};
+    for (auto& e : extra)
+        AfterglowPty::setVariable(o, std::move(e.first), std::move(e.second));
     // The runner's history settings would change which lines Bash keeps,
     // and so the titles of commands.
-    o.unsetEnvironment = {"HISTFILE", "HISTSIZE", "HISTFILESIZE", "HISTCONTROL", "HISTIGNORE", "HISTTIMEFORMAT", "SSH_TTY"};
+    o.unsetEnvironment = {"HISTFILE",   "HISTSIZE",       "HISTFILESIZE", "HISTCONTROL",
+                          "HISTIGNORE", "HISTTIMEFORMAT", "SSH_TTY"};
     return o;
 }
 /// Starts @p o, a prepared shell, with @p output reading it.
@@ -132,7 +182,8 @@ std::unique_ptr<Pty> startShell(SpawnOptions o, Output& output)
     o.deferStart = true;
     auto pty = Pty::spawn(o, output, &error);
     EXPECT_NE(pty, nullptr) << error;
-    if (!pty) return pty;
+    if (!pty)
+        return pty;
     output.attach(pty.get());
     EXPECT_TRUE(pty->start(&error)) << error;
     return pty;
@@ -140,18 +191,27 @@ std::unique_ptr<Pty> startShell(SpawnOptions o, Output& output)
 std::string valueOf(const SpawnOptions& o, const std::string& name)
 {
     for (auto it = o.environment.rbegin(); it != o.environment.rend(); ++it)
-        if (it->first == name) return it->second;
+        if (it->first == name)
+            return it->second;
     return "<unset>";
 }
 }
 TEST(ShellIntegration, LeavesOptOutAndCommandsUntouched)
 {
-    for (auto args : std::vector<std::vector<std::string>>{{"bash", "-c", "echo hi"}, {"zsh", "-f"},
-            {"fish", "--no-config"}, {"bash", "script.sh"}, {"bash", "--rcfile", "myrc"}, {"sh"}}) {
-        SpawnOptions o; o.argv = args;
-        EXPECT_FALSE(prepare(o, QStringLiteral("enabled"), root())); EXPECT_EQ(o.argv, args); EXPECT_TRUE(o.environment.empty());
+    for (auto args : std::vector<std::vector<std::string>>{{"bash", "-c", "echo hi"},
+                                                           {"zsh", "-f"},
+                                                           {"fish", "--no-config"},
+                                                           {"bash", "script.sh"},
+                                                           {"bash", "--rcfile", "myrc"},
+                                                           {"sh"}}) {
+        SpawnOptions o;
+        o.argv = args;
+        EXPECT_FALSE(prepare(o, QStringLiteral("enabled"), root()));
+        EXPECT_EQ(o.argv, args);
+        EXPECT_TRUE(o.environment.empty());
     }
-    SpawnOptions o; o.argv = {"bash"};
+    SpawnOptions o;
+    o.argv = {"bash"};
     EXPECT_FALSE(prepare(o, QStringLiteral("disabled"), root()));
     o.environment = {{"AFTERGLOW_SHELL_INTEGRATION", "0"}};
     EXPECT_FALSE(prepare(o, QStringLiteral("enabled"), root()));
@@ -161,19 +221,23 @@ TEST(ShellIntegration, LeavesOptOutAndCommandsUntouched)
 // Terminal.cursorBlink. A Fish 4 drops its own marks for no-prompt-mark.
 TEST(ShellIntegration, PassesTheSwitchesAndThePromptCursor)
 {
-    SpawnOptions o; o.argv = {"bash", "-i"};
+    SpawnOptions o;
+    o.argv = {"bash", "-i"};
     ASSERT_TRUE(prepare(o, QStringLiteral("enabled no-title no-sudo"), root(), nullptr, true));
     EXPECT_EQ(valueOf(o, "AFTERGLOW_SHELL_FEATURES"), "no-title no-sudo");
     EXPECT_EQ(valueOf(o, "AFTERGLOW_PROMPT_CURSOR"), "5");
-    SpawnOptions steady; steady.argv = {"zsh"};
+    SpawnOptions steady;
+    steady.argv = {"zsh"};
     ASSERT_TRUE(prepare(steady, QStringLiteral("enabled"), root(), nullptr, false));
     EXPECT_EQ(valueOf(steady, "AFTERGLOW_SHELL_FEATURES"), "");
     EXPECT_EQ(valueOf(steady, "AFTERGLOW_PROMPT_CURSOR"), "6");
-    SpawnOptions fish; fish.argv = {"fish", "-l"};
+    SpawnOptions fish;
+    fish.argv = {"fish", "-l"};
     ASSERT_TRUE(prepare(fish, QStringLiteral("no-prompt-mark"), root()));
     ASSERT_GE(fish.argv.size(), 2u);
     EXPECT_EQ(fish.argv[1], "--features=no-mark-prompt");
-    SpawnOptions marks; marks.argv = {"fish"};
+    SpawnOptions marks;
+    marks.argv = {"fish"};
     ASSERT_TRUE(prepare(marks, QStringLiteral("no-cwd"), root()));
     EXPECT_EQ(std::count(marks.argv.begin(), marks.argv.end(), "--features=no-mark-prompt"), 0);
 }
@@ -181,21 +245,27 @@ TEST(ShellIntegration, PassesTheSwitchesAndThePromptCursor)
 // file of the shell changed. no-complete changes nothing.
 TEST(ShellIntegration, NoRcSetsTheEnvironmentOnly)
 {
-    for (const std::vector<std::string>& args : std::vector<std::vector<std::string>>{{"bash", "-i"}, {"zsh"}, {"fish", "-l"}}) {
-        SpawnOptions o; o.argv = args;
+    for (const std::vector<std::string>& args :
+         std::vector<std::vector<std::string>>{{"bash", "-i"}, {"zsh"}, {"fish", "-l"}}) {
+        SpawnOptions o;
+        o.argv = args;
         ASSERT_TRUE(prepare(o, QStringLiteral("no-rc no-cwd"), root(), nullptr, false));
         EXPECT_EQ(o.argv, args);
         EXPECT_EQ(valueOf(o, "AFTERGLOW_SHELL_FEATURES"), "no-rc no-cwd");
         EXPECT_EQ(valueOf(o, "AFTERGLOW_PROMPT_CURSOR"), "6");
-        for (const char* name : {"ENV", "ZDOTDIR", "AFTERGLOW_BASH_INJECT", "AFTERGLOW_ORIGINAL_ENV", "AFTERGLOW_ORIGINAL_ZDOTDIR"})
+        for (const char* name :
+             {"ENV", "ZDOTDIR", "AFTERGLOW_BASH_INJECT", "AFTERGLOW_ORIGINAL_ENV", "AFTERGLOW_ORIGINAL_ZDOTDIR"})
             EXPECT_EQ(valueOf(o, name), "<unset>") << name;
     }
     // Not a shell that the integration knows: nothing.
-    SpawnOptions sh; sh.argv = {"sh"};
+    SpawnOptions sh;
+    sh.argv = {"sh"};
     EXPECT_FALSE(prepare(sh, QStringLiteral("no-rc"), root()));
     EXPECT_TRUE(sh.environment.empty());
-    SpawnOptions complete; complete.argv = {"bash"};
-    SpawnOptions plain; plain.argv = {"bash"};
+    SpawnOptions complete;
+    complete.argv = {"bash"};
+    SpawnOptions plain;
+    plain.argv = {"bash"};
     ASSERT_TRUE(prepare(complete, QStringLiteral("no-complete"), root()));
     ASSERT_TRUE(prepare(plain, QStringLiteral("enabled"), root()));
     EXPECT_EQ(complete.argv, plain.argv);
@@ -211,17 +281,26 @@ TEST(ShellIntegration, RefusesABashPathThatBashWouldExpand)
         const QString dir = temp.filePath(name);
         ASSERT_TRUE(QDir().mkpath(dir));
         ASSERT_TRUE(QFile::copy(root() + "/bash", dir + "/bash"));
-        SpawnOptions o; o.argv = {"bash"};
+        SpawnOptions o;
+        o.argv = {"bash"};
         EXPECT_FALSE(prepare(o, QStringLiteral("enabled"), dir)) << name.toStdString();
         EXPECT_TRUE(o.environment.empty());
     }
 }
 TEST(ShellIntegration, PreservesEnvironmentOverrides)
 {
-    SpawnOptions o; o.argv = {"zsh", "-il"}; o.environment = {{"ZDOTDIR", "/custom rc"}};
+    SpawnOptions o;
+    o.argv = {"zsh", "-il"};
+    o.environment = {{"ZDOTDIR", "/custom rc"}};
     ASSERT_TRUE(prepare(o, QStringLiteral("enabled"), root()));
-    EXPECT_NE(std::find(o.environment.begin(), o.environment.end(), std::pair<std::string,std::string>{"AFTERGLOW_ORIGINAL_ZDOTDIR", "/custom rc"}), o.environment.end());
-    EXPECT_EQ(std::count_if(o.environment.begin(), o.environment.end(), [](const auto& e) { return e.first == "ZDOTDIR"; }), 1);
+    EXPECT_NE(std::find(o.environment.begin(), o.environment.end(),
+                        std::pair<std::string, std::string>{"AFTERGLOW_ORIGINAL_ZDOTDIR", "/custom rc"}),
+              o.environment.end());
+    EXPECT_EQ(std::count_if(o.environment.begin(), o.environment.end(),
+                            [](const auto& e) {
+                                return e.first == "ZDOTDIR";
+                            }),
+              1);
 }
 TEST(ShellIntegration, ReadsTheInheritedEnvironmentWhenGiven)
 {
@@ -230,7 +309,8 @@ TEST(ShellIntegration, ReadsTheInheritedEnvironmentWhenGiven)
     const Afterglow::Test::Saved zdotdir("ZDOTDIR", "/window rc");
     const Afterglow::Test::Saved optOut("AFTERGLOW_SHELL_INTEGRATION", "0");
     const Afterglow::Test::Saved shell("SHELL", "/bin/sh");
-    const std::vector<std::pair<std::string, std::string>> session{{"SHELL", "/usr/bin/zsh"}, {"ZDOTDIR", "/session rc"}};
+    const std::vector<std::pair<std::string, std::string>> session{{"SHELL", "/usr/bin/zsh"},
+                                                                   {"ZDOTDIR", "/session rc"}};
     SpawnOptions o;
     ASSERT_TRUE(prepare(o, QStringLiteral("enabled"), root(), &session));
     ASSERT_FALSE(o.argv.empty());
@@ -244,25 +324,30 @@ TEST(ShellIntegration, ReadsTheInheritedEnvironmentWhenGiven)
     const std::vector<std::pair<std::string, std::string>> bare{{"SHELL", "/usr/bin/zsh"}};
     SpawnOptions unset;
     ASSERT_TRUE(prepare(unset, QStringLiteral("enabled"), root(), &bare));
-    EXPECT_NE(std::find(unset.environment.begin(), unset.environment.end(), std::pair<std::string, std::string>{"AFTERGLOW_ORIGINAL_ZDOTDIR_SET", "0"}),
+    EXPECT_NE(std::find(unset.environment.begin(), unset.environment.end(),
+                        std::pair<std::string, std::string>{"AFTERGLOW_ORIGINAL_ZDOTDIR_SET", "0"}),
               unset.environment.end());
     // The session's own opt-out holds.
-    const std::vector<std::pair<std::string, std::string>> off{{"SHELL", "/usr/bin/zsh"}, {"AFTERGLOW_SHELL_INTEGRATION", "0"}};
+    const std::vector<std::pair<std::string, std::string>> off{{"SHELL", "/usr/bin/zsh"},
+                                                               {"AFTERGLOW_SHELL_INTEGRATION", "0"}};
     SpawnOptions none;
     EXPECT_FALSE(prepare(none, QStringLiteral("enabled"), root(), &off));
 }
-class InteractiveShell : public testing::TestWithParam<std::pair<std::string, bool>> {};
+class InteractiveShell : public testing::TestWithParam<std::pair<std::string, bool>>
+{
+};
 TEST_P(InteractiveShell, UserStartupMarkersStatusAndResize)
 {
     const auto [shell, login] = GetParam();
     const QString executable = QStandardPaths::findExecutable(QString::fromStdString(shell));
-    if (executable.isEmpty()) GTEST_SKIP() << shell << " not installed";
+    if (executable.isEmpty())
+        GTEST_SKIP() << shell << " not installed";
     QTemporaryDir home(QDir::tempPath() + "/afterglow shell-XXXXXX");
     ASSERT_TRUE(home.isValid());
     const QString dir = home.path();
-    file(dir + "/.bashrc", login
-        ? "PS1='AG_READY> '; PROMPT_COMMAND=('printf USER_HOOK'); export AG_USER_RC=yes\n"
-        : "PS1='AG_READY> '; PROMPT_COMMAND='printf USER_HOOK'; export AG_USER_RC=yes\n");
+    file(dir + "/.bashrc",
+         login ? "PS1='AG_READY> '; PROMPT_COMMAND=('printf USER_HOOK'); export AG_USER_RC=yes\n"
+               : "PS1='AG_READY> '; PROMPT_COMMAND='printf USER_HOOK'; export AG_USER_RC=yes\n");
     file(dir + "/.bash_profile", "export AG_LOGIN=yes; source ~/.bashrc\n");
     file(dir + "/.zshenv", "export AG_ENV=yes\n");
     file(dir + "/.zprofile", "export AG_LOGIN=yes\n");
@@ -272,8 +357,10 @@ TEST_P(InteractiveShell, UserStartupMarkersStatusAndResize)
     file(dir + "/fish/config.fish", "function fish_prompt; printf 'AG_READY> '; end; set -gx AG_USER_RC yes\n");
     file(dir + "/helper", "#!/bin/sh\nprintf 'HELPER'; printf ' [%s]' \"$@\"; printf '\\n'\n");
     ASSERT_TRUE(QFile::setPermissions(dir + "/helper", QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
-    SpawnOptions o = isolatedShell(executable, dir, {{"ENV", "/original/env"}, {"AFTERGLOW_SSH_HELPER", (dir + "/helper").toStdString()}});
-    if (login) o.argv.back() = "-il";
+    SpawnOptions o = isolatedShell(
+        executable, dir, {{"ENV", "/original/env"}, {"AFTERGLOW_SSH_HELPER", (dir + "/helper").toStdString()}});
+    if (login)
+        o.argv.back() = "-il";
     ASSERT_TRUE(prepare(o, QStringLiteral("enabled"), root()));
     Output output;
     auto pty = startShell(o, output);
@@ -318,7 +405,8 @@ TEST_P(InteractiveShell, UserStartupMarkersStatusAndResize)
         ASSERT_TRUE(output.wait("\x1b]133;B")) << output.take();
         output.take();
     }
-    ASSERT_TRUE(pty->write("env | grep -c -e '^AFTERGLOW_PROMPT_CURSOR=' -e '^AFTERGLOW_SHELL_FEATURES=' | sed 's/^/EXPORTED_/'\r"));
+    ASSERT_TRUE(pty->write(
+        "env | grep -c -e '^AFTERGLOW_PROMPT_CURSOR=' -e '^AFTERGLOW_SHELL_FEATURES=' | sed 's/^/EXPORTED_/'\r"));
     ASSERT_TRUE(output.wait("EXPORTED_0")) << output.take();
     ASSERT_TRUE(output.wait("\x1b]133;B")) << output.take();
     output.take();
@@ -337,12 +425,14 @@ TEST_P(InteractiveShell, UserStartupMarkersStatusAndResize)
 // at the prompt and the configured one for a command, titles, the working
 // directory, the prompt marks, and a TERM for sudo when afterglow's terminfo
 // entry is not the system's.
-class ShellFeatures : public testing::TestWithParam<std::string> {
+class ShellFeatures : public testing::TestWithParam<std::string>
+{
 protected:
     // The output first: the members go in the reverse order, so the PTY
     // stops its reader thread, which writes to the output, before the
     // output goes.
-    struct Started {
+    struct Started
+    {
         std::unique_ptr<Output> output;
         std::unique_ptr<Pty> pty;
     };
@@ -350,8 +440,10 @@ protected:
     // Terminal.shellIntegration @p switches, waiting for its first prompt
     // (AG_READY>). @p shRc goes in .bashrc and .zshrc, @p zshEnv in .zshenv
     // and @p fishRc in config.fish.
-    Started start(const QString& home, const QString& switches, std::vector<std::pair<std::string, std::string>> extra = {},
-                  const QByteArray& shRc = {}, const QByteArray& zshEnv = {}, const QByteArray& fishRc = {}) {
+    Started start(const QString& home, const QString& switches,
+                  std::vector<std::pair<std::string, std::string>> extra = {}, const QByteArray& shRc = {},
+                  const QByteArray& zshEnv = {}, const QByteArray& fishRc = {})
+    {
         Started s;
         const QString executable = QStandardPaths::findExecutable(QString::fromStdString(GetParam()));
         file(home + "/.bashrc", "PS1='AG_READY> '\n" + shRc);
@@ -363,7 +455,9 @@ protected:
         QDir().mkpath(home + "/bin");
         for (const char* name : {"sudo", "run0"}) {
             const QString path = home + "/bin/" + name;
-            file(path, "#!/bin/sh\nprintf '" + QByteArray(name).toUpper() + " TERM=%s' \"$TERM\"; printf ' [%s]' \"$@\"; printf '\\n'\n");
+            file(path,
+                 "#!/bin/sh\nprintf '" + QByteArray(name).toUpper()
+                     + " TERM=%s' \"$TERM\"; printf ' [%s]' \"$@\"; printf '\\n'\n");
             EXPECT_TRUE(QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         }
         SpawnOptions o = isolatedShell(executable, home, std::move(extra));
@@ -376,8 +470,10 @@ protected:
         return s;
     }
 };
-TEST_P(ShellFeatures, ACursorAndTitlesByDefaultAndNoneWithTheirSwitches) {
-    if (QStandardPaths::findExecutable(QString::fromStdString(GetParam())).isEmpty()) GTEST_SKIP() << GetParam() << " not installed";
+TEST_P(ShellFeatures, ACursorAndTitlesByDefaultAndNoneWithTheirSwitches)
+{
+    if (QStandardPaths::findExecutable(QString::fromStdString(GetParam())).isEmpty())
+        GTEST_SKIP() << GetParam() << " not installed";
     const std::string shell = GetParam();
     QTemporaryDir home(QDir::tempPath() + "/afterglow features-XXXXXX");
     ASSERT_TRUE(home.isValid());
@@ -417,10 +513,13 @@ TEST_P(ShellFeatures, ACursorAndTitlesByDefaultAndNoneWithTheirSwitches) {
         s.output->exit();
     }
 }
-TEST_P(ShellFeatures, SudoGetsATermThatTheSystemKnows) {
+TEST_P(ShellFeatures, SudoGetsATermThatTheSystemKnows)
+{
     const std::string shell = GetParam();
-    if (QStandardPaths::findExecutable(QString::fromStdString(shell)).isEmpty()) GTEST_SKIP() << shell << " not installed";
-    if (!QFile::exists(QStringLiteral(AFTERGLOW_TEST_TERMINFO_DIR "/a/afterglow"))) GTEST_SKIP() << "the build has no terminfo entry";
+    if (QStandardPaths::findExecutable(QString::fromStdString(shell)).isEmpty())
+        GTEST_SKIP() << shell << " not installed";
+    if (!QFile::exists(QStringLiteral(AFTERGLOW_TEST_TERMINFO_DIR "/a/afterglow")))
+        GTEST_SKIP() << "the build has no terminfo entry";
     // With afterglow's terminfo entry installed in the system, sudo needs no
     // help. The probe of the scripts: no ~/.terminfo, which sudo's user lacks.
     QProcess tput;
@@ -435,13 +534,15 @@ TEST_P(ShellFeatures, SudoGetsATermThatTheSystemKnows) {
     }
     QTemporaryDir home(QDir::tempPath() + "/afterglow sudo-XXXXXX");
     ASSERT_TRUE(home.isValid());
-    const std::vector<std::pair<std::string, std::string>> term{{"TERM", "afterglow"}, {"TERMINFO_DIRS", AFTERGLOW_TEST_TERMINFO_DIR}};
+    const std::vector<std::pair<std::string, std::string>> term{{"TERM", "afterglow"},
+                                                                {"TERMINFO_DIRS", AFTERGLOW_TEST_TERMINFO_DIR}};
     // The fakes in the test's bin, never the system's sudo: a startup file
     // of the system can put other directories first.
     const std::string which = shell == "fish" ? "printf 'AG_PATH=%s:%s\\n' (command -s sudo) (command -s run0)"
-                            : shell == "zsh"  ? "printf 'AG_PATH=%s:%s\\n' \"$(whence -p sudo)\" \"$(whence -p run0)\""
+        : shell == "zsh"                      ? "printf 'AG_PATH=%s:%s\\n' \"$(whence -p sudo)\" \"$(whence -p run0)\""
                                               : "printf 'AG_PATH=%s:%s\\n' \"$(type -P sudo)\" \"$(type -P run0)\"";
-    const std::string fakes = "AG_PATH=" + home.path().toStdString() + "/bin/sudo:" + home.path().toStdString() + "/bin/run0";
+    const std::string fakes =
+        "AG_PATH=" + home.path().toStdString() + "/bin/sudo:" + home.path().toStdString() + "/bin/run0";
     // An entry in this ~/.terminfo is not root's: sudo still needs the TERM.
     ASSERT_TRUE(QDir().mkpath(home.path() + "/.terminfo/a"));
     ASSERT_TRUE(QFile::copy(AFTERGLOW_TEST_TERMINFO_DIR "/a/afterglow", home.path() + "/.terminfo/a/afterglow"));
@@ -466,9 +567,10 @@ TEST_P(ShellFeatures, SudoGetsATermThatTheSystemKnows) {
     // no-sudo, and an integration that the user's startup file turns off:
     // the commands get the pane's TERM.
     for (const bool optOut : {false, true}) {
-        Started s = optOut ? start(home.path(), QStringLiteral("enabled"), term, "export AFTERGLOW_SHELL_INTEGRATION=0\n", {},
-                                   "set -gx AFTERGLOW_SHELL_INTEGRATION 0\n")
-                           : start(home.path(), QStringLiteral("no-sudo"), term);
+        Started s = optOut
+            ? start(home.path(), QStringLiteral("enabled"), term, "export AFTERGLOW_SHELL_INTEGRATION=0\n", {},
+                    "set -gx AFTERGLOW_SHELL_INTEGRATION 0\n")
+            : start(home.path(), QStringLiteral("no-sudo"), term);
         ASSERT_TRUE(s.pty);
         std::string out = s.output->run(which);
         ASSERT_NE(out.find(fakes), std::string::npos) << out;
@@ -484,10 +586,13 @@ TEST_P(ShellFeatures, SudoGetsATermThatTheSystemKnows) {
 // cursors. Bash: a line that history did not keep gets no stale title, and
 // PS0 holds no command substitution that promptvars off would show as text.
 // Zsh: the user's options do not change how the hooks are read.
-TEST_P(ShellFeatures, AnOwnPromptAndViBindingsKeepTheRest) {
+TEST_P(ShellFeatures, AnOwnPromptAndViBindingsKeepTheRest)
+{
     const std::string shell = GetParam();
-    if (shell == "fish") GTEST_SKIP() << "Fish 4 marks its own prompts";
-    if (QStandardPaths::findExecutable(QString::fromStdString(shell)).isEmpty()) GTEST_SKIP() << shell << " not installed";
+    if (shell == "fish")
+        GTEST_SKIP() << "Fish 4 marks its own prompts";
+    if (QStandardPaths::findExecutable(QString::fromStdString(shell)).isEmpty())
+        GTEST_SKIP() << shell << " not installed";
     QTemporaryDir home(QDir::tempPath() + "/afterglow prompt-XXXXXX");
     ASSERT_TRUE(home.isValid());
     const bool bash = shell == "bash";
@@ -528,10 +633,13 @@ TEST_P(ShellFeatures, AnOwnPromptAndViBindingsKeepTheRest) {
 // A venv or conda activate puts its text before the prompt, and so before
 // afterglow's marks of the last prompt: the next prompts keep their marks,
 // with the text inside them.
-TEST_P(ShellFeatures, TextPutBeforeThePromptKeepsTheMarks) {
+TEST_P(ShellFeatures, TextPutBeforeThePromptKeepsTheMarks)
+{
     const std::string shell = GetParam();
-    if (shell == "fish") GTEST_SKIP() << "Fish marks its prompts with events, not with the prompt's text";
-    if (QStandardPaths::findExecutable(QString::fromStdString(shell)).isEmpty()) GTEST_SKIP() << shell << " not installed";
+    if (shell == "fish")
+        GTEST_SKIP() << "Fish marks its prompts with events, not with the prompt's text";
+    if (QStandardPaths::findExecutable(QString::fromStdString(shell)).isEmpty())
+        GTEST_SKIP() << shell << " not installed";
     QTemporaryDir home(QDir::tempPath() + "/afterglow venv-XXXXXX");
     ASSERT_TRUE(home.isValid());
     Started s = start(home.path(), QStringLiteral("enabled"));
@@ -554,10 +662,13 @@ TEST_P(ShellFeatures, TextPutBeforeThePromptKeepsTheMarks) {
 // history drops (ignorespace) gets no title of an older command, and with
 // erasedups a line that took a lower number still gets its own. An empty
 // history (HISTSIZE=0) gives no title, not an empty one.
-TEST_P(ShellFeatures, BashTitlesFollowWhatHistoryKeeps) {
+TEST_P(ShellFeatures, BashTitlesFollowWhatHistoryKeeps)
+{
     const std::string shell = GetParam();
-    if (shell != "bash") GTEST_SKIP() << "only Bash reads the title from its history";
-    if (QStandardPaths::findExecutable(QString::fromStdString(shell)).isEmpty()) GTEST_SKIP() << shell << " not installed";
+    if (shell != "bash")
+        GTEST_SKIP() << "only Bash reads the title from its history";
+    if (QStandardPaths::findExecutable(QString::fromStdString(shell)).isEmpty())
+        GTEST_SKIP() << shell << " not installed";
     QTemporaryDir home(QDir::tempPath() + "/afterglow history-XXXXXX");
     ASSERT_TRUE(home.isValid());
     Started s = start(home.path(), QStringLiteral("enabled"), {}, "HISTCONTROL=ignoreboth:erasedups\n");
@@ -593,12 +704,15 @@ TEST_P(ShellFeatures, BashTitlesFollowWhatHistoryKeeps) {
 // the integration loads with the switches, and the shell keeps its own
 // startup (ZDOTDIR). With the script loaded by Afterglow too, the line of the
 // startup file adds nothing: one mark for each command.
-TEST_P(ShellFeatures, AStartupFileCanSourceTheScriptByHand) {
+TEST_P(ShellFeatures, AStartupFileCanSourceTheScriptByHand)
+{
     const std::string shell = GetParam();
-    if (QStandardPaths::findExecutable(QString::fromStdString(shell)).isEmpty()) GTEST_SKIP() << shell << " not installed";
+    if (QStandardPaths::findExecutable(QString::fromStdString(shell)).isEmpty())
+        GTEST_SKIP() << shell << " not installed";
     QTemporaryDir home(QDir::tempPath() + "/afterglow by hand-XXXXXX");
     ASSERT_TRUE(home.isValid());
-    const QString script = root() + (shell == "zsh" ? QStringLiteral("/zsh/.zshenv") : QStringLiteral("/") + QString::fromStdString(shell));
+    const QString script = root()
+        + (shell == "zsh" ? QStringLiteral("/zsh/.zshenv") : QStringLiteral("/") + QString::fromStdString(shell));
     const QByteArray source = "source '" + script.toUtf8() + "'\n";
     for (const QString& switches : {QStringLiteral("no-rc no-title"), QStringLiteral("no-title")}) {
         SCOPED_TRACE(switches.toStdString());
@@ -626,15 +740,18 @@ TEST_P(ShellFeatures, AStartupFileCanSourceTheScriptByHand) {
 // fish_features turning off its own: the marks here end with BEL, which a
 // Fish 4 does not use. The special key stays bound after Fish loads its key
 // bindings at the first prompt, and in each mode of the vi bindings.
-TEST(FishShell, OlderFishGetsMarksAndTheSpecialKey) {
+TEST(FishShell, OlderFishGetsMarksAndTheSpecialKey)
+{
     const QString executable = QStandardPaths::findExecutable(QStringLiteral("fish"));
-    if (executable.isEmpty()) GTEST_SKIP() << "fish not installed";
+    if (executable.isEmpty())
+        GTEST_SKIP() << "fish not installed";
     QTemporaryDir home(QDir::tempPath() + "/afterglow fish3-XXXXXX");
     ASSERT_TRUE(home.isValid());
     const QString dir = home.path();
     QDir().mkpath(dir + "/fish");
     file(dir + "/fish/config.fish", "function fish_prompt; printf 'AG_READY> '; end\n");
-    SpawnOptions o = isolatedShell(executable, dir, {{"AFTERGLOW_FISH_PROMPT_MARKS", "1"}, {"fish_features", "no-mark-prompt"}});
+    SpawnOptions o =
+        isolatedShell(executable, dir, {{"AFTERGLOW_FISH_PROMPT_MARKS", "1"}, {"fish_features", "no-mark-prompt"}});
     ASSERT_TRUE(prepare(o, QStringLiteral("enabled"), root()));
     Output output;
     auto pty = startShell(o, output);
@@ -652,16 +769,23 @@ TEST(FishShell, OlderFishGetsMarksAndTheSpecialKey) {
     output.exit();
 }
 INSTANTIATE_TEST_SUITE_P(Shells, ShellFeatures, testing::Values("bash", "zsh", "fish"));
-INSTANTIATE_TEST_SUITE_P(Shells, InteractiveShell, testing::Values(
-    std::pair{"bash", false}, std::pair{"bash", true}, std::pair{"zsh", false},
-    std::pair{"zsh", true}, std::pair{"fish", false}, std::pair{"fish", true}));
+INSTANTIATE_TEST_SUITE_P(Shells, InteractiveShell,
+                         testing::Values(std::pair{"bash", false}, std::pair{"bash", true}, std::pair{"zsh", false},
+                                         std::pair{"zsh", true}, std::pair{"fish", false}, std::pair{"fish", true}));
 
 TEST(Pty, DeferredStartBoundsQueueAndStopsContinuouslyWritingChild)
 {
-    struct Listener : IPtyListener {
+    struct Listener : IPtyListener
+    {
         std::atomic<unsigned> calls{0};
-        void ptyData(std::string_view) override { ++calls; }
-        void ptyClosed(int) override { ++calls; }
+        void ptyData(std::string_view) override
+        {
+            ++calls;
+        }
+        void ptyClosed(int) override
+        {
+            ++calls;
+        }
     } listener;
     SpawnOptions options;
     options.argv = {"/bin/sh", "-c", "while :; do printf output; done"};
@@ -733,7 +857,8 @@ TEST(Pty, ClosesWhenTheShellExitsWhileABackgroundJobHoldsTheTerminal)
     if (const auto job = text.find("JOB="); job != std::string::npos) {
         // Only a process ID: kill() takes 0 and -1 for groups of processes.
         const long pid = std::strtol(text.c_str() + job + 4, nullptr, 10);
-        if (pid > 0) kill(pid_t(pid), SIGKILL);
+        if (pid > 0)
+            kill(pid_t(pid), SIGKILL);
     }
 }
 
@@ -741,7 +866,8 @@ TEST(Pty, KeepsTheLastValueOfARepeatedVariable)
 {
     Output output;
     SpawnOptions options;
-    options.argv = {"/bin/sh", "-c", "printf 'COUNT=%s VALUE=%s DONE' \"$(env | grep -c '^AG_REPEATED=')\" \"$AG_REPEATED\""};
+    options.argv = {"/bin/sh", "-c",
+                    "printf 'COUNT=%s VALUE=%s DONE' \"$(env | grep -c '^AG_REPEATED=')\" \"$AG_REPEATED\""};
     options.environment = {{"AG_REPEATED", "first"}, {"AG_REPEATED", "second"}};
     options.deferStart = true;
     auto pty = Pty::spawn(options, output);
@@ -759,12 +885,13 @@ TEST(Pty, DefaultShellFollowsTheChildEnvironment)
     options.environment.clear();
     options.unsetEnvironment = {"SHELL"};
     const passwd* account = getpwuid(getuid());
-    EXPECT_EQ(Pty::defaultShell(options), account && account->pw_shell && *account->pw_shell ? account->pw_shell : "/bin/sh");
+    EXPECT_EQ(Pty::defaultShell(options),
+              account && account->pw_shell && *account->pw_shell ? account->pw_shell : "/bin/sh");
 }
 
 TEST(Pty, ChildStartsWithDefaultSignalsAndUtf8Erase)
 {
-    struct sigaction ignore {}, previous {};
+    struct sigaction ignore{}, previous{};
     ignore.sa_handler = SIG_IGN;
     sigaction(SIGUSR1, &ignore, &previous);
     Output status;
@@ -839,7 +966,8 @@ TEST(Pty, ExecutableSearchUsesChildPathAndWorkingDirectory)
     QTemporaryDir directory;
     ASSERT_TRUE(directory.isValid());
     file(directory.filePath("custom-helper"), "printf 'CUSTOM_PATH_DONE'\n");
-    ASSERT_TRUE(QFile::setPermissions(directory.filePath("custom-helper"), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    ASSERT_TRUE(QFile::setPermissions(directory.filePath("custom-helper"),
+                                      QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
     Output output;
     SpawnOptions options;
     options.argv = {"custom-helper"};
@@ -856,7 +984,8 @@ TEST(Pty, ExecutableSearchUsesChildPathAndWorkingDirectory)
 
 namespace {
 // Sets environment variables for one test and restores them afterwards.
-struct ScopedEnvironment {
+struct ScopedEnvironment
+{
     std::vector<std::pair<QByteArray, std::optional<QByteArray>>> saved;
     void set(const char* name, const QByteArray& value)
     {
@@ -871,28 +1000,35 @@ struct ScopedEnvironment {
     ~ScopedEnvironment()
     {
         for (auto it = saved.rbegin(); it != saved.rend(); ++it) {
-            if (it->second) qputenv(it->first.constData(), *it->second);
-            else qunsetenv(it->first.constData());
+            if (it->second)
+                qputenv(it->first.constData(), *it->second);
+            else
+                qunsetenv(it->first.constData());
         }
     }
 };
 
 // A fake ssh on PATH: it answers -G and records every other run.
-struct FakeSsh {
+struct FakeSsh
+{
     QTemporaryDir dir;
     ScopedEnvironment environment;
-    QString log() const { return dir.filePath("log"); }
+    QString log() const
+    {
+        return dir.filePath("log");
+    }
     FakeSsh()
     {
-        file(dir.filePath("ssh"), "#!/bin/sh\n"
-            "for a; do [ \"$a\" = -G ] && { printf 'host prod\\nuser alice\\nhostname 10.0.0.5\\nport 22\\n';"
-            " [ -n \"$FAKE_SETENV\" ] && echo 'setenv A=B';"
-            " [ -n \"$FAKE_REMOTECOMMAND\" ] && echo 'remotecommand tmux attach';"
-            " [ -n \"$FAKE_CONFIG\" ] && printf '%s\\n' \"$FAKE_CONFIG\"; exit 0; }; done\n"
-            "{ printf 'ARGS'; printf ' [%s]' \"$@\"; printf '\\nTERM=%s\\n' \"$TERM\"; } >> \"$FAKE_LOG\"\n"
-            "case \"$*\" in *tic*) cat > \"$FAKE_LOG.terminfo\";"
-            " [ \"$FAKE_TIC_STATUS\" = int ] && kill -INT $$; exit \"${FAKE_TIC_STATUS:-0}\";; esac\n"
-            "exit 7\n");
+        file(dir.filePath("ssh"),
+             "#!/bin/sh\n"
+             "for a; do [ \"$a\" = -G ] && { printf 'host prod\\nuser alice\\nhostname 10.0.0.5\\nport 22\\n';"
+             " [ -n \"$FAKE_SETENV\" ] && echo 'setenv A=B';"
+             " [ -n \"$FAKE_REMOTECOMMAND\" ] && echo 'remotecommand tmux attach';"
+             " [ -n \"$FAKE_CONFIG\" ] && printf '%s\\n' \"$FAKE_CONFIG\"; exit 0; }; done\n"
+             "{ printf 'ARGS'; printf ' [%s]' \"$@\"; printf '\\nTERM=%s\\n' \"$TERM\"; } >> \"$FAKE_LOG\"\n"
+             "case \"$*\" in *tic*) cat > \"$FAKE_LOG.terminfo\";"
+             " [ \"$FAKE_TIC_STATUS\" = int ] && kill -INT $$; exit \"${FAKE_TIC_STATUS:-0}\";; esac\n"
+             "exit 7\n");
         QFile::setPermissions(dir.filePath("ssh"), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
         environment.set("PATH", dir.path().toUtf8() + ':' + qgetenv("PATH"));
         environment.set("FAKE_LOG", log().toUtf8());
@@ -912,7 +1048,8 @@ struct FakeSsh {
     QStringList take()
     {
         QFile f(log());
-        if (!f.open(QIODevice::ReadOnly)) return {};
+        if (!f.open(QIODevice::ReadOnly))
+            return {};
         const QStringList lines = QString::fromUtf8(f.readAll()).split('\n', Qt::SkipEmptyParts);
         f.remove();
         return lines;
@@ -921,10 +1058,12 @@ struct FakeSsh {
     bool compileTerminfo()
     {
         const QString tic = QStandardPaths::findExecutable("tic");
-        if (tic.isEmpty() || QStandardPaths::findExecutable("infocmp").isEmpty()) return false;
+        if (tic.isEmpty() || QStandardPaths::findExecutable("infocmp").isEmpty())
+            return false;
         QProcess process;
         process.start(tic, {"-x", "-o", dir.filePath("terminfo"), QString::fromUtf8(AFTERGLOW_TEST_TERMINFO_SOURCE)});
-        if (!process.waitForFinished() || process.exitCode() != 0) return false;
+        if (!process.waitForFinished() || process.exitCode() != 0)
+            return false;
         environment.set("TERMINFO_DIRS", dir.filePath("terminfo").toUtf8() + ':');
         return true;
     }
@@ -985,13 +1124,15 @@ TEST(Ssh, TheProbeRunsInAnyShellAndMakesAPrivateDirectoryForEachHost)
         QProcessEnvironment env;
         env.insert(QStringLiteral("PATH"), dir.filePath(QStringLiteral("bin")) + QStringLiteral(":/usr/bin:/bin"));
         env.insert(QStringLiteral("HOME"), home);
-        if (!runtime.isEmpty()) env.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime);
+        if (!runtime.isEmpty())
+            env.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime);
         sh.setProcessEnvironment(env);
         // Of the test's own: a relative home or runtime directory must make nothing there.
         sh.setWorkingDirectory(dir.filePath(QStringLiteral("cwd")));
         sh.start(QStringLiteral("sh"), {QStringLiteral("-c"), QString::fromUtf8(script)});
         EXPECT_TRUE(sh.waitForFinished());
-        if (status) *status = sh.exitCode();
+        if (status)
+            *status = sh.exitCode();
         return parseProbe(sh.readAllStandardOutput());
     };
     int status = -1;
@@ -1013,10 +1154,13 @@ TEST(Ssh, TheProbeRunsInAnyShellAndMakesAPrivateDirectoryForEachHost)
     const Probe nowhere = probe(QStringLiteral("home"), {});
     EXPECT_TRUE(nowhere.ran);
     EXPECT_TRUE(nowhere.directory.isEmpty());
-    EXPECT_TRUE(QDir(dir.filePath(QStringLiteral("cwd"))).isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden));
+    EXPECT_TRUE(
+        QDir(dir.filePath(QStringLiteral("cwd"))).isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden));
 
     // A directory that is not text, or not absolute, is none.
-    EXPECT_TRUE(parseProbe("runtime=\ndir=/a\x1b" "b\n").directory.isEmpty());
+    EXPECT_TRUE(parseProbe("runtime=\ndir=/a\x1b"
+                           "b\n")
+                    .directory.isEmpty());
     EXPECT_TRUE(parseProbe("runtime=\ndir=a/b\n").directory.isEmpty());
     EXPECT_FALSE(parseProbe("dir=/a\n").ran);
 }
@@ -1030,9 +1174,10 @@ TEST(Ssh, ForwardsOnlyThePairOfItsToken)
     const std::string directory = "/run/user/1000/afterglow";
     const std::string remote = directory + "/" + token + ".sock";
     EXPECT_TRUE(forwardPair("/run/user/1000/afterglow-remote-" + token + ".sock", remote, token, directory));
-    EXPECT_TRUE(forwardPair("/run/user/1000/aglow-mux/remote-00112233445566778899aabbccddeeff-" + token + ".sock", remote,
-                            token, directory));
-    EXPECT_TRUE(forwardPair("/home/u/.local/state/aglow-mux/remote-myhost-" + token + ".sock", remote, token, directory));
+    EXPECT_TRUE(forwardPair("/run/user/1000/aglow-mux/remote-00112233445566778899aabbccddeeff-" + token + ".sock",
+                            remote, token, directory));
+    EXPECT_TRUE(
+        forwardPair("/home/u/.local/state/aglow-mux/remote-myhost-" + token + ".sock", remote, token, directory));
 
     // Another token, a daemon's name outside its directory or without an ID.
     EXPECT_FALSE(forwardPair("/run/user/1000/afterglow-remote-fedcba9876543210.sock", remote, token, directory));
@@ -1079,8 +1224,9 @@ TEST(Ssh, ReadsResolvedConfigAndLabelsThePane)
     EXPECT_FALSE(config.controlPath);
     EXPECT_FALSE(config.remoteCommand);
     EXPECT_TRUE(parseConfig("setenv A=B\ncontrolpath ~/.ssh/%C\n").controlPath);
-    const Config multiplexed = parseConfig("controlpath ~/.ssh/%C\ncontrolmaster auto\ncontrolpersist no\n"
-                                           "remotecommand tmux attach\nproxyjump bastion\n");
+    const Config multiplexed = parseConfig(
+        "controlpath ~/.ssh/%C\ncontrolmaster auto\ncontrolpersist no\n"
+        "remotecommand tmux attach\nproxyjump bastion\n");
     EXPECT_TRUE(multiplexed.controlMaster);
     EXPECT_FALSE(multiplexed.controlPersist);
     EXPECT_TRUE(multiplexed.remoteCommand);
@@ -1097,11 +1243,16 @@ TEST(Ssh, ReadsResolvedConfigAndLabelsThePane)
     EXPECT_EQ(contextStart("id1", config), "\x1b]3008;start=id1;type=remote;targetuser=alice;targethost=prod\x1b\\");
     EXPECT_EQ(contextEnd("id1"), "\x1b]3008;end=id1\x1b\\");
     // Separators and escapes cannot reach the sequence.
-    Config hostile; hostile.host = "evil;type=x\x1b]0;"; hostile.user = "a b";
+    Config hostile;
+    hostile.host = "evil;type=x\x1b]0;";
+    hostile.user = "a b";
     EXPECT_EQ(contextStart("id", hostile), "\x1b]3008;start=id;type=remote;targetuser=ab;targethost=eviltypex0\x1b\\");
     // The terminal shows the context and clears it at the end.
-    struct Host : AfterglowVt::ITerminalHost {
-        void writeToPty(std::string_view) override {}
+    struct Host : AfterglowVt::ITerminalHost
+    {
+        void writeToPty(std::string_view) override
+        {
+        }
     } host;
     AfterglowVt::Terminal terminal(80, 24, host);
     terminal.feed(contextStart("id1", config).toStdString());
@@ -1115,8 +1266,10 @@ TEST(Ssh, OffersTheEnvironmentAndKeepsTheExitStatus)
 {
     FakeSsh ssh;
     EXPECT_EQ(Afterglow::Ssh::run({"-p", "2222", "prod", "uptime"}), 7);
-    EXPECT_EQ(ssh.take(), QStringList({"ARGS [-o] [SetEnv=COLORTERM=truecolor TERM_PROGRAM=afterglow TERM_PROGRAM_VERSION=1.0]"
-                                       " [-p] [2222] [prod] [uptime]", "TERM=xterm-256color"}));
+    EXPECT_EQ(ssh.take(),
+              QStringList({"ARGS [-o] [SetEnv=COLORTERM=truecolor TERM_PROGRAM=afterglow TERM_PROGRAM_VERSION=1.0]"
+                           " [-p] [2222] [prod] [uptime]",
+                           "TERM=xterm-256color"}));
     // The user's own SetEnv stays in charge.
     ssh.environment.set("FAKE_SETENV", "1");
     EXPECT_EQ(Afterglow::Ssh::run({"prod"}), 7);
@@ -1129,14 +1282,17 @@ TEST(Ssh, OffersTheEnvironmentAndKeepsTheExitStatus)
 TEST(Ssh, InstallsTheTerminfoEntryOnceOrFallsBack)
 {
     FakeSsh ssh;
-    if (!ssh.compileTerminfo()) GTEST_SKIP() << "tic or infocmp not installed";
+    if (!ssh.compileTerminfo())
+        GTEST_SKIP() << "tic or infocmp not installed";
     ssh.environment.set("TERM", "afterglow");
     ssh.environment.set("FAKE_SETENV", "1");
     EXPECT_EQ(Afterglow::Ssh::run({"-p", "2222", "prod"}), 7);
-    const QString shared = "[-o] [ControlMaster=auto] [-o] [ControlPath=" + ssh.dir.path() + "/afterglow-ssh-helper-%C] [-o] [ControlPersist=10]";
+    const QString shared = "[-o] [ControlMaster=auto] [-o] [ControlPath=" + ssh.dir.path()
+        + "/afterglow-ssh-helper-%C] [-o] [ControlPersist=10]";
     auto runs = ssh.take();
     ASSERT_EQ(runs.size(), 4) << runs.join('\n').toStdString();
-    EXPECT_TRUE(runs[0].startsWith("ARGS " + shared + " [-p] [2222] [-T] [--] [prod] [sh -c ")) << runs[0].toStdString();
+    EXPECT_TRUE(runs[0].startsWith("ARGS " + shared + " [-p] [2222] [-T] [--] [prod] [sh -c "))
+        << runs[0].toStdString();
     EXPECT_EQ(runs[2], "ARGS " + shared + " [-p] [2222] [prod]");
     EXPECT_EQ(runs[3], "TERM=afterglow");
     QFile entry(ssh.log() + ".terminfo");
@@ -1177,13 +1333,15 @@ TEST(Ssh, ADashMInstallsAsNoMasterAndSharesNothing)
     // ssh -M joins no master: a master that the install made would only
     // take the session's ControlPath.
     FakeSsh ssh;
-    if (!ssh.compileTerminfo()) GTEST_SKIP() << "tic or infocmp not installed";
+    if (!ssh.compileTerminfo())
+        GTEST_SKIP() << "tic or infocmp not installed";
     ssh.environment.set("TERM", "afterglow");
     ssh.environment.set("FAKE_SETENV", "1");
     EXPECT_EQ(Afterglow::Ssh::run({"-vM", "-p", "2222", "prod"}), 7);
     const auto runs = ssh.take();
     ASSERT_EQ(runs.size(), 4) << runs.join('\n').toStdString();
-    EXPECT_TRUE(runs[0].startsWith("ARGS [-o] [ControlMaster=no] [-v] [-p] [2222] [-T] [--] [prod] [sh -c ")) << runs[0].toStdString();
+    EXPECT_TRUE(runs[0].startsWith("ARGS [-o] [ControlMaster=no] [-v] [-p] [2222] [-T] [--] [prod] [sh -c "))
+        << runs[0].toStdString();
     EXPECT_EQ(runs[2], "ARGS [-vM] [-p] [2222] [prod]");
     EXPECT_EQ(runs[3], "TERM=afterglow");
 }
@@ -1191,7 +1349,8 @@ TEST(Ssh, ADashMInstallsAsNoMasterAndSharesNothing)
 TEST(Ssh, InstallsPastRemoteCommandWithLaterOptionsAndInput)
 {
     FakeSsh ssh;
-    if (!ssh.compileTerminfo()) GTEST_SKIP() << "tic or infocmp not installed";
+    if (!ssh.compileTerminfo())
+        GTEST_SKIP() << "tic or infocmp not installed";
     ssh.environment.set("TERM", "afterglow");
     ssh.environment.set("FAKE_SETENV", "1");
     ssh.environment.set("FAKE_REMOTECOMMAND", "1");
@@ -1210,7 +1369,8 @@ TEST(Ssh, InstallsPastRemoteCommandWithLaterOptionsAndInput)
 TEST(Ssh, FollowsTheConfigsSessionTypeAndStdinNull)
 {
     FakeSsh ssh;
-    if (!ssh.compileTerminfo()) GTEST_SKIP() << "tic or infocmp not installed";
+    if (!ssh.compileTerminfo())
+        GTEST_SKIP() << "tic or infocmp not installed";
     ssh.environment.set("TERM", "afterglow");
     ssh.environment.set("FAKE_SETENV", "1");
     ssh.environment.set("XDG_RUNTIME_DIR", "");
@@ -1233,12 +1393,14 @@ TEST(Ssh, FollowsTheConfigsSessionTypeAndStdinNull)
 TEST(Ssh, DiesFromCtrlCAtTheInstallPrompt)
 {
     FakeSsh ssh;
-    if (!ssh.compileTerminfo()) GTEST_SKIP() << "tic or infocmp not installed";
+    if (!ssh.compileTerminfo())
+        GTEST_SKIP() << "tic or infocmp not installed";
     ssh.environment.set("TERM", "afterglow");
     ssh.environment.set("FAKE_TIC_STATUS", "int");
     // A shell stops a loop only when its job died from SIGINT.
     const pid_t child = fork();
-    if (child == 0) _exit(Afterglow::Ssh::run({"prod"}));
+    if (child == 0)
+        _exit(Afterglow::Ssh::run({"prod"}));
     ASSERT_GT(child, 0);
     int status = 0;
     ASSERT_EQ(waitpid(child, &status, 0), child);
@@ -1256,32 +1418,47 @@ TEST(Ssh, SharedCommandOwnsItsConnectionAndRunsPastTheConfig)
     FakeSsh ssh;
     ssh.environment.set("FAKE_REMOTECOMMAND", "1");
     // The user's own master too, which the command never joins.
-    ssh.environment.set("FAKE_CONFIG", "stdinnull yes\nsessiontype none\ncontrolpath /tmp/user-master\ncontrolmaster auto");
+    ssh.environment.set("FAKE_CONFIG",
+                        "stdinnull yes\nsessiontype none\ncontrolpath /tmp/user-master\ncontrolmaster auto");
     QString error;
-    const QByteArrayList words = Afterglow::Ssh::sharedCommand(QStringLiteral("prod"), 15, AfterglowMux::currentEnvironment(), &error);
+    const QByteArrayList words =
+        Afterglow::Ssh::sharedCommand(QStringLiteral("prod"), 15, AfterglowMux::currentEnvironment(), &error);
     const QByteArray path = "ControlPath=" + QFile::encodeName(ssh.dir.path()) + "/afterglow-ssh-%C";
-    EXPECT_EQ(words, (QByteArrayList{"ssh", "-T", "-o", "ControlMaster=auto", "-o", path, "-o", "ControlPersist=15", "-o",
-                                     "ClearAllForwardings=yes", "-o", "PermitLocalCommand=no", "-o", "RemoteCommand=none", "-o",
-                                     "StdinNull=no", "-o", "SessionType=default", "-o", "ForkAfterAuthentication=no", "--", "prod"}))
+    EXPECT_EQ(words, (QByteArrayList{"ssh", "-T",
+                                     "-o",  "ControlMaster=auto",
+                                     "-o",  path,
+                                     "-o",  "ControlPersist=15",
+                                     "-o",  "ClearAllForwardings=yes",
+                                     "-o",  "PermitLocalCommand=no",
+                                     "-o",  "RemoteCommand=none",
+                                     "-o",  "StdinNull=no",
+                                     "-o",  "SessionType=default",
+                                     "-o",  "ForkAfterAuthentication=no",
+                                     "--",  "prod"}))
         << error.toStdString();
     // No private runtime directory: no connection of Afterglow's own.
     ssh.environment.set("XDG_RUNTIME_DIR", "");
     error.clear();
-    EXPECT_TRUE(Afterglow::Ssh::sharedCommand(QStringLiteral("prod"), 15, AfterglowMux::currentEnvironment(), &error).isEmpty());
+    EXPECT_TRUE(Afterglow::Ssh::sharedCommand(QStringLiteral("prod"), 15, AfterglowMux::currentEnvironment(), &error)
+                    .isEmpty());
     EXPECT_TRUE(error.startsWith(QLatin1String("no private XDG_RUNTIME_DIR"))) << error.toStdString();
     // ssh -G comes from the PATH of the environment given, which the window
     // takes on its GUI thread, not from this process's.
     error.clear();
-    EXPECT_TRUE(Afterglow::Ssh::sharedCommand(QStringLiteral("prod"), 15, {"PATH=" + ssh.dir.filePath("none").toStdString()}, &error)
+    EXPECT_TRUE(Afterglow::Ssh::sharedCommand(QStringLiteral("prod"), 15,
+                                              {"PATH=" + ssh.dir.filePath("none").toStdString()}, &error)
                     .isEmpty());
     EXPECT_TRUE(error.startsWith(QLatin1String("cannot run ssh"))) << error.toStdString();
     // A destination that ssh would read as an option, with its control
     // characters shown as text.
     error.clear();
-    EXPECT_TRUE(Afterglow::Ssh::sharedCommand(QStringLiteral("-x"), 15, AfterglowMux::currentEnvironment(), &error).isEmpty());
+    EXPECT_TRUE(
+        Afterglow::Ssh::sharedCommand(QStringLiteral("-x"), 15, AfterglowMux::currentEnvironment(), &error).isEmpty());
     EXPECT_EQ(error, QStringLiteral("'-x' is no ssh destination"));
     error.clear();
-    EXPECT_TRUE(Afterglow::Ssh::sharedCommand(QString::fromUtf8("-a\x1b[31m"), 15, AfterglowMux::currentEnvironment(), &error).isEmpty());
+    EXPECT_TRUE(
+        Afterglow::Ssh::sharedCommand(QString::fromUtf8("-a\x1b[31m"), 15, AfterglowMux::currentEnvironment(), &error)
+            .isEmpty());
     EXPECT_FALSE(error.contains(QChar(0x1b))) << error.toStdString();
     EXPECT_TRUE(error.endsWith(QLatin1String("is no ssh destination"))) << error.toStdString();
 }
@@ -1310,12 +1487,15 @@ TEST(Ssh, AnIgnoredSigchldKeepsTheExitStatusOfSsh)
     ssh.environment.unset("WAYLAND_DISPLAY");
     QProcess process;
     process.setProcessEnvironment(QProcessEnvironment::systemEnvironment());
-    process.setChildProcessModifier([] { ::signal(SIGCHLD, SIG_IGN); });
+    process.setChildProcessModifier([] {
+        ::signal(SIGCHLD, SIG_IGN);
+    });
     process.start(QStringLiteral(AFTERGLOW_BINARY), {QStringLiteral("ssh"), QStringLiteral("prod")});
     ASSERT_TRUE(process.waitForStarted());
     process.closeWriteChannel();
     const bool ended = process.waitForFinished(15000);
-    if (!ended) process.kill();
+    if (!ended)
+        process.kill();
     ASSERT_TRUE(ended);
     EXPECT_EQ(process.exitStatus(), QProcess::NormalExit);
     EXPECT_EQ(process.exitCode(), 7) << process.readAllStandardError().toStdString();

@@ -74,9 +74,12 @@ constexpr int IconAllocationMiB = 16;
 // reach whatever image plugins are installed (SVG, TIFF) on the GUI thread.
 QByteArray iconFormat(const QByteArray& bytes)
 {
-    if (bytes.startsWith("\x89PNG\r\n\x1a\n")) return QByteArrayLiteral("png");
-    if (bytes.startsWith("\xff\xd8\xff")) return QByteArrayLiteral("jpeg");
-    if (bytes.startsWith("GIF87a") || bytes.startsWith("GIF89a")) return QByteArrayLiteral("gif");
+    if (bytes.startsWith("\x89PNG\r\n\x1a\n"))
+        return QByteArrayLiteral("png");
+    if (bytes.startsWith("\xff\xd8\xff"))
+        return QByteArrayLiteral("jpeg");
+    if (bytes.startsWith("GIF87a") || bytes.startsWith("GIF89a"))
+        return QByteArrayLiteral("gif");
     return {};
 }
 
@@ -84,14 +87,16 @@ QImage decodeIcon(const std::string& data)
 {
     QByteArray bytes = QByteArray::fromRawData(data.data(), qsizetype(data.size()));
     const QByteArray format = iconFormat(bytes);
-    if (format.isEmpty()) return {};
+    if (format.isEmpty())
+        return {};
     QBuffer buffer(&bytes);
     buffer.open(QIODevice::ReadOnly);
     QImageReader reader(&buffer, format);
     reader.setAllocationLimit(IconAllocationMiB);
     // Reads only the header.
     if (const QSize size = reader.size(); size.isValid()) {
-        if (size.width() > MaxIconSide || size.height() > MaxIconSide) return {};
+        if (size.width() > MaxIconSide || size.height() > MaxIconSide)
+            return {};
         if (size.width() > IconSide || size.height() > IconSide)
             reader.setScaledSize(size.scaled(IconSide, IconSide, Qt::KeepAspectRatio).expandedTo(QSize(1, 1)));
     }
@@ -118,9 +123,10 @@ NotificationCenter::NotificationCenter()
     m_clock.start();
     qDBusRegisterMetaType<NotificationImage>();
     QDBusConnection bus = QDBusConnection::sessionBus();
-    bus.connect(Service, Path, Interface, QStringLiteral("ActionInvoked"), this, SLOT(onActionInvoked(uint,QString)));
-    bus.connect(Service, Path, Interface, QStringLiteral("NotificationClosed"), this, SLOT(onClosed(uint,uint)));
-    bus.connect(Service, Path, Interface, QStringLiteral("ActivationToken"), this, SLOT(onActivationToken(uint,QString)));
+    bus.connect(Service, Path, Interface, QStringLiteral("ActionInvoked"), this, SLOT(onActionInvoked(uint, QString)));
+    bus.connect(Service, Path, Interface, QStringLiteral("NotificationClosed"), this, SLOT(onClosed(uint, uint)));
+    bus.connect(Service, Path, Interface, QStringLiteral("ActivationToken"), this,
+                SLOT(onActivationToken(uint, QString)));
     // A restarted server numbers its notifications again: ids held for the
     // old one would replace or match another application's notification.
     // Only a server that goes away takes its ids with it: one that takes a
@@ -129,12 +135,15 @@ NotificationCenter::NotificationCenter()
     auto* watcher = new QDBusServiceWatcher(Service, bus, QDBusServiceWatcher::WatchForOwnerChange, this);
     connect(watcher, &QDBusServiceWatcher::serviceOwnerChanged, this,
             [this](const QString&, const QString& oldOwner, const QString& newOwner) {
-        if (!oldOwner.isEmpty()) forgetServer();
-        // A query with no owner would start the server that just left
-        // (D-Bus activation), perhaps before the one that replaces it.
-        if (newOwner.isEmpty()) m_bodyMarkup = true;
-        else queryCapabilities();
-    });
+                if (!oldOwner.isEmpty())
+                    forgetServer();
+                // A query with no owner would start the server that just left
+                // (D-Bus activation), perhaps before the one that replaces it.
+                if (newOwner.isEmpty())
+                    m_bodyMarkup = true;
+                else
+                    queryCapabilities();
+            });
     queryCapabilities();
 }
 
@@ -154,7 +163,8 @@ void NotificationCenter::queryCapabilities()
     connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher* w) {
         w->deleteLater();
         const QDBusPendingReply<QStringList> reply = *w;
-        if (!reply.isError()) m_bodyMarkup = reply.value().contains(QLatin1String("body-markup"));
+        if (!reply.isError())
+            m_bodyMarkup = reply.value().contains(QLatin1String("body-markup"));
     });
 }
 
@@ -166,19 +176,25 @@ std::string NotificationCenter::capabilities()
 
 void NotificationCenter::track(const Pane* pane)
 {
-    if (!pane || m_tracked.contains(pane)) return;
+    if (!pane || m_tracked.contains(pane))
+        return;
     m_tracked.insert(pane);
     connect(pane, &QObject::destroyed, this, [this, pane] {
         m_tracked.remove(pane);
         m_recent.remove(pane);
-        m_entries.removeIf([pane](const auto& it) { return it.value().owner == pane; });
-        m_inFlight.removeIf([pane](const auto& it) { return it.key().first == pane; });
+        m_entries.removeIf([pane](const auto& it) {
+            return it.value().owner == pane;
+        });
+        m_inFlight.removeIf([pane](const auto& it) {
+            return it.key().first == pane;
+        });
     });
 }
 
 bool NotificationCenter::rateLimited(const Pane* pane)
 {
-    if (!pane || m_rateLimit <= 0) return false;
+    if (!pane || m_rateLimit <= 0)
+        return false;
     track(pane);
     return overLimit(m_recent[pane]);
 }
@@ -186,7 +202,9 @@ bool NotificationCenter::rateLimited(const Pane* pane)
 bool NotificationCenter::overLimit(QList<qint64>& recent)
 {
     const qint64 now = m_clock.elapsed();
-    recent.removeIf([now, window = m_rateWindowMs](qint64 t) { return now - t > window; });
+    recent.removeIf([now, window = m_rateWindowMs](qint64 t) {
+        return now - t > window;
+    });
     if (recent.size() >= m_rateLimit) {
         return true;
     }
@@ -232,7 +250,8 @@ void NotificationCenter::handle(Pane* pane, const AfterglowVt::NotificationReque
             }
         }
         for (auto it = m_inFlight.cbegin(); it != m_inFlight.cend(); ++it) {
-            if (it.key().first == pane && !it->close && !open.contains(it.key().second)) open.append(it.key().second);
+            if (it.key().first == pane && !it->close && !open.contains(it.key().second))
+                open.append(it.key().second);
         }
         pane->sendReply(r.aliveReply(open.join(QLatin1Char(',')).toStdString()));
         return;
@@ -256,7 +275,8 @@ void NotificationCenter::handle(Pane* pane, const AfterglowVt::NotificationReque
         touch();
     }
     NotificationFilter::Fields fields{fromUtf8(r.title), fromUtf8(r.body), fromUtf8(r.appName), {}};
-    for (const std::string& type : r.types) fields.types.append(fromUtf8(type));
+    for (const std::string& type : r.types)
+        fields.types.append(fromUtf8(type));
     // An update of a notification already on screen adds none.
     const uint replaces = idFor(pane, clientId);
     if (filtered(fields)) {
@@ -295,9 +315,11 @@ void NotificationCenter::handle(Pane* pane, const AfterglowVt::NotificationReque
             break;
         }
     }
-    QVariantMap hints{{QStringLiteral("desktop-entry"), DesktopEntry}, {QStringLiteral("urgency"), QVariant::fromValue(uchar(r.urgency))}};
+    QVariantMap hints{{QStringLiteral("desktop-entry"), DesktopEntry},
+                      {QStringLiteral("urgency"), QVariant::fromValue(uchar(r.urgency))}};
     // OSC 99 types use the freedesktop category names ("im.received", "transfer.complete").
-    if (!r.types.empty()) hints.insert(QStringLiteral("category"), fromUtf8(r.types.front()));
+    if (!r.types.empty())
+        hints.insert(QStringLiteral("category"), fromUtf8(r.types.front()));
     std::string cachedIcon;
     if (r.iconData.empty() && !cacheKey.isEmpty()) {
         if (const auto cached = m_iconCache.constFind(cacheKey); cached != m_iconCache.cend()) {
@@ -354,7 +376,9 @@ void NotificationCenter::handle(Pane* pane, const AfterglowVt::NotificationReque
 
 bool NotificationCenter::filtered(const NotificationFilter::Fields& fields) const
 {
-    return std::any_of(m_filters.begin(), m_filters.end(), [&](const NotificationFilter& f) { return f.matches(fields); });
+    return std::any_of(m_filters.begin(), m_filters.end(), [&](const NotificationFilter& f) {
+        return f.matches(fields);
+    });
 }
 
 void NotificationCenter::showSimple(Pane* pane, const QString& title, const QString& body, int urgency)
@@ -392,99 +416,109 @@ void NotificationCenter::showNotice(Pane* pane, const QString& title, const QStr
     request.title = title;
     request.body = body;
     request.actions = {QStringLiteral("default"), QString()};
-    request.hints = {{QStringLiteral("desktop-entry"), DesktopEntry}, {QStringLiteral("urgency"), QVariant::fromValue(uchar(urgency))}};
+    request.hints = {{QStringLiteral("desktop-entry"), DesktopEntry},
+                     {QStringLiteral("urgency"), QVariant::fromValue(uchar(urgency))}};
     send(request, 0);
 }
 
 void NotificationCenter::send(const Request& request, uint replaces)
 {
     const Key key{request.entry.owner, request.entry.clientId};
-    if (!request.entry.clientId.isEmpty()) m_inFlight.insert(key, {});
+    if (!request.entry.clientId.isEmpty())
+        m_inFlight.insert(key, {});
     const QString body = m_bodyMarkup ? request.body.toHtmlEscaped() : request.body;
     QVariantMap hints = request.hints;
     if (request.icon.isEmpty()) {
         const QImage image = request.imageData.empty() ? QImage() : decodedIcon(request.imageData);
-        if (!image.isNull()) hints.insert(QStringLiteral("image-data"), QVariant::fromValue(NotificationImage{image}));
+        if (!image.isNull())
+            hints.insert(QStringLiteral("image-data"), QVariant::fromValue(NotificationImage{image}));
     }
-    const QDBusPendingCall call = notificationServer().asyncCall(Interface, QStringLiteral("Notify"),
-        {QStringLiteral("Afterglow"), replaces, request.icon.isEmpty() ? DesktopEntry : request.icon, request.title, body,
-         request.actions, hints, request.timeout});
+    const QDBusPendingCall call = notificationServer().asyncCall(
+        Interface, QStringLiteral("Notify"),
+        {QStringLiteral("Afterglow"), replaces, request.icon.isEmpty() ? DesktopEntry : request.icon, request.title,
+         body, request.actions, hints, request.timeout});
     auto* watcher = new QDBusPendingCallWatcher(call, this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this,
-            [this, key, entry = request.entry, replaces, expireMs = request.expireMs, server = m_server](QDBusPendingCallWatcher* w) {
-        w->deleteLater();
-        const QDBusPendingReply<uint> reply = *w;
-        // The pane's state went with it. Its address may already be another
-        // pane's, so the key may name that pane's entry: leave it alone.
-        if (entry.owner && !entry.pane) return;
-        // What the program asked for while this call was out.
-        const InFlight waiting = entry.clientId.isEmpty() ? InFlight{} : m_inFlight.take(key);
-        // The server changed while the call was out: its answer and REPLACES
-        // name nothing now, and the new server may give them to another
-        // application's notification.
-        if (server != m_server) {
-            if (waiting.next) send(*waiting.next, 0);
-            return;
-        }
-        if (reply.isError()) {
-            const QDBusError::ErrorType error = reply.error().type();
-            if (error == QDBusError::NoReply && (waiting.next || waiting.close)) {
-                // NoReply has two causes. The bus sends it for a server that left
-                // without answering, whose ids then name nothing for the server
-                // that follows. libdbus sends it for its own reply timeout, while
-                // a slow server lives on and may have applied REPLACES. The bus
-                // sends NameOwnerChanged for a server that left before it answers
-                // a later call, so one round trip to the bus tells them apart.
-                // Requests for the id wait for that answer.
-                m_inFlight.insert(key, waiting);
-                QDBusMessage ask = QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.DBus"),
-                                                                  QStringLiteral("/org/freedesktop/DBus"),
-                                                                  QStringLiteral("org.freedesktop.DBus"),
-                                                                  QStringLiteral("GetNameOwner"));
-                ask << Service;
-                auto* owner = new QDBusPendingCallWatcher(QDBusConnection::sessionBus().asyncCall(ask), this);
-                connect(owner, &QDBusPendingCallWatcher::finished, this,
-                        [this, key, entry, replaces, server](QDBusPendingCallWatcher* w) {
-                    w->deleteLater();
-                    if (entry.owner && !entry.pane) return;
-                    const InFlight settled = m_inFlight.take(key);
-                    const bool gone = server != m_server || w->isError();
-                    // forgetServer() dropped the old ids of a server that left. When the
-                    // bus could not answer, the old id goes here, or idFor() keeps two.
-                    if (gone && server == m_server && replaces != 0) m_entries.remove(replaces);
-                    if (settled.close) {
-                        if (!gone && replaces != 0) close(replaces);
-                    } else if (settled.next) {
-                        send(*settled.next, gone ? 0 : replaces);
+            [this, key, entry = request.entry, replaces, expireMs = request.expireMs,
+             server = m_server](QDBusPendingCallWatcher* w) {
+                w->deleteLater();
+                const QDBusPendingReply<uint> reply = *w;
+                // The pane's state went with it. Its address may already be another
+                // pane's, so the key may name that pane's entry: leave it alone.
+                if (entry.owner && !entry.pane)
+                    return;
+                // What the program asked for while this call was out.
+                const InFlight waiting = entry.clientId.isEmpty() ? InFlight{} : m_inFlight.take(key);
+                // The server changed while the call was out: its answer and REPLACES
+                // name nothing now, and the new server may give them to another
+                // application's notification.
+                if (server != m_server) {
+                    if (waiting.next)
+                        send(*waiting.next, 0);
+                    return;
+                }
+                if (reply.isError()) {
+                    const QDBusError::ErrorType error = reply.error().type();
+                    if (error == QDBusError::NoReply && (waiting.next || waiting.close)) {
+                        // NoReply has two causes. The bus sends it for a server that left
+                        // without answering, whose ids then name nothing for the server
+                        // that follows. libdbus sends it for its own reply timeout, while
+                        // a slow server lives on and may have applied REPLACES. The bus
+                        // sends NameOwnerChanged for a server that left before it answers
+                        // a later call, so one round trip to the bus tells them apart.
+                        // Requests for the id wait for that answer.
+                        m_inFlight.insert(key, waiting);
+                        QDBusMessage ask = QDBusMessage::createMethodCall(
+                            QStringLiteral("org.freedesktop.DBus"), QStringLiteral("/org/freedesktop/DBus"),
+                            QStringLiteral("org.freedesktop.DBus"), QStringLiteral("GetNameOwner"));
+                        ask << Service;
+                        auto* owner = new QDBusPendingCallWatcher(QDBusConnection::sessionBus().asyncCall(ask), this);
+                        connect(owner, &QDBusPendingCallWatcher::finished, this,
+                                [this, key, entry, replaces, server](QDBusPendingCallWatcher* w) {
+                                    w->deleteLater();
+                                    if (entry.owner && !entry.pane)
+                                        return;
+                                    const InFlight settled = m_inFlight.take(key);
+                                    const bool gone = server != m_server || w->isError();
+                                    // forgetServer() dropped the old ids of a server that left. When the
+                                    // bus could not answer, the old id goes here, or idFor() keeps two.
+                                    if (gone && server == m_server && replaces != 0)
+                                        m_entries.remove(replaces);
+                                    if (settled.close) {
+                                        if (!gone && replaces != 0)
+                                            close(replaces);
+                                    } else if (settled.next) {
+                                        send(*settled.next, gone ? 0 : replaces);
+                                    }
+                                });
+                        return;
                     }
-                });
-                return;
-            }
-            // A server that is not there: its ids name nothing for the server that follows.
-            const bool gone = error == QDBusError::ServiceUnknown || error == QDBusError::Disconnected;
-            if (waiting.next) send(*waiting.next, gone ? 0 : replaces);
-            return;
-        }
-        const uint id = reply.value();
-        if (replaces != 0 && replaces != id) {
-            m_entries.remove(replaces);
-        }
-        Entry current = entry;
-        current.generation = ++m_generation;
-        m_entries.insert(id, current);
-        if (waiting.close) {
-            close(id);
-        } else if (waiting.next) {
-            send(*waiting.next, id);
-        } else if (expireMs > 0) {
-            // The protocol promises closing after the time, whatever the server does.
-            QTimer::singleShot(expireMs, this, [this, id, generation = current.generation] {
-                if (m_entries.contains(id) && m_entries.value(id).generation == generation) {
+                    // A server that is not there: its ids name nothing for the server that follows.
+                    const bool gone = error == QDBusError::ServiceUnknown || error == QDBusError::Disconnected;
+                    if (waiting.next)
+                        send(*waiting.next, gone ? 0 : replaces);
+                    return;
+                }
+                const uint id = reply.value();
+                if (replaces != 0 && replaces != id) {
+                    m_entries.remove(replaces);
+                }
+                Entry current = entry;
+                current.generation = ++m_generation;
+                m_entries.insert(id, current);
+                if (waiting.close) {
                     close(id);
+                } else if (waiting.next) {
+                    send(*waiting.next, id);
+                } else if (expireMs > 0) {
+                    // The protocol promises closing after the time, whatever the server does.
+                    QTimer::singleShot(expireMs, this, [this, id, generation = current.generation] {
+                        if (m_entries.contains(id) && m_entries.value(id).generation == generation) {
+                            close(id);
+                        }
+                    });
                 }
             });
-        }
-    });
 }
 
 void NotificationCenter::close(uint id)
@@ -518,7 +552,8 @@ void NotificationCenter::onActionInvoked(uint id, const QString& action)
             if (auto* window = qobject_cast<TerminalWindow*>(place->parent())) {
                 // Lets the window take focus on Wayland: Qt reads the token
                 // from the environment when the window asks to be activated.
-                if (!e.activationToken.isEmpty()) qputenv("XDG_ACTIVATION_TOKEN", e.activationToken.toUtf8());
+                if (!e.activationToken.isEmpty())
+                    qputenv("XDG_ACTIVATION_TOKEN", e.activationToken.toUtf8());
                 window->revealPane(e.pane);
                 qunsetenv("XDG_ACTIVATION_TOKEN");
             }

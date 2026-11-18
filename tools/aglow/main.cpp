@@ -57,7 +57,7 @@ void report(std::string_view command, std::string_view message)
 
 std::string humanSize(std::uint64_t bytes)
 {
-    static const char* units[] = { "B", "KiB", "MiB", "GiB", "TiB" };
+    static const char* units[] = {"B", "KiB", "MiB", "GiB", "TiB"};
     double value = double(bytes);
     int unit = 0;
     // 1023.96 KiB prints as 1.0 MiB, not as 1024.0 KiB.
@@ -95,7 +95,7 @@ TmuxRun runTmux(std::initializer_list<const char*> args, long long deadline)
     if (::pipe2(out, O_CLOEXEC | O_NONBLOCK) != 0) {
         return run;
     }
-    std::vector<char*> argv { const_cast<char*>("tmux") };
+    std::vector<char*> argv{const_cast<char*>("tmux")};
     for (const char* arg : args) {
         argv.push_back(const_cast<char*>(arg));
     }
@@ -112,7 +112,7 @@ TmuxRun runTmux(std::initializer_list<const char*> args, long long deadline)
     // The end of tmux's output: tmux exits there.
     bool ended = false;
     while (run.started && !ended) {
-        pollfd ready { out[0], POLLIN, 0 };
+        pollfd ready{out[0], POLLIN, 0};
         const int polled = ::poll(&ready, 1, int(std::max(0LL, deadline - nowMs())));
         if (polled < 0 && errno == EINTR) {
             continue;
@@ -141,8 +141,7 @@ TmuxRun runTmux(std::initializer_list<const char*> args, long long deadline)
     if (run.late) {
         ::kill(pid, SIGKILL);
     }
-    while (::waitpid(pid, &run.status, 0) < 0 && errno == EINTR) {
-    }
+    while (::waitpid(pid, &run.status, 0) < 0 && errno == EINTR) { }
     return run;
 }
 
@@ -153,27 +152,28 @@ namespace {
 // %1 stands for the program name. afterglow --help shows the summaries of
 // the commands too (Afterglow::Aglow::Commands), and a test checks that
 // they agree.
-const char* usageText = "Usage: %1 COMMAND [options] [arguments]\n"
-                        "\n"
-                        "Kitty's terminal protocols from the command line. They work in Afterglow, kitty and the\n"
-                        "other terminals that support them, also over SSH.\n"
-                        "The run command talks to an Afterglow on the same computer, or on the computer that\n"
-                        "afterglow ssh came from.\n"
-                        "\n"
-                        "Commands:\n"
-                        "  transfer   Copy files to and from the computer of the terminal\n"
-                        "  dnd        Drag files and data out of the terminal, and drop them in\n"
-                        "  icat       Show images in the terminal\n"
-                        "  clipboard  Read and write the clipboard, with any MIME type\n"
-                        "  run        Run a command of a script in a running Afterglow\n"
-                        "\n"
-                        "Run %1 COMMAND --help or %1 help COMMAND for the options of a command.\n"
-                        "afterglow ssh runs %1 remote-prune DIR on remote hosts: it removes the sockets of ssh\n"
-                        "sessions that ended.\n"
-                        "\n"
-                        "Options:\n"
-                        "  -h, --help     Show this help\n"
-                        "  -v, --version  Show the version of aglow and of its protocol\n";
+const char* usageText =
+    "Usage: %1 COMMAND [options] [arguments]\n"
+    "\n"
+    "Kitty's terminal protocols from the command line. They work in Afterglow, kitty and the\n"
+    "other terminals that support them, also over SSH.\n"
+    "The run command talks to an Afterglow on the same computer, or on the computer that\n"
+    "afterglow ssh came from.\n"
+    "\n"
+    "Commands:\n"
+    "  transfer   Copy files to and from the computer of the terminal\n"
+    "  dnd        Drag files and data out of the terminal, and drop them in\n"
+    "  icat       Show images in the terminal\n"
+    "  clipboard  Read and write the clipboard, with any MIME type\n"
+    "  run        Run a command of a script in a running Afterglow\n"
+    "\n"
+    "Run %1 COMMAND --help or %1 help COMMAND for the options of a command.\n"
+    "afterglow ssh runs %1 remote-prune DIR on remote hosts: it removes the sockets of ssh\n"
+    "sessions that ended.\n"
+    "\n"
+    "Options:\n"
+    "  -h, --help     Show this help\n"
+    "  -v, --version  Show the version of aglow and of its protocol\n";
 
 std::string usage()
 {
@@ -232,7 +232,7 @@ int run(int argc, char** argv)
     if (command == "help" && argc > 2) {
         // aglow help COMMAND is aglow COMMAND --help.
         static char helpOption[] = "--help";
-        char* helpArgs[] = { argv[0], argv[2], helpOption, nullptr };
+        char* helpArgs[] = {argv[0], argv[2], helpOption, nullptr};
         return run(3, helpArgs);
     }
     if (command == "--help" || command == "-h" || command == "help") {

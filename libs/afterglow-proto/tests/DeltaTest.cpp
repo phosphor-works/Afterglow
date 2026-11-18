@@ -174,8 +174,14 @@ TEST(Delta, ReadErrorEndsTheDelta)
 {
     struct Failing : ByteSource
     {
-        bool read(std::string&, std::size_t) override { return false; }
-        bool atEnd() const override { return false; }
+        bool read(std::string&, std::size_t) override
+        {
+            return false;
+        }
+        bool atEnd() const override
+        {
+            return false;
+        }
     } source;
     DeltaGenerator generator(makeSignature("basis"));
     std::string out;
@@ -213,7 +219,8 @@ TEST(Delta, RepeatedBlockMatchesItsLowestIndexInAnyOrder)
     const std::string signature = makeSignature(block + block);
     ASSERT_EQ(signature.size(), SignatureHeaderSize + 2 * SignatureRecordSize);
     const std::string reordered = signature.substr(0, SignatureHeaderSize)
-        + signature.substr(SignatureHeaderSize + SignatureRecordSize) + signature.substr(SignatureHeaderSize, SignatureRecordSize);
+        + signature.substr(SignatureHeaderSize + SignatureRecordSize)
+        + signature.substr(SignatureHeaderSize, SignatureRecordSize);
     const auto delta = makeDelta(reordered, block);
     ASSERT_TRUE(delta);
     ASSERT_EQ(delta->size(), 9u + 19u);
@@ -449,7 +456,8 @@ TEST(Delta, InvalidOperationsAreRefused)
     const std::string basis = noise(1000, 12); // 16 blocks: 15 of 64 and one of 40
     const auto hash = [](std::string_view bytes) {
         const auto digest = fileHash(bytes);
-        return std::string("\x02\x10\x00", 3) + std::string(reinterpret_cast<const char*>(digest.data()), digest.size());
+        return std::string("\x02\x10\x00", 3)
+            + std::string(reinterpret_cast<const char*>(digest.data()), digest.size());
     };
     const auto block = [](std::uint64_t index) {
         std::string op(9, '\0');
@@ -482,8 +490,14 @@ TEST(Delta, InvalidOperationsAreRefused)
     // A literal over the receiver's limit is refused before its bytes arrive.
     struct Sink : DeltaTarget
     {
-        bool readBlock(std::uint64_t, std::string&) override { return false; }
-        bool write(std::string_view) override { return true; }
+        bool readBlock(std::uint64_t, std::string&) override
+        {
+            return false;
+        }
+        bool write(std::string_view) override
+        {
+            return true;
+        }
     } sink;
     DeltaApplier applier(64, basis.size(), 100);
     EXPECT_FALSE(applier.apply(std::string("\x01\x65\x00\x00\x00", 5), sink));

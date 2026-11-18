@@ -56,7 +56,14 @@ int fail(const QString& message)
 /// Unavailable: no answer (the main process is starting its socket or
 /// quitting). Unverified: its executable cannot be read. TooLong: the command
 /// does not fit in a request.
-enum class ForwardResult { Forwarded, DifferentExecutable, Unverified, Unavailable, TooLong, Failed };
+enum class ForwardResult {
+    Forwarded,
+    DifferentExecutable,
+    Unverified,
+    Unavailable,
+    TooLong,
+    Failed
+};
 
 /// Share the GPU device with the main process when it runs this executable. A
 /// development build or an executable replaced by an upgrade must run its own
@@ -76,7 +83,8 @@ ForwardResult forwardToRunningInstance(const QString& path, const QString& cwd, 
     }
     const QByteArray executable = QStringLiteral("/proc/%1/exe").arg(pid).toLocal8Bit();
     struct stat self{}, running{};
-    if (::stat("/proc/self/exe", &self) != 0) return ForwardResult::Unverified;
+    if (::stat("/proc/self/exe", &self) != 0)
+        return ForwardResult::Unverified;
     if (::stat(executable.constData(), &running) != 0) {
         // Gone since it answered the connection: it was quitting.
         return errno == ENOENT || errno == ESRCH ? ForwardResult::Unavailable : ForwardResult::Unverified;
@@ -96,28 +104,34 @@ ForwardResult forwardToRunningInstance(const QString& path, const QString& cwd, 
     const QString target = QLatin1String(Afterglow::LaunchApi::Target);
     while (true) {
         const qint64 left = ForwardTimeoutMs - clock.elapsed();
-        if (left <= 0) break;
+        if (left <= 0)
+            break;
         Afterglow::IpcClient::Error failure;
         const auto result = quick
             ? client.call(target, QStringLiteral("toggleQuickTerminal"), {}, int(left), &failure)
             : client.call(target, QStringLiteral("newWindow"),
-                          {cwd, QJsonArray::fromStringList(command), QJsonObject::fromVariantMap(options)}, int(left), &failure);
-        if (result) return ForwardResult::Forwarded;
+                          {cwd, QJsonArray::fromStringList(command), QJsonObject::fromVariantMap(options)}, int(left),
+                          &failure);
+        if (result)
+            return ForwardResult::Forwarded;
         // The process got the request and could not open the window (a bad -e
         // program): starting another process would fail the same way.
         if (failure.code == QLatin1String(PhosphorIpc::ErrorCode::CallFailed)) {
             *error = failure.message;
             return ForwardResult::Failed;
         }
-        if (failure.tooLong) return ForwardResult::TooLong;
+        if (failure.tooLong)
+            return ForwardResult::TooLong;
         // The running process has the request, and can still open its window
         // (a session of another host waits for ssh): a second process would
         // open another, and take the session from the first.
         if (failure.timedOut) {
-            *error = QStringLiteral("the running Afterglow did not answer the launch in %1 s").arg(ForwardTimeoutMs / 1000);
+            *error =
+                QStringLiteral("the running Afterglow did not answer the launch in %1 s").arg(ForwardTimeoutMs / 1000);
             return ForwardResult::Failed;
         }
-        if (failure.code.isEmpty()) break; // no answer
+        if (failure.code.isEmpty())
+            break; // no answer
         // Another error does not change when asked again (an argument that
         // the running process refuses, INVALID_ARG).
         if (failure.code != QLatin1String(PhosphorIpc::ErrorCode::NoSuchTarget)) {
@@ -159,7 +173,8 @@ int main(int argc, char** argv)
     // afterglow ssh ...: ssh with the remote side prepared, no GUI.
     if (argc >= 2 && std::strcmp(argv[1], "ssh") == 0) {
         QByteArrayList args;
-        for (int i = 2; i < argc; ++i) args << QByteArray(argv[i]);
+        for (int i = 2; i < argc; ++i)
+            args << QByteArray(argv[i]);
         return Afterglow::Ssh::run(args);
     }
     Afterglow::prepareApplication();
@@ -174,34 +189,39 @@ int main(int argc, char** argv)
         "  afterglow ssh ...       Run ssh with the remote side prepared for Afterglow.\n");
     if (Afterglow::Aglow::built()) {
         for (const Afterglow::Aglow::Command& command : Afterglow::Aglow::Commands) {
-            description += QStringLiteral("  ") + QStringLiteral("afterglow %1 ...").arg(QLatin1String(command.name)).leftJustified(24)
+            description += QStringLiteral("  ")
+                + QStringLiteral("afterglow %1 ...").arg(QLatin1String(command.name)).leftJustified(24)
                 + QLatin1String(command.summary) + QStringLiteral(".\n");
         }
     }
     parser.setApplicationDescription(description);
     const QCommandLineOption helpOption = parser.addHelpOption();
     const QCommandLineOption versionOption = parser.addVersionOption();
-    parser.addOption({QStringLiteral("config-reference"), QStringLiteral("Print the configuration reference as JSON. Use alone. No desktop required.")});
+    parser.addOption({QStringLiteral("config-reference"),
+                      QStringLiteral("Print the configuration reference as JSON. Use alone. No desktop required.")});
     const QCommandLineOption cwdOption({QStringLiteral("d"), QStringLiteral("working-directory")},
                                        QStringLiteral("Start in <dir>."), QStringLiteral("dir"));
     const QCommandLineOption quickOption(QStringLiteral("quick-terminal"),
                                          QStringLiteral("Show or hide the quick terminal."));
     const QCommandLineOption execOption({QStringLiteral("e"), QStringLiteral("execute")},
                                         QStringLiteral("Run the rest of the command line instead of the shell."));
-    const QCommandLineOption titleOption(QStringLiteral("title"), QStringLiteral("Give the window <title>, whatever its programs set."),
+    const QCommandLineOption titleOption(QStringLiteral("title"),
+                                         QStringLiteral("Give the window <title>, whatever its programs set."),
                                          QStringLiteral("title"));
-    const QCommandLineOption holdOption(QStringLiteral("hold"),
-                                        QStringLiteral("Keep the window open after the program exits, until a key is pressed."));
+    const QCommandLineOption holdOption(
+        QStringLiteral("hold"),
+        QStringLiteral("Keep the window open after the program exits, until a key is pressed."));
     const QCommandLineOption configOption(QStringLiteral("config"),
                                           QStringLiteral("Read settings from <file> (starts a separate Afterglow)."),
                                           QStringLiteral("file"));
     const QCommandLineOption overrideOption(
         {QStringLiteral("o"), QStringLiteral("override")},
-        QStringLiteral("Override a setting: Group.key=value, e.g. Font.size=14 (repeatable). Starts a separate Afterglow."),
+        QStringLiteral(
+            "Override a setting: Group.key=value, e.g. Font.size=14 (repeatable). Starts a separate Afterglow."),
         QStringLiteral("setting"));
-    const QCommandLineOption classOption(QStringLiteral("class"),
-                                         QStringLiteral("Wayland app id for window rules (starts a separate Afterglow)."),
-                                         QStringLiteral("id"));
+    const QCommandLineOption classOption(
+        QStringLiteral("class"), QStringLiteral("Wayland app id for window rules (starts a separate Afterglow)."),
+        QStringLiteral("id"));
     // afterglow mux attach runs afterglow with these: the window of a session
     // opens in the main process of the display, as the window of any launch.
     QCommandLineOption muxAttachOption(QStringLiteral("mux-attach"), QStringLiteral("Show the mux session <name>."),
@@ -210,11 +230,12 @@ int main(int argc, char** argv)
     QCommandLineOption muxNoTakeoverOption(QStringLiteral("mux-no-takeover"),
                                            QStringLiteral("Refuse when another window shows the session."));
     muxNoTakeoverOption.setFlags(QCommandLineOption::HiddenFromHelp);
-    QCommandLineOption muxHostOption(QStringLiteral("mux-host"), QStringLiteral("The session runs on this ssh destination."),
+    QCommandLineOption muxHostOption(QStringLiteral("mux-host"),
+                                     QStringLiteral("The session runs on this ssh destination."),
                                      QStringLiteral("destination"));
     muxHostOption.setFlags(QCommandLineOption::HiddenFromHelp);
-    parser.addOptions({cwdOption, quickOption, execOption, titleOption, holdOption, configOption, overrideOption, classOption,
-                       muxAttachOption, muxNoTakeoverOption, muxHostOption});
+    parser.addOptions({cwdOption, quickOption, execOption, titleOption, holdOption, configOption, overrideOption,
+                       classOption, muxAttachOption, muxNoTakeoverOption, muxHostOption});
     // Everything after the program -e runs is its own, options included.
     parser.setOptionsAfterPositionalArgumentsMode(QCommandLineParser::ParseAsPositionalArguments);
     parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("With -e: the program and its arguments."),
@@ -226,7 +247,8 @@ int main(int argc, char** argv)
     // command line that does not parse yet waits for QApplication. So does
     // --help-all, whose options of Qt's GUI only QApplication adds.
     QStringList arguments;
-    for (int i = 0; i < argc; ++i) arguments << QString::fromLocal8Bit(argv[i]);
+    for (int i = 0; i < argc; ++i)
+        arguments << QString::fromLocal8Bit(argv[i]);
     if (parser.parse(arguments) && (parser.isSet(helpOption) || parser.isSet(versionOption))) {
         QCoreApplication core(argc, argv);
         parser.process(core); // prints them and exits
@@ -246,7 +268,8 @@ int main(int argc, char** argv)
         return fail(QStringLiteral("--config-reference takes no other arguments"));
     }
     if (!parser.isSet(execOption) && !parser.positionalArguments().isEmpty()) {
-        return fail(QStringLiteral("use -e to run a program: afterglow -e %1").arg(parser.positionalArguments().join(QLatin1Char(' '))));
+        return fail(QStringLiteral("use -e to run a program: afterglow -e %1")
+                        .arg(parser.positionalArguments().join(QLatin1Char(' '))));
     }
     if (parser.isSet(execOption) && parser.positionalArguments().isEmpty()) {
         return fail(QStringLiteral("-e needs a program"));
@@ -257,7 +280,8 @@ int main(int argc, char** argv)
         return fail(QStringLiteral("--quick-terminal takes no -e, -d, --title, --hold or --mux-attach"));
     }
     // The program and its directory are the session's.
-    if (parser.isSet(muxAttachOption) && (parser.isSet(execOption) || parser.isSet(cwdOption) || parser.isSet(holdOption))) {
+    if (parser.isSet(muxAttachOption)
+        && (parser.isSet(execOption) || parser.isSet(cwdOption) || parser.isSet(holdOption))) {
         return fail(QStringLiteral("--mux-attach takes no -e, -d or --hold"));
     }
     if (parser.isSet(muxNoTakeoverOption) && !parser.isSet(muxAttachOption)) {
@@ -269,11 +293,14 @@ int main(int argc, char** argv)
     if (parser.isSet(muxAttachOption) && parser.value(muxAttachOption).isEmpty()) {
         return fail(QStringLiteral("--mux-attach needs the name of a session"));
     }
-    if (parser.isSet(configOption) && parser.value(configOption).isEmpty()) return fail(QStringLiteral("--config needs a file"));
-    if (parser.isSet(classOption) && parser.value(classOption).isEmpty()) return fail(QStringLiteral("--class needs an app id"));
+    if (parser.isSet(configOption) && parser.value(configOption).isEmpty())
+        return fail(QStringLiteral("--config needs a file"));
+    if (parser.isSet(classOption) && parser.value(classOption).isEmpty())
+        return fail(QStringLiteral("--class needs an app id"));
     // Any QtWayland platform (wayland, wayland-egl) has the Wayland interface.
     if (!app->nativeInterface<QNativeInterface::QWaylandApplication>()) {
-        return fail(QStringLiteral("Afterglow runs on Wayland only (platform is %1)").arg(QGuiApplication::platformName()));
+        return fail(
+            QStringLiteral("Afterglow runs on Wayland only (platform is %1)").arg(QGuiApplication::platformName()));
     }
 
     const bool cwdGiven = parser.isSet(cwdOption);
@@ -306,7 +333,8 @@ int main(int argc, char** argv)
             return fail(QStringLiteral("-o %1: expected Group.key=value, e.g. Font.size=14").arg(assignment));
         }
     }
-    const QString configPath = parser.isSet(configOption) ? QFileInfo(parser.value(configOption)).absoluteFilePath() : QString();
+    const QString configPath =
+        parser.isSet(configOption) ? QFileInfo(parser.value(configOption)).absoluteFilePath() : QString();
     if (parser.isSet(classOption)) {
         QGuiApplication::setDesktopFileName(parser.value(classOption));
     }
@@ -325,7 +353,8 @@ int main(int argc, char** argv)
         Afterglow::InstanceSocket socket;
         const QString shared = Afterglow::InstanceSocket::sharedPath();
         if (shared.isEmpty()) {
-            qCWarning(lcApp) << "XDG_RUNTIME_DIR is not set or not an absolute path: no socket for launches and control";
+            qCWarning(lcApp)
+                << "XDG_RUNTIME_DIR is not set or not an absolute path: no socket for launches and control";
         } else if (!separate) {
             using Listen = Afterglow::InstanceSocket::Listen;
             // A main process that quits stops answering, then frees the path.
@@ -335,9 +364,12 @@ int main(int argc, char** argv)
             Listen listened = socket.listen(shared);
             while (listened == Listen::Held) {
                 QString error;
-                const ForwardResult result = forwardToRunningInstance(shared, cwd, command, windowOptions, quick, &error);
-                if (result == ForwardResult::Forwarded) return 0;
-                if (result == ForwardResult::Failed) return fail(error);
+                const ForwardResult result =
+                    forwardToRunningInstance(shared, cwd, command, windowOptions, quick, &error);
+                if (result == ForwardResult::Forwarded)
+                    return 0;
+                if (result == ForwardResult::Failed)
+                    return fail(error);
                 if (result == ForwardResult::DifferentExecutable) {
                     qCInfo(lcApp) << "the running instance uses a different executable; starting this build separately";
                     break;
@@ -364,12 +396,14 @@ int main(int argc, char** argv)
         // A process's own path is held only for the moment that another
         // launch's sweep checks its lock.
         for (int attempt = 0; !shared.isEmpty() && !socket.listening() && attempt < 20; ++attempt) {
-            if (socket.listen(Afterglow::InstanceSocket::ownPath()) != Afterglow::InstanceSocket::Listen::Held) break;
+            if (socket.listen(Afterglow::InstanceSocket::ownPath()) != Afterglow::InstanceSocket::Listen::Held)
+                break;
             QThread::msleep(10);
         }
         if (!shared.isEmpty() && !socket.listening()) {
-            qCWarning(lcApp) << "cannot listen on a socket, so afterglow ctl, aglow run, afterglow run and new launches cannot "
-                                "reach this process";
+            qCWarning(lcApp)
+                << "cannot listen on a socket, so afterglow ctl, aglow run, afterglow run and new launches cannot "
+                   "reach this process";
         }
 
         // From here a termination signal closes the windows and the socket,
@@ -386,15 +420,20 @@ int main(int argc, char** argv)
             // with its error, unless a later launch opened a window meanwhile.
             bool started = true;
             const auto launched = [&started](const QString& error) {
-                if (error.isEmpty()) return;
+                if (error.isEmpty())
+                    return;
                 fail(error);
                 started = false;
-                if (Afterglow::TerminalWindow::windows().isEmpty()) QCoreApplication::exit(1);
+                if (Afterglow::TerminalWindow::windows().isEmpty())
+                    QCoreApplication::exit(1);
             };
             // The quick terminal is a layer surface, which takes no activation token.
-            if (quick) launched(application.toggleQuickTerminal());
-            else application.openLaunch(cwd, command, windowOptions, launched);
-            if (!started) return 1;
+            if (quick)
+                launched(application.toggleQuickTerminal());
+            else
+                application.openLaunch(cwd, command, windowOptions, launched);
+            if (!started)
+                return 1;
             // A signal during the start ends the loop at its first pass:
             // QuitSignals hears it there.
             code = app->exec();

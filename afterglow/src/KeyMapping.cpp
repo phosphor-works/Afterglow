@@ -248,7 +248,7 @@ char32_t firstCodepoint(const QString& s)
         return 0;
     }
     const char32_t cp = s.at(0).isHighSurrogate() && s.size() > 1 ? QChar::surrogateToUcs4(s.at(0), s.at(1))
-                                                                     : char32_t(s.at(0).unicode());
+                                                                  : char32_t(s.at(0).unicode());
     return cp < 0x20 || cp == 0x7F ? 0 : cp;
 }
 
@@ -265,7 +265,8 @@ char32_t bindingBaseKey(const QKeyEvent* event)
     const XkbKeyboard& xkb = XkbKeyboard::instance();
     char32_t base = xkb.unshiftedCodepoint(xkbEventOf(event));
     // "H" in a binding means the key that types h on the first Latin layout.
-    if (base < 0x20 || base >= 0x7F) base = xkb.latinCodepoints(event->nativeScanCode()).first;
+    if (base < 0x20 || base >= 0x7F)
+        base = xkb.latinCodepoints(event->nativeScanCode()).first;
     return base;
 }
 
@@ -296,7 +297,8 @@ AfterglowVt::KeyEvent mapKeyEvent(const QKeyEvent* e, QByteArray& textStorage)
     // Without a keymap, the right Alt key is AltGr when Qt says so, as the
     // keymap would say (ISO_Level3_Shift).
     Key byKeycode = modifierKeyFromKeycode(e->nativeScanCode());
-    if (byKeycode == Key::RightAlt && k == Qt::Key_AltGr) byKeycode = Key::IsoLevel3Shift;
+    if (byKeycode == Key::RightAlt && k == Qt::Key_AltGr)
+        byKeycode = Key::IsoLevel3Shift;
     const Key mk = keysym != XKB_KEY_NoSymbol ? modifierKeyFromKeysym(keysym)
         : qtKeyMatches(byKeycode, k)          ? byKeycode
                                               : Key::Text;
@@ -439,7 +441,8 @@ AfterglowVt::KeyEvent mapKeyEvent(const QKeyEvent* e, QByteArray& textStorage)
                 out.shifted = firstCodepoint(text);
                 if (!out.shifted || (e->modifiers() & Qt::ControlModifier)) {
                     out.shifted = shifted >= 0x20 && shifted != 0x7F ? shifted
-                        : k >= 0x20 && k < 0x7F ? char32_t(k) : out.shifted;
+                        : k >= 0x20 && k < 0x7F                      ? char32_t(k)
+                                                                     : out.shifted;
                 }
             }
         }
@@ -560,7 +563,8 @@ bool isModifierKey(int key)
 Qt::KeyboardModifiers modifiersAfter(const QKeyEvent& event)
 {
     const ModifierRole role = modifierRoleOf(event.nativeScanCode());
-    if (role.modifier == Qt::NoModifier) return event.modifiers();
+    if (role.modifier == Qt::NoModifier)
+        return event.modifiers();
     // The state that Qt stores, from before the key, with the key's own bit:
     // Qt flips that bit only for the keys that it names Shift, Control, Alt
     // and Meta, and drops it when the key of the other side is held. The bit
@@ -578,7 +582,8 @@ Qt::KeyboardModifiers modifiersAfter(const QKeyEvent& event)
 
 std::unique_ptr<QKeyEvent> remappedKeyEvent(const QKeyEvent& event, const ModifierRemap& remap)
 {
-    if (remap.isEmpty()) return nullptr;
+    if (remap.isEmpty())
+        return nullptr;
     const ModifierRole role = modifierRoleOf(event.nativeScanCode());
     // With any remap a modifier key reports the modifiers after it, also
     // where Qt's own report does not (one Shift pressed while the other is
@@ -611,7 +616,8 @@ std::unique_ptr<QKeyEvent> remappedKeyEvent(const QKeyEvent& event, const Modifi
             }
         }
     }
-    if (after == event.modifiers() && key == event.key() && text == event.text()) return nullptr;
+    if (after == event.modifiers() && key == event.key() && text == event.text())
+        return nullptr;
     // Stored so that the new event's modifiers() reads as the remapped ones.
     auto remapped = std::make_unique<QKeyEvent>(event.type(), key, after ^ flippedModifier(key), event.nativeScanCode(),
                                                 event.nativeVirtualKey(), event.nativeModifiers(), text,
@@ -625,7 +631,8 @@ std::unique_ptr<QKeyEvent> remappedKeyEvent(const QKeyEvent& event, const Modifi
 AfterglowVt::Key remappedModifierKey(const QKeyEvent& event, AfterglowVt::Key key, const ModifierRemap& remap)
 {
     const ModifierRole role = modifierRoleOf(event.nativeScanCode());
-    if (role.modifier == Qt::NoModifier) return key;
+    if (role.modifier == Qt::NoModifier)
+        return key;
     const Qt::KeyboardModifier target = remap.singleTarget(role.modifier);
     return target == Qt::NoModifier ? key : terminalKeyOfModifier(target, role.right);
 }

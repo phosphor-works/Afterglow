@@ -48,7 +48,8 @@ constexpr qsizetype EventText = 1024 * 1024;
 /// scripts' own.
 std::optional<QString> runIdError(const QString& id)
 {
-    if (validName(id)) return std::nullopt;
+    if (validName(id))
+        return std::nullopt;
     return QStringLiteral("a run ID is 1 to 64 letters, digits, _ and -");
 }
 
@@ -61,13 +62,18 @@ class CommandTarget final : public CommandApi
 {
 public:
     using CommandApi::CommandApi;
-    ~CommandTarget() override { std::free(m_meta); }
+    ~CommandTarget() override
+    {
+        std::free(m_meta);
+    }
 
     void setCommands(const QList<ScriptCommand>& commands)
     {
         QStringList tokens;
-        for (const ScriptCommand& c : commands) tokens << c.token();
-        if (m_meta && tokens == m_tokens) return;
+        for (const ScriptCommand& c : commands)
+            tokens << c.token();
+        if (m_meta && tokens == m_tokens)
+            return;
         QMetaObjectBuilder builder;
         builder.setClassName("Afterglow::CommandTarget");
         builder.setSuperClass(&CommandApi::staticMetaObject);
@@ -87,15 +93,20 @@ public:
         m_tokens = tokens;
     }
 
-    const QMetaObject* metaObject() const override { return m_meta ? m_meta : &CommandApi::staticMetaObject; }
+    const QMetaObject* metaObject() const override
+    {
+        return m_meta ? m_meta : &CommandApi::staticMetaObject;
+    }
 
     int qt_metacall(QMetaObject::Call call, int id, void** argv) override
     {
         id = CommandApi::qt_metacall(call, id, argv);
-        if (id < 0 || call != QMetaObject::InvokeMetaMethod) return id;
+        if (id < 0 || call != QMetaObject::InvokeMetaMethod)
+            return id;
         constexpr int events = int(std::size(Events));
         // An event: nothing emits one through Qt (IpcRouter::sendEvent).
-        if (id < events) return -1;
+        if (id < events)
+            return -1;
         if (id - events < m_tokens.size()) {
             runEntry(m_tokens[id - events], *static_cast<const QStringList*>(argv[1]));
             return -1;
@@ -122,10 +133,14 @@ QVariantList CommandApi::list()
     QVariantList out;
     for (const ScriptCommand& c : m_socket.m_scripts.commands()) {
         // A remote host sees only the commands that declare remote.
-        if (m_socket.m_remote && !c.remote) continue;
-        out.append(QVariantMap{{QStringLiteral("script"), c.script}, {QStringLiteral("command"), c.name},
-                               {QStringLiteral("summary"), c.summary}, {QStringLiteral("usage"), c.usage},
-                               {QStringLiteral("palette"), c.palette}, {QStringLiteral("stdin"), c.input},
+        if (m_socket.m_remote && !c.remote)
+            continue;
+        out.append(QVariantMap{{QStringLiteral("script"), c.script},
+                               {QStringLiteral("command"), c.name},
+                               {QStringLiteral("summary"), c.summary},
+                               {QStringLiteral("usage"), c.usage},
+                               {QStringLiteral("palette"), c.palette},
+                               {QStringLiteral("stdin"), c.input},
                                {QStringLiteral("remote"), c.remote}});
     }
     return out;
@@ -139,8 +154,10 @@ void CommandApi::fail(const char* code, const QString& message)
     }
     // Deferred and failed at once: a pending reply carries a code.
     PhosphorIpc::IpcPendingReply reply = deferReply();
-    if (reply.isValid()) reply.fail(QString::fromLatin1(code), message);
-    else if (!connectionId()) sendErrorReply(message); // past the router's limit of waiting calls, the router fails it
+    if (reply.isValid())
+        reply.fail(QString::fromLatin1(code), message);
+    else if (!connectionId())
+        sendErrorReply(message); // past the router's limit of waiting calls, the router fails it
 }
 
 bool CommandApi::input(const QString& run, const QString& chunk, bool eof)
@@ -187,7 +204,8 @@ void CommandApi::run(const QString& run, const QString& script, const QString& c
     if (!reply.isValid()) {
         // A call from no connection has nobody to answer later; past the
         // router's limit of waiting calls, the router fails it.
-        if (!connection) sendErrorReply(QStringLiteral("a run needs a client connection"));
+        if (!connection)
+            sendErrorReply(QStringLiteral("a run needs a client connection"));
         return;
     }
     const auto& remote = m_socket.m_remote;
@@ -199,12 +217,14 @@ void CommandApi::run(const QString& run, const QString& script, const QString& c
 
 void CommandApi::ack(const QString& run, double bytes)
 {
-    if (const auto refusal = m_socket.ack(connectionId(), run, bytes)) fail(refusal->code, refusal->message);
+    if (const auto refusal = m_socket.ack(connectionId(), run, bytes))
+        fail(refusal->code, refusal->message);
 }
 
 void CommandApi::cancel(const QString& run)
 {
-    if (const auto refusal = m_socket.cancel(connectionId(), run)) fail(refusal->code, refusal->message);
+    if (const auto refusal = m_socket.cancel(connectionId(), run))
+        fail(refusal->code, refusal->message);
 }
 
 void CommandApi::runEntry(const QString& token, const QStringList& args)
@@ -218,18 +238,21 @@ void CommandApi::runEntry(const QString& token, const QStringList& args)
     }
     PhosphorIpc::IpcPendingReply reply = deferReply();
     if (!reply.isValid()) {
-        if (!connectionId()) sendErrorReply(QStringLiteral("a run needs a client connection"));
+        if (!connectionId())
+            sendErrorReply(QStringLiteral("a run needs a client connection"));
         return;
     }
     const auto dot = token.indexOf(QLatin1Char('.'));
     // A client of the schema entry (phosphorctl) does not acknowledge.
-    m_socket.start(connectionId(), QString::fromStdString(*id),
-                   {token.left(dot), token.mid(dot + 1), args, {}, *target, std::nullopt, QStringLiteral("control"), {}},
-                   std::move(reply), false);
+    m_socket.start(
+        connectionId(), QString::fromStdString(*id),
+        {token.left(dot), token.mid(dot + 1), args, {}, *target, std::nullopt, QStringLiteral("control"), {}},
+        std::move(reply), false);
 }
 
-CommandSocket::CommandSocket(Control& control, ScriptHost& scripts, SettingsStore& settings, PhosphorIpc::IpcRouter& router,
-                             std::optional<RemoteSession> remote, std::shared_ptr<CommandBudget> budget, QObject* parent)
+CommandSocket::CommandSocket(Control& control, ScriptHost& scripts, SettingsStore& settings,
+                             PhosphorIpc::IpcRouter& router, std::optional<RemoteSession> remote,
+                             std::shared_ptr<CommandBudget> budget, QObject* parent)
     : QObject(parent)
     , m_control(control)
     , m_scripts(scripts)
@@ -246,8 +269,12 @@ CommandSocket::CommandSocket(Control& control, ScriptHost& scripts, SettingsStor
     target->setCommands(m_remote ? QList<ScriptCommand>{} : scripts.commands());
     // Queued: set_commands can change the list inside a call of this target.
     if (!m_remote) {
-        connect(&scripts, &ScriptHost::commandsChanged, this, [this, target] { target->setCommands(m_scripts.commands()); },
-                Qt::QueuedConnection);
+        connect(
+            &scripts, &ScriptHost::commandsChanged, this,
+            [this, target] {
+                target->setCommands(m_scripts.commands());
+            },
+            Qt::QueuedConnection);
     }
     connect(&router, &PhosphorIpc::IpcRouter::connectionClosed, this, &CommandSocket::connectionClosed);
     connect(&settings, &SettingsStore::changed, this, &CommandSocket::applySettings);
@@ -265,10 +292,12 @@ void CommandSocket::applySettings()
     const Settings& s = m_settings.settings();
     const QString remoteOff = m_remote ? remoteCommandsOff(s) : QString();
     const bool want = m_remote ? remoteOff.isEmpty() : s.control.enabled && s.scripts;
-    if (want == m_enabled) return;
+    if (want == m_enabled)
+        return;
     if (want) {
         m_enabled = m_router.registerTarget(target(), m_api.get());
-        if (!m_enabled) qCWarning(lcCommands) << "another object holds the" << target() << "target";
+        if (!m_enabled)
+            qCWarning(lcCommands) << "another object holds the" << target() << "target";
         return;
     }
     m_router.unregisterTarget(target(), m_api.get());
@@ -289,10 +318,12 @@ void CommandSocket::dropAll(const QString& message, bool cancel)
             m_budget->outputBytes -= run->outputBytes;
             run->outputBytes = 0;
             run->reply.fail(message);
-            if (!cancel) continue;
+            if (!cancel)
+                continue;
             std::move(run->output.begin(), run->output.end(), std::back_inserter(output));
             run->output.clear();
-            if (run->handle && !run->exit) m_scripts.cancelCommand(run->handle, Cancelled);
+            if (run->handle && !run->exit)
+                m_scripts.cancelCommand(run->handle, Cancelled);
         }
     }
     dropped(output);
@@ -309,33 +340,45 @@ void CommandSocket::connectionClosed(quint64 connection)
         std::move(part.begin(), part.end(), std::back_inserter(output));
     }
     for (const auto& run : books.runs) {
-        if (run->handle && !run->exit) m_scripts.cancelCommand(run->handle, Cancelled);
+        if (run->handle && !run->exit)
+            m_scripts.cancelCommand(run->handle, Cancelled);
     }
     dropped(output);
 }
 
-std::optional<CommandSocket::Refusal> CommandSocket::input(quint64 connection, const QString& id, const QString& chunk, bool eof)
+std::optional<CommandSocket::Refusal> CommandSocket::input(quint64 connection, const QString& id, const QString& chunk,
+                                                           bool eof)
 {
-    if (const auto error = runIdError(id)) return Refusal{nullptr, *error};
+    if (const auto error = runIdError(id))
+        return Refusal{nullptr, *error};
     const std::shared_ptr<Run> entry = find(connection, id);
-    if (entry && entry->started) return Refusal{nullptr, QStringLiteral("run %1 has started: its input is complete").arg(id)};
-    if (entry && entry->eof) return Refusal{nullptr, QStringLiteral("the input of run %1 has ended").arg(id)};
+    if (entry && entry->started)
+        return Refusal{nullptr, QStringLiteral("run %1 has started: its input is complete").arg(id)};
+    if (entry && entry->eof)
+        return Refusal{nullptr, QStringLiteral("the input of run %1 has ended").arg(id)};
     if (!entry) {
         const Runs runs = m_connections.value(connection).runs;
-        if (std::count_if(runs.cbegin(), runs.cend(), [](const auto& r) { return !r->started; }) >= MaxWaitingInputs)
+        if (std::count_if(runs.cbegin(), runs.cend(),
+                          [](const auto& r) {
+                              return !r->started;
+                          })
+            >= MaxWaitingInputs)
             return Refusal{nullptr, QStringLiteral("%1 runs wait for their input already").arg(MaxWaitingInputs)};
     }
     const QByteArray bytes = chunk.toUtf8();
     const qint64 limit = m_scripts.commandLimits().inputBytes;
     if ((entry ? entry->input.size() : 0) + bytes.size() > limit) {
         // Refused, not cut: a command that got a part of its input could not tell.
-        if (entry) remove(connection, id);
-        return Refusal{InputTooLarge, QStringLiteral("Standard input is over %1 KiB (Scripts.commandStdinLimit)").arg(limit >> 10)};
+        if (entry)
+            remove(connection, id);
+        return Refusal{InputTooLarge,
+                       QStringLiteral("Standard input is over %1 KiB (Scripts.commandStdinLimit)").arg(limit >> 10)};
     }
     // The input that waited stays: a cancel or a closed connection gives the room back.
     if (m_budget->inputBytes + bytes.size() > MaxWaitingInputBytes) {
-        return Refusal{nullptr, QStringLiteral("afterglow keeps at most %1 MiB of input for runs that have not started")
-                                    .arg(MaxWaitingInputBytes >> 20)};
+        return Refusal{nullptr,
+                       QStringLiteral("afterglow keeps at most %1 MiB of input for runs that have not started")
+                           .arg(MaxWaitingInputBytes >> 20)};
     }
     Run& run = entry ? *entry : *m_connections[connection].runs.insert(id, std::make_shared<Run>()).value();
     run.input += bytes;
@@ -348,8 +391,10 @@ std::optional<CommandSocket::Refusal> CommandSocket::input(quint64 connection, c
 std::optional<CommandSocket::Refusal> CommandSocket::ack(quint64 connection, const QString& id, double bytes)
 {
     const auto run = find(connection, id);
-    if (!run || !run->started) return Refusal{nullptr, QStringLiteral("no run %1 on this connection").arg(id)};
-    if (!std::isfinite(bytes) || bytes < 0) return Refusal{nullptr, QStringLiteral("ack takes a number of bytes")};
+    if (!run || !run->started)
+        return Refusal{nullptr, QStringLiteral("no run %1 on this connection").arg(id)};
+    if (!std::isfinite(bytes) || bytes < 0)
+        return Refusal{nullptr, QStringLiteral("ack takes a number of bytes")};
     // No more than the run sent: an ack cannot open the window for the others.
     const qint64 acknowledged = std::min(run->unacknowledged, qint64(std::min(bytes, 9.0e15)));
     run->unacknowledged -= acknowledged;
@@ -361,7 +406,8 @@ std::optional<CommandSocket::Refusal> CommandSocket::ack(quint64 connection, con
 std::optional<CommandSocket::Refusal> CommandSocket::cancel(quint64 connection, const QString& id)
 {
     const auto run = find(connection, id);
-    if (!run) return Refusal{nullptr, QStringLiteral("no run %1 on this connection").arg(id)};
+    if (!run)
+        return Refusal{nullptr, QStringLiteral("no run %1 on this connection").arg(id)};
     if (!run->started) {
         remove(connection, id); // only its input waited
         return std::nullopt;
@@ -370,15 +416,18 @@ std::optional<CommandSocket::Refusal> CommandSocket::cancel(quint64 connection, 
     std::deque<Output> output = takeOutput(*run);
     // A run that ended answers with its status. Else the scripts end it,
     // and finish() answers with 130.
-    if (run->exit) pump(connection, id);
-    else m_scripts.cancelCommand(run->handle, Cancelled);
+    if (run->exit)
+        pump(connection, id);
+    else
+        m_scripts.cancelCommand(run->handle, Cancelled);
     dropped(output);
     return std::nullopt;
 }
 
 void CommandSocket::releaseInput(Run& run)
 {
-    if (run.started) return;
+    if (run.started)
+        return;
     m_budget->inputBytes -= run.input.size();
     run.input.clear();
 }
@@ -393,7 +442,8 @@ std::deque<CommandSocket::Output> CommandSocket::takeOutput(Run& run)
 void CommandSocket::dropped(std::deque<Output>& output)
 {
     for (Output& out : output) {
-        if (out.sent) out.sent(false);
+        if (out.sent)
+            out.sent(false);
     }
     output.clear();
 }
@@ -401,9 +451,11 @@ void CommandSocket::dropped(std::deque<Output>& output)
 void CommandSocket::remove(quint64 connection, const QString& id)
 {
     const auto books = m_connections.find(connection);
-    if (books == m_connections.end()) return;
+    if (books == m_connections.end())
+        return;
     const std::shared_ptr<Run> run = books->runs.take(id);
-    if (!run) return;
+    if (!run)
+        return;
     releaseInput(*run);
     books->unacknowledged -= run->unacknowledged;
     run->unacknowledged = 0;
@@ -414,11 +466,13 @@ void CommandSocket::start(quint64 connection, const QString& id, ScriptHost::Com
 {
     Runs& runs = m_connections[connection].runs;
     std::shared_ptr<Run> entry = runs.value(id);
-    if (!entry) entry = runs.insert(id, std::make_shared<Run>()).value();
+    if (!entry)
+        entry = runs.insert(id, std::make_shared<Run>()).value();
     // Out of the books first, and converted once: the script gets it as it came.
     const QByteArray input = std::exchange(entry->input, {});
     m_budget->inputBytes -= input.size();
-    if (entry->hasInput) request.input = QString::fromUtf8(input);
+    if (entry->hasInput)
+        request.input = QString::fromUtf8(input);
     entry->started = true;
     entry->credit = credit;
     entry->reply = std::move(reply);
@@ -432,37 +486,44 @@ void CommandSocket::start(quint64 connection, const QString& id, ScriptHost::Com
         return socket && socket->send(connection, "stderr", id, text, std::move(sent));
     };
     sink.finished = [socket, connection, id](int status) {
-        if (socket) socket->finish(connection, id, status);
+        if (socket)
+            socket->finish(connection, id, status);
     };
     QString error;
     bool unknown = false;
     const quint64 handle = m_scripts.startCommand(request, std::move(sink), &error, &unknown);
     if (!handle) {
-        if (const auto run = find(connection, id)) run->reply.fail(unknown ? QString::fromLatin1(NoSuchCommand) : QString(), error);
+        if (const auto run = find(connection, id))
+            run->reply.fail(unknown ? QString::fromLatin1(NoSuchCommand) : QString(), error);
         remove(connection, id);
         return;
     }
     // The run can have ended inside startCommand, and its handler can have
     // closed the socket meanwhile (a setting that it turned off): dropAll
     // then found no handle to cancel, and the run has no client any more.
-    if (const auto run = find(connection, id)) run->handle = handle;
-    else if (!entry->exit) m_scripts.cancelCommand(handle, Cancelled);
+    if (const auto run = find(connection, id))
+        run->handle = handle;
+    else if (!entry->exit)
+        m_scripts.cancelCommand(handle, Cancelled);
 }
 
 bool CommandSocket::send(quint64 connection, const char* event, const QString& id, const QString& text,
                          std::function<void(bool)> sent)
 {
     const auto run = find(connection, id);
-    if (!run) return false;
+    if (!run)
+        return false;
     if (text.isEmpty()) {
         // Nothing to send: it has gone once the output before it has. That
         // output's own callback stays.
         if (run->output.empty()) {
-            if (sent) sent(true);
+            if (sent)
+                sent(true);
         } else if (sent) {
             Output& last = run->output.back();
             last.sent = [before = std::move(last.sent), sent = std::move(sent)](bool delivered) {
-                if (before) before(delivered);
+                if (before)
+                    before(delivered);
                 sent(delivered);
             };
         }
@@ -471,7 +532,8 @@ bool CommandSocket::send(quint64 connection, const char* event, const QString& i
     std::vector<qsizetype> parts;
     for (qsizetype at = 0; at < text.size();) {
         qsizetype size = std::min(EventText, text.size() - at);
-        if (at + size < text.size() && text[at + size - 1].isHighSurrogate()) --size;
+        if (at + size < text.size() && text[at + size - 1].isHighSurrogate())
+            --size;
         parts.push_back(size);
         at += size;
     }
@@ -503,7 +565,8 @@ bool CommandSocket::send(quint64 connection, const char* event, const QString& i
 bool CommandSocket::pump(quint64 connection, const QString& id)
 {
     const auto run = find(connection, id);
-    if (!run) return false;
+    if (!run)
+        return false;
     // A callback can come back here: the books are looked up again each time.
     while (!run->output.empty() && (!run->credit || unacknowledged(connection) < AckWindow)) {
         Output out = std::move(run->output.front());
@@ -515,7 +578,8 @@ bool CommandSocket::pump(quint64 connection, const QString& id)
         // False: the client has gone, or fell more than 16 MiB behind.
         if (!m_router.sendEvent(connection, target(), QLatin1String(out.event), args, &line)) {
             std::deque<Output> rest = takeOutput(*run);
-            if (out.sent) out.sent(false);
+            if (out.sent)
+                out.sent(false);
             dropped(rest);
             return false;
         }
@@ -523,9 +587,11 @@ bool CommandSocket::pump(quint64 connection, const QString& id)
         // callback, which can come back here and read the window.
         if (run->credit) {
             run->unacknowledged += line;
-            if (const auto books = m_connections.find(connection); books != m_connections.end()) books->unacknowledged += line;
+            if (const auto books = m_connections.find(connection); books != m_connections.end())
+                books->unacknowledged += line;
         }
-        if (out.sent) out.sent(true);
+        if (out.sent)
+            out.sent(true);
     }
     if (run->output.empty() && run->exit && find(connection, id) == run) {
         const int status = *run->exit;
@@ -533,7 +599,8 @@ bool CommandSocket::pump(quint64 connection, const QString& id)
         remove(connection, id);
         run->reply.finish(QJsonObject{{QStringLiteral("exit"), status}});
         // Its share of the window is free for the others.
-        if (window) pumpAll(connection);
+        if (window)
+            pumpAll(connection);
     }
     return true;
 }
@@ -547,13 +614,15 @@ qint64 CommandSocket::unacknowledged(quint64 connection) const
 void CommandSocket::pumpAll(quint64 connection)
 {
     const QStringList ids = m_connections.value(connection).runs.keys();
-    for (const QString& id : ids) pump(connection, id);
+    for (const QString& id : ids)
+        pump(connection, id);
 }
 
 void CommandSocket::finish(quint64 connection, const QString& id, int status)
 {
     const auto run = find(connection, id);
-    if (!run) return;
+    if (!run)
+        return;
     // The reply goes after the output that waits for the client.
     run->exit = status;
     pump(connection, id);
@@ -583,7 +652,9 @@ int CommandSocket::waitingInputs() const
 {
     int count = 0;
     for (const Connection& c : m_connections)
-        count += int(std::count_if(c.runs.cbegin(), c.runs.cend(), [](const auto& r) { return !r->started; }));
+        count += int(std::count_if(c.runs.cbegin(), c.runs.cend(), [](const auto& r) {
+            return !r->started;
+        }));
     return count;
 }
 
@@ -601,7 +672,8 @@ std::optional<quint32> CommandSocket::pane(double pane, QString& error) const
     }
     // A remote host reaches the pane of its ssh session only.
     if (m_remote) {
-        if (pane == 0 || quint32(pane) == m_remote->pane) return m_remote->pane;
+        if (pane == 0 || quint32(pane) == m_remote->pane)
+            return m_remote->pane;
         // The client of a session numbers panes as its daemon does: the
         // window's number of its pane would name another one.
         error = m_remote->commandsTarget
@@ -609,7 +681,8 @@ std::optional<quint32> CommandSocket::pane(double pane, QString& error) const
             : QStringLiteral("a run from a remote host acts on the pane of its ssh session, %1").arg(m_remote->pane);
         return std::nullopt;
     }
-    if (pane == 0) return m_control.focusedPane().value_or(0);
+    if (pane == 0)
+        return m_control.focusedPane().value_or(0);
     if (!m_control.hasPane(quint32(pane))) {
         error = QStringLiteral("no pane %1").arg(quint32(pane));
         return std::nullopt;

@@ -142,11 +142,17 @@ public:
     QString endpoint(quint32 pane, const QString& host, bool commandsTarget, QString* error);
 
     /// The tokens of the open sessions. A test hook.
-    QStringList tokens() const { return m_sessions.keys(); }
+    QStringList tokens() const
+    {
+        return m_sessions.keys();
+    }
     /// The local socket of @p token, empty without one. A test hook.
     QString socket(const QString& token) const;
     /// Replaces the program that cancels the forwards ("ssh"). A test hook.
-    void setSsh(const QString& program) { m_ssh = program; }
+    void setSsh(const QString& program)
+    {
+        m_ssh = program;
+    }
 
 private:
     struct Session;

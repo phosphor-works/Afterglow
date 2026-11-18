@@ -85,7 +85,8 @@ std::string apc(std::string_view keys, std::string_view payload = {})
 std::string sixel(int width, int bands)
 {
     std::string s = "\x1bPq#1;2;100;0;0#1";
-    for (int b = 0; b < bands; ++b) s += (b ? "-!" : "!") + std::to_string(width) + "~";
+    for (int b = 0; b < bands; ++b)
+        s += (b ? "-!" : "!") + std::to_string(width) + "~";
     return s + "\x1b\\";
 }
 
@@ -98,7 +99,10 @@ struct Term
     {
         t.resize(cols, rows, 10, 20); // give the terminal a cell size
     }
-    const GraphicsStore& g() const { return t.graphics(); }
+    const GraphicsStore& g() const
+    {
+        return t.graphics();
+    }
 };
 
 /// A store driven directly, for what Terminal does not route yet or what a
@@ -119,11 +123,19 @@ struct Store
             p += ';';
             p += payload;
         }
-        GraphicsStore::Context ctx{screen, host, 10, 20, [this](std::string_view bytes) { host.written.append(bytes); },
+        GraphicsStore::Context ctx{screen,
+                                   host,
+                                   10,
+                                   20,
+                                   [this](std::string_view bytes) {
+                                       host.written.append(bytes);
+                                   },
                                    [this] {
-                                       if (screen.cursor.y + 1 < screen.rows()) ++screen.cursor.y;
-                                       else screen.scrollUp(Region{0, screen.rows() - 1, 0, screen.cols() - 1}, 1,
-                                                            StyleTable::DefaultId, true);
+                                       if (screen.cursor.y + 1 < screen.rows())
+                                           ++screen.cursor.y;
+                                       else
+                                           screen.scrollUp(Region{0, screen.rows() - 1, 0, screen.cols() - 1}, 1,
+                                                           StyleTable::DefaultId, true);
                                    }};
         g.handle(p, ctx);
     }
@@ -133,14 +145,18 @@ struct Store
 struct ShmName
 {
     std::string name;
-    ~ShmName() { shm_unlink(name.c_str()); }
+    ~ShmName()
+    {
+        shm_unlink(name.c_str());
+    }
 };
 
 /// Fills a new shared memory object as a sender does: sized first. A write()
 /// past its end grows it on Linux (a tmpfs file), not on FreeBSD.
 ssize_t writeShm(int fd, const char* bytes, std::size_t size)
 {
-    if (ftruncate(fd, off_t(size)) != 0) return -1;
+    if (ftruncate(fd, off_t(size)) != 0)
+        return -1;
     return pwrite(fd, bytes, size, 0);
 }
 
@@ -150,18 +166,24 @@ ssize_t writeShm(int fd, const char* bytes, std::size_t size)
 struct TempFile
 {
     std::string path;
-    explicit TempFile(std::string_view stem, const std::filesystem::path& directory = std::filesystem::temp_directory_path())
+    explicit TempFile(std::string_view stem,
+                      const std::filesystem::path& directory = std::filesystem::temp_directory_path())
         : path((directory / (std::string(stem) + "XXXXXX")).string())
     {
         const int fd = mkstemp(path.data());
-        if (fd >= 0) close(fd);
+        if (fd >= 0)
+            close(fd);
     }
-    ~TempFile() { unlink(path.c_str()); }
+    ~TempFile()
+    {
+        unlink(path.c_str());
+    }
     /// (Re)writes the file; a link put in its place is not followed.
     bool write(std::string_view bytes) const
     {
         const int fd = open(path.c_str(), O_CREAT | O_WRONLY | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
-        if (fd < 0) return false;
+        if (fd < 0)
+            return false;
         const bool ok = ::write(fd, bytes.data(), bytes.size()) == ssize_t(bytes.size());
         close(fd);
         return ok;
@@ -367,7 +389,8 @@ TEST(Graphics, PartialErasesKeepImagesAsTheSpecSays)
     // graphics" than ED 2 and ED 3. Programs that manage their own
     // placements redraw text over them with EL. A 25x45 image at 10x20
     // cells covers three rows from the top.
-    for (const char* erase : {"\x1b[H\x1b[K", "\x1b[H\x1b[2K", "\x1b[H\x1b[J", "\x1b[4;1H\x1b[1J", "\x1b[2;30H\x1b[K"}) {
+    for (const char* erase :
+         {"\x1b[H\x1b[K", "\x1b[H\x1b[2K", "\x1b[H\x1b[J", "\x1b[4;1H\x1b[1J", "\x1b[2;30H\x1b[K"}) {
         Term t(40, 10);
         t.t.feed(apc("a=T,f=32,s=25,v=45,i=5", base64Encode(rgba(25, 45, 0, 0, 255))));
         ASSERT_EQ(t.g().placements().size(), 1u);
@@ -397,8 +420,8 @@ TEST(Graphics, PartialErasesDropSixelImagesOnTheirCells)
     }
     // An erase of other rows or of the columns to the right keeps it. So do
     // selective erases: images are not characters.
-    for (const char* erase : {"\x1b[5;1H\x1b[K", "\x1b[5;1H\x1b[J", "\x1b[2;4H\x1b[K", "\x1b[3;4H\x1b[J", "\x1b[H\x1b[?K",
-                              "\x1b[H\x1b[?J", "\x1b[4;1H\x1b[?1J"}) {
+    for (const char* erase : {"\x1b[5;1H\x1b[K", "\x1b[5;1H\x1b[J", "\x1b[2;4H\x1b[K", "\x1b[3;4H\x1b[J",
+                              "\x1b[H\x1b[?K", "\x1b[H\x1b[?J", "\x1b[4;1H\x1b[?1J"}) {
         Term t(40, 10);
         t.t.feed("\x1b[H" + sixel(25, 8));
         t.t.feed(erase);
@@ -641,7 +664,8 @@ TEST(Graphics, RegionScrollMovesImagesInsideItOnly)
     t.t.feed("\x1b[1S"); // SU 1 in the region
     const auto rowOf = [&](std::uint32_t id) {
         for (const auto& v : t.g().visible(t.t.screen(), 10, 20)) {
-            if (v.imageId == id) return v.y / 20;
+            if (v.imageId == id)
+                return v.y / 20;
         }
         return -1;
     };
@@ -737,7 +761,8 @@ TEST(Graphics, BothColumnsAndRowsKeepTheAspectAndTheOffsetsAddNoCells)
 TEST(Graphics, AnUnscrollDropsTheImagesOfTheRowsThatLeave)
 {
     Term t(20, 4);
-    for (int i = 0; i < 8; ++i) t.t.feed("line\r\n");
+    for (int i = 0; i < 8; ++i)
+        t.t.feed("line\r\n");
     t.t.feed("\x1b[4;1H");
     t.t.feed(apc("a=T,f=32,s=10,v=40,i=1,C=1,q=2", base64Encode(rgba(10, 40, 0, 0, 0)))); // rows 3 and 4
     ASSERT_EQ(t.g().placements().size(), 1u);
@@ -771,7 +796,8 @@ TEST(Graphics, ACutLetterboxKeepsTheColumnsOfTheChildren)
     t.t.feed(apc("a=p,i=4,p=1,P=3,Q=1,H=6,c=4,r=2,q=2")); // its letterboxed child: column 6
     const auto xOf = [&t](std::uint32_t image) -> std::optional<int> {
         for (const VisiblePlacement& v : t.g().visible(t.t.screen(), 10, 20)) {
-            if (v.imageId == image) return v.x;
+            if (v.imageId == image)
+                return v.x;
         }
         return std::nullopt;
     };
@@ -796,7 +822,9 @@ TEST(Graphics, ChildOfAClippedImageMovesWithTheRows)
     t.t.feed(apc("a=p,i=2,p=2,P=1,Q=1,V=2,q=2")); // row 2
     t.t.feed("\x1b[4;1H\n"); // the parent's anchor moves down to row 0, the child up to row 1
     const auto vis = t.g().visible(t.t.screen(), 10, 20);
-    const auto child = std::find_if(vis.begin(), vis.end(), [](const auto& v) { return v.imageId == 2; });
+    const auto child = std::find_if(vis.begin(), vis.end(), [](const auto& v) {
+        return v.imageId == 2;
+    });
     ASSERT_NE(child, vis.end());
     EXPECT_EQ(child->y, 20);
 }
@@ -814,7 +842,9 @@ TEST(Graphics, ChildOfAClippedImageIsCutLikeItsParent)
     t.t.feed("\x1b[5;1H\n"); // row 1 leaves at the top margin
     const auto vis = t.g().visible(t.t.screen(), 10, 20);
     auto find = [&](std::uint32_t id) {
-        return std::find_if(vis.begin(), vis.end(), [id](const auto& v) { return v.imageId == id; });
+        return std::find_if(vis.begin(), vis.end(), [id](const auto& v) {
+            return v.imageId == id;
+        });
     };
     // The one-row child left with its only row: it does not cover row 0.
     EXPECT_EQ(find(2), vis.end());
@@ -843,7 +873,9 @@ TEST(Graphics, ChildIsCutAtTheBottomMarginAndGoesWithItsParent)
     t.t.feed(apc("a=p,i=2,p=1,P=1,Q=1,V=1,q=2")); // rows 3 and 4
     t.t.feed("\x1b[2;1H\x1bM"); // RI at the top margin: row 4 leaves at the bottom
     const auto vis = t.g().visible(t.t.screen(), 10, 20);
-    const auto child = std::find_if(vis.begin(), vis.end(), [](const auto& v) { return v.imageId == 2; });
+    const auto child = std::find_if(vis.begin(), vis.end(), [](const auto& v) {
+        return v.imageId == 2;
+    });
     ASSERT_NE(child, vis.end());
     EXPECT_EQ(child->y, 80);
     EXPECT_EQ(child->height, 20);
@@ -886,7 +918,8 @@ TEST(Graphics, UpwardScrollAtTheScreenBottomKeepsRowsBelowIt)
     Term t(20, 6);
     t.t.feed(std::string(10, '\n')); // history: SU moves rows inside the screen
     t.t.feed("\x1b[5;1H");
-    t.t.feed(apc("a=T,f=32,s=10,v=80,i=1,C=1,q=2", base64Encode(rgba(10, 80, 0, 0, 0)))); // rows 4 to 7, two below the screen
+    t.t.feed(apc("a=T,f=32,s=10,v=80,i=1,C=1,q=2",
+                 base64Encode(rgba(10, 80, 0, 0, 0)))); // rows 4 to 7, two below the screen
     t.t.feed("\x1b[1S");
     const auto vis = t.g().visible(t.t.screen(), 10, 20);
     ASSERT_EQ(vis.size(), 1u);
@@ -952,7 +985,9 @@ TEST(Graphics, RelativePlacementsFollowParentAndCascadeDeletion)
     t.t.feed("\x1b[6;8H");
     t.t.feed(apc("a=p,i=1,p=1,C=1"));
     visible = t.g().visible(t.t.screen(), 10, 20);
-    auto child = std::find_if(visible.begin(), visible.end(), [](const auto& v) { return v.imageId == 2; });
+    auto child = std::find_if(visible.begin(), visible.end(), [](const auto& v) {
+        return v.imageId == 2;
+    });
     ASSERT_NE(child, visible.end());
     EXPECT_EQ(child->x, 50);
     EXPECT_EQ(child->y, 160);
@@ -1169,9 +1204,9 @@ TEST(Graphics, ComposeRefusesRectanglesOutsideTheImageOrOverlapping)
     t.t.feed(apc("a=t,f=32,s=4,v=4,i=1,q=2", base64Encode(rgba(4, 4, 255, 0, 0))));
     t.t.feed(apc("a=f,f=32,s=4,v=4,i=1,q=2", base64Encode(rgba(4, 4, 0, 0, 255))));
     const auto before = t.g().images().at(1).frames[1];
-    for (std::string_view keys : {"a=c,i=1,r=1,c=2,w=2,h=2,x=3",  // destination past the right edge
-                                  "a=c,i=1,r=1,c=2,w=2,h=2,Y=3",  // source past the bottom
-                                  "a=c,i=1,r=1,c=2,w=5",          // wider than the image
+    for (std::string_view keys : {"a=c,i=1,r=1,c=2,w=2,h=2,x=3", // destination past the right edge
+                                  "a=c,i=1,r=1,c=2,w=2,h=2,Y=3", // source past the bottom
+                                  "a=c,i=1,r=1,c=2,w=5", // wider than the image
                                   "a=c,i=1,r=2,c=2,w=2,h=2,x=1,y=1"}) { // one frame, overlapping
         t.host.written.clear();
         t.t.feed(apc(keys));
@@ -1324,7 +1359,9 @@ TEST(Graphics, OmittedParentPlacementBindsAtCreation)
     t.t.feed("\x1b[6;6H" + apc("a=p,i=1,p=2,C=1,q=2"));
     t.t.feed(apc("a=p,i=2,p=1,P=1,H=1,q=2")); // no Q: the first placement of image 1
     const auto vis = t.g().visible(t.t.screen(), 10, 20);
-    const auto child = std::find_if(vis.begin(), vis.end(), [](const auto& v) { return v.imageId == 2; });
+    const auto child = std::find_if(vis.begin(), vis.end(), [](const auto& v) {
+        return v.imageId == 2;
+    });
     ASSERT_NE(child, vis.end());
     EXPECT_EQ(child->x, 20);
     EXPECT_EQ(child->y, 20);
@@ -1345,7 +1382,9 @@ TEST(Graphics, UnfinishedChunkedUploadDoesNotSwallowTheNextCommand)
     // A reset ends a transfer too.
     t.host.written.clear();
     t.t.feed(apc("a=t,i=2,f=24,s=1,v=1,m=1", "AA"));
-    t.t.feed("\x1b" "c");
+    t.t.feed(
+        "\x1b"
+        "c");
     t.t.feed(apc("a=t,i=3,f=24,s=1,v=1", base64Encode("abc")));
     EXPECT_EQ(t.host.written, "\x1b_Gi=3;OK\x1b\\");
     EXPECT_EQ(t.g().images().count(2), 0u);
@@ -1580,7 +1619,10 @@ TEST(Graphics, IndexedFileIsReadOnlyAsFarAsTheImage)
     // 2x1 at f=16 is 4 bytes. A work budget of 4 bytes with no refill
     // refuses a read of any more, so the OK shows that no more was read.
     TempFile file("afterglow-graphics-indexed-");
-    ASSERT_TRUE(file.write(std::string("\x01\x80\x02\xff" "more", 8)));
+    ASSERT_TRUE(
+        file.write(std::string("\x01\x80\x02\xff"
+                               "more",
+                               8)));
     Store s(20, 5);
     s.g.setWorkBudget(4, 0);
     s.apc("a=t,t=f,f=16,s=2,v=1,i=1", base64Encode(file.path));
@@ -1609,7 +1651,8 @@ TEST(Graphics, IndexedImagesHaveNoFrames)
     ASSERT_EQ(t.g().images().size(), 3u);
     std::uint32_t id = 0;
     for (const auto& [key, image] : t.g().images()) {
-        if (key != 1 && key != 2) id = key;
+        if (key != 1 && key != 2)
+            id = key;
     }
     TempFile file("afterglow-tty-graphics-protocol-indexed-");
     ASSERT_TRUE(file.write("RGBA"));
@@ -1646,8 +1689,12 @@ TEST(Graphics, ClearScreenKeepsVirtualPlacementsAndDropsImagesReachingIt)
     ASSERT_EQ(s.g.placements().size(), 3u);
     s.g.clearPlacements(s.screen, 10, 20);
     ASSERT_EQ(s.g.placements().size(), 2u);
-    EXPECT_TRUE(std::any_of(s.g.placements().begin(), s.g.placements().end(), [](const Placement& p) { return p.isVirtual; }));
-    EXPECT_TRUE(std::none_of(s.g.placements().begin(), s.g.placements().end(), [](const Placement& p) { return p.imageId == 2; }));
+    EXPECT_TRUE(std::any_of(s.g.placements().begin(), s.g.placements().end(), [](const Placement& p) {
+        return p.isVirtual;
+    }));
+    EXPECT_TRUE(std::none_of(s.g.placements().begin(), s.g.placements().end(), [](const Placement& p) {
+        return p.imageId == 2;
+    }));
 }
 
 TEST(Graphics, DeleteVisibleIncludesImagesReachingTheScreen)
@@ -1700,7 +1747,8 @@ void animated(Term& t, bool placed)
 {
     t.t.feed(apc("a=t,f=32,s=1,v=1,i=7,q=2", base64Encode(rgba(1, 1, 255, 0, 0))));
     t.t.feed(apc("a=f,f=32,s=1,v=1,i=7,z=100,q=2", base64Encode(rgba(1, 1, 0, 255, 0))));
-    if (placed) t.t.feed(apc("a=p,i=7,C=1,q=2"));
+    if (placed)
+        t.t.feed(apc("a=p,i=7,C=1,q=2"));
     t.t.feed(apc("a=a,i=7,r=1,z=40,s=3,v=1,q=2"));
 }
 } // namespace
@@ -1738,8 +1786,8 @@ TEST(Graphics, FrameLimitIsCheckedBeforeDecoding)
     t.host.written.clear();
     t.t.feed(apc("a=f,f=24,s=1,v=1,i=1", "AA")); // too short: decoding would say ENODATA
     // r= names the frame the command would have added.
-    EXPECT_EQ(t.host.written, "\x1b_Gi=1,r=" + std::to_string(GraphicsStore::MaxFrames + 1)
-                                  + ";ENOSPC:too many image frames\x1b\\");
+    EXPECT_EQ(t.host.written,
+              "\x1b_Gi=1,r=" + std::to_string(GraphicsStore::MaxFrames + 1) + ";ENOSPC:too many image frames\x1b\\");
 }
 
 TEST(Graphics, SourceRectangleIsClippedToTheImage)
@@ -1912,8 +1960,9 @@ TEST(Graphics, IdWithNumberStillDeletesItsTemporaryMedium)
     Term t(20, 10);
     t.t.feed(apc("a=t,t=t,f=32,s=1,v=1,i=1,I=2", base64Encode(file.path)));
     t.t.feed(apc("a=t,t=s,f=32,s=1,v=1,i=3,I=4", base64Encode(shm.name)));
-    EXPECT_EQ(t.host.written, "\x1b_Gi=1,I=2;EINVAL:both an image id and an image number\x1b\\"
-                              "\x1b_Gi=3,I=4;EINVAL:both an image id and an image number\x1b\\");
+    EXPECT_EQ(t.host.written,
+              "\x1b_Gi=1,I=2;EINVAL:both an image id and an image number\x1b\\"
+              "\x1b_Gi=3,I=4;EINVAL:both an image id and an image number\x1b\\");
     EXPECT_FALSE(std::filesystem::exists(file.path));
     EXPECT_EQ(shm_open(shm.name.c_str(), O_RDONLY, 0), -1);
     EXPECT_TRUE(t.g().images().empty());
@@ -1956,12 +2005,14 @@ TEST(Graphics, ReadOverTheWorkBudgetIsBusy)
     const auto object = [](const std::string& name) {
         const int fd = shm_open(name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
         const bool written = fd >= 0 && writeShm(fd, "RGBA", 4) == 4;
-        if (fd >= 0) close(fd);
+        if (fd >= 0)
+            close(fd);
         return written;
     };
     const auto exists = [](const std::string& name) {
         const int fd = shm_open(name.c_str(), O_RDONLY, 0);
-        if (fd >= 0) close(fd);
+        if (fd >= 0)
+            close(fd);
         return fd >= 0;
     };
     const ShmName tagged{"/afterglow-tty-graphics-protocol-busy-" + std::to_string(getpid())};
@@ -2102,8 +2153,9 @@ TEST(Graphics, PlacementLimitEvictsTheOldestInternalImage)
     t.t.feed("\x1b[5;5H\x1bPq#1~\x1b\\");
     EXPECT_EQ(t.g().placements().size(), GraphicsStore::MaxPlacements);
     EXPECT_EQ(t.g().images().count(first), 0u);
-    const auto kitty = std::count_if(t.g().placements().begin(), t.g().placements().end(),
-                                     [](const Placement& p) { return p.imageId == 1; });
+    const auto kitty = std::count_if(t.g().placements().begin(), t.g().placements().end(), [](const Placement& p) {
+        return p.imageId == 1;
+    });
     EXPECT_EQ(std::size_t(kitty), GraphicsStore::MaxPlacements - 1);
 }
 
@@ -2208,7 +2260,8 @@ TEST(Graphics, PlacementsWithoutAnIdNeverReplaceOnesWithIt)
     const auto& placements = t.g().placements();
     ASSERT_EQ(placements.size(), 4u);
     std::vector<std::uint32_t> ids;
-    for (const auto& p : placements) ids.push_back(p.placementId);
+    for (const auto& p : placements)
+        ids.push_back(p.placementId);
     std::sort(ids.begin(), ids.end());
     EXPECT_EQ(std::adjacent_find(ids.begin(), ids.end()), ids.end());
     EXPECT_EQ(std::count(ids.begin(), ids.end(), 0u), 0);
@@ -2250,7 +2303,8 @@ TEST(Graphics, PlaceholderContinuesOnlyWhatAgrees)
         PlaceholderDecoder decoder;
         std::vector<PlaceholderCell> cells;
         for (int x = 0; x < screen.cols(); ++x) {
-            if (const auto cell = decoder.next(screen, screen.row(y), x)) cells.push_back(*cell);
+            if (const auto cell = decoder.next(screen, screen.row(y), x))
+                cells.push_back(*cell);
         }
         return cells;
     };
@@ -2326,7 +2380,8 @@ TEST(Graphics, AnimationStateResetsTheLoopCount)
     Term t(20, 10);
     animated(t, true);
     t.t.feed(apc("a=a,i=7,v=3,q=2")); // two loops: 0 (40 ms), 1 (100 ms), 0, 1
-    for (std::uint64_t now = 1000; now <= 1280; now += 10) t.t.advanceAnimations(now);
+    for (std::uint64_t now = 1000; now <= 1280; now += 10)
+        t.t.advanceAnimations(now);
     ASSERT_EQ(t.g().images().at(7).currentFrame, 1u); // done at 1280, on the last frame
     EXPECT_EQ(t.t.advanceAnimations(1285), 0u);
     t.t.feed(apc("a=a,i=7,s=3,q=2"));
@@ -2406,7 +2461,8 @@ TEST(Graphics, FrameChunksFromTheClientWriterAddAFrame)
 {
     // The writer gives every chunk of a frame a=f, as the protocol asks.
     std::string pixels;
-    for (int i = 0; i < 40 * 40; ++i) pixels += rgba(1, 1, std::uint8_t(i), 2, 3);
+    for (int i = 0; i < 40 * 40; ++i)
+        pixels += rgba(1, 1, std::uint8_t(i), 2, 3);
     Term t(20, 10);
     t.t.feed(apc("a=t,f=32,s=40,v=40,i=6,q=2", base64Encode(pixels)));
     const auto frame = AfterglowProto::GraphicsCommand::parse("a=f,f=32,s=40,v=40,i=6");

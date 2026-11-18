@@ -19,7 +19,8 @@ inline std::optional<mode_t> currentUmask()
 {
     std::ifstream status("/proc/self/status");
     for (std::string line; std::getline(status, line);) {
-        if (!line.starts_with("Umask:")) continue;
+        if (!line.starts_with("Umask:"))
+            continue;
         try {
             return mode_t(std::stoul(line.substr(6), nullptr, 8) & 0777);
         } catch (const std::exception&) {

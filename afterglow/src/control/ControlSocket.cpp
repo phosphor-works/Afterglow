@@ -46,7 +46,8 @@ ControlApi::ControlApi(Control& control, SettingsStore& settings, QObject* paren
 
 bool ControlApi::failed(const QString& error)
 {
-    if (error.isEmpty()) return false;
+    if (error.isEmpty())
+        return false;
     sendErrorReply(error);
     return true;
 }
@@ -55,7 +56,8 @@ std::optional<quint32> ControlApi::paneId(double value)
 {
     // JSON numbers arrive as doubles. A conversion to uint would wrap -1 and
     // 2^32 + 1 onto real panes, and round 1.6 to pane 2.
-    if (Control::isWhole(value) && value >= 0 && value <= double(std::numeric_limits<quint32>::max())) return quint32(value);
+    if (Control::isWhole(value) && value >= 0 && value <= double(std::numeric_limits<quint32>::max()))
+        return quint32(value);
     failed(QStringLiteral("a pane ID is a whole number from 0 to %1").arg(std::numeric_limits<quint32>::max()));
     return std::nullopt;
 }
@@ -66,36 +68,43 @@ QVariantList ControlApi::listPanes()
     // As those of userVarChanged and the command: only with read access,
     // which also reads the command lines of the foreground processes.
     const bool readText = m_settings.settings().control.allowReadText;
-    for (const PaneInfo& p : m_control.panes(true, readText)) panes.append(m_control.clientPaneMap(Control::paneMap(p)));
+    for (const PaneInfo& p : m_control.panes(true, readText))
+        panes.append(m_control.clientPaneMap(Control::paneMap(p)));
     return panes;
 }
 
 uint ControlApi::focusedPane()
 {
-    if (const auto pane = m_control.focusedPane()) return *pane;
+    if (const auto pane = m_control.focusedPane())
+        return *pane;
     failed(QStringLiteral("no focused pane"));
     return 0;
 }
 
 void ControlApi::sendText(double pane, const QString& text)
 {
-    if (const auto id = paneId(pane)) failed(m_control.sendText(*id, text));
+    if (const auto id = paneId(pane))
+        failed(m_control.sendText(*id, text));
 }
 
 ControlApi::PendingReply ControlApi::deferCall(const QString& noClient)
 {
     auto reply = std::make_shared<PhosphorIpc::IpcPendingReply>(deferReply());
-    if (reply->isValid()) return reply;
+    if (reply->isValid())
+        return reply;
     // A call from no connection has nobody to answer later; past the
     // router's limit of waiting calls, the router fails it.
-    if (!connectionId()) failed(noClient);
+    if (!connectionId())
+        failed(noClient);
     return nullptr;
 }
 
 std::optional<quint32> ControlApi::targetPane(PhosphorIpc::IpcPendingReply& reply, quint32 id)
 {
-    if (id != 0) return id;
-    if (const auto focused = m_control.focusedPane()) return *focused;
+    if (id != 0)
+        return id;
+    if (const auto focused = m_control.focusedPane())
+        return *focused;
     reply.fail(QStringLiteral("no_pane"), QStringLiteral("no focused pane"));
     return std::nullopt;
 }
@@ -103,14 +112,16 @@ std::optional<quint32> ControlApi::targetPane(PhosphorIpc::IpcPendingReply& repl
 void ControlApi::screenshot(double pane, const QString& scope)
 {
     const auto id = paneId(pane);
-    if (!id) return;
+    if (!id)
+        return;
     const auto captureScope = Control::captureScopeFromName(scope);
     if (!captureScope) {
         failed(QStringLiteral("scope is pane, tab or window"));
         return;
     }
     const PendingReply reply = deferCall(QStringLiteral("a screenshot needs a client connection"));
-    if (!reply) return;
+    if (!reply)
+        return;
     // From here on a failure has a code of its own, which only the pending
     // reply sends. The permission goes first: it holds for every pane.
     QString code;
@@ -119,18 +130,24 @@ void ControlApi::screenshot(double pane, const QString& scope)
         return;
     }
     const auto target = targetPane(*reply, *id);
-    if (!target) return;
+    if (!target)
+        return;
     // The reply moves on with the answer, which Control posts to its thread,
     // the router's: it ends there, as IpcPendingReply wants.
     const QString error = m_control.screenshot(
         *target, *captureScope,
-        [reply, api = QPointer<ControlApi>(this)](const QString& error, const QString& code, const QJsonObject& result) {
-            if (!api) reply->fail(QStringLiteral("failed"), QStringLiteral("the control socket closed"));
-            else if (!error.isEmpty()) reply->fail(code, error);
-            else reply->finish(result);
+        [reply, api = QPointer<ControlApi>(this)](const QString& error, const QString& code,
+                                                  const QJsonObject& result) {
+            if (!api)
+                reply->fail(QStringLiteral("failed"), QStringLiteral("the control socket closed"));
+            else if (!error.isEmpty())
+                reply->fail(code, error);
+            else
+                reply->finish(result);
         },
         code);
-    if (!error.isEmpty()) reply->fail(code, error);
+    if (!error.isEmpty())
+        reply->fail(code, error);
 }
 
 QString ControlApi::getText(double pane, const QString& scope)
@@ -141,14 +158,16 @@ QString ControlApi::getText(double pane, const QString& scope)
 QString ControlApi::getText(double pane, const QString& scope, const QVariantMap& options)
 {
     const auto id = paneId(pane);
-    if (!id) return {};
+    if (!id)
+        return {};
     const auto s = Control::scopeFromName(scope);
     if (!s) {
         failed(Control::BadTextScope);
         return {};
     }
     AfterglowVt::TextFormat format;
-    if (failed(Control::textFormat(options, format))) return {};
+    if (failed(Control::textFormat(options, format)))
+        return {};
     QString text;
     failed(m_control.readText(*id, *s, text, format));
     return text;
@@ -157,28 +176,33 @@ QString ControlApi::getText(double pane, const QString& scope, const QVariantMap
 uint ControlApi::split(double pane, const QString& direction, const QStringList& command)
 {
     quint32 created = 0;
-    if (const auto id = paneId(pane)) failed(m_control.split(*id, direction, command, {}, created));
+    if (const auto id = paneId(pane))
+        failed(m_control.split(*id, direction, command, {}, created));
     return created;
 }
 
 uint ControlApi::newTab(double pane, const QString& workingDirectory, const QStringList& command)
 {
     quint32 created = 0;
-    if (const auto id = paneId(pane)) failed(m_control.newTab(*id, workingDirectory, command, created));
+    if (const auto id = paneId(pane))
+        failed(m_control.newTab(*id, workingDirectory, command, created));
     return created;
 }
 
 uint ControlApi::split(double pane, const QString& direction, const QStringList& command, const QVariantMap& options)
 {
     quint32 created = 0;
-    if (const auto id = paneId(pane)) failed(m_control.clientSplit(*id, direction, command, options, created));
+    if (const auto id = paneId(pane))
+        failed(m_control.clientSplit(*id, direction, command, options, created));
     return created;
 }
 
-uint ControlApi::newTab(double pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
+uint ControlApi::newTab(double pane, const QString& workingDirectory, const QStringList& command,
+                        const QVariantMap& options)
 {
     quint32 created = 0;
-    if (const auto id = paneId(pane)) failed(m_control.clientNewTab(*id, workingDirectory, command, options, created));
+    if (const auto id = paneId(pane))
+        failed(m_control.clientNewTab(*id, workingDirectory, command, options, created));
     return created;
 }
 
@@ -198,23 +222,27 @@ uint ControlApi::newWindow(const QString& workingDirectory, const QStringList& c
 
 void ControlApi::focus(double pane)
 {
-    if (const auto id = paneId(pane)) failed(m_control.focus(*id));
+    if (const auto id = paneId(pane))
+        failed(m_control.focus(*id));
 }
 
 void ControlApi::close(double pane)
 {
-    if (const auto id = paneId(pane)) failed(m_control.close(*id));
+    if (const auto id = paneId(pane))
+        failed(m_control.close(*id));
 }
 
 void ControlApi::setTitle(double pane, const QString& title)
 {
-    if (const auto id = paneId(pane)) failed(m_control.setTitle(*id, title));
+    if (const auto id = paneId(pane))
+        failed(m_control.setTitle(*id, title));
 }
 
 uint ControlApi::focusNeighbor(double pane, const QString& direction)
 {
     const auto id = paneId(pane);
-    if (!id) return 0;
+    if (!id)
+        return 0;
     quint32 focused = 0;
     failed(m_control.focusNeighbor(*id, direction, focused));
     return focused;
@@ -222,35 +250,41 @@ uint ControlApi::focusNeighbor(double pane, const QString& direction)
 
 void ControlApi::resizePane(double pane, const QString& direction, double cells)
 {
-    if (const auto id = paneId(pane)) failed(m_control.resizePane(*id, direction, cells));
+    if (const auto id = paneId(pane))
+        failed(m_control.resizePane(*id, direction, cells));
 }
 
 void ControlApi::sendKeys(double pane, const QStringList& keys)
 {
-    if (const auto id = paneId(pane)) failed(m_control.sendKeys(*id, keys));
+    if (const auto id = paneId(pane))
+        failed(m_control.sendKeys(*id, keys));
 }
 
 void ControlApi::scroll(double pane, const QString& unit, double amount)
 {
-    if (const auto id = paneId(pane)) failed(m_control.scroll(*id, unit, amount));
+    if (const auto id = paneId(pane))
+        failed(m_control.scroll(*id, unit, amount));
 }
 
 void ControlApi::setTabTitle(double pane, const QString& title)
 {
-    if (const auto id = paneId(pane)) failed(m_control.setTabTitle(*id, title));
+    if (const auto id = paneId(pane))
+        failed(m_control.setTabTitle(*id, title));
 }
 
 QVariantMap ControlApi::getColors(double pane)
 {
     QVariantMap colors;
-    if (const auto id = paneId(pane)) failed(m_control.colors(*id, colors));
+    if (const auto id = paneId(pane))
+        failed(m_control.colors(*id, colors));
     return colors;
 }
 
 void ControlApi::setColors(double pane, const QVariantMap& colors, bool reset)
 {
     const auto id = paneId(pane);
-    if (!id) return;
+    if (!id)
+        return;
     QString code;
     const QString error = m_control.setColors(*id, colors, reset, &code);
     if (code.isEmpty()) {
@@ -259,77 +293,94 @@ void ControlApi::setColors(double pane, const QVariantMap& colors, bool reset)
     }
     // A code of its own goes only through a pending reply. Past the
     // router's limit of waiting calls, the router fails the call.
-    if (const PendingReply reply = deferCall(error)) reply->fail(code, error);
+    if (const PendingReply reply = deferCall(error))
+        reply->fail(code, error);
 }
 
 void ControlApi::setFontSize(double pane, const QString& size)
 {
-    if (const auto id = paneId(pane)) failed(m_control.setFontSize(*id, size));
+    if (const auto id = paneId(pane))
+        failed(m_control.setFontSize(*id, size));
 }
 
 void ControlApi::setOpacity(double pane, double opacity)
 {
-    if (const auto id = paneId(pane)) failed(m_control.setOpacity(*id, opacity));
+    if (const auto id = paneId(pane))
+        failed(m_control.setOpacity(*id, opacity));
 }
 
 void ControlApi::setUserVar(double pane, const QString& name, const QString& value)
 {
-    if (const auto id = paneId(pane)) failed(m_control.setUserVar(*id, name, value));
+    if (const auto id = paneId(pane))
+        failed(m_control.setUserVar(*id, name, value));
 }
 
 void ControlApi::signalProgram(double pane, const QString& signal)
 {
-    if (const auto id = paneId(pane)) failed(m_control.signalProgram(*id, signal));
+    if (const auto id = paneId(pane))
+        failed(m_control.signalProgram(*id, signal));
 }
 
 void ControlApi::setWindowState(double pane, const QString& state, double cols, double rows)
 {
-    if (const auto id = paneId(pane)) failed(m_control.setWindowState(*id, state, cols, rows));
+    if (const auto id = paneId(pane))
+        failed(m_control.setWindowState(*id, state, cols, rows));
 }
 
 void ControlApi::signal(double pane, double channel, double value)
 {
-    if (const auto id = paneId(pane)) failed(m_control.signal(*id, channel, value));
+    if (const auto id = paneId(pane))
+        failed(m_control.signal(*id, channel, value));
 }
 
 void ControlApi::notify(double pane, const QString& title, const QString& body)
 {
-    if (const auto id = paneId(pane)) failed(m_control.notify(*id, title, body));
+    if (const auto id = paneId(pane))
+        failed(m_control.notify(*id, title, body));
 }
 
 void ControlApi::runAction(double pane, const QString& action)
 {
-    if (const auto id = paneId(pane)) failed(m_control.runClientAction(*id, action));
+    if (const auto id = paneId(pane))
+        failed(m_control.runClientAction(*id, action));
 }
 
 Control::PaneMoved ControlApi::movedReply(const PendingReply& reply)
 {
     // Control answers on its thread, the router's, as IpcPendingReply wants.
     return [reply, api = QPointer<ControlApi>(this)](const QString& error, const QVariantMap& result) {
-        if (!error.isEmpty()) reply->fail(error);
-        else if (!api) reply->fail(QStringLiteral("the control socket closed"));
-        else reply->finish(QJsonObject::fromVariantMap(api->m_control.clientPaneMap(result)));
+        if (!error.isEmpty())
+            reply->fail(error);
+        else if (!api)
+            reply->fail(QStringLiteral("the control socket closed"));
+        else
+            reply->finish(QJsonObject::fromVariantMap(api->m_control.clientPaneMap(result)));
     };
 }
 
 void ControlApi::movePane(double pane, double target, const QString& placement)
 {
     const auto id = paneId(pane);
-    if (!id) return;
+    if (!id)
+        return;
     const auto to = paneId(target);
-    if (!to) return;
+    if (!to)
+        return;
     // Taken first: a call that cannot wait moves nothing.
     const PendingReply reply = deferCall(QStringLiteral("moving a pane needs a client connection"));
-    if (!reply) return;
+    if (!reply)
+        return;
     m_control.movePane(*id, *to, placement, movedReply(reply));
 }
 
 void ControlApi::detachTab(double pane)
 {
     const auto id = paneId(pane);
-    if (!id) return;
+    if (!id)
+        return;
     const PendingReply reply = deferCall(QStringLiteral("moving a tab needs a client connection"));
-    if (!reply) return;
+    if (!reply)
+        return;
     m_control.detachTab(*id, movedReply(reply));
 }
 
@@ -348,7 +399,8 @@ QStringList ControlApi::projects()
 QVariantMap ControlApi::saveProject(double pane, const QString& name, bool overwrite)
 {
     QVariantMap result;
-    if (const auto id = paneId(pane)) failed(m_control.saveProject(*id, name, overwrite, result));
+    if (const auto id = paneId(pane))
+        failed(m_control.saveProject(*id, name, overwrite, result));
     return result;
 }
 
@@ -357,10 +409,13 @@ void ControlApi::openProject(const QString& name, bool newInstance, const QStrin
     // A session waits for the mux daemon off the GUI thread: the call is
     // answered then. Taken first: a call that cannot wait opens nothing.
     const PendingReply reply = deferCall(QStringLiteral("opening a project needs a client connection"));
-    if (!reply) return;
+    if (!reply)
+        return;
     m_control.openProject(name, newInstance, mode, [reply](const QString& error, const QVariantMap& result) {
-        if (error.isEmpty()) reply->finish(QJsonObject::fromVariantMap(result));
-        else reply->fail(error);
+        if (error.isEmpty())
+            reply->finish(QJsonObject::fromVariantMap(result));
+        else
+            reply->fail(error);
     });
 }
 
@@ -375,10 +430,12 @@ bool ControlApi::remoteCommandsEnabled()
 }
 
 QVariantMap ControlApi::openRemoteSocket(double pane, double pid, const QString& host, const QString& directory,
-                                         double protocol, const QStringList& ssh, const QString& destination, bool overlay)
+                                         double protocol, const QStringList& ssh, const QString& destination,
+                                         bool overlay)
 {
     const auto id = paneId(pane);
-    if (!id) return {};
+    if (!id)
+        return {};
     if (!m_remote) {
         failed(QStringLiteral("this afterglow has no remote sockets"));
         return {};
@@ -398,8 +455,9 @@ QVariantMap ControlApi::openRemoteSocket(double pane, double pid, const QString&
         return {};
     }
     RemoteSockets::Opened opened;
-    if (failed(m_remote->open({*id, qint64(std::clamp(pid, -1.0, 1e12)), host, directory, int(protocol), ssh, destination, overlay},
-                              opened)))
+    if (failed(m_remote->open(
+            {*id, qint64(std::clamp(pid, -1.0, 1e12)), host, directory, int(protocol), ssh, destination, overlay},
+            opened)))
         return {};
     QVariantMap result{{QStringLiteral("token"), opened.token}};
     if (!opened.error.isEmpty()) {
@@ -432,7 +490,8 @@ void ControlApi::remoteSocketFailed(const QString& token, const QString& reason)
 bool ControlApi::overlayInput(const QString& input, const QString& chunk, bool eof)
 {
     const quint64 connection = connectionId();
-    if (!connection) return !failed(QStringLiteral("an input needs a client connection"));
+    if (!connection)
+        return !failed(QStringLiteral("an input needs a client connection"));
     return !failed(m_inputs.add(QString::number(connection), input, chunk, eof));
 }
 
@@ -441,25 +500,32 @@ void ControlApi::overlay(double pane, const QStringList& argv, const QVariantMap
     // Standard input that came in parts: the call takes it, whatever it
     // decides, also for a pane ID that it refuses.
     QVariantMap options = given;
-    if (failed(m_inputs.resolve(QString::number(connectionId()), options))) return;
+    if (failed(m_inputs.resolve(QString::number(connectionId()), options)))
+        return;
     const auto id = paneId(pane);
-    if (!id) return;
+    if (!id)
+        return;
     QString error;
     const auto spec = Control::clientOverlaySpec(argv, options, error);
-    if (failed(error)) return;
+    if (failed(error))
+        return;
     const quint64 connection = connectionId();
     const PendingReply reply = deferCall(QStringLiteral("an overlay needs a client connection"));
-    if (!reply) return;
+    if (!reply)
+        return;
     // From here on a failure has a code of its own, which only the pending
     // reply sends.
     const auto target = targetPane(*reply, *id);
-    if (!target) return;
+    if (!target)
+        return;
     QString code;
     error = m_control.clientOverlay(
         overlayOwner(connection), *target, *spec,
         [reply](const QString& error, const QString& code, const QVariantMap& result) {
-            if (!error.isEmpty()) reply->fail(code, error);
-            else reply->finish(QJsonObject::fromVariantMap(result));
+            if (!error.isEmpty())
+                reply->fail(code, error);
+            else
+                reply->finish(QJsonObject::fromVariantMap(result));
         },
         code);
     if (!error.isEmpty()) {
@@ -472,7 +538,8 @@ void ControlApi::overlay(double pane, const QStringList& argv, const QVariantMap
 void ControlApi::cancelOverlays(const QString& message)
 {
     const QSet<quint64> clients = std::exchange(m_overlayClients, {});
-    for (const quint64 connection : clients) m_control.closeOverlays(overlayOwner(connection), message);
+    for (const quint64 connection : clients)
+        m_control.closeOverlays(overlayOwner(connection), message);
 }
 
 void ControlApi::dropInputs()
@@ -483,7 +550,8 @@ void ControlApi::dropInputs()
 void ControlApi::connectionClosed(quint64 connection)
 {
     m_inputs.drop(QString::number(connection));
-    if (m_overlayClients.remove(connection)) m_control.closeOverlays(overlayOwner(connection), QStringLiteral("The client went away"));
+    if (m_overlayClients.remove(connection))
+        m_control.closeOverlays(overlayOwner(connection), QStringLiteral("The client went away"));
 }
 
 ControlSocket::ControlSocket(Control& control, SettingsStore& settings, PhosphorIpc::IpcRouter& router, QObject* parent)
@@ -500,15 +568,23 @@ ControlSocket::ControlSocket(Control& control, SettingsStore& settings, Phosphor
     connect(&m_due, &QTimer::timeout, this, &ControlSocket::sendDue);
 
     // A client that goes takes its overlays with it: nobody waits for them.
-    connect(&router, &PhosphorIpc::IpcRouter::connectionClosed, this, [this](quint64 connection) { m_api.connectionClosed(connection); });
-    connect(&control, &Control::paneCreated, this, [this](quint32 p) { sendNow("paneCreated", p, {paneValue(p)}); });
-    connect(&control, &Control::paneMoved, this, [this](quint32 p) { sendNow("paneMoved", p, {paneValue(p)}); });
+    connect(&router, &PhosphorIpc::IpcRouter::connectionClosed, this, [this](quint64 connection) {
+        m_api.connectionClosed(connection);
+    });
+    connect(&control, &Control::paneCreated, this, [this](quint32 p) {
+        sendNow("paneCreated", p, {paneValue(p)});
+    });
+    connect(&control, &Control::paneMoved, this, [this](quint32 p) {
+        sendNow("paneMoved", p, {paneValue(p)});
+    });
     connect(&control, &Control::paneClosed, this, [this](quint32 p) {
         sendNow("paneClosed", p, {paneValue(p)});
         // Nothing more comes for the pane.
         forgetPane(p);
     });
-    connect(&control, &Control::focusChanged, this, [this](quint32 p) { sendNow("focusChanged", p, {paneValue(p)}); });
+    connect(&control, &Control::focusChanged, this, [this](quint32 p) {
+        sendNow("focusChanged", p, {paneValue(p)});
+    });
     connect(&control, &Control::commandStarted, this, [this](quint32 p, const QString& c) {
         sendNow("commandStarted", p, {paneValue(p), readable(m_settings, c)});
     });
@@ -518,7 +594,9 @@ ControlSocket::ControlSocket(Control& control, SettingsStore& settings, Phosphor
     connect(&control, &Control::titleChanged, this, [this](quint32 p, const QString& title) {
         sendMerged("titleChanged", p, {}, {paneValue(p), title});
     });
-    connect(&control, &Control::bell, this, [this](quint32 p) { sendMerged("bell", p, {}, {paneValue(p)}); });
+    connect(&control, &Control::bell, this, [this](quint32 p) {
+        sendMerged("bell", p, {}, {paneValue(p)});
+    });
     connect(&control, &Control::statusChanged, this, [this](quint32 p, const QString& state, const QString& text) {
         sendMerged("statusChanged", p, {}, {paneValue(p), state, text});
     });
@@ -545,7 +623,8 @@ void ControlSocket::applySettings()
     if (want != m_enabled) {
         if (want) {
             m_enabled = m_router.registerTarget(QLatin1String(Target), &m_api);
-            if (!m_enabled) qCWarning(lcControl) << "another object holds the control target";
+            if (!m_enabled)
+                qCWarning(lcControl) << "another object holds the control target";
         } else {
             // Ends the subscriptions too: a client must subscribe again
             // after control comes back.
@@ -561,11 +640,13 @@ void ControlSocket::applySettings()
             m_api.dropInputs();
         }
     }
-    if (m_merged.isEmpty()) return;
+    if (m_merged.isEmpty())
+        return;
     if (m_settings.settings().control.eventInterval <= 0) {
         // Every later event goes at once: what waits must go before it.
         for (const Merged& m : std::as_const(m_merged)) {
-            if (m.waiting) send(m.event, m.args);
+            if (m.waiting)
+                send(m.event, m.args);
         }
         m_merged.clear();
         m_due.stop();
@@ -577,8 +658,10 @@ void ControlSocket::applySettings()
 
 void ControlSocket::send(const char* event, QJsonArray args)
 {
-    if (!m_enabled) return;
-    if (std::strcmp(event, "userVarChanged") == 0) args[2] = readable(m_settings, args[2].toString());
+    if (!m_enabled)
+        return;
+    if (std::strcmp(event, "userVarChanged") == 0)
+        args[2] = readable(m_settings, args[2].toString());
     m_router.broadcastEvent(QLatin1String(Target), QLatin1String(event), args);
 }
 
@@ -588,7 +671,8 @@ void ControlSocket::sendNow(const char* event, quint32 pane, const QJsonArray& a
     // before an event that is never merged.
     const qint64 now = m_clock.elapsed();
     for (Merged& m : m_merged) {
-        if (m.pane != pane || !m.waiting) continue;
+        if (m.pane != pane || !m.waiting)
+            continue;
         m.waiting = false;
         m.sentAt = now;
         send(m.event, m.args);
@@ -598,7 +682,8 @@ void ControlSocket::sendNow(const char* event, quint32 pane, const QJsonArray& a
 
 void ControlSocket::sendMerged(const char* event, quint32 pane, const QString& name, const QJsonArray& args)
 {
-    if (!m_enabled) return;
+    if (!m_enabled)
+        return;
     if (m_settings.settings().control.eventInterval <= 0) {
         // What still waits from before the interval became 0 goes first.
         sendNow(event, pane, args);
@@ -617,7 +702,8 @@ void ControlSocket::sendMerged(const char* event, quint32 pane, const QString& n
         it->waiting = true;
     }
     // A new entry is due last, after everything that the timer waits for.
-    if (!m_due.isActive()) scheduleDue();
+    if (!m_due.isActive())
+        scheduleDue();
 }
 
 void ControlSocket::sendDue()
@@ -659,7 +745,8 @@ void ControlSocket::scheduleDue()
     }
     const qint64 interval = m_settings.settings().control.eventInterval;
     qint64 next = std::numeric_limits<qint64>::max();
-    for (const Merged& m : std::as_const(m_merged)) next = std::min(next, m.sentAt + interval);
+    for (const Merged& m : std::as_const(m_merged))
+        next = std::min(next, m.sentAt + interval);
     m_due.start(int(std::clamp<qint64>(next - m_clock.elapsed(), 0, interval)));
 }
 

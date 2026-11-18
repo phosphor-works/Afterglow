@@ -163,7 +163,10 @@ public:
     void buildPane(const PaneSnapshot& snap, const PaneParams& params, FontSet& fonts, GlyphCache& glyphs,
                    std::vector<Instance>& out, Ranges& ranges);
 
-    void clearShapeCache() { m_shapeCache.clear(); }
+    void clearShapeCache()
+    {
+        m_shapeCache.clear();
+    }
 
 private:
     struct ShapedGlyph
@@ -188,7 +191,8 @@ private:
         std::size_t operator()(const ShapeKey& k) const noexcept;
     };
 
-    const std::vector<ShapedGlyph>& shape(FontSet& fonts, int face, int slot, const std::u32string& text, bool rtl = false, std::uint32_t script = 0);
+    const std::vector<ShapedGlyph>& shape(FontSet& fonts, int face, int slot, const std::u32string& text,
+                                          bool rtl = false, std::uint32_t script = 0);
 
     std::uint64_t m_shapeFont = 0;
     std::unordered_map<ShapeKey, std::vector<ShapedGlyph>, ShapeKeyHash> m_shapeCache;
@@ -274,7 +278,10 @@ public:
     /// @p window may be null for a renderer that only renders to images;
     /// then setDevicePixelRatio() chooses the font scale.
     WindowRenderer(GpuDevice& device, QWindow* window);
-    void setDevicePixelRatio(qreal dpr) { m_devicePixelRatio = dpr; }
+    void setDevicePixelRatio(qreal dpr)
+    {
+        m_devicePixelRatio = dpr;
+    }
     ~WindowRenderer();
 
     WindowRenderer(const WindowRenderer&) = delete;
@@ -292,10 +299,19 @@ public:
 
     /// Optional diagnostic sampling. GPU time is asynchronous, in seconds;
     /// zero means unavailable. It need not describe the most recent frame.
-    void setGpuTimingEnabled(bool enabled) { m_gpuTimingEnabled = enabled; m_completedGpuSeconds = 0; }
-    double completedGpuSeconds() const { return m_completedGpuSeconds; }
-    std::uint64_t submittedFrames() const { return m_submittedFrames; }
-
+    void setGpuTimingEnabled(bool enabled)
+    {
+        m_gpuTimingEnabled = enabled;
+        m_completedGpuSeconds = 0;
+    }
+    double completedGpuSeconds() const
+    {
+        return m_completedGpuSeconds;
+    }
+    std::uint64_t submittedFrames() const
+    {
+        return m_submittedFrames;
+    }
 
     FontResources& fonts();
 
@@ -339,7 +355,10 @@ public:
     /// valid until it returns, and a frame without its own setDocks() draws
     /// no docks. A window dock has no docks of its own: its Pane::docks are
     /// not drawn.
-    void setDocks(std::vector<Pane> docks) { m_docks = std::move(docks); }
+    void setDocks(std::vector<Pane> docks)
+    {
+        m_docks = std::move(docks);
+    }
     /// Open, or still closing.
     bool overviewShowing() const;
     /// A tab switch: the tab being left is drawn at full resolution into
@@ -353,7 +372,10 @@ public:
         OverviewTab from;
     };
     void setTabTransition(TabTransition transition);
-    bool transitionShowing() const { return m_transition.active && !overviewShowing(); }
+    bool transitionShowing() const
+    {
+        return m_transition.active && !overviewShowing();
+    }
     /// Panes opening and closing: the pane effects chain runs while @c active.
     /// A closed pane's last frame is drawn into uTabImage at its old place.
     struct PaneEffects
@@ -364,11 +386,20 @@ public:
         float closingProgress = 1; ///< 0 just closed, 1 gone
     };
     void setPaneEffects(PaneEffects effects);
-    bool paneEffectsShowing() const { return m_effects.active && !overviewShowing() && !transitionShowing(); }
+    bool paneEffectsShowing() const
+    {
+        return m_effects.active && !overviewShowing() && !transitionShowing();
+    }
     /// Synthetic combined rows for developer previews. Unset sums only the rendered panes.
-    void setScrollbackLinesOverride(std::optional<std::uint64_t> lines) { m_scrollbackLinesOverride = lines; }
+    void setScrollbackLinesOverride(std::optional<std::uint64_t> lines)
+    {
+        m_scrollbackLinesOverride = lines;
+    }
     /// The pointer, in framebuffer pixels, for shaders' iMouse.
-    void setMousePosition(const QPointF& px) { m_mouse = px; }
+    void setMousePosition(const QPointF& px)
+    {
+        m_mouse = px;
+    }
 
     /// What render() did with the frame.
     enum class FrameResult {
@@ -390,16 +421,23 @@ public:
     /// (the chrome) drawn over everything, after the chains; @p overlaySerial
     /// changes whenever that texture object is replaced.
     FrameResult render(const std::vector<Pane>& panes, const std::vector<std::pair<QRect, std::uint32_t>>& overlays,
-                       std::uint32_t clearColor, QRhiTexture* overlayTexture = nullptr, std::uint64_t overlaySerial = 0);
+                       std::uint32_t clearColor, QRhiTexture* overlayTexture = nullptr,
+                       std::uint64_t overlaySerial = 0);
 
     /// Shader time (iTime) for the following frames instead of the wall
     /// clock, for reproducible renders; unset returns to the clock. Event
     /// ages (signals, the overview, tab switches) still come from their
     /// steady_clock stamps.
-    void setClockOverride(std::optional<double> seconds) { m_clockOverride = seconds; }
+    void setClockOverride(std::optional<double> seconds)
+    {
+        m_clockOverride = seconds;
+    }
     /// iDate (year, month, day, seconds since midnight) instead of the
     /// wall clock's date, for reproducible renders; unset returns to it.
-    void setDateOverride(std::optional<std::array<float, 4>> date) { m_dateOverride = date; }
+    void setDateOverride(std::optional<std::array<float, 4>> date)
+    {
+        m_dateOverride = date;
+    }
     /// Where the content shown at @p windowPixel (device pixels) comes from,
     /// through the pointer maps (pPointerMap) of the window chain, last pack
     /// first, as the frames drew them: on the window's canvas, with the
@@ -483,7 +521,11 @@ private:
                   QRhiTexture* overlayTexture, std::uint64_t overlaySerial);
     void initResources(FontResources& res);
     void ensureBindings(FontResources& res);
-    enum class GridBlend { None, Premultiplied, Subpixel };
+    enum class GridBlend {
+        None,
+        Premultiplied,
+        Subpixel
+    };
     std::unique_ptr<QRhiGraphicsPipeline> makeGridPipeline(QRhiRenderPassDescriptor* pass, GridBlend blend);
     std::unique_ptr<QRhiGraphicsPipeline> makeImagePipeline(QRhiRenderPassDescriptor* pass,
                                                             QRhiShaderResourceBindings* layout);
@@ -492,7 +534,11 @@ private:
     {
         /// Kitty z: below INT32_MIN/2 under non-default cell backgrounds,
         /// below 0 under the text, else over it.
-        enum class Layer { UnderCells, BelowText, AboveText };
+        enum class Layer {
+            UnderCells,
+            BelowText,
+            AboveText
+        };
         std::uint32_t instance;
         AfterglowVt::FramePtr frame;
         Layer layer;
@@ -643,7 +689,8 @@ private:
         std::uint64_t seenFrame = 0;
     };
     std::unordered_map<std::uint64_t, PaneCache> m_paneCache; ///< by PaneSnapshot::identity
-    std::unordered_map<std::uint64_t, PaneCache> m_hostPaneCache; ///< a pane drawn a second time in a frame: under a fading popup
+    std::unordered_map<std::uint64_t, PaneCache>
+        m_hostPaneCache; ///< a pane drawn a second time in a frame: under a fading popup
     std::vector<Instance> m_scratch;
 };
 

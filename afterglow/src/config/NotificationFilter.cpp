@@ -12,8 +12,19 @@ namespace Afterglow {
 
 struct NotificationFilter::Node
 {
-    enum class Kind { All, Term, Not, And, Or };
-    enum class Field { Title, Body, App, Type };
+    enum class Kind {
+        All,
+        Term,
+        Not,
+        And,
+        Or
+    };
+    enum class Field {
+        Title,
+        Body,
+        App,
+        Type
+    };
     Kind kind = Kind::All;
     Field field = Field::Title;
     QRegularExpression pattern;
@@ -31,7 +42,13 @@ constexpr int MaxDepth = 32;
 
 struct Token
 {
-    enum class Kind { Open, Close, Word, Term, End };
+    enum class Kind {
+        Open,
+        Close,
+        Word,
+        Term,
+        End
+    };
     Kind kind = Kind::End;
     QString word; ///< a keyword, or the field of a term
     QString value; ///< the pattern of a term
@@ -49,9 +66,11 @@ public:
     {
         m_token = next();
         auto root = orExpression(0);
-        if (root && m_token.kind != Token::Kind::End) fail(QStringLiteral("unexpected text after the rule"));
+        if (root && m_token.kind != Token::Kind::End)
+            fail(QStringLiteral("unexpected text after the rule"));
         if (!m_error.isEmpty()) {
-            if (error) *error = m_error;
+            if (error)
+                *error = m_error;
             return nullptr;
         }
         return root;
@@ -60,13 +79,16 @@ public:
 private:
     void fail(const QString& message)
     {
-        if (m_error.isEmpty()) m_error = message;
+        if (m_error.isEmpty())
+            m_error = message;
     }
 
     Token next()
     {
-        while (m_at < m_text.size() && m_text.at(m_at).isSpace()) ++m_at;
-        if (m_at >= m_text.size()) return {};
+        while (m_at < m_text.size() && m_text.at(m_at).isSpace())
+            ++m_at;
+        if (m_at >= m_text.size())
+            return {};
         const QChar c = m_text.at(m_at);
         if (c == QLatin1Char('(')) {
             ++m_at;
@@ -82,12 +104,15 @@ private:
             ++m_at;
         // Keywords and fields in any case, as kitty reads them.
         const QString word = m_text.mid(start, m_at - start).toLower();
-        if (m_at >= m_text.size() || m_text.at(m_at) != QLatin1Char(':')) return {Token::Kind::Word, word, {}};
+        if (m_at >= m_text.size() || m_text.at(m_at) != QLatin1Char(':'))
+            return {Token::Kind::Word, word, {}};
         ++m_at; // the colon
         // kitty takes a quoted value after white space too: title: "a b".
         qsizetype quote = m_at;
-        while (quote < m_text.size() && m_text.at(quote).isSpace()) ++quote;
-        if (quote > m_at && quote < m_text.size() && m_text.at(quote) == QLatin1Char('"')) m_at = quote;
+        while (quote < m_text.size() && m_text.at(quote).isSpace())
+            ++quote;
+        if (quote > m_at && quote < m_text.size() && m_text.at(quote) == QLatin1Char('"'))
+            m_at = quote;
         return {Token::Kind::Term, word, value()};
     }
 
@@ -105,15 +130,19 @@ private:
                 }
                 out += m_text.at(m_at++);
             }
-            if (m_at >= m_text.size()) fail(QStringLiteral("a quote is not closed"));
-            else ++m_at;
+            if (m_at >= m_text.size())
+                fail(QStringLiteral("a quote is not closed"));
+            else
+                ++m_at;
             return out;
         }
         int depth = 0;
         while (m_at < m_text.size() && !m_text.at(m_at).isSpace()) {
             const QChar c = m_text.at(m_at);
-            if (c == QLatin1Char('(')) ++depth;
-            if (c == QLatin1Char(')') && depth-- == 0) break;
+            if (c == QLatin1Char('('))
+                ++depth;
+            if (c == QLatin1Char(')') && depth-- == 0)
+                break;
             out += c;
             ++m_at;
         }
@@ -124,7 +153,8 @@ private:
     /// nests nor recurses.
     static std::shared_ptr<const Node> join(Node::Kind kind, std::vector<std::shared_ptr<const Node>> children)
     {
-        if (children.size() == 1) return std::move(children.front());
+        if (children.size() == 1)
+            return std::move(children.front());
         auto node = std::make_shared<Node>();
         node->kind = kind;
         node->children = std::move(children);
@@ -153,8 +183,10 @@ private:
         terms.push_back(notExpression(depth));
         while (terms.back()) {
             // Terms side by side join with and, as in kitty's queries.
-            if (isWord("and")) m_token = next();
-            else if (m_token.kind == Token::Kind::End || m_token.kind == Token::Kind::Close || isWord("or")) break;
+            if (isWord("and"))
+                m_token = next();
+            else if (m_token.kind == Token::Kind::End || m_token.kind == Token::Kind::Close || isWord("or"))
+                break;
             terms.push_back(notExpression(depth));
         }
         return terms.back() ? join(Node::Kind::And, std::move(terms)) : nullptr;
@@ -169,7 +201,8 @@ private:
             negated = !negated;
         }
         auto operand = primary(depth);
-        if (!operand || !negated) return operand;
+        if (!operand || !negated)
+            return operand;
         auto node = std::make_shared<Node>();
         node->kind = Node::Kind::Not;
         node->children = {std::move(operand)};
@@ -186,7 +219,8 @@ private:
         case Token::Kind::Open: {
             m_token = next();
             auto inner = orExpression(depth + 1);
-            if (!inner) return nullptr;
+            if (!inner)
+                return nullptr;
             if (m_token.kind != Token::Kind::Close) {
                 fail(QStringLiteral("a parenthesis is not closed"));
                 return nullptr;
@@ -205,10 +239,14 @@ private:
             auto node = std::make_shared<Node>();
             node->kind = Node::Kind::Term;
             const QString& field = m_token.word;
-            if (field == QLatin1String("title")) node->field = Node::Field::Title;
-            else if (field == QLatin1String("body")) node->field = Node::Field::Body;
-            else if (field == QLatin1String("app")) node->field = Node::Field::App;
-            else if (field == QLatin1String("type")) node->field = Node::Field::Type;
+            if (field == QLatin1String("title"))
+                node->field = Node::Field::Title;
+            else if (field == QLatin1String("body"))
+                node->field = Node::Field::Body;
+            else if (field == QLatin1String("app"))
+                node->field = Node::Field::App;
+            else if (field == QLatin1String("type"))
+                node->field = Node::Field::Type;
             else {
                 fail(QStringLiteral("\"%1\" is not a field: use title, body, app or type").arg(field));
                 return nullptr;
@@ -220,7 +258,8 @@ private:
             // \w, \d and \b of all scripts, as in kitty's Python re.
             node->pattern = QRegularExpression(m_token.value, QRegularExpression::UseUnicodePropertiesOption);
             if (!node->pattern.isValid()) {
-                fail(QStringLiteral("%1 is not a regular expression: %2").arg(m_token.value, node->pattern.errorString()));
+                fail(QStringLiteral("%1 is not a regular expression: %2")
+                         .arg(m_token.value, node->pattern.errorString()));
                 return nullptr;
             }
             m_token = next();
@@ -250,9 +289,13 @@ bool evaluate(const Node& node, const NotificationFilter::Fields& fields)
     case Node::Kind::Not:
         return !evaluate(*node.children[0], fields);
     case Node::Kind::And:
-        return std::all_of(node.children.begin(), node.children.end(), [&](const auto& child) { return evaluate(*child, fields); });
+        return std::all_of(node.children.begin(), node.children.end(), [&](const auto& child) {
+            return evaluate(*child, fields);
+        });
     case Node::Kind::Or:
-        return std::any_of(node.children.begin(), node.children.end(), [&](const auto& child) { return evaluate(*child, fields); });
+        return std::any_of(node.children.begin(), node.children.end(), [&](const auto& child) {
+            return evaluate(*child, fields);
+        });
     case Node::Kind::Term:
         break;
     }
@@ -266,7 +309,8 @@ bool evaluate(const Node& node, const NotificationFilter::Fields& fields)
         return node.pattern.match(fields.app).hasMatch();
     case Node::Field::Type:
         for (const QString& type : fields.types) {
-            if (node.pattern.match(type).hasMatch()) return true;
+            if (node.pattern.match(type).hasMatch())
+                return true;
         }
         return false;
     }
@@ -279,7 +323,8 @@ std::optional<NotificationFilter> NotificationFilter::parse(const QString& text,
 {
     Parser parser(text);
     auto root = parser.parse(error);
-    if (!root) return std::nullopt;
+    if (!root)
+        return std::nullopt;
     NotificationFilter filter;
     filter.m_text = text;
     filter.m_root = std::move(root);

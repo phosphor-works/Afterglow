@@ -23,10 +23,16 @@ class FdSource : public ByteSource
 public:
     explicit FdSource(int fd, std::uint64_t limit = std::numeric_limits<std::uint64_t>::max());
     bool read(std::string& out, std::size_t max) override;
-    bool atEnd() const override { return m_end; }
+    bool atEnd() const override
+    {
+        return m_end;
+    }
     /// The bytes read so far. A client compares them with the announced size
     /// to find a file that shrank while it was read.
-    std::uint64_t consumed() const { return m_consumed; }
+    std::uint64_t consumed() const
+    {
+        return m_consumed;
+    }
 
 private:
     int m_fd;
@@ -49,7 +55,10 @@ public:
     bool readBlock(std::uint64_t index, std::string& out) override;
     bool write(std::string_view bytes) override;
     /// The bytes of the new file written so far.
-    std::uint64_t written() const { return m_written; }
+    std::uint64_t written() const
+    {
+        return m_written;
+    }
 
 private:
     int m_basis;

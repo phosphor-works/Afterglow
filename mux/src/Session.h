@@ -33,11 +33,20 @@ public:
     /// decodes the images of the panes, and outlives the session.
     Session(std::string name, SessionOptions options, long fileLimit, ImageDecoder& images);
 
-    const std::string& name() const { return m_name; }
+    const std::string& name() const
+    {
+        return m_name;
+    }
     /// The daemon's number of the session: a later session of the same name
     /// has another.
-    std::uint64_t serial() const { return m_serial; }
-    void setSerial(std::uint64_t serial) { m_serial = serial; }
+    std::uint64_t serial() const
+    {
+        return m_serial;
+    }
+    void setSerial(std::uint64_t serial)
+    {
+        m_serial = serial;
+    }
     /// Whether `afterglow ctl watch` watches the session: its panes, and
     /// those that start or come later, keep what their terminals tell for it.
     void setWatched(bool watched);
@@ -49,12 +58,21 @@ public:
         std::vector<MuxPane::WatchEvent> events;
     };
     /// Those of the panes that left since the last take, oldest first.
-    std::vector<LeftEvents> takeLeftEvents() { return std::exchange(m_left, {}); }
+    std::vector<LeftEvents> takeLeftEvents()
+    {
+        return std::exchange(m_left, {});
+    }
     /// A pane moved, by a window's layout or by `afterglow ctl`: kept for
     /// `afterglow ctl watch` while the session is watched.
     void noteMoved(std::uint32_t pane);
-    std::vector<std::uint32_t> takeMoved() { return std::exchange(m_moved, {}); }
-    const SessionOptions& options() const { return m_options; }
+    std::vector<std::uint32_t> takeMoved()
+    {
+        return std::exchange(m_moved, {});
+    }
+    const SessionOptions& options() const
+    {
+        return m_options;
+    }
 
     /// Starts a pane with @p launch over the session's environment and
     /// umask, at @p size, and the variables that name the session, the pane
@@ -66,8 +84,14 @@ public:
     bool addPane(std::uint32_t id, const Launch& launch, const PaneSize& size, const std::string& daemonSocket,
                  std::uint64_t window, std::size_t windowQueue, std::function<void()> wake, std::string* error);
     /// The launch and the size of the session's first pane.
-    const Launch& firstLaunch() const { return m_options.launch; }
-    const PaneSize& firstSize() const { return m_options.size; }
+    const Launch& firstLaunch() const
+    {
+        return m_options.launch;
+    }
+    const PaneSize& firstSize() const
+    {
+        return m_options.size;
+    }
     /// Takes out the panes whose programs exited, also from the layout: the
     /// window that shows the session still sends their last frames. Without
     /// a pane left, the last program of the session ended, and so does the
@@ -79,13 +103,23 @@ public:
     /// the session and the layout at once. When it was the last pane, the
     /// session is empty(), and the daemon ends it. False when the session
     /// has no such pane.
-    bool closePane(std::uint32_t id) { return take(id) != nullptr; }
-    bool empty() const { return m_panes.empty(); }
-    const std::vector<std::unique_ptr<MuxPane>>& panes() const { return m_panes; }
+    bool closePane(std::uint32_t id)
+    {
+        return take(id) != nullptr;
+    }
+    bool empty() const
+    {
+        return m_panes.empty();
+    }
+    const std::vector<std::unique_ptr<MuxPane>>& panes() const
+    {
+        return m_panes;
+    }
     MuxPane* pane(std::uint32_t id) const
     {
         for (const auto& p : m_panes) {
-            if (p->id() == id) return p.get();
+            if (p->id() == id)
+                return p.get();
         }
         return nullptr;
     }
@@ -103,14 +137,20 @@ public:
     void adopt(std::vector<std::unique_ptr<MuxPane>> panes, Layout layout) noexcept;
     /// Room for one more pane, for join(): made before the pane leaves its
     /// session, so that a failure (out of memory) leaves it there.
-    void reservePane() { m_panes.reserve(m_panes.size() + 1); }
+    void reservePane()
+    {
+        m_panes.reserve(m_panes.size() + 1);
+    }
     /// Takes pane @p pane, which another session gave up (take()), with its
     /// program running: Fn::JoinPane. The caller made room for it
     /// (reservePane()) and puts it in the layout (changeLayout()).
     /// Allocates nothing.
     void join(std::unique_ptr<MuxPane> pane) noexcept;
 
-    const Layout& layout() const { return m_layout; }
+    const Layout& layout() const
+    {
+        return m_layout;
+    }
     /// For the calls of `afterglow ctl` that change the layout while no
     /// window shows the session, or before the window sends its own: each
     /// call counts in layoutChanges().
@@ -122,9 +162,15 @@ public:
     /// The changes of changeLayout() so far: a window that finished before
     /// one (Attachment::Late) did not see it, and its late layout would undo
     /// it.
-    std::uint64_t layoutChanges() const { return m_layoutChanges; }
+    std::uint64_t layoutChanges() const
+    {
+        return m_layoutChanges;
+    }
     /// The pane that has the focus in the tab that shows, 0 without a tab.
-    std::uint32_t focusedPane() const { return m_layout.current < m_layout.tabs.size() ? m_layout.tabs[m_layout.current].focused : 0; }
+    std::uint32_t focusedPane() const
+    {
+        return m_layout.current < m_layout.tabs.size() ? m_layout.tabs[m_layout.current].focused : 0;
+    }
     /// The layout that the window sent, with the panes of the session only:
     /// a pane that exited since the window sent it goes, and a pane that it
     /// does not name yet is a tab of its own (Layout::reconcile). A pane

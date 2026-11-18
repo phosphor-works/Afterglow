@@ -43,26 +43,35 @@ public:
             overflowed = true;
             return;
         }
-        if (!pending()) m_progress = std::chrono::steady_clock::now();
+        if (!pending())
+            m_progress = std::chrono::steady_clock::now();
         m_pending.erase(0, m_offset);
         m_offset = 0;
         m_pending.append(bytes);
     }
-    bool pending() const { return m_offset < m_pending.size(); }
+    bool pending() const
+    {
+        return m_offset < m_pending.size();
+    }
     void flush()
     {
-        if (!pending()) return;
+        if (!pending())
+            return;
         const ssize_t n = ::write(m_fd, m_pending.data() + m_offset, m_pending.size() - m_offset);
         if (n > 0) {
             m_offset += std::size_t(n);
             m_progress = std::chrono::steady_clock::now();
-            if (!pending()) { m_pending.clear(); m_offset = 0; }
+            if (!pending()) {
+                m_pending.clear();
+                m_offset = 0;
+            }
         } else if (n < 0 && errno == EIO) {
             // The program closed its side after a last query: nobody reads
             // the reply. The read path sees the hangup and ends the run.
             m_pending.clear();
             m_offset = 0;
-        } else if (n == 0 || (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)) failed = true;
+        } else if (n == 0 || (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK))
+            failed = true;
     }
     bool stalled() const
     {
@@ -75,7 +84,8 @@ public:
     // as xterm does with window ops allowed; the pty follows.
     bool requestResize(int cols, int rows) override
     {
-        if (cols < MinCols || cols > 1000 || rows < 1 || rows > 500) return false;
+        if (cols < MinCols || cols > 1000 || rows < 1 || rows > 500)
+            return false;
         return setPtySize(m_fd, cols, rows);
     }
 

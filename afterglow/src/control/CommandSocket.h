@@ -164,14 +164,23 @@ public:
     /// handler resumed in a process that quits.
     ~CommandSocket() override;
 
-    bool enabled() const { return m_enabled; }
+    bool enabled() const
+    {
+        return m_enabled;
+    }
     /// Ends every run, whose reply fails with @p message: the socket closes.
-    void cancelAll(const QString& message) { dropAll(message, true); }
+    void cancelAll(const QString& message)
+    {
+        dropAll(message, true);
+    }
     /// The target's name: AfterglowProto::Remote::Target for a remote
     /// session, unless it has commandsTarget, else Target.
     QLatin1String target() const;
     /// The budget of the socket's runs, for the sockets that share it.
-    const std::shared_ptr<CommandBudget>& budget() const { return m_budget; }
+    const std::shared_ptr<CommandBudget>& budget() const
+    {
+        return m_budget;
+    }
     /// Runs whose stdin waits for run(), on this socket. A test hook.
     int waitingInputs() const;
     /// The bytes of stdin that wait for run(), in the sockets of the budget. A test hook.
@@ -236,8 +245,8 @@ private:
     std::optional<Refusal> ack(quint64 connection, const QString& id, double bytes);
     std::optional<Refusal> cancel(quint64 connection, const QString& id);
     /// Starts a run whose reply is @p reply, and answers it when the run cannot start.
-    void start(quint64 connection, const QString& id, ScriptHost::CommandRequest request, PhosphorIpc::IpcPendingReply reply,
-               bool credit);
+    void start(quint64 connection, const QString& id, ScriptHost::CommandRequest request,
+               PhosphorIpc::IpcPendingReply reply, bool credit);
     /// Queues @p text as @p event. False when it cannot go, as there is no
     /// such run or it passes MaxWaitingOutputBytes: @p sent is then never
     /// called, and the scripts end the run.
@@ -259,7 +268,10 @@ private:
     /// right again: the callback can come back here.
     std::deque<Output> takeOutput(Run& run);
     static void dropped(std::deque<Output>& output);
-    static qint64 cost(const Output& output) { return OutputPartBytes + output.text.size() * qint64(sizeof(QChar)); }
+    static qint64 cost(const Output& output)
+    {
+        return OutputPartBytes + output.text.size() * qint64(sizeof(QChar));
+    }
     std::shared_ptr<Run> find(quint64 connection, const QString& id) const;
     /// The pane of a call: @p pane, or for 0 the focused pane, 0 when there
     /// is none. Empty with @p error. For a remote session, its pane.

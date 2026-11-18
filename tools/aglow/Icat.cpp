@@ -64,7 +64,7 @@ constexpr std::uint64_t MaxInput = 2 * std::uint64_t(AfterglowProto::GraphicsDef
 // The bytes of graphics commands that go out between two checks for a signal.
 constexpr std::size_t WriteSlice = 64 * 1024;
 
-const Cli::Command command {
+const Cli::Command command{
     "icat",
     "image_file_url_or_directory ...",
     "Show images in the terminal, with kitty's graphics protocol.",
@@ -73,70 +73,137 @@ const Cli::Command command {
     "An http, https or ftp URL is downloaded with curl, and a file URL names a file of this computer. Image data "
     "on standard input is shown too. An animated GIF, WebP or PNG (APNG) plays in the terminal.",
     {
-        { "--align", Cli::Option::Kind::Choice, "center", { "center", "left", "right" },
-          "Horizontal alignment of the image." },
-        { "--place", Cli::Option::Kind::String, "", {},
-          "Where on the screen to show the image, as WIDTHxHEIGHT@LEFTxTOP in cells, from the top left corner at "
-          "0x0. The image is scaled to fit the rectangle and aligned in it with --align. The cursor ends at the top "
-          "left corner of the image, not on the line after it." },
-        { "--scale-up", Cli::Option::Kind::Flag, "", {},
-          "Scale images that are smaller than the area up to fill as much of it as they can. The area comes from "
-          "--place or --fit." },
-        { "--fit", Cli::Option::Kind::Choice, "width", { "width", "height", "both", "none" },
-          "Without --place, how the image is scaled to the screen: to fit its width, its height, both, or not at "
-          "all." },
-        { "--background", Cli::Option::Kind::String, "none", {},
-          "A background color: an X11 color name, #rgb to #rrrrggggbbbb, rgb:r/g/b, rgbi:r/g/b, oklch(L C H) or "
-          "lab(L a b). #fff is white. none draws no background. Transparent images are drawn over it." },
-        { "--mirror", Cli::Option::Kind::Choice, "none", { "none", "horizontal", "vertical", "both" },
-          "Mirror the image about a horizontal or vertical axis, or both." },
-        { "--clear", Cli::Option::Kind::Flag, "", {}, "Remove every image that is on the screen." },
-        { "--clear-all", Cli::Option::Kind::Flag, "", {},
-          "Remove every image from the screen and the scrollback, and free its data in the terminal." },
-        { "--transfer-mode", Cli::Option::Kind::Choice, "detect", { "detect", "file", "stream", "memory" },
-          "How images reach the terminal: a temporary file, shared memory, or the data in escape codes. detect "
-          "asks the terminal, and uses a file or shared memory only when the terminal can read them, that is "
-          "when it runs on this computer and standard output is the terminal. With standard output elsewhere, "
-          "aglow removes its files and shared memory when it exits. Inside tmux, images always go in escape codes." },
-        { "--detect-support", Cli::Option::Kind::Flag, "", {},
-          "Ask the terminal whether it shows images. Exits with 1 when it does not, else prints the transfer mode "
-          "(memory, file or stream) on standard error and exits with 0. Inside tmux, which answers in place of "
-          "the terminal, it cannot ask and exits with 1." },
-        { "--detection-timeout", Cli::Option::Kind::Float, "10", {}, "Seconds to wait for the terminal's answer.",
-          0, 3600 },
-        { "--use-window-size", Cli::Option::Kind::String, "", {},
-          "Use this window size and do not ask the terminal: COLUMNS,ROWS,WIDTH,HEIGHT, the last two in pixels." },
-        { "--print-window-size", Cli::Option::Kind::Flag, "", {},
-          "Print the window size as WIDTHxHEIGHT in pixels, and exit." },
-        { "--stdin", Cli::Option::Kind::Choice, "detect", { "detect", "yes", "no" },
-          "Read image data from standard input. detect reads it when standard input is not a terminal, and "
-          "shows nothing for it when it is empty." },
-        { "--z-index -z", Cli::Option::Kind::String, "0", {},
-          "The z-index of the image. Text is drawn over an image with a negative one. With two dashes, as --1, "
-          "the image goes under the cell backgrounds too." },
-        { "--loop -l", Cli::Option::Kind::Int, "-1", {},
-          "How many times an animation plays. A negative number plays it forever. With 0, only the first frame "
-          "shows." },
-        { "--hold", Cli::Option::Kind::Flag, "", {}, "Wait for a key press before exiting." },
-        { "--unicode-placeholder", Cli::Option::Kind::Flag, "", {},
-          "Show images through Unicode placeholder characters, which full screen programs, terminal multiplexers "
-          "and editors keep as text." },
-        { "--passthrough", Cli::Option::Kind::Choice, "detect", { "detect", "tmux", "none" },
-          "Wrap the graphics commands so that they pass through tmux. detect does it inside tmux. This implies "
-          "--unicode-placeholder." },
-        { "--image-id", Cli::Option::Kind::Int, "0", {},
-          "The graphics protocol id of the image. More images take the ids that follow it. 0 picks one when it is "
-          "needed.",
-          0, 4294967295.0 },
-        { "--engine", Cli::Option::Kind::Choice, "auto", { "auto", "builtin", "magick" },
-          "The engine that decodes images. aglow decodes PNG, JPEG, GIF, WebP, BMP, TIFF and netPBM itself with any "
-          "engine. auto reads AVIF, HEIC, JPEG XL, QOI, SVG, TGA, ICO and CUR images with ImageMagick (magick) when it "
-          "is installed. It also reads BMP images with JPEG or PNG data, or with a run-length encoding at a depth that "
-          "aglow does not read, that way. magick is the same as auto. kitten icat has it, and aglow "
-          "takes it too. builtin never runs ImageMagick." },
-        { "--silent", Cli::Option::Kind::Flag, "", {}, "Not used. kitten icat keeps it for compatibility, and so does aglow." },
-        { "--no-trailing-newline -n", Cli::Option::Kind::Flag, "", {},
-          "Leave the cursor after the image, not on the next line. Has no effect with --place." },
+        {"--align",
+         Cli::Option::Kind::Choice,
+         "center",
+         {"center", "left", "right"},
+         "Horizontal alignment of the image."},
+        {"--place",
+         Cli::Option::Kind::String,
+         "",
+         {},
+         "Where on the screen to show the image, as WIDTHxHEIGHT@LEFTxTOP in cells, from the top left corner at "
+         "0x0. The image is scaled to fit the rectangle and aligned in it with --align. The cursor ends at the top "
+         "left corner of the image, not on the line after it."},
+        {"--scale-up",
+         Cli::Option::Kind::Flag,
+         "",
+         {},
+         "Scale images that are smaller than the area up to fill as much of it as they can. The area comes from "
+         "--place or --fit."},
+        {"--fit",
+         Cli::Option::Kind::Choice,
+         "width",
+         {"width", "height", "both", "none"},
+         "Without --place, how the image is scaled to the screen: to fit its width, its height, both, or not at "
+         "all."},
+        {"--background",
+         Cli::Option::Kind::String,
+         "none",
+         {},
+         "A background color: an X11 color name, #rgb to #rrrrggggbbbb, rgb:r/g/b, rgbi:r/g/b, oklch(L C H) or "
+         "lab(L a b). #fff is white. none draws no background. Transparent images are drawn over it."},
+        {"--mirror",
+         Cli::Option::Kind::Choice,
+         "none",
+         {"none", "horizontal", "vertical", "both"},
+         "Mirror the image about a horizontal or vertical axis, or both."},
+        {"--clear", Cli::Option::Kind::Flag, "", {}, "Remove every image that is on the screen."},
+        {"--clear-all",
+         Cli::Option::Kind::Flag,
+         "",
+         {},
+         "Remove every image from the screen and the scrollback, and free its data in the terminal."},
+        {"--transfer-mode",
+         Cli::Option::Kind::Choice,
+         "detect",
+         {"detect", "file", "stream", "memory"},
+         "How images reach the terminal: a temporary file, shared memory, or the data in escape codes. detect "
+         "asks the terminal, and uses a file or shared memory only when the terminal can read them, that is "
+         "when it runs on this computer and standard output is the terminal. With standard output elsewhere, "
+         "aglow removes its files and shared memory when it exits. Inside tmux, images always go in escape codes."},
+        {"--detect-support",
+         Cli::Option::Kind::Flag,
+         "",
+         {},
+         "Ask the terminal whether it shows images. Exits with 1 when it does not, else prints the transfer mode "
+         "(memory, file or stream) on standard error and exits with 0. Inside tmux, which answers in place of "
+         "the terminal, it cannot ask and exits with 1."},
+        {"--detection-timeout",
+         Cli::Option::Kind::Float,
+         "10",
+         {},
+         "Seconds to wait for the terminal's answer.",
+         0,
+         3600},
+        {"--use-window-size",
+         Cli::Option::Kind::String,
+         "",
+         {},
+         "Use this window size and do not ask the terminal: COLUMNS,ROWS,WIDTH,HEIGHT, the last two in pixels."},
+        {"--print-window-size",
+         Cli::Option::Kind::Flag,
+         "",
+         {},
+         "Print the window size as WIDTHxHEIGHT in pixels, and exit."},
+        {"--stdin",
+         Cli::Option::Kind::Choice,
+         "detect",
+         {"detect", "yes", "no"},
+         "Read image data from standard input. detect reads it when standard input is not a terminal, and "
+         "shows nothing for it when it is empty."},
+        {"--z-index -z",
+         Cli::Option::Kind::String,
+         "0",
+         {},
+         "The z-index of the image. Text is drawn over an image with a negative one. With two dashes, as --1, "
+         "the image goes under the cell backgrounds too."},
+        {"--loop -l",
+         Cli::Option::Kind::Int,
+         "-1",
+         {},
+         "How many times an animation plays. A negative number plays it forever. With 0, only the first frame "
+         "shows."},
+        {"--hold", Cli::Option::Kind::Flag, "", {}, "Wait for a key press before exiting."},
+        {"--unicode-placeholder",
+         Cli::Option::Kind::Flag,
+         "",
+         {},
+         "Show images through Unicode placeholder characters, which full screen programs, terminal multiplexers "
+         "and editors keep as text."},
+        {"--passthrough",
+         Cli::Option::Kind::Choice,
+         "detect",
+         {"detect", "tmux", "none"},
+         "Wrap the graphics commands so that they pass through tmux. detect does it inside tmux. This implies "
+         "--unicode-placeholder."},
+        {"--image-id",
+         Cli::Option::Kind::Int,
+         "0",
+         {},
+         "The graphics protocol id of the image. More images take the ids that follow it. 0 picks one when it is "
+         "needed.",
+         0,
+         4294967295.0},
+        {"--engine",
+         Cli::Option::Kind::Choice,
+         "auto",
+         {"auto", "builtin", "magick"},
+         "The engine that decodes images. aglow decodes PNG, JPEG, GIF, WebP, BMP, TIFF and netPBM itself with any "
+         "engine. auto reads AVIF, HEIC, JPEG XL, QOI, SVG, TGA, ICO and CUR images with ImageMagick (magick) when it "
+         "is installed. It also reads BMP images with JPEG or PNG data, or with a run-length encoding at a depth that "
+         "aglow does not read, that way. magick is the same as auto. kitten icat has it, and aglow "
+         "takes it too. builtin never runs ImageMagick."},
+        {"--silent",
+         Cli::Option::Kind::Flag,
+         "",
+         {},
+         "Not used. kitten icat keeps it for compatibility, and so does aglow."},
+        {"--no-trailing-newline -n",
+         Cli::Option::Kind::Flag,
+         "",
+         {},
+         "Leave the cursor after the image, not on the next line. Has no effect with --place."},
     },
 };
 
@@ -154,11 +221,21 @@ struct Screen
     int rows = 0;
     int width = 0;
     int height = 0;
-    int cellWidth() const { return std::max(1, width / std::max(1, columns)); }
-    int cellHeight() const { return std::max(1, height / std::max(1, rows)); }
+    int cellWidth() const
+    {
+        return std::max(1, width / std::max(1, columns));
+    }
+    int cellHeight() const
+    {
+        return std::max(1, height / std::max(1, rows));
+    }
 };
 
-enum class Medium { Stream, File, Memory };
+enum class Medium {
+    Stream,
+    File,
+    Memory
+};
 
 struct Settings
 {
@@ -197,7 +274,11 @@ bool parseFields(std::string_view text, std::string_view separators, int* fields
             return false;
         }
         const auto field = text.substr(0, end);
-        if (field.empty() || !std::all_of(field.begin(), field.end(), [](char c) { return c >= '0' && c <= '9'; })
+        if (field.empty()
+            || !std::all_of(field.begin(), field.end(),
+                            [](char c) {
+                                return c >= '0' && c <= '9';
+                            })
             || !parseInt(field, fields[i]) || fields[i] > MaxField) {
             return false;
         }
@@ -212,7 +293,7 @@ std::optional<Place> parsePlace(std::string_view spec)
     if (!parseFields(spec, "x@x", fields) || fields[0] < 1 || fields[1] < 1) {
         return std::nullopt;
     }
-    return Place { fields[0], fields[1], fields[2], fields[3] };
+    return Place{fields[0], fields[1], fields[2], fields[3]};
 }
 
 std::optional<std::array<std::uint8_t, 3>> parseColour(const std::string& text, bool& valid)
@@ -224,9 +305,9 @@ std::optional<std::array<std::uint8_t, 3>> parseColour(const std::string& text, 
     // kitten icat reads "#fff" as white, as CSS does. XParseColor, which
     // parseColorSpec follows for the escape codes, reads it as f0f0f0.
     const std::string spec = text.size() == 4 && text[0] == '#'
-        ? std::string { '#', text[1], text[1], text[2], text[2], text[3], text[3] }
+        ? std::string{'#', text[1], text[1], text[2], text[2], text[3], text[3]}
         : text;
-    std::array<std::uint8_t, 3> rgb {};
+    std::array<std::uint8_t, 3> rgb{};
     if (AfterglowProto::parseColorSpec(spec, rgb[0], rgb[1], rgb[2])) {
         return rgb;
     }
@@ -243,11 +324,17 @@ bool hasImageExtension(const std::string& name, bool external)
         return false;
     }
     std::string ext = name.substr(dot + 1);
-    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-    static const char* known[] = { "png", "apng", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "pbm", "pgm", "ppm", "pnm", "pam" };
-    static const char* magick[] = { "avif", "heic", "heif", "jxl", "qoi", "svg", "tga", "ico", "cur" };
-    const auto is = [&](const char* k) { return ext == k; };
-    return std::any_of(std::begin(known), std::end(known), is) || (external && std::any_of(std::begin(magick), std::end(magick), is));
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+        return char(std::tolower(c));
+    });
+    static const char* known[] = {"png", "apng", "jpg", "jpeg", "gif", "webp", "bmp",
+                                  "tif", "tiff", "pbm", "pgm",  "ppm", "pnm",  "pam"};
+    static const char* magick[] = {"avif", "heic", "heif", "jxl", "qoi", "svg", "tga", "ico", "cur"};
+    const auto is = [&](const char* k) {
+        return ext == k;
+    };
+    return std::any_of(std::begin(known), std::end(known), is)
+        || (external && std::any_of(std::begin(magick), std::end(magick), is));
 }
 
 // The image files under @p path, in name order. A directory that a link leads
@@ -258,7 +345,7 @@ bool hasImageExtension(const std::string& name, bool external)
 bool walk(const std::string& path, std::vector<std::string>& out, std::set<std::pair<dev_t, ino_t>>& seen,
           std::vector<std::string>& skipped, std::string& error, bool external, bool top = true)
 {
-    struct stat self { };
+    struct stat self{};
     if (::stat(path.c_str(), &self) != 0 || !seen.emplace(self.st_dev, self.st_ino).second) {
         return true;
     }
@@ -283,7 +370,7 @@ bool walk(const std::string& path, std::vector<std::string>& out, std::set<std::
     std::sort(names.begin(), names.end());
     for (const auto& name : names) {
         const auto child = path + "/" + name;
-        struct stat st { };
+        struct stat st{};
         if (::stat(child.c_str(), &st) != 0) {
             continue;
         }
@@ -304,7 +391,7 @@ bool walk(const std::string& path, std::vector<std::string>& out, std::set<std::
 // no writer yet has no data and no end.
 bool readSource(int fd, std::string& out, const std::function<bool()>& stop, std::string& error)
 {
-    struct stat st { };
+    struct stat st{};
     if (::fstat(fd, &st) != 0) {
         error = std::strerror(errno);
         return false;
@@ -324,7 +411,7 @@ bool readSource(int fd, std::string& out, const std::function<bool()>& stop, std
     char buffer[65536];
     for (;;) {
         if (!regular) {
-            pollfd ready { fd, POLLIN, 0 };
+            pollfd ready{fd, POLLIN, 0};
             const int n = ::poll(&ready, 1, 100);
             if (n < 0 && errno != EINTR) {
                 error = std::strerror(errno);
@@ -401,7 +488,7 @@ std::uint32_t randomId(bool placeholder)
 // delete it after reading. Empty with @p error set on failure.
 std::string temporaryFile(std::string_view bytes, std::string& error)
 {
-    for (const char* dir : { "/dev/shm", "/tmp" }) {
+    for (const char* dir : {"/dev/shm", "/tmp"}) {
         std::string name = std::string(dir) + "/" + std::string(AfterglowProto::GraphicsTemporaryTag) + "-aglow-XXXXXX";
         const int fd = ::mkostemp(name.data(), O_CLOEXEC);
         if (fd < 0) {
@@ -488,11 +575,20 @@ public:
     /// input), which tells only a TGA without a signature. An error message
     /// on failure. @p warning tells what did not show, for an image that did.
     std::string show(std::string bytes, std::string_view name, std::uint32_t id, std::string& warning);
-    bool interrupted() const { return m_interrupted; }
+    bool interrupted() const
+    {
+        return m_interrupted;
+    }
     /// Whether a write to the terminal failed: no later image can reach it.
-    bool cutOff() const { return m_cutOff; }
+    bool cutOff() const
+    {
+        return m_cutOff;
+    }
     // The temporary files or shared memory objects sent so far.
-    const std::vector<std::string>& temporaries() const { return m_temporaries; }
+    const std::vector<std::string>& temporaries() const
+    {
+        return m_temporaries;
+    }
 
 private:
     bool transmit(GraphicsCommand command, std::string_view data, std::string& error);
@@ -590,7 +686,8 @@ std::string Icat::show(std::string bytes, std::string_view name, std::uint32_t i
     if (const std::string coder = magickCoder(bytes, name);
         !coder.empty() && (coder == "BMP" || AfterglowImage::format(bytes) == AfterglowImage::Format::Unknown)) {
         if (m_s.engine == "builtin") {
-            return "aglow reads " + std::string(magickFormat(coder)) + " images only with ImageMagick, which --engine builtin turns off";
+            return "aglow reads " + std::string(magickFormat(coder))
+                + " images only with ImageMagick, which --engine builtin turns off";
         }
         std::string converted;
         if (!magickToPng(bytes, coder, converted, error, m_stop)) {
@@ -677,9 +774,13 @@ std::string Icat::show(std::string bytes, std::string_view name, std::uint32_t i
     int frames = !image ? 1 : m_s.loops == 0 ? 1 : image->frameCount();
     // The terminal keeps every frame at the size it is shown: an animation
     // that does not fit in its image memory shows its first frame.
-    if (frames > 1 && std::uint64_t(frames) * std::uint64_t(outWidth) * std::uint64_t(outHeight) * 4 > AfterglowProto::GraphicsDefaultQuota) {
+    if (frames > 1
+        && std::uint64_t(frames) * std::uint64_t(outWidth) * std::uint64_t(outHeight) * 4
+            > AfterglowProto::GraphicsDefaultQuota) {
         frames = 1;
-        warning = "the animation is too large for the image memory of the terminal at this size, so only its first frame shows";
+        warning =
+            "the animation is too large for the image memory of the terminal at this size, so only its first frame "
+            "shows";
     }
     const Resizer resize(image ? image->width : width, image ? image->height : height, outWidth, outHeight);
     // Each frame is sent once: it moves out of the image and changes in
@@ -799,7 +900,7 @@ std::string Icat::show(std::string bytes, std::string_view name, std::uint32_t i
             if (opaque) {
                 dropAlpha(data);
             }
-            GraphicsCommand command = n == 0 ? first : GraphicsCommand {};
+            GraphicsCommand command = n == 0 ? first : GraphicsCommand{};
             if (n > 0) {
                 command.action = 'f';
                 command.hasAction = true;
@@ -905,7 +1006,12 @@ std::string Icat::show(std::string bytes, std::string_view name, std::uint32_t i
     return failure;
 }
 
-enum class Detection { Answered, Interrupted, Silent, Closed };
+enum class Detection {
+    Answered,
+    Interrupted,
+    Silent,
+    Closed
+};
 
 // Asks the terminal which media it reads: a=q with a pixel through each, then
 // DA1. A terminal answers in order, so DA1 first means no graphics at all.
@@ -1014,19 +1120,21 @@ std::optional<std::string> fileUri(std::string_view arg)
 {
     constexpr std::string_view Scheme = "file:";
     if (arg.size() <= Scheme.size() || arg[Scheme.size()] != '/'
-        || !std::equal(Scheme.begin(), Scheme.end(), arg.begin(),
-                       [](char a, char b) { return a == char(std::tolower(std::uint8_t(b))); })) {
+        || !std::equal(Scheme.begin(), Scheme.end(), arg.begin(), [](char a, char b) {
+               return a == char(std::tolower(std::uint8_t(b)));
+           })) {
         return std::nullopt;
     }
     std::string_view rest = arg.substr(Scheme.size());
     if (rest.starts_with("//")) {
         const std::size_t slash = rest.find('/', 2);
-        const std::string_view host = rest.substr(2, slash == std::string_view::npos ? std::string_view::npos : slash - 2);
+        const std::string_view host =
+            rest.substr(2, slash == std::string_view::npos ? std::string_view::npos : slash - 2);
         // Host names have no case: "LOCALHOST" as well.
         const auto sameName = [&host](std::string_view name) {
-            return host.size() == name.size()
-                && std::equal(host.begin(), host.end(), name.begin(),
-                              [](char a, char b) { return std::tolower(std::uint8_t(a)) == std::tolower(std::uint8_t(b)); });
+            return host.size() == name.size() && std::equal(host.begin(), host.end(), name.begin(), [](char a, char b) {
+                       return std::tolower(std::uint8_t(a)) == std::tolower(std::uint8_t(b));
+                   });
         };
         char own[AfterglowProto::MaxHostNameBytes + 2] = {};
         if (!host.empty() && (sameName("localhost") || (::gethostname(own, sizeof own - 1) == 0 && sameName(own)))) {
@@ -1040,7 +1148,7 @@ std::optional<std::string> fileUri(std::string_view arg)
 // @p deadline (nowMs()).
 bool allowTmuxPassthrough(long long deadline)
 {
-    const TmuxRun run = runTmux({ "set", "-p", "allow-passthrough", "on" }, deadline);
+    const TmuxRun run = runTmux({"set", "-p", "allow-passthrough", "on"}, deadline);
     return run.started && !run.late && WIFEXITED(run.status) && WEXITSTATUS(run.status) == 0;
 }
 
@@ -1121,7 +1229,8 @@ int runIcat(int argc, char** argv)
     const long long timeoutMs = (long long)(parsed->real("detection-timeout") * 1000);
     const int out = STDOUT_FILENO;
     if (detecting && settings.tmux) {
-        report("icat", "Inside tmux, aglow cannot ask the terminal whether it shows images, as tmux answers in its place.");
+        report("icat",
+               "Inside tmux, aglow cannot ask the terminal whether it shows images, as tmux answers in its place.");
         return 1;
     }
     // A clear needs no window size, and with no image to show it is all there is to do.
@@ -1151,13 +1260,14 @@ int runIcat(int argc, char** argv)
     Screen screen;
     if (const auto spec = parsed->value("use-window-size"); !spec.empty()) {
         int fields[4] = {};
-        if (!parseFields(spec, ",,,", fields) || fields[0] < 1 || fields[1] < 1 || fields[2] < fields[0] || fields[3] < fields[1]) {
+        if (!parseFields(spec, ",,,", fields) || fields[0] < 1 || fields[1] < 1 || fields[2] < fields[0]
+            || fields[3] < fields[1]) {
             report("icat", "Invalid size specification " + spec + ". Give COLUMNS,ROWS,WIDTH,HEIGHT.");
             return 1;
         }
-        screen = { fields[0], fields[1], fields[2], fields[3] };
+        screen = {fields[0], fields[1], fields[2], fields[3]};
     } else {
-        winsize size { };
+        winsize size{};
         int fd = ::isatty(STDOUT_FILENO) ? STDOUT_FILENO : ::open("/dev/tty", O_RDONLY | O_CLOEXEC | O_NOCTTY);
         if (fd < 0 || ::ioctl(fd, TIOCGWINSZ, &size) != 0) {
             report("icat", std::string("Failed to query the window size: ") + std::strerror(errno));
@@ -1166,7 +1276,7 @@ int runIcat(int argc, char** argv)
         if (fd != STDOUT_FILENO) {
             ::close(fd);
         }
-        screen = { size.ws_col, size.ws_row, size.ws_xpixel, size.ws_ypixel };
+        screen = {size.ws_col, size.ws_row, size.ws_xpixel, size.ws_ypixel};
     }
     if (parsed->flag("print-window-size")) {
         std::printf("%dx%d", screen.width, screen.height);
@@ -1200,7 +1310,7 @@ int runIcat(int argc, char** argv)
     bool unread = false;
     for (const auto& arg : parsed->args) {
         if (isRemoteUrl(arg)) {
-            sources.push_back({ arg, {}, true });
+            sources.push_back({arg, {}, true});
             continue;
         }
         std::string path = arg;
@@ -1212,7 +1322,7 @@ int runIcat(int argc, char** argv)
             }
             path = uris[0].path;
         }
-        struct stat st { };
+        struct stat st{};
         if (::stat(path.c_str(), &st) != 0) {
             report("icat", "Cannot read " + printable(arg) + ": " + std::strerror(errno));
             return 1;
@@ -1236,10 +1346,10 @@ int runIcat(int argc, char** argv)
                 return 1;
             }
             for (auto& name : found) {
-                sources.push_back({ std::move(name), {} });
+                sources.push_back({std::move(name), {}});
             }
         } else {
-            sources.push_back({ path, {} });
+            sources.push_back({path, {}});
         }
     }
     if (sources.empty() && !detecting) {
@@ -1253,11 +1363,13 @@ int runIcat(int argc, char** argv)
     }
     // Only an image needs the size in pixels: a clear without one is done.
     if (!detecting && (screen.width == 0 || screen.height == 0)) {
-        report("icat", "The terminal does not report its size in pixels. Use a terminal that does, or --use-window-size.");
+        report("icat",
+               "The terminal does not report its size in pixels. Use a terminal that does, or --use-window-size.");
         return 1;
     }
     if (settings.place && sources.size() > 1) {
-        report("icat", "The --place option can only be used with a single image, not " + std::to_string(sources.size()));
+        report("icat",
+               "The --place option can only be used with a single image, not " + std::to_string(sources.size()));
         return 1;
     }
     Tty tty;
@@ -1285,10 +1397,12 @@ int runIcat(int argc, char** argv)
             return 1;
         }
         if (!direct) {
-            report("icat", detection == Detection::Silent
-                               ? "The terminal did not answer in time. A terminal multiplexer such as tmux or screen may be in the way."
-                               : "This terminal does not support the graphics protocol. A terminal multiplexer such as tmux or "
-                                 "screen may be in the way.");
+            report("icat",
+                   detection == Detection::Silent
+                       ? "The terminal did not answer in time. A terminal multiplexer such as tmux or screen may be in "
+                         "the way."
+                       : "This terminal does not support the graphics protocol. A terminal multiplexer such as tmux or "
+                         "screen may be in the way.");
             return 1;
         }
         if (detecting) {
@@ -1315,7 +1429,9 @@ int runIcat(int argc, char** argv)
     // between two slices of commands, so that no command is cut in half.
     Tty::watchSignals();
     bool interrupted = false;
-    auto stop = [&] { return interrupted = interrupted || tty.takeSignal() != 0; };
+    auto stop = [&] {
+        return interrupted = interrupted || tty.takeSignal() != 0;
+    };
     Icat icat(settings, screen, out, stop);
     // The files and shared memory objects that the terminal did not read go
     // however this function ends, also by an exception (no memory for an
@@ -1327,7 +1443,10 @@ int runIcat(int argc, char** argv)
             : m_remove(std::move(remove))
         {
         }
-        ~LeftOver() { run(); }
+        ~LeftOver()
+        {
+            run();
+        }
         LeftOver(const LeftOver&) = delete;
         LeftOver& operator=(const LeftOver&) = delete;
         void run()

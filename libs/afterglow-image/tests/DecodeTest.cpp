@@ -46,17 +46,22 @@ struct Result
 Result run(std::string_view bytes, std::size_t maxFrames = 100, PngFrames pngFrames = PngFrames::Animation)
 {
     Result r;
-    r.ok = decode(bytes, [&](const unsigned char* rgba, int width, int height, int delay) {
-        r.frames.push_back({width, height, delay, std::vector<std::uint8_t>(rgba, rgba + std::size_t(width) * std::size_t(height) * 4)});
-        return r.frames.size() < maxFrames;
-    }, r.error, r.warning, pngFrames);
+    r.ok = decode(
+        bytes,
+        [&](const unsigned char* rgba, int width, int height, int delay) {
+            r.frames.push_back({width, height, delay,
+                                std::vector<std::uint8_t>(rgba, rgba + std::size_t(width) * std::size_t(height) * 4)});
+            return r.frames.size() < maxFrames;
+        },
+        r.error, r.warning, pngFrames);
     return r;
 }
 
 std::string text(const std::vector<std::uint8_t>& bytes)
 {
     std::string out;
-    for (const std::uint8_t byte : bytes) out += std::to_string(byte) + ' ';
+    for (const std::uint8_t byte : bytes)
+        out += std::to_string(byte) + ' ';
     return out;
 }
 
@@ -64,12 +69,16 @@ std::string text(const std::vector<std::uint8_t>& bytes)
 /// that says what the decoder gave.
 ::testing::AssertionResult still(const Result& r, int width, int height)
 {
-    if (!r.ok) return ::testing::AssertionFailure() << "not decoded: " << r.error;
-    if (r.frames.size() != 1) return ::testing::AssertionFailure() << r.frames.size() << " frames";
+    if (!r.ok)
+        return ::testing::AssertionFailure() << "not decoded: " << r.error;
+    if (r.frames.size() != 1)
+        return ::testing::AssertionFailure() << r.frames.size() << " frames";
     const Frame& f = r.frames[0];
-    if (f.width != width || f.height != height || f.delay != 0 || f.rgba.size() != std::size_t(width) * std::size_t(height) * 4)
+    if (f.width != width || f.height != height || f.delay != 0
+        || f.rgba.size() != std::size_t(width) * std::size_t(height) * 4)
         return ::testing::AssertionFailure() << f.width << " by " << f.height << ", delay " << f.delay;
-    if (!r.error.empty() || !r.warning.empty()) return ::testing::AssertionFailure() << "says: " << r.error << r.warning;
+    if (!r.error.empty() || !r.warning.empty())
+        return ::testing::AssertionFailure() << "says: " << r.error << r.warning;
     return ::testing::AssertionSuccess();
 }
 
@@ -77,8 +86,10 @@ std::string text(const std::vector<std::uint8_t>& bytes)
 ::testing::AssertionResult shows(std::string_view file, int width, int height, const std::vector<std::uint8_t>& rgba)
 {
     const Result r = run(file);
-    if (const auto size = still(r, width, height); !size) return size;
-    if (r.frames[0].rgba != rgba) return ::testing::AssertionFailure() << "pixels " << text(r.frames[0].rgba);
+    if (const auto size = still(r, width, height); !size)
+        return size;
+    if (r.frames[0].rgba != rgba)
+        return ::testing::AssertionFailure() << "pixels " << text(r.frames[0].rgba);
     return ::testing::AssertionSuccess();
 }
 
@@ -87,12 +98,13 @@ std::string text(const std::vector<std::uint8_t>& bytes)
 ::testing::AssertionResult showsNear(std::string_view file, int width, int height, int r, int g, int b, int a = 255)
 {
     const Result result = run(file);
-    if (const auto size = still(result, width, height); !size) return size;
+    if (const auto size = still(result, width, height); !size)
+        return size;
     const auto& px = result.frames[0].rgba;
     for (std::size_t i = 0; i < px.size(); i += 4) {
         if (std::abs(px[i] - r) > 16 || std::abs(px[i + 1] - g) > 16 || std::abs(px[i + 2] - b) > 16 || px[i + 3] != a)
-            return ::testing::AssertionFailure() << "pixel " << i / 4 << " is " << int(px[i]) << ' ' << int(px[i + 1]) << ' '
-                                                 << int(px[i + 2]) << ' ' << int(px[i + 3]);
+            return ::testing::AssertionFailure() << "pixel " << i / 4 << " is " << int(px[i]) << ' ' << int(px[i + 1])
+                                                 << ' ' << int(px[i + 2]) << ' ' << int(px[i + 3]);
     }
     return ::testing::AssertionSuccess();
 }
@@ -101,17 +113,22 @@ std::string text(const std::vector<std::uint8_t>& bytes)
 ::testing::AssertionResult refuses(std::string_view file, std::string_view what = {})
 {
     const Result r = run(file);
-    if (r.ok) return ::testing::AssertionFailure() << "decoded, " << r.frames.size() << " frames";
-    if (!r.frames.empty()) return ::testing::AssertionFailure() << "gave a frame, then failed: " << r.error;
-    if (r.error.empty()) return ::testing::AssertionFailure() << "no error text";
-    if (r.error.find(what) == std::string::npos) return ::testing::AssertionFailure() << "error: " << r.error;
+    if (r.ok)
+        return ::testing::AssertionFailure() << "decoded, " << r.frames.size() << " frames";
+    if (!r.frames.empty())
+        return ::testing::AssertionFailure() << "gave a frame, then failed: " << r.error;
+    if (r.error.empty())
+        return ::testing::AssertionFailure() << "no error text";
+    if (r.error.find(what) == std::string::npos)
+        return ::testing::AssertionFailure() << "error: " << r.error;
     return ::testing::AssertionSuccess();
 }
 
 std::string le(std::uint32_t value, int bytes)
 {
     std::string out;
-    for (int i = 0; i < bytes; ++i) out += char(value >> (8 * i) & 0xFF);
+    for (int i = 0; i < bytes; ++i)
+        out += char(value >> (8 * i) & 0xFF);
     return out;
 }
 
@@ -153,16 +170,17 @@ std::string bmp(const BmpSpec& s)
 // blue, white.
 std::string gifScreen(int width, int height, int background = 0, const char* version = "GIF89a")
 {
-    return std::string(version) + le(std::uint32_t(width), 2) + le(std::uint32_t(height), 2) + std::string("\x81", 1) + char(background)
-        + std::string("\x00", 1) + std::string("\x00\x00\x00\xff\x00\x00\x00\x00\xff\xff\xff\xff", 12);
+    return std::string(version) + le(std::uint32_t(width), 2) + le(std::uint32_t(height), 2) + std::string("\x81", 1)
+        + char(background) + std::string("\x00", 1)
+        + std::string("\x00\x00\x00\xff\x00\x00\x00\x00\xff\xff\xff\xff", 12);
 }
 
 /// A frame of one pixel of the colour @p index at @p left, @p top: a clear
 /// code, the index and the end code, in codes of three bits.
 std::string gifPixel(int left, int top, int index)
 {
-    return std::string("\x2c", 1) + le(std::uint32_t(left), 2) + le(std::uint32_t(top), 2) + le(1, 2) + le(1, 2) + std::string("\x00\x02\x02", 3)
-        + char(0x44 | index << 3) + std::string("\x01\x00", 2);
+    return std::string("\x2c", 1) + le(std::uint32_t(left), 2) + le(std::uint32_t(top), 2) + le(1, 2) + le(1, 2)
+        + std::string("\x00\x02\x02", 3) + char(0x44 | index << 3) + std::string("\x01\x00", 2);
 }
 
 const std::string GifTrailer("\x3b", 1);
@@ -185,11 +203,14 @@ std::string gifFrame(int left, int top, int width, int height, const std::vector
     for (const unsigned code : codes) {
         bits |= code << count;
         count += 3;
-        for (; count >= 8; count -= 8, bits >>= 8) data += char(bits & 0xFF);
+        for (; count >= 8; count -= 8, bits >>= 8)
+            data += char(bits & 0xFF);
     }
-    if (count > 0) data += char(bits & 0xFF);
-    std::string out = std::string("\x2c", 1) + le(std::uint32_t(left), 2) + le(std::uint32_t(top), 2) + le(std::uint32_t(width), 2)
-        + le(std::uint32_t(height), 2) + char(interlaced ? 0x40 : 0) + std::string("\x02", 1);
+    if (count > 0)
+        data += char(bits & 0xFF);
+    std::string out = std::string("\x2c", 1) + le(std::uint32_t(left), 2) + le(std::uint32_t(top), 2)
+        + le(std::uint32_t(width), 2) + le(std::uint32_t(height), 2) + char(interlaced ? 0x40 : 0)
+        + std::string("\x02", 1);
     for (std::size_t i = 0; i < data.size(); i += 255) {
         const std::string block = data.substr(i, 255);
         out += char(block.size()) + block;
@@ -201,7 +222,8 @@ std::string gifFrame(int left, int top, int width, int height, const std::vector
 std::vector<std::uint8_t> joined(std::initializer_list<std::vector<std::uint8_t>> pixels)
 {
     std::vector<std::uint8_t> out;
-    for (const auto& pixel : pixels) out.insert(out.end(), pixel.begin(), pixel.end());
+    for (const auto& pixel : pixels)
+        out.insert(out.end(), pixel.begin(), pixel.end());
     return out;
 }
 
@@ -209,7 +231,8 @@ std::vector<std::uint8_t> joined(std::initializer_list<std::vector<std::uint8_t>
 /// hundredths of a second.
 std::string gifControl(int disposal, int delay)
 {
-    return std::string("\x21\xf9\x04", 3) + char(disposal << 2) + le(std::uint32_t(delay), 2) + std::string("\x00\x00", 2);
+    return std::string("\x21\xf9\x04", 3) + char(disposal << 2) + le(std::uint32_t(delay), 2)
+        + std::string("\x00\x00", 2);
 }
 
 /// The place of the marker @p marker (0xC2: SOF2) in a JPEG.
@@ -225,7 +248,8 @@ std::pair<std::size_t, std::size_t> firstScan(const std::string& jpeg)
     std::size_t end = start + 2;
     // In the data a 0xFF is followed by 0 or by a restart marker.
     while (end + 1 < jpeg.size()
-           && !(std::uint8_t(jpeg[end]) == 0xFF && jpeg[end + 1] != 0 && (std::uint8_t(jpeg[end + 1]) < 0xD0 || std::uint8_t(jpeg[end + 1]) > 0xD7)))
+           && !(std::uint8_t(jpeg[end]) == 0xFF && jpeg[end + 1] != 0
+                && (std::uint8_t(jpeg[end + 1]) < 0xD0 || std::uint8_t(jpeg[end + 1]) > 0xD7)))
         ++end;
     return {start, end};
 }
@@ -234,7 +258,8 @@ std::pair<std::size_t, std::size_t> firstScan(const std::string& jpeg)
 std::string be(std::uint32_t value, int bytes)
 {
     std::string out;
-    for (int i = bytes; i-- > 0;) out += char(value >> (8 * i) & 0xFF);
+    for (int i = bytes; i-- > 0;)
+        out += char(value >> (8 * i) & 0xFF);
     return out;
 }
 
@@ -244,7 +269,8 @@ std::uint32_t crc(std::string_view bytes)
     std::uint32_t c = 0xFFFFFFFF;
     for (const char ch : bytes) {
         c ^= std::uint8_t(ch);
-        for (int k = 0; k < 8; ++k) c = c & 1 ? 0xEDB88320 ^ (c >> 1) : c >> 1;
+        for (int k = 0; k < 8; ++k)
+            c = c & 1 ? 0xEDB88320 ^ (c >> 1) : c >> 1;
     }
     return ~c;
 }
@@ -262,9 +288,11 @@ std::string zlibStored(std::string_view data, bool end = true)
         out += char(last ? 1 : 0) + le(std::uint32_t(n), 2) + le(std::uint32_t(~n & 0xFFFF), 2);
         out.append(rest.substr(0, n));
         rest.remove_prefix(n);
-        if (last) break;
+        if (last)
+            break;
     } while (!rest.empty());
-    if (!end) return out;
+    if (!end)
+        return out;
     std::uint32_t a = 1;
     std::uint32_t b = 0;
     for (const char c : data) {
@@ -279,20 +307,26 @@ const std::string PngSignature("\x89PNG\r\n\x1a\n", 8);
 
 std::string pngChunk(std::string_view type, std::string_view data)
 {
-    return be(std::uint32_t(data.size()), 4) + std::string(type) + std::string(data) + be(crc(std::string(type) + std::string(data)), 4);
+    return be(std::uint32_t(data.size()), 4) + std::string(type) + std::string(data)
+        + be(crc(std::string(type) + std::string(data)), 4);
 }
 
 /// The whole chunk @p type of @p png, the first of its kind.
 std::string chunkOf(std::string_view png, std::string_view type)
 {
     const std::size_t at = png.find(type);
-    if (at == std::string_view::npos || at < 4) return {};
+    if (at == std::string_view::npos || at < 4)
+        return {};
     std::size_t length = 0;
-    for (std::size_t i = at - 4; i < at; ++i) length = length << 8 | std::uint8_t(png[i]);
+    for (std::size_t i = at - 4; i < at; ++i)
+        length = length << 8 | std::uint8_t(png[i]);
     return std::string(png.substr(at - 4, 12 + length));
 }
 
-int channelsOf(int colourType) { return colourType == 6 ? 4 : colourType == 2 ? 3 : colourType == 4 ? 2 : 1; }
+int channelsOf(int colourType)
+{
+    return colourType == 6 ? 4 : colourType == 2 ? 3 : colourType == 4 ? 2 : 1;
+}
 
 /// The image data of @p samples, @p width by @p height, each row with the
 /// filter 0.
@@ -302,19 +336,23 @@ std::string imageData(int width, int height, int colourType, const std::vector<s
     const std::size_t row = std::size_t(width * channelsOf(colourType));
     for (int y = 0; y < height; ++y) {
         rows += '\0';
-        rows.append(samples.begin() + std::ptrdiff_t(std::size_t(y) * row), samples.begin() + std::ptrdiff_t(std::size_t(y + 1) * row));
+        rows.append(samples.begin() + std::ptrdiff_t(std::size_t(y) * row),
+                    samples.begin() + std::ptrdiff_t(std::size_t(y + 1) * row));
     }
     return zlibStored(rows);
 }
 
 std::string ihdrOf(int width, int height, int colourType)
 {
-    return pngChunk("IHDR", be(std::uint32_t(width), 4) + be(std::uint32_t(height), 4) + char(8) + char(colourType) + std::string(3, '\0'));
+    return pngChunk("IHDR",
+                    be(std::uint32_t(width), 4) + be(std::uint32_t(height), 4) + char(8) + char(colourType)
+                        + std::string(3, '\0'));
 }
 
 /// A PNG of @p samples (RGBA for the colour type 6), with @p before
 /// between its IHDR and its image data.
-std::string pngOf(int width, int height, const std::vector<std::uint8_t>& samples, std::string_view before = {}, int colourType = 6)
+std::string pngOf(int width, int height, const std::vector<std::uint8_t>& samples, std::string_view before = {},
+                  int colourType = 6)
 {
     return PngSignature + ihdrOf(width, height, colourType) + std::string(before)
         + pngChunk("IDAT", imageData(width, height, colourType, samples)) + pngChunk("IEND", {});
@@ -333,13 +371,16 @@ struct ApngFrame
 
 std::string fcTL(std::uint32_t sequence, const ApngFrame& f)
 {
-    return pngChunk("fcTL", be(sequence, 4) + be(std::uint32_t(f.width), 4) + be(std::uint32_t(f.height), 4) + be(std::uint32_t(f.x), 4)
-                                + be(std::uint32_t(f.y), 4) + be(10, 2) + be(100, 2) + char(f.dispose) + char(f.blend));
+    return pngChunk("fcTL",
+                    be(sequence, 4) + be(std::uint32_t(f.width), 4) + be(std::uint32_t(f.height), 4)
+                        + be(std::uint32_t(f.x), 4) + be(std::uint32_t(f.y), 4) + be(10, 2) + be(100, 2)
+                        + char(f.dispose) + char(f.blend));
 }
 
 /// An APNG whose default image is its first frame, with @p before between
 /// its IHDR and its acTL.
-std::string apngOf(int width, int height, const std::vector<ApngFrame>& frames, std::string_view before = {}, int colourType = 6)
+std::string apngOf(int width, int height, const std::vector<ApngFrame>& frames, std::string_view before = {},
+                   int colourType = 6)
 {
     std::string out = PngSignature + ihdrOf(width, height, colourType) + std::string(before)
         + pngChunk("acTL", be(std::uint32_t(frames.size()), 4) + be(0, 4));
@@ -356,7 +397,8 @@ std::string apngOf(int width, int height, const std::vector<ApngFrame>& frames, 
 /// The pixel at @p x, @p y of a frame @p width wide.
 std::vector<std::uint8_t> pixelAt(const Frame& frame, int x, int y)
 {
-    const auto at = frame.rgba.begin() + std::ptrdiff_t((std::size_t(y) * std::size_t(frame.width) + std::size_t(x)) * 4);
+    const auto at =
+        frame.rgba.begin() + std::ptrdiff_t((std::size_t(y) * std::size_t(frame.width) + std::size_t(x)) * 4);
     return std::vector<std::uint8_t>(at, at + 4);
 }
 
@@ -371,10 +413,12 @@ struct TiffField
 /// A TIFF of @p fields and the strips (tiles with @p tiled) @p blocks, whose
 /// offsets and byte counts it adds. With @p shared, every one of @p shared
 /// blocks is the first.
-std::string tiffOf(std::vector<TiffField> fields, const std::vector<std::string>& blocks, bool tiled = false, bool bigEndian = false,
-                   std::size_t shared = 0)
+std::string tiffOf(std::vector<TiffField> fields, const std::vector<std::string>& blocks, bool tiled = false,
+                   bool bigEndian = false, std::size_t shared = 0)
 {
-    const auto number = [&](std::uint32_t value, int bytes) { return bigEndian ? be(value, bytes) : le(value, bytes); };
+    const auto number = [&](std::uint32_t value, int bytes) {
+        return bigEndian ? be(value, bytes) : le(value, bytes);
+    };
     std::string data;
     std::vector<std::uint32_t> offsets;
     std::vector<std::uint32_t> counts;
@@ -389,7 +433,9 @@ std::string tiffOf(std::vector<TiffField> fields, const std::vector<std::string>
     }
     fields.push_back({std::uint16_t(tiled ? 324 : 273), 4, offsets});
     fields.push_back({std::uint16_t(tiled ? 325 : 279), 4, counts});
-    std::sort(fields.begin(), fields.end(), [](const TiffField& a, const TiffField& b) { return a.tag < b.tag; });
+    std::sort(fields.begin(), fields.end(), [](const TiffField& a, const TiffField& b) {
+        return a.tag < b.tag;
+    });
     const std::size_t directory = 8 + data.size();
     std::string entries;
     std::string values;
@@ -397,7 +443,8 @@ std::string tiffOf(std::vector<TiffField> fields, const std::vector<std::string>
     for (const TiffField& f : fields) {
         const int size = f.type == 3 ? 2 : f.type == 4 ? 4 : 1;
         std::string bytes;
-        for (const std::uint32_t v : f.values) bytes += number(v, size);
+        for (const std::uint32_t v : f.values)
+            bytes += number(v, size);
         entries += number(f.tag, 2) + number(f.type, 2) + number(std::uint32_t(f.values.size()), 4);
         if (bytes.size() <= 4) {
             entries += bytes + std::string(4 - bytes.size(), '\0');
@@ -413,11 +460,12 @@ std::string tiffOf(std::vector<TiffField> fields, const std::vector<std::string>
 /// The fields of an image of @p width by @p height with @p samples samples
 /// of @p bits bits, the photometric interpretation @p kind, in strips of
 /// @p rows rows, and @p more.
-std::vector<TiffField> tiffImage(std::uint32_t width, std::uint32_t height, std::uint32_t samples, std::uint32_t bits, std::uint32_t kind,
-                                 std::uint32_t rows, std::vector<TiffField> more = {})
+std::vector<TiffField> tiffImage(std::uint32_t width, std::uint32_t height, std::uint32_t samples, std::uint32_t bits,
+                                 std::uint32_t kind, std::uint32_t rows, std::vector<TiffField> more = {})
 {
-    std::vector<TiffField> fields{{256, 4, {width}}, {257, 4, {height}}, {258, 3, std::vector<std::uint32_t>(samples, bits)},
-                                  {262, 3, {kind}}, {277, 3, {samples}}, {278, 4, {rows}}};
+    std::vector<TiffField> fields{
+        {256, 4, {width}}, {257, 4, {height}},  {258, 3, std::vector<std::uint32_t>(samples, bits)},
+        {262, 3, {kind}},  {277, 3, {samples}}, {278, 4, {rows}}};
     fields.insert(fields.end(), more.begin(), more.end());
     return fields;
 }
@@ -425,7 +473,8 @@ std::vector<TiffField> tiffImage(std::uint32_t width, std::uint32_t height, std:
 std::string bytesOf(std::initializer_list<int> values)
 {
     std::string out;
-    for (const int v : values) out += char(v);
+    for (const int v : values)
+        out += char(v);
     return out;
 }
 
@@ -441,8 +490,9 @@ TEST(ImageDecode, PngOfEveryKindDecodesToStraightAlpha)
     EXPECT_TRUE(shows(PngGrey2, 4, 1, {0, 0, 0, 255, 85, 85, 85, 255, 170, 170, 170, 255, 255, 255, 255, 255}));
     EXPECT_TRUE(shows(PngGreyTrns, 2, 1, {50, 50, 50, 0, 60, 60, 60, 255}));
     EXPECT_TRUE(shows(PngRgbTrns, 2, 1, {1, 2, 3, 0, 4, 5, 6, 255}));
-    EXPECT_TRUE(shows(PngInterlaced, 3, 3, {1, 1, 1, 255, 2, 2, 2, 255, 3, 3, 3, 255, 11, 11, 11, 255, 12, 12, 12, 255, 13, 13, 13, 255,
-                                            21, 21, 21, 255, 22, 22, 22, 255, 23, 23, 23, 255}));
+    EXPECT_TRUE(
+        shows(PngInterlaced, 3, 3, {1,  1,   1,  255, 2,  2,   2,  255, 3,  3,   3,  255, 11, 11,  11, 255, 12, 12,
+                                    12, 255, 13, 13,  13, 255, 21, 21,  21, 255, 22, 22,  22, 255, 23, 23,  23, 255}));
 }
 
 TEST(ImageDecode, PngSamplesOf16BitsAreNotMadeBrighter)
@@ -488,9 +538,12 @@ namespace {
         const auto& w = want[i % want.size()];
         for (int c = 0; c < 3; ++c) {
             if (std::abs(int(px[i * 4 + std::size_t(c)]) - w[std::size_t(c)]) > 1)
-                return ::testing::AssertionFailure() << "pixel " << i << ": " << text({px.begin() + std::ptrdiff_t(i * 4), px.begin() + std::ptrdiff_t(i * 4 + 4)});
+                return ::testing::AssertionFailure()
+                    << "pixel " << i << ": "
+                    << text({px.begin() + std::ptrdiff_t(i * 4), px.begin() + std::ptrdiff_t(i * 4 + 4)});
         }
-        if (px[i * 4 + 3] != 255) return ::testing::AssertionFailure() << "pixel " << i << " lost its alpha";
+        if (px[i * 4 + 3] != 255)
+            return ::testing::AssertionFailure() << "pixel " << i << " lost its alpha";
     }
     return ::testing::AssertionSuccess();
 }
@@ -540,7 +593,8 @@ TEST(ImageDecode, JpegWarningsShowThePictureAndErrorsDoNot)
     std::string broken = JpegProgressive;
     broken[broken.find("JFIF") + 5] = 2;
     const std::size_t frame = marker(broken, '\xc2');
-    const std::string header = broken.substr(frame, 2 + (std::size_t(std::uint8_t(broken[frame + 2])) << 8 | std::uint8_t(broken[frame + 3])));
+    const std::string header =
+        broken.substr(frame, 2 + (std::size_t(std::uint8_t(broken[frame + 2])) << 8 | std::uint8_t(broken[frame + 3])));
     broken = broken.substr(0, firstScan(broken).second) + header + std::string("\xff\xd9", 2);
     EXPECT_TRUE(refuses(broken));
 }
@@ -550,12 +604,14 @@ TEST(ImageDecode, JpegLimits)
     // More scans than a picture needs: the first scan, 1,001 times.
     const auto [start, end] = firstScan(JpegProgressive);
     std::string scans = JpegProgressive.substr(0, end);
-    for (int i = 0; i < 1001; ++i) scans += JpegProgressive.substr(start, end - start);
+    for (int i = 0; i < 1001; ++i)
+        scans += JpegProgressive.substr(start, end - start);
     scans += JpegProgressive.substr(end);
     EXPECT_TRUE(refuses(scans, "scans"));
     // The same file with a few scans more than its own decodes.
     std::string few = JpegProgressive.substr(0, end);
-    for (int i = 0; i < 5; ++i) few += JpegProgressive.substr(start, end - start);
+    for (int i = 0; i < 5; ++i)
+        few += JpegProgressive.substr(start, end - start);
     few += JpegProgressive.substr(end);
     EXPECT_TRUE(run(few).ok);
 
@@ -610,7 +666,8 @@ TEST(ImageDecode, AnAnimationKeepsTheFramesBeforeItsDamage)
     const std::size_t second = webp.find("ANMF", webp.find("ANMF") + 4);
     ASSERT_NE(second, std::string::npos);
     const std::size_t data = webp.find("VP8L", second) + 8;
-    for (std::size_t i = data + 5; i < webp.size(); ++i) webp[i] = '\xff';
+    for (std::size_t i = data + 5; i < webp.size(); ++i)
+        webp[i] = '\xff';
     Result r = run(webp);
     EXPECT_TRUE(r.ok) << r.error;
     EXPECT_EQ(r.frames.size(), 1u);
@@ -618,7 +675,8 @@ TEST(ImageDecode, AnAnimationKeepsTheFramesBeforeItsDamage)
     // The same damage in the first frame is an error.
     webp = WebpAnimated;
     const std::size_t first = webp.find("VP8L") + 8;
-    for (std::size_t i = first + 5; i < second; ++i) webp[i] = '\xff';
+    for (std::size_t i = first + 5; i < second; ++i)
+        webp[i] = '\xff';
     EXPECT_TRUE(refuses(webp));
     // A WebP that is cut short has no frame: its container must be whole.
     EXPECT_TRUE(refuses(WebpAnimated.substr(0, WebpAnimated.size() - 4)));
@@ -653,7 +711,8 @@ TEST(ImageDecode, AnAnimationOfMoreThan24DaysStops)
     std::string frame = WebpAnimated.substr(first, WebpAnimated.find("ANMF", first + 4) - first);
     frame.replace(8 + 12, 3, std::string("\xff\xff\xff", 3));
     std::string file = WebpAnimated.substr(0, first);
-    for (int i = 0; i < 130; ++i) file += frame;
+    for (int i = 0; i < 130; ++i)
+        file += frame;
     file.replace(4, 4, le(std::uint32_t(file.size() - 8), 4));
     const Result r = run(file, 1000);
     EXPECT_TRUE(r.ok) << r.error;
@@ -671,9 +730,12 @@ TEST(ImageDecode, GifCanvasAndBlocks)
     // A frame outside the screen draws nothing.
     EXPECT_TRUE(shows(gifScreen(1, 1) + gifPixel(5, 5, 1) + GifTrailer, 1, 1, {0, 0, 0, 0}));
     // A graphic control extension whose first block is empty is skipped.
-    EXPECT_TRUE(shows(gifScreen(1, 1) + std::string("\x21\xf9\x00", 3) + gifPixel(0, 0, 1) + GifTrailer, 1, 1, {255, 0, 0, 255}));
+    EXPECT_TRUE(shows(gifScreen(1, 1) + std::string("\x21\xf9\x00", 3) + gifPixel(0, 0, 1) + GifTrailer, 1, 1,
+                      {255, 0, 0, 255}));
     // Its transparent index: the pixel stays as the canvas was.
-    EXPECT_TRUE(shows(gifScreen(1, 1) + std::string("\x21\xf9\x04\x01\x00\x00\x01\x00", 8) + gifPixel(0, 0, 1) + GifTrailer, 1, 1, {0, 0, 0, 0}));
+    EXPECT_TRUE(
+        shows(gifScreen(1, 1) + std::string("\x21\xf9\x04\x01\x00\x00\x01\x00", 8) + gifPixel(0, 0, 1) + GifTrailer, 1,
+              1, {0, 0, 0, 0}));
     // The older signature.
     EXPECT_TRUE(shows(gifScreen(1, 1, 0, "GIF87a") + gifPixel(0, 0, 3) + GifTrailer, 1, 1, {255, 255, 255, 255}));
 
@@ -684,9 +746,11 @@ TEST(ImageDecode, GifCanvasAndBlocks)
     const std::vector<std::uint8_t> blue{0, 0, 255, 255};
     const std::vector<std::uint8_t> white{255, 255, 255, 255};
     const std::vector<std::uint8_t> black{0, 0, 0, 255};
-    EXPECT_TRUE(shows(gifScreen(2, 2) + gifFrame(1, 0, 2, 2, {1, 2, 3, 2}) + GifTrailer, 2, 2, joined({none, red, none, white})));
+    EXPECT_TRUE(shows(gifScreen(2, 2) + gifFrame(1, 0, 2, 2, {1, 2, 3, 2}) + GifTrailer, 2, 2,
+                      joined({none, red, none, white})));
     // An interlaced frame: the data has rows 0, 2, 1 and 3 of four.
-    EXPECT_TRUE(shows(gifScreen(1, 4) + gifFrame(0, 0, 1, 4, {1, 2, 3, 0}, true) + GifTrailer, 1, 4, joined({red, white, blue, black})));
+    EXPECT_TRUE(shows(gifScreen(1, 4) + gifFrame(0, 0, 1, 4, {1, 2, 3, 0}, true) + GifTrailer, 1, 4,
+                      joined({red, white, blue, black})));
 
     // No image, with and without a trailer.
     EXPECT_TRUE(refuses(gifScreen(1, 1) + GifTrailer, "no image"));
@@ -698,7 +762,8 @@ TEST(ImageDecode, GifCanvasAndBlocks)
     // Cut after the descriptor, after the least code size and after the
     // length of the first block: no pixel, so no frame.
     const std::string pixel = gifPixel(0, 0, 1);
-    for (const std::size_t cut : {10, 11, 12}) EXPECT_TRUE(refuses(gifScreen(1, 1) + pixel.substr(0, cut), "truncated")) << cut;
+    for (const std::size_t cut : {10, 11, 12})
+        EXPECT_TRUE(refuses(gifScreen(1, 1) + pixel.substr(0, cut), "truncated")) << cut;
     // A frame with no colour table at all.
     EXPECT_TRUE(refuses(bare + gifPixel(0, 0, 1) + GifTrailer, "color table"));
     // A screen with an empty side.
@@ -714,8 +779,8 @@ TEST(ImageDecode, GifDisposalOfAFrame)
     const std::vector<std::uint8_t> white{255, 255, 255, 255};
     // Disposal 2: the frame's rectangle goes back to transparent before the
     // next frame.
-    Result r = run(gifScreen(2, 1) + gifControl(2, 10) + gifFrame(0, 0, 1, 1, {1}) + gifControl(0, 10) + gifFrame(1, 0, 1, 1, {2})
-                   + GifTrailer);
+    Result r = run(gifScreen(2, 1) + gifControl(2, 10) + gifFrame(0, 0, 1, 1, {1}) + gifControl(0, 10)
+                   + gifFrame(1, 0, 1, 1, {2}) + GifTrailer);
     ASSERT_TRUE(r.ok) << r.error;
     EXPECT_TRUE(r.warning.empty()) << r.warning;
     ASSERT_EQ(r.frames.size(), 2u);
@@ -723,8 +788,8 @@ TEST(ImageDecode, GifDisposalOfAFrame)
     EXPECT_EQ(r.frames[0].rgba, joined({red, none}));
     EXPECT_EQ(r.frames[1].rgba, joined({none, blue}));
     // Disposal 3: the canvas goes back to what it was before the frame.
-    r = run(gifScreen(2, 1) + gifFrame(0, 0, 2, 1, {3, 3}) + gifControl(3, 10) + gifFrame(0, 0, 1, 1, {1}) + gifFrame(1, 0, 1, 1, {2})
-            + GifTrailer);
+    r = run(gifScreen(2, 1) + gifFrame(0, 0, 2, 1, {3, 3}) + gifControl(3, 10) + gifFrame(0, 0, 1, 1, {1})
+            + gifFrame(1, 0, 1, 1, {2}) + GifTrailer);
     ASSERT_TRUE(r.ok) << r.error;
     ASSERT_EQ(r.frames.size(), 3u);
     EXPECT_EQ(r.frames[0].rgba, joined({white, white}));
@@ -748,7 +813,8 @@ TEST(ImageDecode, BmpOfEachDepthAndHeader)
     // biClrUsed: two colours.
     std::string file = bmp(s);
     file.replace(14 + 32, 4, le(2, 4));
-    EXPECT_TRUE(shows(file, 3, 2, {255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 0, 255, 0, 255, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255}));
+    EXPECT_TRUE(shows(file, 3, 2,
+                      {255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 0, 255, 0, 255, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255}));
 
     // 1 bit, bottom-up: the last row in the file is the first.
     s = {};
@@ -840,7 +906,8 @@ TEST(ImageDecode, BmpOfEachDepthAndHeader)
     std::string os2 = le(12, 4) + le(1, 2) + le(1, 2) + le(1, 2) + le(8, 2);
     const std::string os2Palette = std::string("\x30\x20\x10", 3) + std::string(3 * 255, '\0');
     const std::string os2Body = os2 + os2Palette + std::string("\x00\x00\x00\x00", 4);
-    EXPECT_TRUE(shows("BM" + le(std::uint32_t(14 + os2Body.size()), 4) + le(0, 4) + le(std::uint32_t(14 + os2.size() + os2Palette.size()), 4) + os2Body,
+    EXPECT_TRUE(shows("BM" + le(std::uint32_t(14 + os2Body.size()), 4) + le(0, 4)
+                          + le(std::uint32_t(14 + os2.size() + os2Palette.size()), 4) + os2Body,
                       1, 1, {0x10, 0x20, 0x30, 255}));
 }
 
@@ -848,7 +915,8 @@ TEST(ImageDecode, BmpWithRunLengthEncoding)
 {
     // Black, red, green and blue, as BGRA.
     const std::string colours = bytesOf({0, 0, 0, 0, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0, 0});
-    const std::vector<std::uint8_t> black{0, 0, 0, 255}, red{255, 0, 0, 255}, green{0, 255, 0, 255}, blue{0, 0, 255, 255};
+    const std::vector<std::uint8_t> black{0, 0, 0, 255}, red{255, 0, 0, 255}, green{0, 255, 0, 255},
+        blue{0, 0, 255, 255};
     BmpSpec s;
     s.width = 4;
     s.height = 2;
@@ -941,7 +1009,8 @@ TEST(ImageDecode, RefusesBmpsThatAreNotValid)
         changed.replace(at, 4, le(value, 4));
         return changed;
     };
-    for (const std::string& bad : {header(14, 30), header(14, 128), header(18, 0), header(18, 0xFFFFFFFF), header(22, 0), header(22, 0x80000000)}) {
+    for (const std::string& bad : {header(14, 30), header(14, 128), header(18, 0), header(18, 0xFFFFFFFF),
+                                   header(22, 0), header(22, 0x80000000)}) {
         EXPECT_EQ(probed(bad), "unknown 0x0");
         EXPECT_TRUE(refuses(bad, "no valid header"));
     }
@@ -954,14 +1023,16 @@ TEST(ImageDecode, RefusesBmpsThatAreNotValid)
 ::testing::AssertionResult showsPattern(std::string_view file, int width, int height)
 {
     const Result r = run(file);
-    if (const auto size = still(r, width, height); !size) return size;
+    if (const auto size = still(r, width, height); !size)
+        return size;
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
-            const std::uint8_t* p = r.frames[0].rgba.data() + (std::size_t(y) * std::size_t(width) + std::size_t(x)) * 4;
+            const std::uint8_t* p =
+                r.frames[0].rgba.data() + (std::size_t(y) * std::size_t(width) + std::size_t(x)) * 4;
             const std::uint32_t want = TiffPattern(x, y);
             if (p[0] != (want >> 16) || p[1] != ((want >> 8) & 255) || p[2] != (want & 255) || p[3] != 255) {
-                return ::testing::AssertionFailure() << "at " << x << ", " << y << ": " << int(p[0]) << ' ' << int(p[1]) << ' ' << int(p[2])
-                                                     << ' ' << int(p[3]);
+                return ::testing::AssertionFailure() << "at " << x << ", " << y << ": " << int(p[0]) << ' ' << int(p[1])
+                                                     << ' ' << int(p[2]) << ' ' << int(p[3]);
             }
         }
     }
@@ -974,13 +1045,15 @@ std::string withField(std::string file, std::string_view entry, std::string_view
 {
     const std::size_t at = file.find(entry);
     EXPECT_NE(at, std::string::npos);
-    if (at != std::string::npos) file.replace(at + entry.size(), value.size(), value);
+    if (at != std::string::npos)
+        file.replace(at + entry.size(), value.size(), value);
     return file;
 }
 
 TEST(ImageDecode, TiffOfEachKind)
 {
-    EXPECT_TRUE(shows(TiffRgb, 3, 2, {255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 10, 20, 30, 255, 200, 100, 50, 255, 1, 2, 3, 255}));
+    EXPECT_TRUE(shows(TiffRgb, 3, 2, {255, 0,  0,  255, 0,   255, 0,  255, 0, 0, 255, 255,
+                                      10,  20, 30, 255, 200, 100, 50, 255, 1, 2, 3,   255}));
     // LZW with codes of 9 to 12 bits and a clear code, the predictor of 8
     // and 16 bits, PackBits in a big-endian file, and edge tiles.
     EXPECT_TRUE(showsPattern(TiffLzw, 40, 36));
@@ -990,7 +1063,8 @@ TEST(ImageDecode, TiffOfEachKind)
     EXPECT_TRUE(shows(Tiff16Predictor, 2, 1, {128, 64, 192, 255, 255, 1, 0, 255}));
     // 1 bit, white is zero, rows of whole bytes.
     std::vector<std::uint8_t> bilevel(10 * 2 * 4, 255);
-    for (const int i : {0, 3, 9, 15}) std::fill_n(bilevel.begin() + i * 4, 3, std::uint8_t(0));
+    for (const int i : {0, 3, 9, 15})
+        std::fill_n(bilevel.begin() + i * 4, 3, std::uint8_t(0));
     EXPECT_TRUE(shows(TiffBilevel, 10, 2, bilevel));
     EXPECT_TRUE(shows(TiffPalette, 2, 1, {0, 0, 255, 255, 255, 0, 0, 255}));
     // Unassociated alpha stays as it is.
@@ -1025,18 +1099,22 @@ TEST(ImageDecode, RefusesTiffsThatAreNotSupportedOrValid)
 TEST(ImageDecode, NetpbmOfEachKind)
 {
     // Plain PBM: 1 is black, and the digits need no space between them.
-    EXPECT_TRUE(shows("P1\n# a comment\n3 2\n1 0 1\n010", 3, 2,
-                      {0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255}));
+    EXPECT_TRUE(
+        shows("P1\n# a comment\n3 2\n1 0 1\n010", 3, 2,
+              {0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255}));
     EXPECT_TRUE(shows("P2\n3 1\n15\n0 7 15\n", 3, 1, {0, 0, 0, 255, 119, 119, 119, 255, 255, 255, 255, 255}));
     EXPECT_TRUE(shows("P3 1 1 255\n10 20 30\n", 1, 1, {10, 20, 30, 255}));
     // Raw PBM: rows of whole bytes.
     std::vector<std::uint8_t> bitmap(10 * 4, 255);
-    for (const int i : {0, 3, 9}) std::fill_n(bitmap.begin() + i * 4, 3, std::uint8_t(0));
+    for (const int i : {0, 3, 9})
+        std::fill_n(bitmap.begin() + i * 4, 3, std::uint8_t(0));
     EXPECT_TRUE(shows(std::string("P4\n10 1\n\x90\x40", 10), 10, 1, bitmap));
     // Samples of 16 bits, big-endian.
-    EXPECT_TRUE(shows(std::string("P5 2 1 65535\n\x80\x00\xff\xff", 17), 2, 1, {128, 128, 128, 255, 255, 255, 255, 255}));
+    EXPECT_TRUE(
+        shows(std::string("P5 2 1 65535\n\x80\x00\xff\xff", 17), 2, 1, {128, 128, 128, 255, 255, 255, 255, 255}));
     EXPECT_TRUE(shows("P6\n2 1\n255\n\x01\x02\x03\xfa\xfb\xfc", 2, 1, {1, 2, 3, 255, 250, 251, 252, 255}));
-    EXPECT_TRUE(shows("P7\nWIDTH 2\nHEIGHT 1\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n" + std::string("\x01\x02\x03\x80\x04\x05\x06\x00", 8),
+    EXPECT_TRUE(shows("P7\nWIDTH 2\nHEIGHT 1\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n"
+                          + std::string("\x01\x02\x03\x80\x04\x05\x06\x00", 8),
                       2, 1, {1, 2, 3, 128, 4, 5, 6, 0}));
     // A PAM without a tuple type: its depth says which.
     EXPECT_TRUE(shows("P7\nWIDTH 1\nHEIGHT 1\nDEPTH 2\nMAXVAL 3\nENDHDR\n\x01\x03", 1, 1, {85, 85, 85, 255}));
@@ -1044,7 +1122,8 @@ TEST(ImageDecode, NetpbmOfEachKind)
 
     EXPECT_TRUE(refuses("P6\n2 1\n255\n\x01", "truncated"));
     EXPECT_TRUE(refuses("P2 2 1 255 1", "truncated"));
-    EXPECT_TRUE(refuses("P7\nWIDTH 1\nHEIGHT 1\nDEPTH 4\nMAXVAL 255\nTUPLTYPE CMYK\nENDHDR\n\x01\x02\x03\x04", "no valid header"));
+    EXPECT_TRUE(refuses("P7\nWIDTH 1\nHEIGHT 1\nDEPTH 4\nMAXVAL 255\nTUPLTYPE CMYK\nENDHDR\n\x01\x02\x03\x04",
+                        "no valid header"));
     EXPECT_TRUE(refuses("P5 1 1 0\n\x01", "no valid header"));
     EXPECT_TRUE(refuses("P6 10001 1 255\n", "side longer than 10000"));
     // A plain maximum above 255, and samples that are not numbers or too
@@ -1057,7 +1136,8 @@ TEST(ImageDecode, NetpbmOfEachKind)
     // another depth.
     EXPECT_TRUE(refuses(std::string("P4\n10 2\n\x90\x40", 10), "truncated"));
     EXPECT_TRUE(refuses("P6 10000 10000 255\n", "truncated"));
-    EXPECT_TRUE(refuses("P7\nWIDTH 1\nHEIGHT 1\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB\nENDHDR\n\x01\x02\x03\x04", "no valid header"));
+    EXPECT_TRUE(refuses("P7\nWIDTH 1\nHEIGHT 1\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB\nENDHDR\n\x01\x02\x03\x04",
+                        "no valid header"));
 }
 
 TEST(ImageDecode, ApngGivesEachFrameOnItsCanvas)
@@ -1074,7 +1154,8 @@ TEST(ImageDecode, ApngGivesEachFrameOnItsCanvas)
     EXPECT_EQ(r.frames[0].delay, 100);
     EXPECT_EQ(r.frames[1].delay, 50);
     EXPECT_EQ(r.frames[2].delay, 30);
-    for (int i = 0; i < 16; ++i) EXPECT_EQ(pixel(0, i % 4, i / 4), red);
+    for (int i = 0; i < 16; ++i)
+        EXPECT_EQ(pixel(0, i % 4, i / 4), red);
     // Blue at alpha 128 over red, in the 2 by 2 at (1, 1) only.
     EXPECT_EQ(pixel(1, 0, 0), red);
     EXPECT_EQ(pixel(1, 1, 1), (std::vector<std::uint8_t>{127, 0, 128, 255}));
@@ -1128,7 +1209,8 @@ TEST(ImageDecode, ApngStopsAtAFrameThatIsNotValid)
     std::string corrupt = apngOf(2, 1, {first, blue});
     const std::size_t data = corrupt.find("fdAT") + 8;
     corrupt.replace(data, 2, "\x78\x02", 2);
-    corrupt.replace(corrupt.find("IEND") - 8, 4, be(crc(corrupt.substr(corrupt.find("fdAT"), corrupt.find("IEND") - 8 - corrupt.find("fdAT"))), 4));
+    corrupt.replace(corrupt.find("IEND") - 8, 4,
+                    be(crc(corrupt.substr(corrupt.find("fdAT"), corrupt.find("IEND") - 8 - corrupt.find("fdAT"))), 4));
     r = run(corrupt);
     ASSERT_TRUE(r.ok) << r.error;
     EXPECT_EQ(r.frames.size(), 1u);
@@ -1142,7 +1224,8 @@ TEST(ImageDecode, ApngStopsAtAFrameThatIsNotValid)
     std::size_t at = third + 16;
     for (std::uint32_t sequence = 4; at < withEmpty.size(); ++sequence) {
         const std::string type = withEmpty.substr(at + 4, 4);
-        if (type != "fcTL" && type != "fdAT") break;
+        if (type != "fcTL" && type != "fdAT")
+            break;
         const std::size_t length = std::size_t(std::uint8_t(withEmpty[at + 2])) << 8 | std::uint8_t(withEmpty[at + 3]);
         std::string chunk = withEmpty.substr(at + 8, length);
         chunk.replace(0, 4, be(sequence, 4));
@@ -1272,7 +1355,8 @@ TEST(ImageDecode, ColourChunksApplyByTheirOrderOfPrecedence)
     const std::string adobe = chunkOf(PngAdobe, "iCCP");
     ASSERT_FALSE(adobe.empty());
     const std::string unknownCicp = pngChunk("cICP", bytesOf({5, 13, 0, 1}));
-    EXPECT_TRUE(convertsTo(pngOf(1, 1, {100, 150, 200, 255}, unknownCicp + adobe + LinearGamma), 1, 1, {{66, 151, 203}}));
+    EXPECT_TRUE(
+        convertsTo(pngOf(1, 1, {100, 150, 200, 255}, unknownCicp + adobe + LinearGamma), 1, 1, {{66, 151, 203}}));
     // An RGB profile on a grey image is dropped, as libpng drops it, and
     // the gAMA applies.
     EXPECT_TRUE(shows(pngOf(1, 1, {128}, adobe + LinearGamma, 0), 1, 1, {186, 186, 186, 255}));
@@ -1284,7 +1368,8 @@ TEST(ImageDecode, ColourChunksApplyByTheirOrderOfPrecedence)
     EXPECT_FALSE(converter.active());
     EXPECT_TRUE(converter.known());
     std::vector<std::uint8_t> ramp;
-    for (int i = 0; i < 256; ++i) ramp.insert(ramp.end(), {std::uint8_t(i), std::uint8_t(255 - i), std::uint8_t(i / 2), 255});
+    for (int i = 0; i < 256; ++i)
+        ramp.insert(ramp.end(), {std::uint8_t(i), std::uint8_t(255 - i), std::uint8_t(i / 2), 255});
     EXPECT_TRUE(shows(pngOf(256, 1, ramp, iccpOf(space.icc) + LinearGamma), 256, 1, ramp));
     // A WebP profile counts only with the ICC flag of its VP8X header.
     std::string webp = WebpAdobe;
@@ -1306,29 +1391,37 @@ TEST(ImageDecode, ColourConversionKeepsAlphaAndConvertsEachFrame)
     EXPECT_EQ(r.frames[0].rgba[7], 0);
     // Each frame of an APNG, on a canvas in the colours of the file, and
     // without the gAMA of the file.
-    r = run(apngOf(2, 1, {{2, 1, 0, 0, 0, 0, {100, 150, 200, 255, 100, 150, 200, 255}}, {1, 1, 1, 0, 0, 0, {10, 200, 30, 255}}},
-                   p3 + LinearGamma));
+    r = run(apngOf(
+        2, 1, {{2, 1, 0, 0, 0, 0, {100, 150, 200, 255, 100, 150, 200, 255}}, {1, 1, 1, 0, 0, 0, {10, 200, 30, 255}}},
+        p3 + LinearGamma));
     ASSERT_TRUE(r.ok) << r.error;
     ASSERT_EQ(r.frames.size(), 2u);
-    for (const auto& [frame, x, want] : std::vector<std::tuple<int, int, std::array<int, 3>>>{
-             {0, 0, {83, 152, 205}}, {0, 1, {83, 152, 205}}, {1, 0, {83, 152, 205}}, {1, 1, {0, 204, 0}}}) {
+    for (const auto& [frame, x, want] : std::vector<std::tuple<int, int, std::array<int, 3>>>{{0, 0, {83, 152, 205}},
+                                                                                              {0, 1, {83, 152, 205}},
+                                                                                              {1, 0, {83, 152, 205}},
+                                                                                              {1, 1, {0, 204, 0}}}) {
         const auto px = pixelAt(r.frames[std::size_t(frame)], x, 0);
-        for (std::size_t c = 0; c < 3; ++c) EXPECT_NEAR(px[c], want[c], 1) << frame << ' ' << x;
+        for (std::size_t c = 0; c < 3; ++c)
+            EXPECT_NEAR(px[c], want[c], 1) << frame << ' ' << x;
     }
     // BT.709 with linear light, and BT.2020 with HLG: grey stays grey.
-    EXPECT_TRUE(convertsTo(pngOf(1, 1, {128, 128, 128, 255}, pngChunk("cICP", bytesOf({1, 8, 0, 1}))), 1, 1, {{188, 188, 188}}));
-    EXPECT_TRUE(convertsTo(pngOf(1, 1, {128, 128, 128, 255}, pngChunk("cICP", bytesOf({9, 18, 0, 1}))), 1, 1, {{138, 138, 138}}));
+    EXPECT_TRUE(convertsTo(pngOf(1, 1, {128, 128, 128, 255}, pngChunk("cICP", bytesOf({1, 8, 0, 1}))), 1, 1,
+                           {{188, 188, 188}}));
+    EXPECT_TRUE(convertsTo(pngOf(1, 1, {128, 128, 128, 255}, pngChunk("cICP", bytesOf({9, 18, 0, 1}))), 1, 1,
+                           {{138, 138, 138}}));
     // A JPEG profile in two APP2 segments, in the file in reverse order.
     std::string jpeg = JpegAdobe;
     const std::size_t app2 = marker(jpeg, '\xe2');
     const std::size_t length = std::size_t(std::uint8_t(jpeg[app2 + 2])) << 8 | std::uint8_t(jpeg[app2 + 3]);
     const std::string profile = jpeg.substr(app2 + 4 + 14, length - 2 - 14);
     const auto segment = [](int number, std::string_view part) {
-        return std::string("\xff\xe2", 2) + be(std::uint32_t(2 + 14 + part.size()), 2) + std::string("ICC_PROFILE\0", 12) + char(number) + char(2)
-            + std::string(part);
+        return std::string("\xff\xe2", 2) + be(std::uint32_t(2 + 14 + part.size()), 2)
+            + std::string("ICC_PROFILE\0", 12) + char(number) + char(2) + std::string(part);
     };
     const std::size_t half = profile.size() / 2;
-    jpeg.replace(app2, 2 + length, segment(2, std::string_view(profile).substr(half)) + segment(1, std::string_view(profile).substr(0, half)));
+    jpeg.replace(app2, 2 + length,
+                 segment(2, std::string_view(profile).substr(half))
+                     + segment(1, std::string_view(profile).substr(0, half)));
     EXPECT_TRUE(convertsTo(jpeg, 8, 8, {{66, 151, 202}}));
 }
 
@@ -1340,7 +1433,8 @@ TEST(ImageDecode, TiffOfEachDepthOrderAndAlpha)
     // 2 bits of grey, black is zero, and 4 bits, white is zero.
     EXPECT_TRUE(shows(tiffOf(tiffImage(4, 1, 1, 2, 1, 1), {bytesOf({0x1b})}), 4, 1,
                       {0, 0, 0, 255, 85, 85, 85, 255, 170, 170, 170, 255, 255, 255, 255, 255}));
-    EXPECT_TRUE(shows(tiffOf(tiffImage(2, 1, 1, 4, 0, 1), {bytesOf({0x3f})}), 2, 1, {204, 204, 204, 255, 0, 0, 0, 255}));
+    EXPECT_TRUE(
+        shows(tiffOf(tiffImage(2, 1, 1, 4, 0, 1), {bytesOf({0x3f})}), 2, 1, {204, 204, 204, 255, 0, 0, 0, 255}));
     // Associated alpha, from ExtraSamples 1, from an unspecified fourth
     // sample, and from RGB with four samples and no ExtraSamples, as libtiff
     // takes them.
@@ -1350,8 +1444,10 @@ TEST(ImageDecode, TiffOfEachDepthOrderAndAlpha)
     EXPECT_TRUE(shows(tiffOf(tiffImage(1, 1, 4, 8, 2, 1, {{338, 3, {0}}}), {pixel}), 1, 1, straight));
     EXPECT_TRUE(shows(tiffOf(tiffImage(1, 1, 4, 8, 2, 1), {pixel}), 1, 1, straight));
     // An unspecified second sample of grey is no alpha.
-    EXPECT_TRUE(shows(tiffOf(tiffImage(1, 1, 2, 8, 1, 1, {{338, 3, {0}}}), {bytesOf({100, 128})}), 1, 1, {100, 100, 100, 255}));
-    EXPECT_TRUE(shows(tiffOf(tiffImage(1, 1, 2, 8, 1, 1, {{338, 3, {2}}}), {bytesOf({100, 128})}), 1, 1, {100, 100, 100, 128}));
+    EXPECT_TRUE(
+        shows(tiffOf(tiffImage(1, 1, 2, 8, 1, 1, {{338, 3, {0}}}), {bytesOf({100, 128})}), 1, 1, {100, 100, 100, 255}));
+    EXPECT_TRUE(
+        shows(tiffOf(tiffImage(1, 1, 2, 8, 1, 1, {{338, 3, {2}}}), {bytesOf({100, 128})}), 1, 1, {100, 100, 100, 128}));
     // Deflate whose last strip has its rows but not the end of its stream,
     // which libtiff takes too.
     const std::vector<TiffField> deflate = tiffImage(1, 3, 1, 8, 1, 2, {{259, 3, {8}}});
@@ -1359,13 +1455,13 @@ TEST(ImageDecode, TiffOfEachDepthOrderAndAlpha)
                       {10, 10, 10, 255, 20, 20, 20, 255, 30, 30, 30, 255}));
     EXPECT_TRUE(refuses(tiffOf(deflate, {zlibStored(bytesOf({10, 20})), zlibStored({}, false)}), "corrupt"));
     // A tile far larger than a small image.
-    const std::vector<TiffField> tiles{{256, 4, {1}}, {257, 4, {1}}, {258, 3, {8, 8, 8}}, {262, 3, {2}}, {277, 3, {3}},
-                                       {322, 4, {1024}}, {323, 4, {1024}}};
+    const std::vector<TiffField> tiles{{256, 4, {1}}, {257, 4, {1}},    {258, 3, {8, 8, 8}}, {262, 3, {2}},
+                                       {277, 3, {3}}, {322, 4, {1024}}, {323, 4, {1024}}};
     EXPECT_TRUE(shows(tiffOf(tiles, {bytesOf({1, 2, 3}) + std::string(3 * 1023, '\0')}, true), 1, 1, {1, 2, 3, 255}));
     // Tiles of 256 by 256 on an image of 32 columns, which cover more than
     // four times its pixels.
-    const std::vector<TiffField> narrow{{256, 4, {32}}, {257, 4, {10000}}, {258, 3, {8}}, {262, 3, {1}}, {277, 3, {1}},
-                                        {322, 4, {256}}, {323, 4, {256}}};
+    const std::vector<TiffField> narrow{{256, 4, {32}}, {257, 4, {10000}}, {258, 3, {8}},  {262, 3, {1}},
+                                        {277, 3, {1}},  {322, 4, {256}},   {323, 4, {256}}};
     EXPECT_TRUE(showsNear(tiffOf(narrow, {std::string(256 * 256, '\0')}, true, false, 40), 32, 10000, 0, 0, 0));
 }
 
@@ -1377,21 +1473,22 @@ TEST(ImageDecode, RefusesTiffsOfEachKindThatIsNotSupported)
     EXPECT_TRUE(refuses(tiffOf(tiffImage(1, 1, 3, 8, 2, 1, {{317, 3, {3}}}), {pixel}), "predictor 3"));
     EXPECT_TRUE(refuses(tiffOf(tiffImage(2, 1, 1, 4, 1, 1, {{317, 3, {2}}}), {bytesOf({0x12})}), "predictor 2"));
     EXPECT_TRUE(refuses(tiffOf(tiffImage(1, 1, 3, 12, 2, 1), {pixel}), "depth of 12 bits"));
-    EXPECT_TRUE(refuses(tiffOf(tiffImage(1, 1, 1, 8, 3, 1, {{320, 3, std::vector<std::uint32_t>(3, 0)}}), {bytesOf({0})}), "depth"));
+    EXPECT_TRUE(refuses(
+        tiffOf(tiffImage(1, 1, 1, 8, 3, 1, {{320, 3, std::vector<std::uint32_t>(3, 0)}}), {bytesOf({0})}), "depth"));
     EXPECT_TRUE(refuses(tiffOf(tiffImage(1, 1, 3, 8, 2, 1), {}), "does not say where"));
     // The LZW of before TIFF 6.
     EXPECT_TRUE(refuses(tiffOf(tiffImage(1, 1, 3, 8, 2, 1, {{259, 3, {5}}}), {bytesOf({0, 1, 2, 3})}), "corrupt"));
     // Tiles as wide as the longest side, on an image of one column: each
     // row of tiles would be read whole, from the same data.
-    const std::vector<TiffField> tiles{{256, 4, {1}}, {257, 4, {10000}}, {258, 3, {8}}, {262, 3, {1}}, {277, 3, {1}},
-                                       {322, 4, {10000}}, {323, 4, {16}}};
+    const std::vector<TiffField> tiles{{256, 4, {1}}, {257, 4, {10000}}, {258, 3, {8}}, {262, 3, {1}},
+                                       {277, 3, {1}}, {322, 4, {10000}}, {323, 4, {16}}};
     EXPECT_TRUE(refuses(tiffOf(tiles, {std::string(10000 * 16, '\0')}, true, false, 625), "strips or tiles"));
     // Tiles of one pixel that share PackBits data of no-ops before their
     // byte: each tile would scan all of it.
     const std::string noOps = std::string(1000, '\x80') + bytesOf({0, 7});
     const auto packed = [](std::uint32_t side) {
-        return std::vector<TiffField>{{256, 4, {side}}, {257, 4, {side}}, {258, 3, {8}}, {259, 3, {32773}}, {262, 3, {1}},
-                                      {277, 3, {1}},    {322, 4, {1}},    {323, 4, {1}}};
+        return std::vector<TiffField>{{256, 4, {side}}, {257, 4, {side}}, {258, 3, {8}}, {259, 3, {32773}},
+                                      {262, 3, {1}},    {277, 3, {1}},    {322, 4, {1}}, {323, 4, {1}}};
     };
     EXPECT_TRUE(shows(tiffOf(packed(1), {noOps}, true), 1, 1, {7, 7, 7, 255}));
     EXPECT_TRUE(refuses(tiffOf(packed(64), {noOps}, true, false, 64 * 64), "corrupt"));
@@ -1399,16 +1496,21 @@ TEST(ImageDecode, RefusesTiffsOfEachKindThatIsNotSupported)
 
 TEST(ImageDecode, FormatComesFromTheSignature)
 {
-    for (const std::string* file : {&Png, &Png16, &PngPalette, &PngInterlaced}) EXPECT_EQ(format(*file), Format::Png);
-    for (const std::string* file : {&Jpeg, &JpegCmyk, &JpegProgressive, &JpegGrey}) EXPECT_EQ(format(*file), Format::Jpeg);
-    for (const std::string* file : {&Webp, &WebpAnimated, &WebpLossy, &WebpLossyAlpha}) EXPECT_EQ(format(*file), Format::WebP);
+    for (const std::string* file : {&Png, &Png16, &PngPalette, &PngInterlaced})
+        EXPECT_EQ(format(*file), Format::Png);
+    for (const std::string* file : {&Jpeg, &JpegCmyk, &JpegProgressive, &JpegGrey})
+        EXPECT_EQ(format(*file), Format::Jpeg);
+    for (const std::string* file : {&Webp, &WebpAnimated, &WebpLossy, &WebpLossyAlpha})
+        EXPECT_EQ(format(*file), Format::WebP);
     EXPECT_EQ(format(Gif), Format::Gif);
     EXPECT_EQ(format("GIF87a"), Format::Gif);
     EXPECT_EQ(format(Bmp), Format::Bmp);
     EXPECT_EQ(format("BM"), Format::Bmp);
-    for (const std::string* file : {&TiffRgb, &TiffPackBitsBig}) EXPECT_EQ(format(*file), Format::Tiff);
+    for (const std::string* file : {&TiffRgb, &TiffPackBitsBig})
+        EXPECT_EQ(format(*file), Format::Tiff);
     EXPECT_EQ(format(std::string("II+\0", 4)), Format::Unknown); // BigTIFF
-    for (const char* file : {"P1\n", "P6 ", "P7\n"}) EXPECT_EQ(format(file), Format::Pnm);
+    for (const char* file : {"P1\n", "P6 ", "P7\n"})
+        EXPECT_EQ(format(file), Format::Pnm);
     EXPECT_EQ(format("P8\n"), Format::Unknown);
     EXPECT_EQ(format("P6x"), Format::Unknown);
     EXPECT_EQ(format("GIF88a"), Format::Unknown);

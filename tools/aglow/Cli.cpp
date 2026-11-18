@@ -31,13 +31,16 @@ std::vector<std::string> split(std::string_view names)
 }
 
 // The key of an option: its long name without the dashes.
-std::string key(const Option& option) { return split(option.names).front().substr(2); }
+std::string key(const Option& option)
+{
+    return split(option.names).front().substr(2);
+}
 
 std::string wrap(std::string_view text, std::size_t indent, std::size_t width = 80)
 {
     // Each line of the source text is a paragraph or a line of its own.
     std::string out;
-    std::istringstream paragraphs { std::string(text) };
+    std::istringstream paragraphs{std::string(text)};
     std::string line;
     while (std::getline(paragraphs, line)) {
         // Lines that start with spaces are examples: kept as they are.
@@ -99,9 +102,15 @@ std::vector<std::string> Parsed::list(std::string_view name) const
     return it == m_values.end() ? std::vector<std::string>() : it->second;
 }
 
-long long Parsed::integer(std::string_view name) const { return std::strtoll(value(name).c_str(), nullptr, 10); }
+long long Parsed::integer(std::string_view name) const
+{
+    return std::strtoll(value(name).c_str(), nullptr, 10);
+}
 
-double Parsed::real(std::string_view name) const { return std::strtod(value(name).c_str(), nullptr); }
+double Parsed::real(std::string_view name) const
+{
+    return std::strtod(value(name).c_str(), nullptr);
+}
 
 namespace {
 
@@ -147,7 +156,8 @@ bool checkValue(const Option& option, const std::string& name, const std::string
     } else if (option.kind == Option::Kind::Float) {
         // from_chars, not strtod: the locale cannot change the decimal point,
         // and "inf", "nan" and hex floats are no numbers here.
-        const auto [end, ec] = AfterglowProto::fromChars(value.data(), value.data() + value.size(), number, std::chars_format::fixed);
+        const auto [end, ec] =
+            AfterglowProto::fromChars(value.data(), value.data() + value.size(), number, std::chars_format::fixed);
         if (ec != std::errc() || end != value.data() + value.size() || !std::isfinite(number)) {
             error = "Not a number for " + name + ": " + value;
             return false;
@@ -174,7 +184,10 @@ void setProgram(std::string_view argv0)
     programName() = base.empty() ? std::string("aglow") : printable(base);
 }
 
-const std::string& program() { return programName(); }
+const std::string& program()
+{
+    return programName();
+}
 
 std::optional<Parsed> parse(const Command& command, int argc, char** argv, std::string& error, bool& help)
 {
@@ -307,7 +320,7 @@ std::string helpText(const Command& command)
         out += head + "\n";
         std::string text = option.help;
         const bool numeric = option.kind == Option::Kind::Int || option.kind == Option::Kind::Float;
-        if (numeric && (option.min != Option {}.min || option.max != Option {}.max)) {
+        if (numeric && (option.min != Option{}.min || option.max != Option{}.max)) {
             text += "\nFrom " + formatNumber(option, option.min) + " to " + formatNumber(option, option.max) + ".";
         }
         if (!option.fallback.empty() && option.kind != Option::Kind::Flag) {

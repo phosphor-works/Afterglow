@@ -32,9 +32,11 @@ namespace {
 std::optional<std::optional<Side>> joinPlacement(const std::string& placement)
 {
     for (const Side side : {Side::Right, Side::Down, Side::Left, Side::Up}) {
-        if (placement == sideName(side)) return std::optional<std::optional<Side>>(std::in_place, side);
+        if (placement == sideName(side))
+            return std::optional<std::optional<Side>>(std::in_place, side);
     }
-    if (placement == "new-tab") return std::optional<std::optional<Side>>(std::in_place);
+    if (placement == "new-tab")
+        return std::optional<std::optional<Side>>(std::in_place);
     return std::nullopt;
 }
 
@@ -42,25 +44,35 @@ std::optional<std::optional<Side>> joinPlacement(const std::string& placement)
 
 std::string Daemon::joinPane(const IpcRequest& request)
 {
-    if (request.args.size() < 5 || request.args.size() > 6 || !request.args[1].isString() || !request.args[4].isString()) {
-        return ipcError(request.id, IpcErrorCode::InvalidArg, "joinPane takes (protocol, name, pane, beside, placement[, window])");
+    if (request.args.size() < 5 || request.args.size() > 6 || !request.args[1].isString()
+        || !request.args[4].isString()) {
+        return ipcError(request.id, IpcErrorCode::InvalidArg,
+                        "joinPane takes (protocol, name, pane, beside, placement[, window])");
     }
-    if (auto error = versionError(request)) return *error;
+    if (auto error = versionError(request))
+        return *error;
     const std::string& name = request.args[1].toString();
     const auto from = find(name);
-    if (from == m_sessions.end()) return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
+    if (from == m_sessions.end())
+        return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
     // A window that no longer shows the session moves none of its panes.
-    if (std::string refusal = windowRefusal(request, name, 5); !refusal.empty()) return refusal;
+    if (std::string refusal = windowRefusal(request, name, 5); !refusal.empty())
+        return refusal;
     const auto id = paneIdFrom(request.args[2]);
     const auto beside = paneIdFrom(request.args[3]);
-    if (!id || !beside) return ipcError(request.id, IpcErrorCode::InvalidArg, "a pane is a whole number from 1 to 4294967295");
-    if (!(*from)->pane(*id)) return ipcError(request.id, Error::NoSuchPane, "session '" + name + "' has no pane " + std::to_string(*id));
+    if (!id || !beside)
+        return ipcError(request.id, IpcErrorCode::InvalidArg, "a pane is a whole number from 1 to 4294967295");
+    if (!(*from)->pane(*id))
+        return ipcError(request.id, Error::NoSuchPane, "session '" + name + "' has no pane " + std::to_string(*id));
     Session* const to = sessionOfPane(*beside);
-    if (!to) return ipcError(request.id, Error::NoSuchPane, "no session has pane " + std::to_string(*beside));
+    if (!to)
+        return ipcError(request.id, Error::NoSuchPane, "no session has pane " + std::to_string(*beside));
     // Within its session, the window moves the pane and sends its layout.
-    if (to == from->get()) return failed(request, "pane " + std::to_string(*beside) + " is in session '" + name + "' too");
+    if (to == from->get())
+        return failed(request, "pane " + std::to_string(*beside) + " is in session '" + name + "' too");
     std::optional<Side> side;
-    if (std::string refusal = joinRefusal(request, **from, *id, *to, *beside, request.args[4].toString(), false, &side); !refusal.empty()) {
+    if (std::string refusal = joinRefusal(request, **from, *id, *to, *beside, request.args[4].toString(), false, &side);
+        !refusal.empty()) {
         return refusal;
     }
     std::string target = to->name();
@@ -71,37 +83,45 @@ std::string Daemon::joinPane(const IpcRequest& request)
 }
 
 std::string Daemon::joinRefusal(const IpcRequest& request, const Session& from, std::uint32_t id, const Session& to,
-                                std::uint32_t beside, const std::string& placement, bool tellFrom, std::optional<Side>* side) const
+                                std::uint32_t beside, const std::string& placement, bool tellFrom,
+                                std::optional<Side>* side) const
 {
     const auto place = joinPlacement(placement);
     if (!place) {
         // A new window makes a new session (Fn::BreakOut), and names no target.
-        if (placement == "new-window") return failed(request, "new-window takes no target pane");
+        if (placement == "new-window")
+            return failed(request, "new-window takes no target pane");
         return failed(request, "placement must be left, right, up, down, new-tab or new-window");
     }
     *side = *place;
-    if (to.panes().size() >= MaxSessionPanes) return tooManyPanes(request, to);
+    if (to.panes().size() >= MaxSessionPanes)
+        return tooManyPanes(request, to);
     // The calls that tell the windows wait in no queue past Mux.eventQueue.
     if (tellFrom) {
         if (const Attachment* window = showing(from.name())) {
-            if (std::string full = windowFull(request, *window); !full.empty()) return full;
+            if (std::string full = windowFull(request, *window); !full.empty())
+                return full;
         }
     }
     const Attachment* const window = showing(to.name());
     // The window knows a pane ID once in its stream: a pane that left it
     // comes back only after the window let it go (PaneForgotten).
     if (window && window->stillLeaving(id)) {
-        return failed(request, "pane " + std::to_string(id) + " is still leaving the window of session '" + to.name() + "'");
+        return failed(request,
+                      "pane " + std::to_string(id) + " is still leaving the window of session '" + to.name() + "'");
     }
-    if (window) return windowFull(request, *window);
+    if (window)
+        return windowFull(request, *window);
     // The window that shows the session measures the room, and makes a tab
     // of a split that has none. Without one, such a move is refused, as a
     // window refuses it: two columns or one row, as half of the pane.
-    if (*side && !roomBeside(to.pane(beside)->facts().size, **side)) return failed(request, "There is not enough room beside that pane");
+    if (*side && !roomBeside(to.pane(beside)->facts().size, **side))
+        return failed(request, "There is not enough room beside that pane");
     return {};
 }
 
-void Daemon::joinPanes(Session& from, std::uint32_t id, Session& to, std::uint32_t beside, std::optional<Side> side, bool tellFrom)
+void Daemon::joinPanes(Session& from, std::uint32_t id, Session& to, std::uint32_t beside, std::optional<Side> side,
+                       bool tellFrom)
 {
     // Each allocation before the pane leaves its session: a failure then
     // leaves it where it was, and no pane between two sessions, where its
@@ -109,7 +129,8 @@ void Daemon::joinPanes(Session& from, std::uint32_t id, Session& to, std::uint32
     // session gave the pane go with it, while the layout has room for them.
     std::map<std::uint32_t, PaneValues> carried;
     if (const auto values = from.layout().values.find(id); values != from.layout().values.end()) {
-        if (to.layout().valueBytes() + values->second.bytes() <= MaxLayoutValueBytes) carried.insert(*values);
+        if (to.layout().valueBytes() + values->second.bytes() <= MaxLayoutValueBytes)
+            carried.insert(*values);
     }
     auto values = carried.extract(id);
     // The window of the other session keeps the command for a project, as
@@ -143,7 +164,8 @@ void Daemon::joinPanes(Session& from, std::uint32_t id, Session& to, std::uint32
     removed.emplace_back(id, moved);
     // Before its PaneClosed: the window closes the pane as one that left,
     // not as the end of its program.
-    if (tellFrom) tellWindow(from, "paneLeft", std::move(left));
+    if (tellFrom)
+        tellWindow(from, "paneLeft", std::move(left));
     if (Attachment* window = shown(fromName)) {
         guarded(*window, [&] {
             window->panesRemoved(removed);
@@ -151,18 +173,24 @@ void Daemon::joinPanes(Session& from, std::uint32_t id, Session& to, std::uint32
         });
     }
     to.join(std::move(pane));
-    if (side) layout.split(beside, id, *side);
-    else layout.insertTab(std::move(alone), beside);
-    if (values) layout.values.insert(std::move(values));
+    if (side)
+        layout.split(beside, id, *side);
+    else
+        layout.insertTab(std::move(alone), beside);
+    if (values)
+        layout.values.insert(std::move(values));
     // Before its PaneOpened, which the next pass sends: the window then
     // knows the pane as its own.
     tellWindow(to, "placePane", std::move(placed));
     // The terminal values of the other session, which its window sent.
     // Out of memory, the pane keeps its own: it moved all the same.
-    contained("the terminal values of a pane that moved", [&] { moved->setOptions(to.options().terminal); });
+    contained("the terminal values of a pane that moved", [&] {
+        moved->setOptions(to.options().terminal);
+    });
     // Its last pane: the session ends, as when its last program exits.
     if (from.empty()) {
-        if (const auto ended = find(fromName); ended != m_sessions.end()) endSession(ended);
+        if (const auto ended = find(fromName); ended != m_sessions.end())
+            endSession(ended);
     }
 }
 

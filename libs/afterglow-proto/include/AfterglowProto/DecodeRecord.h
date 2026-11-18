@@ -51,7 +51,8 @@ static_assert(std::is_trivially_copyable_v<DecodeRecord> && sizeof(DecodeRecord)
 /// parent stopped reading.
 inline bool writeDecodeRecord(int fd, const DecodeRecord& record, std::string_view payload = {})
 {
-    return writeAll(fd, std::string_view(reinterpret_cast<const char*>(&record), sizeof record)) && writeAll(fd, payload);
+    return writeAll(fd, std::string_view(reinterpret_cast<const char*>(&record), sizeof record))
+        && writeAll(fd, payload);
 }
 
 /// Writes a Frame record of @p width x @p height pixels, and @p pixels.
@@ -91,25 +92,34 @@ inline DecodeRead readFromDecoder(int fd, void* data, std::size_t size, const De
 {
     auto* p = static_cast<char*>(data);
     while (size > 0) {
-        if (wait.stopped && wait.stopped()) return DecodeRead::Interrupted;
+        if (wait.stopped && wait.stopped())
+            return DecodeRead::Interrupted;
         timespec timeout{};
         const timespec* until = nullptr;
         if (wait.deadline) {
-            const auto left = std::chrono::ceil<std::chrono::milliseconds>(*wait.deadline - std::chrono::steady_clock::now());
-            if (left.count() <= 0) return DecodeRead::Late;
+            const auto left =
+                std::chrono::ceil<std::chrono::milliseconds>(*wait.deadline - std::chrono::steady_clock::now());
+            if (left.count() <= 0)
+                return DecodeRead::Late;
             timeout.tv_sec = time_t(left.count() / 1000);
             timeout.tv_nsec = long(left.count() % 1000) * 1000000;
             until = &timeout;
         }
         pollfd ready[2] = {{fd, POLLIN, 0}, {wait.cancel, POLLIN, 0}};
         const int polled = ::ppoll(ready, wait.cancel >= 0 ? 2 : 1, until, wait.mask);
-        if (polled < 0 && errno == EINTR) continue;
-        if (polled < 0) return DecodeRead::Ended;
-        if (polled == 0) return DecodeRead::Late;
-        if (wait.cancel >= 0 && ready[1].revents) return DecodeRead::Cancelled;
+        if (polled < 0 && errno == EINTR)
+            continue;
+        if (polled < 0)
+            return DecodeRead::Ended;
+        if (polled == 0)
+            return DecodeRead::Late;
+        if (wait.cancel >= 0 && ready[1].revents)
+            return DecodeRead::Cancelled;
         const ssize_t n = ::read(fd, p, size);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) return DecodeRead::Ended;
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n <= 0)
+            return DecodeRead::Ended;
         p += n;
         size -= std::size_t(n);
     }

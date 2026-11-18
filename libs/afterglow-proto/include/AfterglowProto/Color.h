@@ -43,8 +43,9 @@ struct ColorValue
 inline constexpr std::pair<std::string_view, ColorValue> ColorNames[] = {
 #include "ColorNames.inc"
 };
-static_assert(std::is_sorted(std::begin(ColorNames), std::end(ColorNames),
-                             [](const auto& a, const auto& b) { return a.first < b.first; }));
+static_assert(std::is_sorted(std::begin(ColorNames), std::end(ColorNames), [](const auto& a, const auto& b) {
+    return a.first < b.first;
+}));
 
 /// The longest colour name: a longer spec is no name, and is not copied to look it up.
 inline constexpr std::size_t MaxColorName = [] {
@@ -57,20 +58,25 @@ inline constexpr std::size_t MaxColorName = [] {
 
 inline int colorHexDigit(char c)
 {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
     return -1;
 }
 
 /// One "rgb:" component of 1-4 hex digits, scaled to 8 bits.
 inline bool parseColorScaled(std::string_view s, std::uint8_t& out)
 {
-    if (s.empty() || s.size() > 4) return false;
+    if (s.empty() || s.size() > 4)
+        return false;
     unsigned v = 0;
     for (const char c : s) {
         const int d = colorHexDigit(c);
-        if (d < 0) return false;
+        if (d < 0)
+            return false;
         v = v * 16 + unsigned(d);
     }
     const unsigned max = (1u << (4 * s.size())) - 1;
@@ -85,7 +91,8 @@ inline bool parseColorHigh(std::string_view s, std::uint8_t& out)
     unsigned v = 0;
     for (const char c : s) {
         const int d = colorHexDigit(c);
-        if (d < 0) return false;
+        if (d < 0)
+            return false;
         v = v * 16 + unsigned(d);
     }
     const int bits = 4 * int(s.size());
@@ -111,7 +118,8 @@ bool parseColorTriple(std::string_view spec, std::uint8_t& r, std::uint8_t& g, s
 {
     const auto s1 = spec.find('/');
     const auto s2 = s1 == std::string_view::npos ? s1 : spec.find('/', s1 + 1);
-    if (s2 == std::string_view::npos) return false;
+    if (s2 == std::string_view::npos)
+        return false;
     return component(spec.substr(0, s1), r) && component(spec.substr(s1 + 1, s2 - s1 - 1), g)
         && component(spec.substr(s2 + 1), b);
 }
@@ -143,11 +151,14 @@ inline bool parseColorSpec(std::string_view spec, std::uint8_t& r, std::uint8_t&
         }
     } else if (spec.size() <= detail::MaxColorName) {
         std::string lower(spec);
-        std::transform(lower.begin(), lower.end(), lower.begin(),
-                       [](unsigned char c) { return c >= 'A' && c <= 'Z' ? char(c + 32) : char(c); });
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+            return c >= 'A' && c <= 'Z' ? char(c + 32) : char(c);
+        });
         const auto* end = std::end(detail::ColorNames);
         const auto* it = std::lower_bound(std::begin(detail::ColorNames), end, std::string_view(lower),
-                                          [](const auto& entry, std::string_view value) { return entry.first < value; });
+                                          [](const auto& entry, std::string_view value) {
+                                              return entry.first < value;
+                                          });
         if (it != end && it->first == lower) {
             cr = it->second.r;
             cg = it->second.g;

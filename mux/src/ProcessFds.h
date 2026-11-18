@@ -53,7 +53,8 @@ inline std::string selfExecutable()
     char path[PATH_MAX];
     int name[] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
     std::size_t size = sizeof path;
-    if (::sysctl(name, 4, path, &size, nullptr, 0) != 0 || size <= 1) return {};
+    if (::sysctl(name, 4, path, &size, nullptr, 0) != 0 || size <= 1)
+        return {};
     return std::string(path, size - 1);
 #endif
 }
@@ -70,10 +71,12 @@ inline int watchProcess(pid_t pid)
     return int(::syscall(SYS_pidfd_open, pid, 0));
 #else
     const int queue = ::kqueuex(KQUEUE_CLOEXEC);
-    if (queue < 0) return -1;
+    if (queue < 0)
+        return -1;
     struct kevent change{};
     EV_SET(&change, uintptr_t(pid), EVFILT_PROC, EV_ADD, NOTE_EXIT, 0, nullptr);
-    if (::kevent(queue, &change, 1, nullptr, 0, nullptr) != 0) return detail::closeKeepingErrno(queue);
+    if (::kevent(queue, &change, 1, nullptr, 0, nullptr) != 0)
+        return detail::closeKeepingErrno(queue);
     return queue;
 #endif
 }
@@ -89,12 +92,14 @@ inline pid_t forkWithDescriptor(int& descriptor)
     descriptor = -1;
 #if defined(__linux__)
     const pid_t pid = ::fork();
-    if (pid > 0) descriptor = watchProcess(pid);
+    if (pid > 0)
+        descriptor = watchProcess(pid);
     return pid;
 #else
     int fd = -1;
     const pid_t pid = ::pdfork(&fd, PD_CLOEXEC);
-    if (pid > 0) descriptor = fd;
+    if (pid > 0)
+        descriptor = fd;
     return pid;
 #endif
 }
@@ -120,12 +125,15 @@ inline int openSignalFd(const sigset_t& signals)
     return ::signalfd(-1, &signals, SFD_NONBLOCK | SFD_CLOEXEC);
 #else
     const int queue = ::kqueuex(KQUEUE_CLOEXEC);
-    if (queue < 0) return -1;
+    if (queue < 0)
+        return -1;
     for (int number = 1; number <= SIGRTMAX; ++number) {
-        if (::sigismember(&signals, number) != 1) continue;
+        if (::sigismember(&signals, number) != 1)
+            continue;
         struct kevent change{};
         EV_SET(&change, uintptr_t(number), EVFILT_SIGNAL, EV_ADD, 0, 0, nullptr);
-        if (::kevent(queue, &change, 1, nullptr, 0, nullptr) != 0) return detail::closeKeepingErrno(queue);
+        if (::kevent(queue, &change, 1, nullptr, 0, nullptr) != 0)
+            return detail::closeKeepingErrno(queue);
     }
     return queue;
 #endif
@@ -139,16 +147,20 @@ inline int takeSignals(int fd)
 #if defined(__linux__)
     signalfd_siginfo info{};
     while (::read(fd, &info, sizeof info) == ssize_t(sizeof info)) {
-        if (signal == 0) signal = int(info.ssi_signo);
+        if (signal == 0)
+            signal = int(info.ssi_signo);
     }
 #else
     struct kevent events[8];
     const timespec now{};
     for (;;) {
         const int count = ::kevent(fd, nullptr, 0, events, 8, &now);
-        if (count <= 0) break;
-        if (signal == 0) signal = int(events[0].ident);
-        if (count < 8) break;
+        if (count <= 0)
+            break;
+        if (signal == 0)
+            signal = int(events[0].ident);
+        if (count < 8)
+            break;
     }
 #endif
     return signal;

@@ -27,9 +27,18 @@ public:
         : m_s(s)
     {
     }
-    void byte(std::uint8_t v) { m_s.push_back(char(v)); }
-    void varint(std::uint64_t v) { Codec::varint(m_s, v); }
-    void signedInt(int v) { varint((std::uint32_t(v) << 1) ^ std::uint32_t(v >> 31)); }
+    void byte(std::uint8_t v)
+    {
+        m_s.push_back(char(v));
+    }
+    void varint(std::uint64_t v)
+    {
+        Codec::varint(m_s, v);
+    }
+    void signedInt(int v)
+    {
+        varint((std::uint32_t(v) << 1) ^ std::uint32_t(v >> 31));
+    }
     void string(std::string_view v)
     {
         varint(v.size());
@@ -38,7 +47,8 @@ public:
     void strings(const std::vector<std::string>& v)
     {
         varint(v.size());
-        for (const auto& s : v) string(s);
+        for (const auto& s : v)
+            string(s);
     }
     void pairs(const std::vector<std::pair<std::string, std::string>>& v)
     {
@@ -57,7 +67,10 @@ class In : public Codec::Reader
 {
 public:
     using Codec::Reader::Reader;
-    std::uint64_t varint() { return Codec::Reader::varint(~std::uint64_t(0)); }
+    std::uint64_t varint()
+    {
+        return Codec::Reader::varint(~std::uint64_t(0));
+    }
     int signedInt()
     {
         const std::uint32_t u = std::uint32_t(Codec::Reader::varint(0xffffffffu));
@@ -66,16 +79,21 @@ public:
     bool boolean()
     {
         const std::uint8_t v = byte();
-        if (v > 1) fail();
+        if (v > 1)
+            fail();
         return v == 1;
     }
-    std::string string() { return std::string(take(std::size_t(Codec::Reader::varint(left())))); }
+    std::string string()
+    {
+        return std::string(take(std::size_t(Codec::Reader::varint(left()))));
+    }
     /// A list of at most @p most items, which the parser's limits bound.
     std::vector<std::string> strings(std::size_t most)
     {
         std::vector<std::string> v;
         const std::uint64_t n = Codec::Reader::varint(most);
-        for (std::uint64_t i = 0; i < n && ok(); ++i) v.push_back(string());
+        for (std::uint64_t i = 0; i < n && ok(); ++i)
+            v.push_back(string());
         return v;
     }
     std::vector<std::pair<std::string, std::string>> pairs(std::size_t most)
@@ -146,11 +164,13 @@ bool decodeNotification(In& in, AfterglowVt::NotificationRequest& n)
     namespace Allow = AfterglowProto::TextAllow;
     std::size_t text = n.title.size() + n.body.size();
     for (const std::string& button : n.buttons) {
-        if (button.empty() || !isCleanText(button, Allow::LineSeparators)) return false;
+        if (button.empty() || !isCleanText(button, Allow::LineSeparators))
+            return false;
         text += button.size();
     }
-    if (!cleanId(n.id) || !cleanId(n.iconCacheId) || n.urgency < 0 || n.urgency > 2 || text > AfterglowVt::NotificationRequest::MaxText
-        || !isCleanText(n.title, Allow::LineSeparators) || !isCleanText(n.body, Allow::Newline | Allow::LineSeparators)) {
+    if (!cleanId(n.id) || !cleanId(n.iconCacheId) || n.urgency < 0 || n.urgency > 2
+        || text > AfterglowVt::NotificationRequest::MaxText || !isCleanText(n.title, Allow::LineSeparators)
+        || !isCleanText(n.body, Allow::Newline | Allow::LineSeparators)) {
         return false;
     }
     n.kind = AfterglowVt::NotificationRequest::Kind(kind);
@@ -186,11 +206,12 @@ bool decodeClipboard(In& in, AfterglowVt::ClipboardRequest& c)
     c.osc52 = in.boolean();
     c.osc52Bel = in.boolean();
     c.osc52Selection = in.string();
-    if (!in.ok() || kind > std::uint8_t(AfterglowVt::ClipboardRequest::Kind::Write) || !cleanId(c.id)) return false;
+    if (!in.ok() || kind > std::uint8_t(AfterglowVt::ClipboardRequest::Kind::Write) || !cleanId(c.id))
+        return false;
     // The parser makes OSC 52 reads only, of the selections that the answer
     // echoes; OSC 5522 has none of the OSC 52 fields.
     if (c.osc52 ? kind != std::uint8_t(AfterglowVt::ClipboardRequest::Kind::Read) || c.osc52Selection.empty()
-                      || AfterglowProto::osc52Letters(c.osc52Selection) != c.osc52Selection
+                || AfterglowProto::osc52Letters(c.osc52Selection) != c.osc52Selection
                 : c.osc52Bel || !c.osc52Selection.empty()) {
         return false;
     }
@@ -269,7 +290,8 @@ std::optional<Call> decode(std::string_view bytes)
     In in(bytes);
     Call call;
     const std::uint8_t kind = in.byte();
-    if (kind < std::uint8_t(Kind::Bell) || kind > std::uint8_t(Kind::UploadRequest)) return std::nullopt;
+    if (kind < std::uint8_t(Kind::Bell) || kind > std::uint8_t(Kind::UploadRequest))
+        return std::nullopt;
     call.kind = Kind(kind);
     switch (call.kind) {
     case Kind::Bell:
@@ -290,27 +312,32 @@ std::optional<Call> decode(std::string_view bytes)
         call.title = in.string();
         call.value = in.varint();
         // The size that the terminal gives, at most INT64_MAX, + 1.
-        if (call.value > std::uint64_t(INT64_MAX) + 1) return std::nullopt;
+        if (call.value > std::uint64_t(INT64_MAX) + 1)
+            return std::nullopt;
         break;
     case Kind::DownloadData:
         call.text = in.string();
         break;
     case Kind::DownloadEnd:
         call.number = in.signedInt();
-        if (call.number != 0 && call.number != 1) return std::nullopt;
+        if (call.number != 0 && call.number != 1)
+            return std::nullopt;
         break;
     case Kind::DesktopNotification:
-        if (!decodeNotification(in, call.notification)) return std::nullopt;
+        if (!decodeNotification(in, call.notification))
+            return std::nullopt;
         call.missed = in.boolean();
         break;
     case Kind::ClipboardRequest:
-        if (!decodeClipboard(in, call.clipboard)) return std::nullopt;
+        if (!decodeClipboard(in, call.clipboard))
+            return std::nullopt;
         break;
     case Kind::TerminalProtocol:
         call.number = in.signedInt();
         call.text = in.string();
         // The codes that the terminal passes to its host.
-        if (call.number != 0 && call.number != 72 && call.number != 5113) return std::nullopt;
+        if (call.number != 0 && call.number != 72 && call.number != 5113)
+            return std::nullopt;
         break;
     case Kind::PointerShape:
     case Kind::CommandStarted:
@@ -324,10 +351,12 @@ std::optional<Call> decode(std::string_view bytes)
     case Kind::ProtocolLost:
         call.number = in.signedInt();
         call.value = in.varint();
-        if (call.number < LostNothing || call.number > LostPackets || call.value > 1) return std::nullopt;
+        if (call.number < LostNothing || call.number > LostPackets || call.value > 1)
+            return std::nullopt;
         break;
     }
-    if (!in.ok() || !in.done()) return std::nullopt;
+    if (!in.ok() || !in.done())
+        return std::nullopt;
     // The text of OSC 9 and OSC 777, as the parser lets it through.
     if (call.kind == Kind::Notify
         && (!AfterglowProto::isCleanText(call.title, AfterglowProto::TextAllow::LineSeparators)
@@ -344,7 +373,8 @@ std::string protocolWithoutWindow(int code, std::string_view payload)
     if (code == 72) {
         // A program asks which drag and drop types the terminal supports. It
         // gets the answer of a window: a client may attach before a drag.
-        if (std::string reply = AfterglowProto::dndQueryReply(payload); !reply.empty()) return reply;
+        if (std::string reply = AfterglowProto::dndQueryReply(payload); !reply.empty())
+            return reply;
         // A drag starts from an offer (t=o without x=1 or x=2) while the
         // user holds the mouse button. Without a window no drag can start,
         // so the offer gets the window's EPERM. A drop never arrives, so
@@ -352,17 +382,22 @@ std::string protocolWithoutWindow(int code, std::string_view payload)
         // once, at its last chunk.
         const std::string_view raw = AfterglowProto::splitDnd(payload).first;
         const auto meta = AfterglowProto::parseDndMeta(raw);
-        if (!meta || AfterglowProto::dndMore(raw)) return {};
+        if (!meta || AfterglowProto::dndMore(raw))
+            return {};
         const auto type = meta->find("t");
         const auto x = meta->find("x");
-        if (type == meta->end() || type->second != "o" || (x != meta->end() && (x->second == "1" || x->second == "2"))) return {};
+        if (type == meta->end() || type->second != "o" || (x != meta->end() && (x->second == "1" || x->second == "2")))
+            return {};
         AfterglowProto::DndMeta error{{"t", "E"}};
-        if (const auto id = meta->find("i"); id != meta->end()) error.emplace("i", id->second);
+        if (const auto id = meta->find("i"); id != meta->end())
+            error.emplace("i", id->second);
         std::string out;
-        for (const std::string& packet : AfterglowProto::writeDnd(std::move(error), "EPERM")) out += packet;
+        for (const std::string& packet : AfterglowProto::writeDnd(std::move(error), "EPERM"))
+            out += packet;
         return out;
     }
-    if (code != 5113 || payload.size() > AfterglowProto::TransferMaxCommand) return {};
+    if (code != 5113 || payload.size() > AfterglowProto::TransferMaxCommand)
+        return {};
     // A transfer starts with ac=send or ac=receive and waits for the user's
     // answer. Without a window no user answers: it is the answer of a
     // denial. A session with q=2 asked for no status, errors included. The
@@ -370,11 +405,14 @@ std::string protocolWithoutWindow(int code, std::string_view payload)
     // program learns of the end when its terminal answers it no more, as for
     // a window that closed.
     const auto fields = AfterglowProto::decodeTransfer(payload);
-    if (!fields) return {};
+    if (!fields)
+        return {};
     const auto action = fields->find("ac");
     const auto id = fields->find("id");
-    if (action == fields->end() || id == fields->end() || (action->second != "send" && action->second != "receive")) return {};
-    if (const auto quiet = fields->find("q"); quiet != fields->end() && quiet->second == "2") return {};
+    if (action == fields->end() || id == fields->end() || (action->second != "send" && action->second != "receive"))
+        return {};
+    if (const auto quiet = fields->find("q"); quiet != fields->end() && quiet->second == "2")
+        return {};
     const std::array<std::pair<std::string_view, std::string_view>, 3> status{{
         {"ac", "status"},
         {"id", id->second},
@@ -397,7 +435,8 @@ std::string answerWithoutWindow(const Call& call)
     case Kind::DesktopNotification:
         // No notification is on screen: a program that asks which are gets
         // an empty list, in the reply of a window. The others are dropped.
-        return call.notification.kind == AfterglowVt::NotificationRequest::Kind::Alive ? call.notification.aliveReply() : std::string();
+        return call.notification.kind == AfterglowVt::NotificationRequest::Kind::Alive ? call.notification.aliveReply()
+                                                                                       : std::string();
     case Kind::Report:
         return call.text;
     case Kind::UploadRequest:

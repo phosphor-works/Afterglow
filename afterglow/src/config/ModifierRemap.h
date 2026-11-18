@@ -28,7 +28,10 @@ public:
     /// and remaps nothing, as in kitty.
     static std::optional<ModifierRemap> parse(const QString& text, QString* error = nullptr);
 
-    bool isEmpty() const noexcept { return m_targets == Identity; }
+    bool isEmpty() const noexcept
+    {
+        return m_targets == Identity;
+    }
     /// @p modifiers with each of the four remapped, all at once: a swap does
     /// not chain. Other flags (Keypad, GroupSwitch) stay.
     Qt::KeyboardModifiers apply(Qt::KeyboardModifiers modifiers) const noexcept;
@@ -41,10 +44,10 @@ public:
     bool operator==(const ModifierRemap&) const = default;
 
 private:
-    static constexpr std::array<Qt::KeyboardModifier, 4> Sources{Qt::ShiftModifier, Qt::ControlModifier, Qt::AltModifier,
-                                                                  Qt::MetaModifier};
+    static constexpr std::array<Qt::KeyboardModifier, 4> Sources{Qt::ShiftModifier, Qt::ControlModifier,
+                                                                 Qt::AltModifier, Qt::MetaModifier};
     static constexpr std::array<Qt::KeyboardModifiers, 4> Identity{Qt::ShiftModifier, Qt::ControlModifier,
-                                                                    Qt::AltModifier, Qt::MetaModifier};
+                                                                   Qt::AltModifier, Qt::MetaModifier};
     /// What each of Sources becomes: itself without a rule.
     std::array<Qt::KeyboardModifiers, 4> m_targets = Identity;
 };

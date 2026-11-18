@@ -24,7 +24,10 @@ namespace AfterglowProto {
 /// OSC 52 read.
 struct ClipboardRequest
 {
-    enum class Kind : std::uint8_t { Read, Write };
+    enum class Kind : std::uint8_t {
+        Read,
+        Write
+    };
     Kind kind = Kind::Read;
     bool primary = false; ///< loc=primary: the primary selection
     std::string id; ///< echoed in every reply; sanitized
@@ -68,7 +71,12 @@ public:
     /// The most MIME types in one request, and the most aliases in a write.
     static constexpr std::size_t MaxParts = 64;
 
-    enum class Result : std::uint8_t { Pending, Ready, Ignored, Error };
+    enum class Result : std::uint8_t {
+        Pending,
+        Ready,
+        Ignored,
+        Error
+    };
 
     /// Feeds the OSC payload after "5522;". On Ready, @p out holds the
     /// request; on Error, @p reply holds the error packet to send back.
@@ -76,7 +84,8 @@ public:
     void reset();
 
     // Replies, as complete OSC sequences.
-    static std::string readStatus(std::string_view status, const ClipboardRequest& request, std::string_view oneTimePassword = {});
+    static std::string readStatus(std::string_view status, const ClipboardRequest& request,
+                                  std::string_view oneTimePassword = {});
     /// The DATA packets for one MIME type, in chunks of DataChunk bytes.
     static std::string readData(std::string_view mime, std::string_view bytes, const ClipboardRequest& request,
                                 std::string_view oneTimePassword = {});

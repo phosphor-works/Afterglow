@@ -91,7 +91,8 @@ private:
     bool read(AfterglowProto::IpcServerConnection& connection);
     /// @p caller is the process of the client, 0 when unknown. Empty when
     /// the answer comes later: a window gives it (answerForwarded()).
-    std::string answer(const AfterglowProto::IpcRequest& request, pid_t caller, AfterglowProto::IpcServerConnection& connection);
+    std::string answer(const AfterglowProto::IpcRequest& request, pid_t caller,
+                       AfterglowProto::IpcServerConnection& connection);
 
     // The sockets of `afterglow ssh` in session panes, in DaemonRemote.cpp.
     /// One ssh session's socket for remote commands, and the pane's answer
@@ -116,7 +117,11 @@ private:
     /// What the poll of the loop watches for the ssh sessions.
     struct SshWatch
     {
-        enum class Kind { Listener, Process, Cancel } kind = Kind::Listener;
+        enum class Kind {
+            Listener,
+            Process,
+            Cancel
+        } kind = Kind::Listener;
         std::string token;
         pid_t pid = 0; ///< Cancel
     };
@@ -170,7 +175,8 @@ private:
 
     // `afterglow ctl watch` for a session (DaemonWatch.cpp).
     /// A subscription to an event of the control target of @p session.
-    std::string subscribe(const AfterglowProto::IpcRequest& request, AfterglowProto::IpcServerConnection& connection, Session& session);
+    std::string subscribe(const AfterglowProto::IpcRequest& request, AfterglowProto::IpcServerConnection& connection,
+                          Session& session);
     /// The end of a subscription of @p connection, which names no target. It
     /// sends its answer itself, before it lets the connection go
     /// (holdForAnswers()): empty then.
@@ -216,18 +222,21 @@ private:
         std::uint32_t focused = 0;
         std::map<std::string, Merged> merged; ///< by signal, pane and name
     };
-    void sendWatch(std::uint64_t serial, const SessionWatch& watch, const std::string& signal, AfterglowProto::Json::Array args);
+    void sendWatch(std::uint64_t serial, const SessionWatch& watch, const std::string& signal,
+                   AfterglowProto::Json::Array args);
     /// Sends what waits for @p pane.
     void flushPane(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane);
     /// An event that is never merged: what waits for its pane goes first.
-    void watchNow(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane, const std::string& signal, AfterglowProto::Json::Array args);
+    void watchNow(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane, const std::string& signal,
+                  AfterglowProto::Json::Array args);
     /// An event that goes at most once in Control.eventInterval for @p pane
     /// and @p key (a user variable's name).
-    void watchMerged(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane, const std::string& key, const std::string& signal,
-                     AfterglowProto::Json::Array args);
+    void watchMerged(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane, const std::string& key,
+                     const std::string& signal, AfterglowProto::Json::Array args);
     /// The events of one watch event of @p pane, whose last events @p state
     /// holds.
-    void watchEvent(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane, PaneWatch& state, MuxPane::WatchEvent& event);
+    void watchEvent(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane, PaneWatch& state,
+                    MuxPane::WatchEvent& event);
     /// pumpWatch() for the watched session @p it at @p now, which it erases
     /// when its watch ends.
     void pumpWatchOf(std::map<std::uint64_t, SessionWatch>::iterator it, std::chrono::steady_clock::time_point now);
@@ -259,8 +268,10 @@ private:
     Attachment* attachment(std::uint64_t serial) const;
     /// A session with callerEnvironment takes the environment that
     /// callerEnvironment() kept for @p connection.
-    std::string newSession(const AfterglowProto::IpcRequest& request, const AfterglowProto::IpcServerConnection& connection);
-    std::string callerEnvironment(const AfterglowProto::IpcRequest& request, const AfterglowProto::IpcServerConnection& connection);
+    std::string newSession(const AfterglowProto::IpcRequest& request,
+                           const AfterglowProto::IpcServerConnection& connection);
+    std::string callerEnvironment(const AfterglowProto::IpcRequest& request,
+                                  const AfterglowProto::IpcServerConnection& connection);
     std::string killSession(const AfterglowProto::IpcRequest& request);
     /// The connection of the call becomes the window's stream once the
     /// answer went (m_attaching).
@@ -278,7 +289,8 @@ private:
     /// names a window in its argument @p windowArg ("window" of the attach
     /// answer), while that window does not show the session: another one
     /// does, or none. Empty when it may.
-    std::string windowRefusal(const AfterglowProto::IpcRequest& request, const std::string& name, std::size_t windowArg) const;
+    std::string windowRefusal(const AfterglowProto::IpcRequest& request, const std::string& name,
+                              std::size_t windowArg) const;
     /// The pane @p id of any session, or nullptr.
     MuxPane* findPane(std::uint32_t id) const;
     /// The next pane ID: never 0, which marks a split, and none that a
@@ -315,8 +327,9 @@ private:
     /// @p from must have room for the call that tells it (joinPanes()).
     /// Pane @p id cannot go back into the window of @p to while that window
     /// still holds it from before (Attachment::stillLeaving).
-    std::string joinRefusal(const AfterglowProto::IpcRequest& request, const Session& from, std::uint32_t id, const Session& to,
-                            std::uint32_t beside, const std::string& placement, bool tellFrom, std::optional<Side>* side) const;
+    std::string joinRefusal(const AfterglowProto::IpcRequest& request, const Session& from, std::uint32_t id,
+                            const Session& to, std::uint32_t beside, const std::string& placement, bool tellFrom,
+                            std::optional<Side>* side) const;
     /// Moves pane @p id of @p from, with its program running, to @p to: on
     /// @p side of pane @p beside of @p to, else in a tab of its own after the
     /// tab of @p beside. Its title and command go with it. The window of
@@ -326,7 +339,8 @@ private:
     /// When it was the last pane of @p from, that session ends: the caller
     /// uses @p from no more. A failure (out of memory) leaves the pane
     /// where it was.
-    void joinPanes(Session& from, std::uint32_t id, Session& to, std::uint32_t beside, std::optional<Side> side, bool tellFrom);
+    void joinPanes(Session& from, std::uint32_t id, Session& to, std::uint32_t beside, std::optional<Side> side,
+                   bool tellFrom);
 
     // The control target (`afterglow ctl` for a session), in DaemonControl.cpp.
     /// selectSession and selectPane: the session that the control calls of
@@ -334,12 +348,13 @@ private:
     std::string select(const AfterglowProto::IpcRequest& request, AfterglowProto::IpcServerConnection& connection);
     /// A call of the control target, for the session that @p connection
     /// selected. Empty when a window answers it later.
-    std::string control(const AfterglowProto::IpcRequest& request, AfterglowProto::IpcServerConnection& connection, pid_t caller);
+    std::string control(const AfterglowProto::IpcRequest& request, AfterglowProto::IpcServerConnection& connection,
+                        pid_t caller);
     /// Passes @p request to the window that shows @p session, with @p args in
     /// place of its own. Empty: its answer comes later. Without a window, the
     /// error that says so.
-    std::string forward(const AfterglowProto::IpcRequest& request, AfterglowProto::IpcServerConnection& connection, Session& session,
-                        const AfterglowProto::Json::Array& args);
+    std::string forward(const AfterglowProto::IpcRequest& request, AfterglowProto::IpcServerConnection& connection,
+                        Session& session, const AfterglowProto::Json::Array& args);
     /// Tells the window that shows @p session of a change that the daemon
     /// made (a pane to place, a focus): no answer comes.
     void tellWindow(const Session& session, const std::string& fn, AfterglowProto::Json::Array args);
@@ -443,7 +458,8 @@ private:
     };
     std::map<const AfterglowProto::IpcServerConnection*, Selected> m_selected;
     /// The environment that each connection's caller sent (callerEnvironment()).
-    std::map<const AfterglowProto::IpcServerConnection*, std::vector<std::pair<std::string, std::string>>> m_callerEnvironments;
+    std::map<const AfterglowProto::IpcServerConnection*, std::vector<std::pair<std::string, std::string>>>
+        m_callerEnvironments;
     /// The control calls that wait for the answer of a window, by the ID of
     /// their Control event.
     struct Forward

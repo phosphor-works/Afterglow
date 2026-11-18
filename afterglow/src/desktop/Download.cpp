@@ -39,7 +39,8 @@ QString renameToFreeName(const QByteArray& part, const QString& target, Download
         const QString path = n == 0 ? target : directory.filePath(numberedDownloadName(name, n));
         const QByteArray to = QFile::encodeName(path);
         if (calls.noReplace) {
-            if (::renameat2(AT_FDCWD, part.constData(), AT_FDCWD, to.constData(), RENAME_NOREPLACE) == 0) return path;
+            if (::renameat2(AT_FDCWD, part.constData(), AT_FDCWD, to.constData(), RENAME_NOREPLACE) == 0)
+                return path;
         } else {
             errno = EINVAL;
         }
@@ -51,15 +52,19 @@ QString renameToFreeName(const QByteArray& part, const QString& target, Download
                 ::unlink(part.constData());
                 return path;
             }
-            if (!calls.link) errno = EPERM;
+            if (!calls.link)
+                errno = EPERM;
             // Nor hard links (some FUSE file systems): a look, then a rename.
             if (errno != EEXIST) {
                 struct stat st;
-                if (::lstat(to.constData(), &st) == 0) errno = EEXIST;
-                else if (errno == ENOENT) return ::rename(part.constData(), to.constData()) == 0 ? path : QString();
+                if (::lstat(to.constData(), &st) == 0)
+                    errno = EEXIST;
+                else if (errno == ENOENT)
+                    return ::rename(part.constData(), to.constData()) == 0 ? path : QString();
             }
         }
-        if (errno != EEXIST) return {};
+        if (errno != EEXIST)
+            return {};
     }
     errno = EEXIST;
     return {};
@@ -67,7 +72,8 @@ QString renameToFreeName(const QByteArray& part, const QString& target, Download
 
 QString numberedDownloadName(const QString& name, int n)
 {
-    if (n == 0) return name;
+    if (n == 0)
+        return name;
     const qsizetype dot = name.lastIndexOf(QLatin1Char('.'));
     const QString stem = dot > 0 ? name.left(dot) : name;
     const QString suffix = dot > 0 ? name.mid(dot) : QString();
@@ -84,11 +90,13 @@ QString cleanDownloadName(std::string_view name)
     // neither half of the pair is printable on its own.
     std::u32string kept;
     for (const char32_t c : suggested.toUcs4())
-        if (c && QChar::isPrint(c) && QChar::category(c) != QChar::Other_Format) kept += c;
+        if (c && QChar::isPrint(c) && QChar::category(c) != QChar::Other_Format)
+            kept += c;
     QString clean = QString::fromStdU32String(kept);
     // A program names no hidden file: with Terminal.downloadDirectory set
     // to ~ and downloads allowed, ".bashrc" would be the shell's own.
-    while (clean.startsWith(QLatin1Char('.'))) clean.remove(0, 1);
+    while (clean.startsWith(QLatin1Char('.')))
+        clean.remove(0, 1);
     // NAME_MAX is 255 bytes. A long name keeps room for what the user adds,
     // and keeps its last extension when that is short: the stem is cut at
     // the end of a whole character (a grapheme, with its combining marks).
@@ -100,16 +108,19 @@ QString cleanDownloadName(std::string_view name)
         const qsizetype budget = MaxNameBytes - suffix.toUtf8().size();
         QTextBoundaryFinder graphemes(QTextBoundaryFinder::Grapheme, stem);
         qsizetype end = 0, used = 0;
-        for (qsizetype start = 0, next = graphemes.toNextBoundary(); next > 0; start = next, next = graphemes.toNextBoundary()) {
+        for (qsizetype start = 0, next = graphemes.toNextBoundary(); next > 0;
+             start = next, next = graphemes.toNextBoundary()) {
             used += QStringView(stem).mid(start, next - start).toUtf8().size();
-            if (used > budget) break;
+            if (used > budget)
+                break;
             end = next;
         }
         // A first character over the budget alone (marks without end) leaves
         // no stem: the name would be a hidden file.
         clean = (end > 0 ? stem.left(end) : QStringLiteral("download")) + suffix;
     }
-    if (clean.isEmpty()) clean = QStringLiteral("download.bin");
+    if (clean.isEmpty())
+        clean = QStringLiteral("download.bin");
     return clean;
 }
 
@@ -149,28 +160,34 @@ DownloadFile::Released& DownloadFile::released()
     return instance;
 }
 
-std::unique_ptr<DownloadFile> DownloadFile::create(const QString& path, bool replace, std::function<void()> room, Ended ended,
-                                                   QString& error)
+std::unique_ptr<DownloadFile> DownloadFile::create(const QString& path, bool replace, std::function<void()> room,
+                                                   Ended ended, QString& error)
 {
     const QByteArray target = QFile::encodeName(path);
     for (int n = 0; n < 100; ++n) {
         const QByteArray part = n == 0 ? target + ".part" : target + '.' + QByteArray::number(n) + ".part";
         const int fd = ::open(part.constData(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
-        if (fd >= 0) return std::unique_ptr<DownloadFile>(new DownloadFile(fd, part, path, replace, std::move(room), std::move(ended)));
-        if (errno != EEXIST) break;
+        if (fd >= 0)
+            return std::unique_ptr<DownloadFile>(
+                new DownloadFile(fd, part, path, replace, std::move(room), std::move(ended)));
+        if (errno != EEXIST)
+            break;
     }
     error = QString::fromLocal8Bit(std::strerror(errno));
     return nullptr;
 }
 
-DownloadFile::DownloadFile(int fd, QByteArray part, QString target, bool replace, std::function<void()> room, Ended ended)
+DownloadFile::DownloadFile(int fd, QByteArray part, QString target, bool replace, std::function<void()> room,
+                           Ended ended)
     : m_fd(fd)
     , m_part(std::move(part))
     , m_target(std::move(target))
     , m_replace(replace)
     , m_room(std::move(room))
     , m_ended(std::move(ended))
-    , m_thread([this] { run(); })
+    , m_thread([this] {
+        run();
+    })
 {
 }
 
@@ -178,7 +195,8 @@ DownloadFile::~DownloadFile()
 {
     {
         std::lock_guard lock(m_mutex);
-        if (!m_finishing) m_cancelled = true;
+        if (!m_finishing)
+            m_cancelled = true;
     }
     m_wake.notify_all();
     m_thread.join();
@@ -186,14 +204,16 @@ DownloadFile::~DownloadFile()
 
 void DownloadFile::release(std::unique_ptr<DownloadFile> file)
 {
-    if (!file) return;
+    if (!file)
+        return;
     {
         std::lock_guard calls(file->m_callMutex);
         file->m_released = true;
     }
     {
         std::lock_guard lock(file->m_mutex);
-        if (!file->m_finishing) file->m_cancelled = true;
+        if (!file->m_finishing)
+            file->m_cancelled = true;
     }
     file->m_wake.notify_all();
     // Those whose writers returned go after the lock: their joins take no time.
@@ -213,10 +233,12 @@ void DownloadFile::release(std::unique_ptr<DownloadFile> file)
 
 bool DownloadFile::write(std::string_view bytes)
 {
-    if (bytes.empty()) return true;
+    if (bytes.empty())
+        return true;
     {
         std::lock_guard lock(m_mutex);
-        if (m_failed) return false;
+        if (m_failed)
+            return false;
         m_queue.emplace_back(bytes);
         m_queued += bytes.size();
     }
@@ -227,7 +249,8 @@ bool DownloadFile::write(std::string_view bytes)
 bool DownloadFile::pauseIfFull(const std::function<void()>& pause)
 {
     std::lock_guard lock(m_mutex);
-    if (m_queued <= MaxQueued || m_failed) return false;
+    if (m_queued <= MaxQueued || m_failed)
+        return false;
     pause();
     m_paused = true;
     return true;
@@ -244,7 +267,8 @@ void DownloadFile::finish(bool complete, const QString& reason)
 {
     {
         std::lock_guard lock(m_mutex);
-        if (m_finishing) return;
+        if (m_finishing)
+            return;
         m_finishing = true;
         m_complete = complete;
         m_reason = reason;
@@ -257,14 +281,20 @@ void DownloadFile::run()
     struct Done
     {
         std::atomic_bool& done;
-        ~Done() { done.store(true); }
+        ~Done()
+        {
+            done.store(true);
+        }
     } done{m_done};
     for (;;) {
         std::string chunk;
         {
             std::unique_lock lock(m_mutex);
-            m_wake.wait(lock, [this] { return m_cancelled || !m_queue.empty() || m_finishing; });
-            if (m_cancelled || m_queue.empty()) break;
+            m_wake.wait(lock, [this] {
+                return m_cancelled || !m_queue.empty() || m_finishing;
+            });
+            if (m_cancelled || m_queue.empty())
+                break;
             chunk = std::move(m_queue.front());
             m_queue.pop_front();
         }
@@ -278,7 +308,8 @@ void DownloadFile::run()
         // its next write.
         for (std::string_view rest = chunk; !failed && !rest.empty();) {
             const ssize_t n = ::write(m_fd, rest.data(), rest.size());
-            if (n < 0 && errno == EINTR) continue;
+            if (n < 0 && errno == EINTR)
+                continue;
             if (n <= 0) {
                 failed = true;
                 error = QString::fromLocal8Bit(std::strerror(n < 0 ? errno : ENOSPC));
@@ -304,7 +335,8 @@ void DownloadFile::run()
             std::lock_guard lock(m_mutex);
             if (hasRoomLocked()) {
                 m_paused = false;
-                if (!m_released && m_room) m_room();
+                if (!m_released && m_room)
+                    m_room();
             }
         }
     }
@@ -325,7 +357,8 @@ void DownloadFile::run()
         ::unlink(m_part.constData());
         // A cancel comes from the destructor, whose owner has stopped its
         // producer: no one waits for the end.
-        if (cancelled) return;
+        if (cancelled)
+            return;
     } else if (::close(m_fd) != 0) {
         // A close that fails may have lost the end of the file.
         ok = false;
@@ -346,7 +379,8 @@ void DownloadFile::run()
         }
     }
     std::lock_guard calls(m_callMutex);
-    if (!m_released && m_ended) m_ended(saved, ok, error);
+    if (!m_released && m_ended)
+        m_ended(saved, ok, error);
 }
 
 } // namespace Afterglow

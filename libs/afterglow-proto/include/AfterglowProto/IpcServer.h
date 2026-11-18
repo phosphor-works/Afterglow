@@ -89,8 +89,14 @@ public:
     /// Closes the socket, removes its file and its lock file, each only when
     /// it is still the one that this listener made, and lets go of the lock.
     void close();
-    int fd() const { return m_fd; }
-    const std::string& path() const { return m_path; }
+    int fd() const
+    {
+        return m_fd;
+    }
+    const std::string& path() const
+    {
+        return m_path;
+    }
     /// Whether the file at path() is still the socket that listen() bound.
     /// Not after someone removed it (logind removes the runtime directory
     /// at the last logout): a client then cannot reach this listener there.
@@ -107,7 +113,10 @@ public:
     /// The last accept() left a connection waiting, as no descriptor was
     /// left and none was kept. The listener stays readable: a caller polls
     /// it again only after a descriptor was freed, or the poll spins.
-    bool starved() const { return m_starved; }
+    bool starved() const
+    {
+        return m_starved;
+    }
 
 private:
     int m_fd = -1;
@@ -145,8 +154,14 @@ public:
     IpcServerConnection(const IpcServerConnection&) = delete;
     IpcServerConnection& operator=(const IpcServerConnection&) = delete;
 
-    int fd() const { return m_fd; }
-    bool open() const { return m_fd >= 0; }
+    int fd() const
+    {
+        return m_fd;
+    }
+    bool open() const
+    {
+        return m_fd >= 0;
+    }
     void close();
     /// Gives the descriptor up, for another protocol on the same connection
     /// (the stream of a mux attach), with the output that did not go yet in
@@ -178,7 +193,10 @@ public:
     /// Whether the client can send more. Not after it ended its side: the
     /// output queued then still goes out, and the connection closes after
     /// it, unless keepAtEnd() holds it for an answer that comes later.
-    bool wantsRead() const { return m_fd >= 0 && !m_eof; }
+    bool wantsRead() const
+    {
+        return m_fd >= 0 && !m_eof;
+    }
     /// While @p keep, the end of the client's side does not close the
     /// connection: the server still owes it an answer (a call that another
     /// process answers). When the caller lets go and the client ended its
@@ -188,9 +206,15 @@ public:
     void send(std::string line);
     /// Writes waiting output. False when the connection failed.
     bool flush();
-    bool wantsWrite() const { return m_fd >= 0 && m_out.size() > m_outOffset; }
+    bool wantsWrite() const
+    {
+        return m_fd >= 0 && m_out.size() > m_outOffset;
+    }
     /// The bytes queued that the socket has not taken yet.
-    std::size_t waitingBytes() const { return m_out.size() - m_outOffset; }
+    std::size_t waitingBytes() const
+    {
+        return m_out.size() - m_outOffset;
+    }
 
 private:
     bool fill();

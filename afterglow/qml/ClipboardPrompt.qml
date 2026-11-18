@@ -18,7 +18,7 @@ Item {
 
     // Called by Chrome.qml when this is the topmost open overlay.
     function takeFocus() {
-        deny.forceActiveFocus()
+        deny.forceActiveFocus();
     }
 
     Scrim {
@@ -77,17 +77,15 @@ Item {
             Label {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
-                text: prompt.canRemember ? qsTr("Tab chooses a button and Enter presses it. Press a to always allow. Escape denies.")
-                                         : qsTr("Tab chooses a button and Enter presses it. Escape denies.")
+                text: prompt.canRemember ? qsTr("Tab chooses a button and Enter presses it. Press a to always allow. Escape denies.") : qsTr("Tab chooses a button and Enter presses it. Escape denies.")
             }
         }
 
         Keys.onEscapePressed: prompt.controller.answerClipboard(0)
         Keys.onPressed: event => {
-            if (event.key === Qt.Key_A && prompt.canRemember && !event.isAutoRepeat
-                && (event.modifiers & ~Qt.KeypadModifier) === Qt.NoModifier) {
-                prompt.controller.answerClipboard(2)
-                event.accepted = true
+            if (event.key === Qt.Key_A && prompt.canRemember && !event.isAutoRepeat && (event.modifiers & ~Qt.KeypadModifier) === Qt.NoModifier) {
+                prompt.controller.answerClipboard(2);
+                event.accepted = true;
             }
         }
     }

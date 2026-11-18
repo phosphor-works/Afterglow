@@ -38,17 +38,29 @@ public:
     TempDir()
     {
         char dir[] = "/tmp/afterglow-ipcserver-XXXXXX";
-        if (::mkdtemp(dir)) m_path = dir;
+        if (::mkdtemp(dir))
+            m_path = dir;
     }
     ~TempDir()
     {
-        if (m_path.empty()) return;
-        for (const char* name : {"/s.sock", "/s.sock.lock", "/file", "/file.lock"}) ::unlink((m_path + name).c_str());
+        if (m_path.empty())
+            return;
+        for (const char* name : {"/s.sock", "/s.sock.lock", "/file", "/file.lock"})
+            ::unlink((m_path + name).c_str());
         ::rmdir(m_path.c_str());
     }
-    std::string socket() const { return m_path + "/s.sock"; }
-    std::string lock() const { return socket() + ".lock"; }
-    const std::string& path() const { return m_path; }
+    std::string socket() const
+    {
+        return m_path + "/s.sock";
+    }
+    std::string lock() const
+    {
+        return socket() + ".lock";
+    }
+    const std::string& path() const
+    {
+        return m_path;
+    }
 
 private:
     std::string m_path;
@@ -68,13 +80,20 @@ public:
         : m_fd(fd)
     {
     }
-    ~ScopedFd() { reset(); }
+    ~ScopedFd()
+    {
+        reset();
+    }
     ScopedFd(const ScopedFd&) = delete;
     ScopedFd& operator=(const ScopedFd&) = delete;
-    int get() const { return m_fd; }
+    int get() const
+    {
+        return m_fd;
+    }
     void reset(int fd = -1)
     {
-        if (m_fd >= 0) ::close(m_fd);
+        if (m_fd >= 0)
+            ::close(m_fd);
         m_fd = fd;
     }
 
@@ -87,7 +106,8 @@ private:
 int lowestFreeDescriptor()
 {
     const int fd = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
-    if (fd >= 0) ::close(fd);
+    if (fd >= 0)
+        ::close(fd);
     return fd;
 }
 
@@ -96,7 +116,8 @@ int lowestFreeDescriptor()
 bool socketPair(int& server, ScopedFd& client)
 {
     int fds[2];
-    if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, fds) != 0) return false;
+    if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, fds) != 0)
+        return false;
     server = fds[0];
     client.reset(fds[1]);
     return true;
@@ -123,7 +144,8 @@ int connectTo(const std::string& path)
 int acceptOne(IpcListener& listener)
 {
     pollfd p{listener.fd(), POLLIN, 0};
-    if (::poll(&p, 1, 1000) != 1) return -1;
+    if (::poll(&p, 1, 1000) != 1)
+        return -1;
     return listener.accept();
 }
 
@@ -134,10 +156,12 @@ std::optional<std::string> lineOf(IpcServerConnection& connection)
     std::string line;
     while (std::chrono::steady_clock::now() < deadline) {
         if (connection.nextLine(line)) {
-            if (!line.empty()) return line;
+            if (!line.empty())
+                return line;
             continue;
         }
-        if (!connection.open()) return std::nullopt;
+        if (!connection.open())
+            return std::nullopt;
         pollfd p{connection.fd(), POLLIN, 0};
         ::poll(&p, 1, 50);
     }
@@ -149,11 +173,13 @@ std::string received(int client, int ms = 1000)
 {
     std::string all;
     pollfd p{client, POLLIN, 0};
-    if (::poll(&p, 1, ms) != 1) return all;
+    if (::poll(&p, 1, ms) != 1)
+        return all;
     char buffer[65536];
     while (true) {
         const ssize_t n = ::recv(client, buffer, sizeof buffer, MSG_DONTWAIT);
-        if (n <= 0) return all;
+        if (n <= 0)
+            return all;
         all.append(buffer, std::size_t(n));
     }
 }
@@ -169,23 +195,31 @@ struct Pair
     Pair()
     {
         std::string error;
-        if (listener.listen(dir.socket(), &error) != Listen::Listening) return;
+        if (listener.listen(dir.socket(), &error) != Listen::Listening)
+            return;
         client = connectTo(dir.socket());
-        if (client < 0) return;
+        if (client < 0)
+            return;
         const int fd = acceptOne(listener);
-        if (fd >= 0) server = std::make_unique<IpcServerConnection>(fd);
+        if (fd >= 0)
+            server = std::make_unique<IpcServerConnection>(fd);
     }
     ~Pair()
     {
-        if (client >= 0) ::close(client);
+        if (client >= 0)
+            ::close(client);
     }
-    bool ready() const { return server != nullptr; }
+    bool ready() const
+    {
+        return server != nullptr;
+    }
 };
 
 std::size_t count(const std::string& text, std::string_view what)
 {
     std::size_t n = 0;
-    for (std::size_t at = text.find(what); at != std::string::npos; at = text.find(what, at + what.size())) ++n;
+    for (std::size_t at = text.find(what); at != std::string::npos; at = text.find(what, at + what.size()))
+        ++n;
     return n;
 }
 
@@ -194,7 +228,8 @@ std::size_t count(const std::string& text, std::string_view what)
 TEST(IpcServer, ParsesACall)
 {
     std::string error;
-    const auto request = parseIpcRequest(R"({"type":"call","id":7,"target":"mux","fn":"version","args":[1,"a"]})", &error);
+    const auto request =
+        parseIpcRequest(R"({"type":"call","id":7,"target":"mux","fn":"version","args":[1,"a"]})", &error);
     ASSERT_TRUE(request) << error;
     EXPECT_EQ(request->type, "call");
     EXPECT_EQ(request->id, 7);
@@ -229,7 +264,8 @@ TEST(IpcServer, RefusesWhatPhosphorIpcRefuses)
         EXPECT_FALSE(error.empty()) << line;
     }
     std::string many = R"({"type":"call","id":3,"target":"t","fn":"f","args":[)";
-    for (int i = 0; i < 4097; ++i) many += i ? ",0" : "0";
+    for (int i = 0; i < 4097; ++i)
+        many += i ? ",0" : "0";
     many += "]}";
     std::optional<std::int64_t> id;
     EXPECT_FALSE(parseIpcRequest(many, nullptr, &id));
@@ -267,7 +303,8 @@ TEST(IpcServer, ReadsFieldsInTheOrderAndRangeOfPhosphorIpc)
 TEST(IpcServer, ParsesSubscriptionsAndWritesTheirEvents)
 {
     std::string error;
-    const auto subscribe = parseIpcRequest(R"({"type":"subscribe","id":9,"target":"control","signal":"titleChanged"})", &error);
+    const auto subscribe =
+        parseIpcRequest(R"({"type":"subscribe","id":9,"target":"control","signal":"titleChanged"})", &error);
     ASSERT_TRUE(subscribe) << error;
     EXPECT_EQ(subscribe->target, "control");
     EXPECT_EQ(subscribe->signal, "titleChanged");
@@ -309,7 +346,8 @@ TEST(IpcServer, AnswersTheClientOfThisLibrary)
     IpcRequest request;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     IpcServerConnection::Read read = IpcServerConnection::Read::None;
-    while (std::chrono::steady_clock::now() < deadline && (read = connection.nextRequest(request)) != IpcServerConnection::Read::Request) {
+    while (std::chrono::steady_clock::now() < deadline
+           && (read = connection.nextRequest(request)) != IpcServerConnection::Read::Request) {
         pollfd p{fd, POLLIN, 0};
         ::poll(&p, 1, 50);
     }
@@ -489,8 +527,10 @@ TEST(IpcServer, ClosesAConnectionWhoseLineIsTooLong)
         const std::string chunk(65536, 'x');
         for (std::size_t sent = 0; !stop && sent <= IpcConnection::MaxRequestBytes + chunk.size();) {
             const ssize_t n = ::send(client, chunk.data(), chunk.size(), MSG_NOSIGNAL);
-            if (n < 0 && errno == EAGAIN) continue;
-            if (n <= 0) break;
+            if (n < 0 && errno == EAGAIN)
+                continue;
+            if (n <= 0)
+                break;
             sent += std::size_t(n);
         }
     });
@@ -515,8 +555,10 @@ TEST(IpcServer, TheLineLimitCountsTheNewline)
         std::jthread writer([client, &text, &stop] {
             for (std::size_t sent = 0; !stop && sent < text.size();) {
                 const ssize_t n = ::send(client, text.data() + sent, text.size() - sent, MSG_NOSIGNAL);
-                if (n < 0 && errno == EAGAIN) continue;
-                if (n <= 0) break;
+                if (n < 0 && errno == EAGAIN)
+                    continue;
+                if (n <= 0)
+                    break;
                 sent += std::size_t(n);
             }
         });
@@ -593,7 +635,8 @@ TEST(IpcServer, AStreamOfEmptyLinesDoesNotKeepTheReader)
         const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(3);
         while (!stop && std::chrono::steady_clock::now() < end) {
             const ssize_t n = ::send(client, chunk.data(), chunk.size(), MSG_NOSIGNAL);
-            if (n < 0 && errno != EAGAIN) break;
+            if (n < 0 && errno != EAGAIN)
+                break;
         }
     });
     IpcServerConnection& connection = *pair.server;
@@ -630,23 +673,30 @@ TEST(IpcServer, ClosesAfterTooManyMalformedLinesInARow)
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
         while (connection.open() && std::chrono::steady_clock::now() < deadline) {
             const auto read = connection.nextRequest(request);
-            if (read == IpcServerConnection::Read::Request) ++requests;
-            if (read != IpcServerConnection::Read::None) continue;
+            if (read == IpcServerConnection::Read::Request)
+                ++requests;
+            if (read != IpcServerConnection::Read::None)
+                continue;
             pollfd p{connection.fd(), POLLIN, 0};
-            if (::poll(&p, 1, 50) == 0) break;
+            if (::poll(&p, 1, 50) == 0)
+                break;
         }
         return requests;
     };
-    const std::string good = R"({"type":"call","id":1,"target":"t","fn":"f"})" "\n";
+    const std::string good = R"({"type":"call","id":1,"target":"t","fn":"f"})"
+                             "\n";
     std::string text;
-    for (int i = 0; i < IpcServerConnection::MaxMalformedLines; ++i) text += "bad\n";
+    for (int i = 0; i < IpcServerConnection::MaxMalformedLines; ++i)
+        text += "bad\n";
     // A good line ends the run, and an empty line does not count.
     text += good + "\n";
-    for (int i = 0; i < IpcServerConnection::MaxMalformedLines; ++i) text += "bad\n";
+    for (int i = 0; i < IpcServerConnection::MaxMalformedLines; ++i)
+        text += "bad\n";
     ASSERT_EQ(::send(pair.client, text.data(), text.size(), 0), ssize_t(text.size()));
     EXPECT_EQ(drive(), 1);
     EXPECT_TRUE(connection.open());
-    EXPECT_EQ(count(received(pair.client), "MALFORMED_REQUEST"), std::size_t(2 * IpcServerConnection::MaxMalformedLines));
+    EXPECT_EQ(count(received(pair.client), "MALFORMED_REQUEST"),
+              std::size_t(2 * IpcServerConnection::MaxMalformedLines));
     // One more in the run closes it, after its error.
     ASSERT_EQ(::send(pair.client, "bad\n", 4, 0), 4);
     EXPECT_EQ(drive(), 0);
@@ -683,7 +733,8 @@ TEST(IpcServer, WaitingOutputGoesOutWholeAndInOrder)
     IpcServerConnection& connection = *pair.server;
     std::string sent;
     for (int i = 0; i < 40; ++i) {
-        std::string line = std::to_string(i) + ":" + std::string(std::size_t(50000 + i * 1000), char('a' + i % 26)) + "\n";
+        std::string line =
+            std::to_string(i) + ":" + std::string(std::size_t(50000 + i * 1000), char('a' + i % 26)) + "\n";
         sent += line;
         connection.send(std::move(line));
     }
@@ -695,7 +746,8 @@ TEST(IpcServer, WaitingOutputGoesOutWholeAndInOrder)
     while (got.size() < sent.size() && std::chrono::steady_clock::now() < deadline) {
         // Small reads, so that the server's output waits in parts.
         const ssize_t n = ::recv(pair.client, buffer, sizeof buffer, MSG_DONTWAIT);
-        if (n > 0) got.append(buffer, std::size_t(n));
+        if (n > 0)
+            got.append(buffer, std::size_t(n));
         ASSERT_TRUE(connection.flush());
         if (queued < 60 && got.size() % 3 == 0) {
             std::string line = std::to_string(queued++) + ":more\n";
@@ -733,7 +785,8 @@ TEST(IpcServer, AClientThatEndsItsSideStillGetsItsAnswers)
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (connection.open() && std::chrono::steady_clock::now() < deadline) {
         const ssize_t n = ::recv(pair.client, buffer, sizeof buffer, MSG_DONTWAIT);
-        if (n > 0) got.append(buffer, std::size_t(n));
+        if (n > 0)
+            got.append(buffer, std::size_t(n));
         connection.flush();
     }
     got += received(pair.client, 100);
@@ -833,7 +886,8 @@ TEST(IpcServer, AListenerWithoutItsKeptDescriptorSaysItIsStarved)
     const int fd = listener.accept();
     EXPECT_GE(fd, 0);
     EXPECT_FALSE(listener.starved());
-    if (fd >= 0) ::close(fd);
+    if (fd >= 0)
+        ::close(fd);
     // At the limit once more, the kept descriptor drains the other waiting
     // connection: the listener is not starved, and not readable.
     const int next = lowestFreeDescriptor();
@@ -869,7 +923,8 @@ TEST(IpcServer, ReleaseHandsOverTheOutputThatDidNotGo)
     char buffer[65536];
     while (true) {
         const ssize_t n = ::recv(client.get(), buffer, sizeof buffer, 0);
-        if (n <= 0) break;
+        if (n <= 0)
+            break;
         got.append(buffer, std::size_t(n));
     }
     EXPECT_FALSE(unsent.empty());

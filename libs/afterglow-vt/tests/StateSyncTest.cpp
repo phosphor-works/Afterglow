@@ -34,12 +34,16 @@ TerminalOptions withScrollback(std::size_t rows)
 /// The first difference of two screens, or an empty string.
 std::string differs(const Screen& a, const Screen& b, const char* which)
 {
-    const auto where = [which](std::string what) { return std::string(which) + ": " + what; };
-    if (a.cols() != b.cols() || a.rows() != b.rows()) return where("size");
+    const auto where = [which](std::string what) {
+        return std::string(which) + ": " + what;
+    };
+    if (a.cols() != b.cols() || a.rows() != b.rows())
+        return where("size");
     if (a.historySize() != b.historySize()) {
         return where("history " + std::to_string(a.historySize()) + " and " + std::to_string(b.historySize()));
     }
-    if (a.rowsDropped() != b.rowsDropped()) return where("stable ids");
+    if (a.rowsDropped() != b.rowsDropped())
+        return where("stable ids");
     if (a.cursor.x != b.cursor.x || a.cursor.y != b.cursor.y || a.cursor.pendingWrap != b.cursor.pendingWrap) {
         return where("cursor");
     }
@@ -47,7 +51,8 @@ std::string differs(const Screen& a, const Screen& b, const char* which)
         const Row& ra = a.absoluteRow(i);
         const Row& rb = b.absoluteRow(i);
         const std::string at = "row " + std::to_string(i);
-        if (ra.wrapped != rb.wrapped || ra.promptStart != rb.promptStart || ra.lineSize != rb.lineSize) return where(at + " flags");
+        if (ra.wrapped != rb.wrapped || ra.promptStart != rb.promptStart || ra.lineSize != rb.lineSize)
+            return where(at + " flags");
         const std::size_t cells = std::max(ra.cells.size(), rb.cells.size());
         for (std::size_t x = 0; x < cells; ++x) {
             const Cell& ca = ra.at(int(x));
@@ -60,18 +65,22 @@ std::string differs(const Screen& a, const Screen& b, const char* which)
             Style sa = a.styles().get(ca.styleId());
             Style sb = b.styles().get(cb.styleId());
             // Link indices differ between the two tables: their text counts.
-            if (a.styles().linkUri(sa.link) != b.styles().linkUri(sb.link) || a.styles().linkId(sa.link) != b.styles().linkId(sb.link)) {
-                return where(at + " link " + std::to_string(x) + " '" + std::string(a.styles().linkUri(sa.link)) + "' and '"
-                             + std::string(b.styles().linkUri(sb.link)) + "' (indices " + std::to_string(sa.link) + " and "
-                             + std::to_string(sb.link) + ", style ids " + std::to_string(ca.styleId()) + " and "
-                             + std::to_string(cb.styleId()) + ")");
+            if (a.styles().linkUri(sa.link) != b.styles().linkUri(sb.link)
+                || a.styles().linkId(sa.link) != b.styles().linkId(sb.link)) {
+                return where(at + " link " + std::to_string(x) + " '" + std::string(a.styles().linkUri(sa.link))
+                             + "' and '" + std::string(b.styles().linkUri(sb.link)) + "' (indices "
+                             + std::to_string(sa.link) + " and " + std::to_string(sb.link) + ", style ids "
+                             + std::to_string(ca.styleId()) + " and " + std::to_string(cb.styleId()) + ")");
             }
             sa.link = sb.link = 0;
-            if (!(sa == sb)) return where(at + " style " + std::to_string(x));
-            if (a.graphemeExtra(ra, int(x)) != b.graphemeExtra(rb, int(x))) return where(at + " grapheme " + std::to_string(x));
+            if (!(sa == sb))
+                return where(at + " style " + std::to_string(x));
+            if (a.graphemeExtra(ra, int(x)) != b.graphemeExtra(rb, int(x)))
+                return where(at + " grapheme " + std::to_string(x));
             const MulticellParams* ma = a.multicellParams(ra, int(x));
             const MulticellParams* mb = b.multicellParams(rb, int(x));
-            if (bool(ma) != bool(mb) || (ma && !(*ma == *mb))) return where(at + " multicell " + std::to_string(x));
+            if (bool(ma) != bool(mb) || (ma && !(*ma == *mb)))
+                return where(at + " multicell " + std::to_string(x));
         }
     }
     return {};
@@ -82,7 +91,8 @@ std::string regionsDiffer(const Terminal& a, const Terminal& b)
 {
     const auto ra = a.semanticRegions();
     const auto rb = b.semanticRegions();
-    if (ra.size() != rb.size()) return "count " + std::to_string(ra.size()) + " and " + std::to_string(rb.size());
+    if (ra.size() != rb.size())
+        return "count " + std::to_string(ra.size()) + " and " + std::to_string(rb.size());
     for (std::size_t i = 0; i < ra.size(); ++i) {
         const SemanticRegion& x = ra[i];
         const SemanticRegion& y = rb[i];
@@ -91,7 +101,8 @@ std::string regionsDiffer(const Terminal& a, const Terminal& b)
             || x.available != y.available || x.startTrimmed != y.startTrimmed) {
             return "region " + std::to_string(i);
         }
-        if (a.semanticRegionText(x.id) != b.semanticRegionText(y.id)) return "the text of region " + std::to_string(i);
+        if (a.semanticRegionText(x.id) != b.semanticRegionText(y.id))
+            return "the text of region " + std::to_string(i);
     }
     return {};
 }
@@ -101,7 +112,8 @@ std::string statusDiffers(const Terminal& a, const Terminal& b)
 {
     const auto& ra = a.programStatus().records();
     const auto& rb = b.programStatus().records();
-    if (ra.size() != rb.size()) return "status count";
+    if (ra.size() != rb.size())
+        return "status count";
     for (std::size_t i = 0; i < ra.size(); ++i) {
         const StatusRecord& x = ra[i];
         const StatusRecord& y = rb[i];
@@ -115,17 +127,24 @@ std::string statusDiffers(const Terminal& a, const Terminal& b)
 
 std::string differs(const Terminal& a, const Terminal& b)
 {
-    if (std::memcmp(&a.modes(), &b.modes(), sizeof(Modes)) != 0) return "modes";
-    if (a.title() != b.title() || a.workingDirectory() != b.workingDirectory()) return "text";
-    if (a.cursorShape() != b.cursorShape()) return "cursor shape";
+    if (std::memcmp(&a.modes(), &b.modes(), sizeof(Modes)) != 0)
+        return "modes";
+    if (a.title() != b.title() || a.workingDirectory() != b.workingDirectory())
+        return "text";
+    if (a.cursorShape() != b.cursorShape())
+        return "cursor shape";
     for (int i = 0; i < 256; ++i) {
-        if (!(a.paletteColor(i) == b.paletteColor(i))) return "palette " + std::to_string(i);
+        if (!(a.paletteColor(i) == b.paletteColor(i)))
+            return "palette " + std::to_string(i);
     }
-    if (!(a.defaultForeground() == b.defaultForeground()) || !(a.defaultBackground() == b.defaultBackground())) return "defaults";
-    const auto same = [](const Rgb* x, const Rgb* y) { return bool(x) == bool(y) && (!x || *x == *y); };
+    if (!(a.defaultForeground() == b.defaultForeground()) || !(a.defaultBackground() == b.defaultBackground()))
+        return "defaults";
+    const auto same = [](const Rgb* x, const Rgb* y) {
+        return bool(x) == bool(y) && (!x || *x == *y);
+    };
     if (!same(a.cursorColor(), b.cursorColor()) || !same(a.cursorTextColor(), b.cursorTextColor())
-        || !same(a.selectionForeground(), b.selectionForeground()) || !same(a.selectionBackground(), b.selectionBackground())
-        || !same(a.visualBellColor(), b.visualBellColor())) {
+        || !same(a.selectionForeground(), b.selectionForeground())
+        || !same(a.selectionBackground(), b.selectionBackground()) || !same(a.visualBellColor(), b.visualBellColor())) {
         return "dynamic colors";
     }
     // An opacity goes in 65535ths, and a negative one (the window's) as -1.
@@ -133,28 +152,37 @@ std::string differs(const Terminal& a, const Terminal& b)
         const auto& x = a.transparentColors()[i];
         const auto& y = b.transparentColors()[i];
         if (bool(x) != bool(y)
-            || (x && (!(x->color == y->color) || (x->opacity < 0) != (y->opacity < 0) || std::abs(x->opacity - y->opacity) > 1.0 / 65535))) {
+            || (x
+                && (!(x->color == y->color) || (x->opacity < 0) != (y->opacity < 0)
+                    || std::abs(x->opacity - y->opacity) > 1.0 / 65535))) {
             return "transparent color " + std::to_string(i + 1);
         }
     }
-    if (std::string d = differs(a.primaryScreen(), b.primaryScreen(), "primary"); !d.empty()) return d;
+    if (std::string d = differs(a.primaryScreen(), b.primaryScreen(), "primary"); !d.empty())
+        return d;
     if (a.modes().altScreen) {
-        if (std::string d = differs(a.screen(), b.screen(), "alternate"); !d.empty()) return d;
+        if (std::string d = differs(a.screen(), b.screen(), "alternate"); !d.empty())
+            return d;
     }
     // What a frame carries besides the screens.
-    if (std::string d = regionsDiffer(a, b); !d.empty()) return "shell marks: " + d;
+    if (std::string d = regionsDiffer(a, b); !d.empty())
+        return "shell marks: " + d;
     if (a.atShellPrompt() != b.atShellPrompt() || a.hasCommandOutput() != b.hasCommandOutput()
         || a.promptRedrawPending() != b.promptRedrawPending()) {
         return "shell state";
     }
     // A click on the command line sends the same input from both: a few
     // cells, so that random runs stay fast.
-    for (const auto& [x, y] : {std::pair{0, 0}, std::pair{a.cols() - 1, a.rows() - 1}, std::pair{a.cols() / 2, a.rows() / 2},
-                               std::pair{a.screen().cursor.x, a.screen().cursor.y}}) {
-        if (a.promptClickInput(x, y) != b.promptClickInput(x, y)) return "prompt click";
+    for (const auto& [x, y] :
+         {std::pair{0, 0}, std::pair{a.cols() - 1, a.rows() - 1}, std::pair{a.cols() / 2, a.rows() / 2},
+          std::pair{a.screen().cursor.x, a.screen().cursor.y}}) {
+        if (a.promptClickInput(x, y) != b.promptClickInput(x, y))
+            return "prompt click";
     }
-    if (std::string d = statusDiffers(a, b); !d.empty()) return d;
-    if (!(a.contexts().stack() == b.contexts().stack())) return "contexts";
+    if (std::string d = statusDiffers(a, b); !d.empty())
+        return d;
+    if (!(a.contexts().stack() == b.contexts().stack()))
+        return "contexts";
     if (a.extraCursors() != b.extraCursors() || !(a.extraCursorColor() == b.extraCursorColor())
         || !(a.extraCursorTextColor() == b.extraCursorTextColor())) {
         return "extra cursors";
@@ -184,12 +212,16 @@ struct SyncHost : RecordingHost
     /// What the host heard, with the screen that was active then.
     std::vector<std::pair<bool, RegionScroll>> scrolls;
     int statusChanges = 0;
-    void programStatusChanged() override { ++statusChanges; }
+    void programStatusChanged() override
+    {
+        ++statusChanges;
+    }
     // An iTerm2 "animation": two 2x2 frames, red and green, of 30 and 40 ms.
     bool decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<ImageFrame>& frames,
                            std::vector<std::uint32_t>& delays) override
     {
-        if (data != "animation") return RecordingHost::decodeImageFrames(data, maxBytes, frames, delays);
+        if (data != "animation")
+            return RecordingHost::decodeImageFrames(data, maxBytes, frames, delays);
         for (const std::uint8_t channel : {0, 1}) {
             ImageFrame f;
             f.width = f.height = 2;
@@ -205,10 +237,12 @@ struct SyncHost : RecordingHost
     }
     void regionScrolled(const RegionScroll& s) override
     {
-        if (record) record->add(terminal->modes().altScreen, s);
+        if (record)
+            record->add(terminal->modes().altScreen, s);
         scrolls.emplace_back(terminal->modes().altScreen, s);
         // The screen that the host reads is the one that scrolled.
-        activeMatches = activeMatches && (&terminal->screen() == &terminal->primaryScreen()) == !terminal->modes().altScreen;
+        activeMatches =
+            activeMatches && (&terminal->screen() == &terminal->primaryScreen()) == !terminal->modes().altScreen;
     }
     bool activeMatches = true;
 };
@@ -252,15 +286,18 @@ struct Pair
     {
         for (int guard = 0; guard < 100000; ++guard) {
             const std::string frame = update();
-            if (frame.empty() && !writer.pending()) return true;
+            if (frame.empty() && !writer.pending())
+                return true;
             ++frames;
             std::string why;
             if (!reader.apply(replica, frame, &why)) {
-                if (error) *error = why;
+                if (error)
+                    *error = why;
                 return false;
             }
         }
-        if (error) *error = "the writer never caught up";
+        if (error)
+            *error = "the writer never caught up";
         return false;
     }
 };
@@ -281,7 +318,8 @@ std::string apc(std::string_view keys, std::string_view pixels = {})
 std::string rgba(int w, int h, std::uint8_t r, std::uint8_t g, std::uint8_t b)
 {
     std::string px;
-    for (int i = 0; i < w * h; ++i) px += {char(r), char(g), char(b), char(255)};
+    for (int i = 0; i < w * h; ++i)
+        px += {char(r), char(g), char(b), char(255)};
     return px;
 }
 
@@ -309,7 +347,8 @@ std::string placeholderCell(std::uint32_t id, int row, int col)
         return out;
     };
     return "\x1b[38;5;" + std::to_string(id) + "m" + utf8(AfterglowProto::PlaceholderChar)
-        + utf8(AfterglowProto::PlaceholderDiacritics[row]) + utf8(AfterglowProto::PlaceholderDiacritics[col]) + "\x1b[39m";
+        + utf8(AfterglowProto::PlaceholderDiacritics[row]) + utf8(AfterglowProto::PlaceholderDiacritics[col])
+        + "\x1b[39m";
 }
 
 /// The first difference of the images and placements of both screens, and
@@ -322,53 +361,62 @@ std::string imagesDiffer(const Terminal& a, const Terminal& b)
         const GraphicsStore& x = a.graphics(alternate);
         const GraphicsStore& y = b.graphics(alternate);
         if (x.images().size() != y.images().size()) {
-            return screen + "image count " + std::to_string(x.images().size()) + " and " + std::to_string(y.images().size());
+            return screen + "image count " + std::to_string(x.images().size()) + " and "
+                + std::to_string(y.images().size());
         }
         for (const auto& [id, image] : x.images()) {
             const auto other = y.images().find(id);
-            if (other == y.images().end()) return screen + "image " + std::to_string(id) + " is missing";
+            if (other == y.images().end())
+                return screen + "image " + std::to_string(id) + " is missing";
             const Image& o = other->second;
             if (image.number != o.number || image.isSixel != o.isSixel || image.anonymous != o.anonymous
-                || image.transient != o.transient || image.width != o.width || image.height != o.height || image.gaps != o.gaps
-                || image.order != o.order || image.sequence != o.sequence || image.frames.size() != o.frames.size()
-                || image.animation != o.animation || image.maxLoops != o.maxLoops || image.loopsDone != o.loopsDone
+                || image.transient != o.transient || image.width != o.width || image.height != o.height
+                || image.gaps != o.gaps || image.order != o.order || image.sequence != o.sequence
+                || image.frames.size() != o.frames.size() || image.animation != o.animation
+                || image.maxLoops != o.maxLoops || image.loopsDone != o.loopsDone
                 || image.currentFrame != o.currentFrame || image.stateCommands != o.stateCommands
                 || image.frameCommands != o.frameCommands) {
                 return screen + "image " + std::to_string(id) + " (anim " + std::to_string(int(image.animation)) + "/"
                     + std::to_string(int(o.animation)) + " frame " + std::to_string(image.currentFrame) + "/"
                     + std::to_string(o.currentFrame) + " cmds " + std::to_string(image.stateCommands) + "/"
-                    + std::to_string(o.stateCommands) + " seq " + std::to_string(image.sequence) + "/" + std::to_string(o.sequence)
-                    + " loops " + std::to_string(image.loopsDone) + "/" + std::to_string(o.loopsDone) + ")";
+                    + std::to_string(o.stateCommands) + " seq " + std::to_string(image.sequence) + "/"
+                    + std::to_string(o.sequence) + " loops " + std::to_string(image.loopsDone) + "/"
+                    + std::to_string(o.loopsDone) + ")";
             }
             for (std::size_t i = 0; i < image.frames.size(); ++i) {
                 const ImageFrame& f = *image.frames[i];
                 const ImageFrame& g = *o.frames[i];
-                if (f.width != g.width || f.height != g.height || f.format != g.format || !(f.rgba == g.rgba) || !(f.indices == g.indices)) {
+                if (f.width != g.width || f.height != g.height || f.format != g.format || !(f.rgba == g.rgba)
+                    || !(f.indices == g.indices)) {
                     return screen + "frame " + std::to_string(i) + " of image " + std::to_string(id);
                 }
             }
         }
-        if (x.placements().size() != y.placements().size()) return screen + "placement count";
+        if (x.placements().size() != y.placements().size())
+            return screen + "placement count";
         for (std::size_t i = 0; i < x.placements().size(); ++i) {
             const Placement& p = x.placements()[i];
             const Placement& q = y.placements()[i];
             if (p.imageId != q.imageId || p.placementId != q.placementId || p.row != q.row || p.col != q.col
-                || p.offsetX != q.offsetX || p.offsetY != q.offsetY || p.srcX != q.srcX || p.srcY != q.srcY || p.srcW != q.srcW
-                || p.srcH != q.srcH || p.cols != q.cols || p.rows != q.rows || p.z != q.z || p.parentImage != q.parentImage
-                || p.parentPlacement != q.parentPlacement || p.relativeX != q.relativeX || p.relativeY != q.relativeY
-                || p.isVirtual != q.isVirtual || p.displayWidth != q.displayWidth || p.displayHeight != q.displayHeight) {
+                || p.offsetX != q.offsetX || p.offsetY != q.offsetY || p.srcX != q.srcX || p.srcY != q.srcY
+                || p.srcW != q.srcW || p.srcH != q.srcH || p.cols != q.cols || p.rows != q.rows || p.z != q.z
+                || p.parentImage != q.parentImage || p.parentPlacement != q.parentPlacement
+                || p.relativeX != q.relativeX || p.relativeY != q.relativeY || p.isVirtual != q.isVirtual
+                || p.displayWidth != q.displayWidth || p.displayHeight != q.displayHeight) {
                 return screen + "placement " + std::to_string(i);
             }
         }
     }
     // What each draws, at its own cell size: a cell size that did not come
     // draws elsewhere.
-    if (a.cellWidth() != b.cellWidth() || a.cellHeight() != b.cellHeight()) return "cell size";
+    if (a.cellWidth() != b.cellWidth() || a.cellHeight() != b.cellHeight())
+        return "cell size";
     const int cw = a.cellWidth() > 0 ? a.cellWidth() : 10;
     const int ch = a.cellHeight() > 0 ? a.cellHeight() : 20;
     const auto va = a.graphics().visible(a.screen(), cw, ch);
     const auto vb = b.graphics().visible(b.screen(), cw, ch);
-    if (va.size() != vb.size()) return "visible count";
+    if (va.size() != vb.size())
+        return "visible count";
     for (std::size_t i = 0; i < va.size(); ++i) {
         if (va[i].imageId != vb[i].imageId || va[i].x != vb[i].x || va[i].y != vb[i].y || va[i].width != vb[i].width
             || va[i].height != vb[i].height || va[i].z != vb[i].z) {
@@ -380,9 +428,12 @@ std::string imagesDiffer(const Terminal& a, const Terminal& b)
             for (int col = 0; col < 2; ++col) {
                 const auto sa = a.graphics().placeholderSlice(id, 0, row, col, 0, 0, cw, ch);
                 const auto sb = b.graphics().placeholderSlice(id, 0, row, col, 0, 0, cw, ch);
-                if (sa.has_value() != sb.has_value()) return "placeholder slice of image " + std::to_string(id);
-                if (sa && (sa->width != sb->width || sa->height != sb->height || sa->srcX != sb->srcX || sa->srcY != sb->srcY
-                           || sa->srcW != sb->srcW || sa->srcH != sb->srcH || !(sa->frame->rgba == sb->frame->rgba))) {
+                if (sa.has_value() != sb.has_value())
+                    return "placeholder slice of image " + std::to_string(id);
+                if (sa
+                    && (sa->width != sb->width || sa->height != sb->height || sa->srcX != sb->srcX
+                        || sa->srcY != sb->srcY || sa->srcW != sb->srcW || sa->srcH != sb->srcH
+                        || !(sa->frame->rgba == sb->frame->rgba))) {
                     return "placeholder slice of image " + std::to_string(id);
                 }
             }
@@ -410,7 +461,8 @@ TEST(StateSync, TextStylesLinksAndText)
 TEST(StateSync, ViewOptionsLeaveTheReplicaAsItsWriter)
 {
     Pair p(20, 4, 10);
-    for (int i = 0; i < 12; ++i) p.source.feed("row " + std::to_string(i) + "\r\n");
+    for (int i = 0; i < 12; ++i)
+        p.source.feed("row " + std::to_string(i) + "\r\n");
     p.source.feed("\x1b[5 q\x1b]4;3;rgb:12/34/56\x1b\\\x1b]11;rgb:01/02/03\x1b\\\x1b]12;rgb:aa/bb/cc\x1b\\x");
     std::string error;
     ASSERT_TRUE(p.sync(&error)) << error;
@@ -492,7 +544,8 @@ TEST(StateSync, ALowerQuotaOfTheWindowKeepsTheWritersImages)
 TEST(StateSync, TransparentBackgroundsKeepTheirOpacity)
 {
     Pair p(20, 4, 10);
-    p.source.feed("\x1b]21;transparent_background_color1=red@-1;transparent_background_color2=#102030@0.5\x1b\\\x1b[41mx");
+    p.source.feed(
+        "\x1b]21;transparent_background_color1=red@-1;transparent_background_color2=#102030@0.5\x1b\\\x1b[41mx");
     std::string error;
     ASSERT_TRUE(p.sync(&error)) << error;
     EXPECT_EQ(differs(p.source, p.replica), "");
@@ -525,19 +578,22 @@ TEST(StateSync, PromptClickModesReachTheReplica)
     // With history, the stable ids of the marks are past the indexes of the
     // visible rows: the replica maps them as the source does.
     Pair h(30, 4, 100);
-    for (int i = 0; i < 10; ++i) h.source.feed("line\r\n");
+    for (int i = 0; i < 10; ++i)
+        h.source.feed("line\r\n");
     h.source.feed("\x1b]133;A;click_events=2\x1b\\$ \x1b]133;B\x1b\\for x in 1\r\n\x1b]133;A;k=s\x1b\\> echo");
     ASSERT_TRUE(h.sync(&error)) << error;
     ASSERT_GT(h.source.primaryScreen().historySize(), 0u);
     const int secondary = h.source.screen().cursor.y;
-    for (int y = 0; y < 4; ++y) EXPECT_EQ(h.replica.promptClickInput(3, y), h.source.promptClickInput(3, y)) << y;
+    for (int y = 0; y < 4; ++y)
+        EXPECT_EQ(h.replica.promptClickInput(3, y), h.source.promptClickInput(3, y)) << y;
     EXPECT_EQ(h.replica.promptClickInput(3, secondary), "\x1b[<0;4;0M\x1b[<0;4;0m");
 }
 
 TEST(StateSync, ShellIntegrationMarksAndRegions)
 {
     Pair p(30, 8, 100);
-    p.source.feed("\x1b]133;A;click_events=1\x1b\\$ \x1b]133;B\x1b\\ls\r\n\x1b]133;C\x1b\\one\r\ntwo\r\n\x1b]133;D;3\x1b\\");
+    p.source.feed(
+        "\x1b]133;A;click_events=1\x1b\\$ \x1b]133;B\x1b\\ls\r\n\x1b]133;C\x1b\\one\r\ntwo\r\n\x1b]133;D;3\x1b\\");
     p.source.feed("\x1b]133;A;click_events=1\x1b\\$ \x1b]133;B\x1b\\");
     std::string error;
     ASSERT_TRUE(p.sync(&error)) << error;
@@ -557,7 +613,8 @@ TEST(StateSync, ShellIntegrationMarksAndRegions)
     EXPECT_EQ(p.replica.promptClickInput(0, p.replica.screen().cursor.y), "");
     EXPECT_EQ(regionsDiffer(p.source, p.replica), "");
     // Output past the screen: the regions keep their rows by stable id.
-    for (int i = 0; i < 20; ++i) p.source.feed("line\r\n");
+    for (int i = 0; i < 20; ++i)
+        p.source.feed("line\r\n");
     p.source.feed("\x1b]133;D;0\x1b\\");
     ASSERT_TRUE(p.sync(&error)) << error;
     EXPECT_EQ(regionsDiffer(p.source, p.replica), "");
@@ -650,7 +707,8 @@ TEST(StateSync, TheReplicasHostHearsOfRegionScrolls)
     EXPECT_EQ(p.replicaHost.scrolls[1].second.delta, 1);
     EXPECT_EQ(p.replicaHost.scrolls[2].second.delta, p.sourceHost.scrolls[3].second.delta);
     EXPECT_EQ(p.replicaHost.scrolls[2].second.top, p.sourceHost.scrolls[3].second.top);
-    for (const auto& [alt, scroll] : p.replicaHost.scrolls) EXPECT_FALSE(alt);
+    for (const auto& [alt, scroll] : p.replicaHost.scrolls)
+        EXPECT_FALSE(alt);
     // On the alternate screen, which the frame then leaves: the host hears
     // of the scroll with the screen that scrolled.
     p.replicaHost.scrolls.clear();
@@ -677,10 +735,12 @@ TEST(StateSync, ExactlyTheMostRegionScrollsAllGo)
     ASSERT_TRUE(p.sync(&error)) << error;
     p.replicaHost.scrolls.clear();
     // Two regions in turn: no scroll continues the one before it.
-    for (std::size_t i = 0; i < RegionScrolls::Max; ++i) p.source.feed(i % 2 ? "\x1b[2;4r\x1b[S" : "\x1b[3;5r\x1b[S");
+    for (std::size_t i = 0; i < RegionScrolls::Max; ++i)
+        p.source.feed(i % 2 ? "\x1b[2;4r\x1b[S" : "\x1b[3;5r\x1b[S");
     ASSERT_TRUE(p.sync(&error)) << error;
     ASSERT_EQ(p.replicaHost.scrolls.size(), RegionScrolls::Max);
-    for (const auto& [alt, scroll] : p.replicaHost.scrolls) EXPECT_EQ(scroll.delta, -1);
+    for (const auto& [alt, scroll] : p.replicaHost.scrolls)
+        EXPECT_EQ(scroll.delta, -1);
 }
 
 TEST(StateSync, TooManyRegionScrollsMoveTheRowsThatTheyTouchedOut)
@@ -693,7 +753,8 @@ TEST(StateSync, TooManyRegionScrollsMoveTheRowsThatTheyTouchedOut)
     const Screen& primary = p.replica.primaryScreen();
     const std::uint64_t firstVisible = primary.rowsDropped() + primary.historySize();
     // One past the most: two regions in turn, rows 2 to 5 of the screen.
-    for (std::size_t i = 0; i <= RegionScrolls::Max; ++i) p.source.feed(i % 2 ? "\x1b[2;4r\x1b[S" : "\x1b[3;5r\x1b[S");
+    for (std::size_t i = 0; i <= RegionScrolls::Max; ++i)
+        p.source.feed(i % 2 ? "\x1b[2;4r\x1b[S" : "\x1b[3;5r\x1b[S");
     ASSERT_TRUE(p.sync(&error)) << error;
     // Only the primary screen scrolled: one scroll from the top of the higher
     // region to the bottom of the lower, which every row in it leaves.
@@ -836,7 +897,8 @@ TEST(StateSync, AnITerm2AnimationReachesTheReplica)
     // The source's own clock, at the same times.
     p.source.advanceAnimations(1000);
     p.source.advanceAnimations(1030);
-    for (int i = 0; i < 10; ++i) p.source.feed("\r\n");
+    for (int i = 0; i < 10; ++i)
+        p.source.feed("\r\n");
     ASSERT_TRUE(p.sync(&error)) << error;
     EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
 }
@@ -851,7 +913,8 @@ TEST(StateSync, AFinishedAnimationPlaysAgainForItsCommand)
     std::string error;
     ASSERT_TRUE(p.sync(&error)) << error;
     // One loop, on the replica's clock: it stays on its last frame.
-    for (std::uint64_t now = 1000; now <= 2000; now += 50) p.replica.advanceAnimations(now);
+    for (std::uint64_t now = 1000; now <= 2000; now += 50)
+        p.replica.advanceAnimations(now);
     ASSERT_EQ(p.replica.graphics().images().at(10).loopsDone, 1u);
     // The same command again, which changes no value of the writer's store:
     // the animation plays again.
@@ -859,7 +922,8 @@ TEST(StateSync, AFinishedAnimationPlaysAgainForItsCommand)
     ASSERT_TRUE(p.sync(&error)) << error;
     EXPECT_EQ(p.replica.graphics().images().at(10).loopsDone, 0u);
     // A new image under the id starts over, whatever its animation's values.
-    for (std::uint64_t now = 3000; now <= 4000; now += 50) p.replica.advanceAnimations(now);
+    for (std::uint64_t now = 3000; now <= 4000; now += 50)
+        p.replica.advanceAnimations(now);
     ASSERT_EQ(p.replica.graphics().images().at(10).loopsDone, 1u);
     p.source.feed(apc("a=T,f=32,s=2,v=2,i=10,q=2", rgba(2, 2, 0, 0, 255)));
     p.source.feed(apc("a=f,f=32,s=2,v=2,i=10,z=100,q=2", rgba(2, 2, 255, 255, 0)));
@@ -920,7 +984,8 @@ TEST(StateSync, AnImageThatAFrameDeletionCompletesShowsAtOnceAndStaysNewest)
     Pair p(30, 8, 100, 8192);
     p.source.resize(30, 8, 10, 20);
     p.source.feed(apc("a=T,f=32,s=100,v=100,i=1,q=2", rgba(100, 100, 1, 0, 0)));
-    for (const std::uint8_t red : {2, 3}) p.source.feed(apc("a=f,f=32,s=100,v=100,i=1,q=2", rgba(100, 100, red, 0, 0)));
+    for (const std::uint8_t red : {2, 3})
+        p.source.feed(apc("a=f,f=32,s=100,v=100,i=1,q=2", rgba(100, 100, red, 0, 0)));
     std::string error;
     ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
     ASSERT_TRUE(p.writer.pending());
@@ -934,7 +999,8 @@ TEST(StateSync, AnImageThatAFrameDeletionCompletesShowsAtOnceAndStaysNewest)
         ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << error;
         const auto& images = p.replica.graphics().images();
         if (const auto it = images.find(1); it != images.end()) {
-            for (const FramePtr& f : it->second.frames) ASSERT_NE(f->rgba[0], 3);
+            for (const FramePtr& f : it->second.frames)
+                ASSERT_NE(f->rgba[0], 3);
         }
     };
     int shown = -1;
@@ -943,10 +1009,12 @@ TEST(StateSync, AnImageThatAFrameDeletionCompletesShowsAtOnceAndStaysNewest)
     for (int guard = 0; guard < 1000 && !caughtUp; ++guard) {
         const std::string frame = p.update();
         caughtUp = frame.empty() && !p.writer.pending();
-        if (caughtUp) break;
+        if (caughtUp)
+            break;
         ++frames;
         apply(frame);
-        if (HasFatalFailure()) return;
+        if (HasFatalFailure())
+            return;
         // No pixels of the third frame go once the first two went.
         if (shown < 0) {
             EXPECT_LE(p.reader.frames(), 2u) << frames;
@@ -972,7 +1040,8 @@ TEST(StateSync, AFrameDeletionThatLeavesTheImageWholeEndsItsTransferAtOnce)
     Pair p(30, 8, 100, 8192);
     p.source.resize(30, 8, 10, 20);
     p.source.feed(apc("a=T,f=32,s=100,v=100,i=1,q=2", rgba(100, 100, 1, 0, 0)));
-    for (const std::uint8_t red : {2, 3}) p.source.feed(apc("a=f,f=32,s=100,v=100,i=1,q=2", rgba(100, 100, red, 0, 0)));
+    for (const std::uint8_t red : {2, 3})
+        p.source.feed(apc("a=f,f=32,s=100,v=100,i=1,q=2", rgba(100, 100, red, 0, 0)));
     std::string error;
     // The first two frames went, and a part of the third.
     for (int guard = 0; guard < 100 && p.reader.frames() < 3; ++guard) {
@@ -992,9 +1061,11 @@ TEST(StateSync, AFrameDeletionThatLeavesTheImageWholeEndsItsTransferAtOnce)
     for (int guard = 0; guard < 1000 && !caughtUp; ++guard) {
         const std::string frame = p.update();
         caughtUp = frame.empty() && !p.writer.pending();
-        if (caughtUp) break;
+        if (caughtUp)
+            break;
         ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << error;
-        for (const FramePtr& f : p.replica.graphics().images().at(1).frames) ASSERT_NE(f->rgba[0], 3);
+        for (const FramePtr& f : p.replica.graphics().images().at(1).frames)
+            ASSERT_NE(f->rgba[0], 3);
     }
     ASSERT_TRUE(caughtUp);
     EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
@@ -1011,7 +1082,8 @@ TEST(StateSync, TheFramesOfAVersionThatShowedGoWithItsRecord)
     ASSERT_TRUE(p.sync(&error)) << error;
     p.budget = 128;
     p.source.feed(apc("a=T,f=32,s=32,v=32,i=1,q=2", rgba(32, 32, 1, 0, 0)));
-    for (const std::uint8_t red : {2, 3}) p.source.feed(apc("a=f,f=32,s=32,v=32,i=1,q=2", rgba(32, 32, red, 0, 0)));
+    for (const std::uint8_t red : {2, 3})
+        p.source.feed(apc("a=f,f=32,s=32,v=32,i=1,q=2", rgba(32, 32, red, 0, 0)));
     for (int guard = 0; guard < 100 && p.reader.frames() < 2; ++guard) {
         ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
     }
@@ -1052,18 +1124,21 @@ TEST(StateSync, AVersionThatShowedLeavesTheReplicaOnceTheStoresImageShows)
     for (int guard = 0; guard < 1000 && !caughtUp; ++guard) {
         const std::string frame = p.update();
         caughtUp = frame.empty() && !p.writer.pending();
-        if (caughtUp) break;
+        if (caughtUp)
+            break;
         ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << error;
         const auto& images = p.replica.graphics().images();
         const auto it = images.find(1);
-        if (it == images.end()) continue;
+        if (it == images.end())
+            continue;
         ASSERT_EQ(it->second.frames.size(), 2u);
         const std::uint8_t red = it->second.frames[1]->rgba[0];
         if (red == 2) {
             ASSERT_FALSE(third);
             second = true;
         }
-        if (red == 3) third = true;
+        if (red == 3)
+            third = true;
     }
     ASSERT_TRUE(caughtUp);
     EXPECT_TRUE(second);
@@ -1083,22 +1158,29 @@ TEST(StateSync, ReaderRefusesBadImageSections)
     // The first part of frame @p id of @p w by @p h RGBA, with @p bytes of
     // pixels.
     const auto start = [&](std::uint64_t id, std::uint64_t w, std::uint64_t h, std::size_t bytes) {
-        return section(16, varint(id) + varint(0) + varint(w) + varint(h) + std::string(1, '\0') + std::string(bytes, '\xff'));
+        return section(
+            16, varint(id) + varint(0) + varint(w) + varint(h) + std::string(1, '\0') + std::string(bytes, '\xff'));
     };
     const std::string frame1 = start(1, 1, 1, 4);
     // Image 9 of @p width by 1 on the primary screen, with the frames and
     // the gaps given.
-    const auto image = [&](std::vector<std::uint64_t> frames, std::vector<std::uint64_t> gaps, std::uint64_t width = 1) {
-        std::string record = varint(9) + varint(0) + std::string(1, '\0') + varint(width) + varint(1) + varint(frames.size());
-        for (const std::uint64_t id : frames) record += varint(id);
+    const auto image = [&](std::vector<std::uint64_t> frames, std::vector<std::uint64_t> gaps,
+                           std::uint64_t width = 1) {
+        std::string record =
+            varint(9) + varint(0) + std::string(1, '\0') + varint(width) + varint(1) + varint(frames.size());
+        for (const std::uint64_t id : frames)
+            record += varint(id);
         record += varint(gaps.size());
-        for (const std::uint64_t gap : gaps) record += varint(gap);
-        record += std::string(1, '\0') + varint(0) + varint(0) + varint(0) + varint(0) + varint(0) + varint(1) + varint(1);
+        for (const std::uint64_t gap : gaps)
+            record += varint(gap);
+        record +=
+            std::string(1, '\0') + varint(0) + varint(0) + varint(0) + varint(0) + varint(0) + varint(1) + varint(1);
         return section(17, std::string(1, '\0') + varint(0) + varint(1) + record);
     };
     // A placement of image @p id at stable row @p row.
     const auto placement = [&](std::uint64_t id, std::uint64_t row) {
-        std::string p = varint(id) + varint(1) + varint(row) + std::string(14, '\0') + std::string(1, '\0') + varint(0) + varint(0);
+        std::string p =
+            varint(id) + varint(1) + varint(row) + std::string(14, '\0') + std::string(1, '\0') + varint(0) + varint(0);
         return section(18, std::string(1, '\0') + varint(1) + p);
     };
     const std::string version(1, char(1));
@@ -1113,18 +1195,22 @@ TEST(StateSync, ReaderRefusesBadImageSections)
     for (const auto& [name, bytes] : std::vector<std::pair<const char*, std::string>>{
              {"a part of a frame that did not start", section(16, varint(1) + varint(4) + std::string(4, '\xff'))},
              {"a frame of no width", start(1, 0, 1, 4)},
-             {"a frame of format 3", section(16, varint(1) + varint(0) + varint(1) + varint(1) + std::string(1, '\3') + "x")},
+             {"a frame of format 3",
+              section(16, varint(1) + varint(0) + varint(1) + varint(1) + std::string(1, '\3') + "x")},
              {"more pixels than the frame holds", start(1, 1, 1, 8)},
              {"a frame that starts while another builds", start(1, 2, 2, 4) + start(2, 1, 1, 4)},
              {"a frame id twice", frame1 + frame1},
-             {"a part after its frame was dropped", start(1, 2, 2, 4) + section(19, varint(1) + varint(1)) + section(16, varint(1) + varint(4) + std::string(4, '\xff'))},
+             {"a part after its frame was dropped",
+              start(1, 2, 2, 4) + section(19, varint(1) + varint(1))
+                  + section(16, varint(1) + varint(4) + std::string(4, '\xff'))},
              {"an image with a frame that did not come", image({5}, {40})},
              {"an image without frames", frame1 + image({}, {})},
              {"an image without a gap for each frame", frame1 + image({1}, {})},
              {"an image with a frame of another size", frame1 + image({1}, {40}, 2)},
              {"a gap past what a command gives", frame1 + image({1}, {0x80000000u})},
              {"a placement of no image", placement(5, 0)},
-             {"a placement row past what a row takes", frame1 + image({1}, {40}) + placement(9, std::uint64_t(1) << 62)},
+             {"a placement row past what a row takes",
+              frame1 + image({1}, {40}) + placement(9, std::uint64_t(1) << 62)},
          }) {
         // A reader of its own: a refused frame leaves a reader in no state
         // to judge the next.
@@ -1160,16 +1246,19 @@ TEST(StateSync, ManyImagesComeInFramesThatFit)
     p.source.resize(30, 8, 10, 20);
     for (int id = 1; id <= 200; ++id) {
         p.source.feed(apc("a=t,f=32,s=1,v=1,i=" + std::to_string(id) + ",q=2", rgba(1, 1, 1, 2, 3)));
-        for (int k = 1; k < 64; ++k) p.source.feed(apc("a=f,f=32,s=1,v=1,i=" + std::to_string(id) + ",q=2", rgba(1, 1, 4, 5, 6)));
+        for (int k = 1; k < 64; ++k)
+            p.source.feed(apc("a=f,f=32,s=1,v=1,i=" + std::to_string(id) + ",q=2", rgba(1, 1, 4, 5, 6)));
     }
     std::string error;
     std::size_t largest = 0;
     const auto drain = [&] {
         for (int guard = 0; guard < 100000; ++guard) {
             const std::string frame = p.update();
-            if (frame.empty() && !p.writer.pending()) return true;
+            if (frame.empty() && !p.writer.pending())
+                return true;
             largest = std::max(largest, frame.size());
-            if (!p.reader.apply(p.replica, frame, &error)) return false;
+            if (!p.reader.apply(p.replica, frame, &error))
+                return false;
         }
         return false;
     };
@@ -1177,11 +1266,13 @@ TEST(StateSync, ManyImagesComeInFramesThatFit)
     EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
     ASSERT_EQ(p.replica.graphics().images().size(), 200u);
     // A command to each image at once: 200 records again.
-    for (int id = 1; id <= 200; ++id) p.source.feed(apc("a=a,i=" + std::to_string(id) + ",c=2,q=2"));
+    for (int id = 1; id <= 200; ++id)
+        p.source.feed(apc("a=a,i=" + std::to_string(id) + ",c=2,q=2"));
     ASSERT_TRUE(drain()) << error;
     EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
     // Every image goes: 12,800 frames to drop.
-    for (int id = 1; id <= 200; ++id) p.source.feed(apc("a=d,d=I,i=" + std::to_string(id) + ",q=2"));
+    for (int id = 1; id <= 200; ++id)
+        p.source.feed(apc("a=d,d=I,i=" + std::to_string(id) + ",q=2"));
     ASSERT_TRUE(drain()) << error;
     EXPECT_EQ(imagesDiffer(p.source, p.replica), "");
     EXPECT_TRUE(p.replica.graphics().images().empty());
@@ -1194,11 +1285,13 @@ TEST(StateSync, ATransferThatEndsDropsTheFrameThatTheReplicaBuilds)
     Pair p(30, 8, 100, 8192);
     p.source.resize(30, 8, 10, 20);
     std::string sixel = "\x1bPq\"1;1;200;200#1;2;100;0;0#1";
-    for (int band = 0; band < 34; ++band) sixel += "!200~-";
+    for (int band = 0; band < 34; ++band)
+        sixel += "!200~-";
     p.source.feed(sixel + "\x1b\\");
     std::uint32_t id = 0;
     for (const auto& [key, image] : p.source.graphics().images()) {
-        if (image.isSixel) id = key;
+        if (image.isSixel)
+            id = key;
     }
     ASSERT_NE(id, 0u);
     std::string error;
@@ -1230,7 +1323,8 @@ TEST(StateSync, ATransferOfAnImageThatAClearReplacedEnds)
     for (int guard = 0; guard < 1000 && !caughtUp; ++guard) {
         const std::string frame = p.update();
         caughtUp = frame.empty() && !p.writer.pending();
-        if (caughtUp) break;
+        if (caughtUp)
+            break;
         ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << error;
         const auto& images = p.replica.graphics(true).images();
         if (const auto it = images.find(1); it != images.end()) {
@@ -1266,9 +1360,14 @@ TEST(StateSync, ReaderRefusesBadNewSections)
     // one thing that it names.
     for (const auto& [name, bytes] : std::vector<std::pair<const char*, std::string>>{
              {"no marks", frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x00\x00", 2)))},
-             {"a region", frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x02\x01\x01\x00\x00\x00\x00\x00", 8)))},
-             {"click mode 2 with the special key", frame(11, shell(std::string("\x01\x06\x00\x00", 4), noMarks, std::string("\x00\x00", 2)))},
-             {"a mark", frame(11, shell(std::string(4, '\0'), std::string("\x00\x00\x00\x01\x05\x02", 6), std::string("\x00\x00", 2)))},
+             {"a region",
+              frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x02\x01\x01\x00\x00\x00\x00\x00", 8)))},
+             {"click mode 2 with the special key",
+              frame(11, shell(std::string("\x01\x06\x00\x00", 4), noMarks, std::string("\x00\x00", 2)))},
+             {"a mark",
+              frame(
+                  11,
+                  shell(std::string(4, '\0'), std::string("\x00\x00\x00\x01\x05\x02", 6), std::string("\x00\x00", 2)))},
          }) {
         StateReader reader;
         Terminal replica(20, 4, p.replicaHost);
@@ -1278,33 +1377,59 @@ TEST(StateSync, ReaderRefusesBadNewSections)
     for (const auto& [name, bytes] : std::vector<std::pair<const char*, std::string>>{
              {"a scroll of no rows", frame(15, std::string("\x00\x01\x00\x05\x02\x00\x01\x01\x01", 9))},
              {"a scroll that moves nothing", frame(15, std::string("\x00\x01\x00\x01\x02\x00\x01\x01\x00", 9))},
-             {"a shell zone past Input", frame(11, shell(std::string("\x03\x00\x00\x00", 4), noMarks, std::string("\x00\x00", 2)))},
-             {"a click mode of 3", frame(11, shell(std::string("\x00\x03\x00\x00", 4), noMarks, std::string("\x00\x00", 2)))},
-             {"an unknown click bit", frame(11, shell(std::string("\x00\x08\x00\x00", 4), noMarks, std::string("\x00\x00", 2)))},
-             {"a region id past the next one", frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x01\x01\x01\x00\x00\x00\x00\x00", 8)))},
-             {"a prompt redraw of 2", frame(11, shell(std::string("\x00\x00\x00\x02", 4), noMarks, std::string("\x00\x00", 2)))},
-             {"a shell mark that is valid twice", frame(11, shell(std::string(4, '\0'), std::string("\x00\x00\x00\x02", 4), std::string("\x00\x00", 2)))},
-             {"a shell mark past the last row id", frame(11, shell(std::string(4, '\0'), std::string("\x00\x00\x00\x01", 4) + past + std::string(1, '\0'), std::string("\x00\x00", 2)))},
-             {"a region of kind 3", frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x02\x01\x01\x03\x00\x00\x00\x00", 8)))},
-             {"a region with an unknown flag", frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x02\x01\x01\x10\x00\x00\x00\x00", 8)))},
-             {"a region past the last row id", frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x02\x01\x01\x00", 4) + past + std::string(3, '\0')))},
-             {"a reset past the last row id", frame(4, std::string(1, '\0') + varint(20) + varint(4) + past + std::string(1, '\0'))},
+             {"a shell zone past Input",
+              frame(11, shell(std::string("\x03\x00\x00\x00", 4), noMarks, std::string("\x00\x00", 2)))},
+             {"a click mode of 3",
+              frame(11, shell(std::string("\x00\x03\x00\x00", 4), noMarks, std::string("\x00\x00", 2)))},
+             {"an unknown click bit",
+              frame(11, shell(std::string("\x00\x08\x00\x00", 4), noMarks, std::string("\x00\x00", 2)))},
+             {"a region id past the next one",
+              frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x01\x01\x01\x00\x00\x00\x00\x00", 8)))},
+             {"a prompt redraw of 2",
+              frame(11, shell(std::string("\x00\x00\x00\x02", 4), noMarks, std::string("\x00\x00", 2)))},
+             {"a shell mark that is valid twice",
+              frame(11, shell(std::string(4, '\0'), std::string("\x00\x00\x00\x02", 4), std::string("\x00\x00", 2)))},
+             {"a shell mark past the last row id",
+              frame(11,
+                    shell(std::string(4, '\0'), std::string("\x00\x00\x00\x01", 4) + past + std::string(1, '\0'),
+                          std::string("\x00\x00", 2)))},
+             {"a region of kind 3",
+              frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x02\x01\x01\x03\x00\x00\x00\x00", 8)))},
+             {"a region with an unknown flag",
+              frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x02\x01\x01\x10\x00\x00\x00\x00", 8)))},
+             {"a region past the last row id",
+              frame(11,
+                    shell(std::string(4, '\0'), noMarks,
+                          std::string("\x02\x01\x01\x00", 4) + past + std::string(3, '\0')))},
+             {"a reset past the last row id",
+              frame(4, std::string(1, '\0') + varint(20) + varint(4) + past + std::string(1, '\0'))},
              {"history past the last row id", frame(8, std::string(2, '\0') + past + std::string(1, '\0'))},
              {"a lost flag of 2", frame(15, std::string("\x02\x00", 2))},
-             {"a varint of more than 64 bits", frame(15, std::string("\x00\x80\x80\x80\x80\x80\x80\x80\x80\x80\x02", 11))},
+             {"a varint of more than 64 bits",
+              frame(15, std::string("\x00\x80\x80\x80\x80\x80\x80\x80\x80\x80\x02", 11))},
              {"a status kind past Auth", frame(12, std::string("\x01\x00\x00\x7f\x01\x00\x00\x00\x01", 9))},
-             {"status records out of order", frame(12, std::string("\x02\x01\x62\x00\x00\x01\x00\x00\x00\x01\x01\x61\x00\x00\x01\x00\x00\x00\x01", 19))},
-             {"a status record twice", frame(12, std::string("\x02\x01\x61\x00\x00\x01\x00\x00\x00\x01\x01\x61\x00\x00\x01\x00\x00\x00\x01", 19))},
-             {"a status id with a control character", frame(12, std::string("\x01\x01\x07\x00\x00\x01\x00\x00\x00\x01", 10))},
+             {"status records out of order",
+              frame(12,
+                    std::string("\x02\x01\x62\x00\x00\x01\x00\x00\x00\x01\x01\x61\x00\x00\x01\x00\x00\x00\x01", 19))},
+             {"a status record twice",
+              frame(12,
+                    std::string("\x02\x01\x61\x00\x00\x01\x00\x00\x00\x01\x01\x61\x00\x00\x01\x00\x00\x00\x01", 19))},
+             {"a status id with a control character",
+              frame(12, std::string("\x01\x01\x07\x00\x00\x01\x00\x00\x00\x01", 10))},
              {"a context remote byte of 2", frame(13, std::string("\x01\x01\x61\x02\x00\x00\x00\x00\x00\x00\x00", 11))},
              {"a context without an id", frame(13, std::string("\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00", 10))},
-             {"two contexts of iTerm2", frame(13, std::string("\x02\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00", 19))},
+             {"two contexts of iTerm2",
+              frame(13,
+                    std::string("\x02\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00", 19))},
              {"more contexts than the most", frame(13, varint(ShellContexts::MaxDepth + 1))},
-             {"an extra cursor past the last column", frame(14, std::string(10, '\0') + "\x01\x00" + varint(Screen::MaxColumns) + "\x01")},
+             {"an extra cursor past the last column",
+              frame(14, std::string(10, '\0') + "\x01\x00" + varint(Screen::MaxColumns) + "\x01")},
              {"a status state past Error", frame(12, std::string("\x01\x00\x05\x00\x01\x00\x00\x00\x01", 9))},
              {"a progress past 100", frame(12, std::string("\x01\x00\x01\x00\xca\x01\x00\x00\x00\x01", 10))},
-             {"an extra cursor of shape 4", frame(14, std::string("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x04", 14))},
-             {"an extra cursor color mode 3", frame(14, std::string("\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", 11))},
+             {"an extra cursor of shape 4",
+              frame(14, std::string("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x04", 14))},
+             {"an extra cursor color mode 3",
+              frame(14, std::string("\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", 11))},
              {"a modifyOtherKeys of 3", frame(1, std::string("\x00\x03\x00\x00\x00\x00", 6))},
              {"a kitty keyboard flag past the last", frame(1, std::string("\x00\x00\x00\x00\x20\x00", 6))},
              {"a title with a control character", frame(3, std::string("\x01\x07\x00", 3))},
@@ -1314,7 +1439,9 @@ TEST(StateSync, ReaderRefusesBadNewSections)
              {"a directory with a line feed", frame(3, std::string("\x00\x02/\n", 4))},
              {"a directory with DEL", frame(3, std::string("\x00\x02/\x7f", 4))},
              {"a directory longer than the terminal takes",
-              frame(3, std::string(1, '\0') + varint(Terminal::MaxWorkingDirectory + 1) + std::string(Terminal::MaxWorkingDirectory + 1, 'a'))},
+              frame(3,
+                    std::string(1, '\0') + varint(Terminal::MaxWorkingDirectory + 1)
+                        + std::string(Terminal::MaxWorkingDirectory + 1, 'a'))},
          }) {
         // A refused frame leaves a reader unfit to judge the next: each case
         // has its own.
@@ -1359,7 +1486,8 @@ TEST(StateSync, ScrollingFillsTheHistoryInSmallFrames)
 TEST(StateSync, ALateReplicaGetsTheScreenFirstThenTheHistory)
 {
     Pair p(40, 8, 1000, 4096);
-    for (int i = 0; i < 600; ++i) p.source.feed("history line " + std::to_string(i) + "\r\n");
+    for (int i = 0; i < 600; ++i)
+        p.source.feed("history line " + std::to_string(i) + "\r\n");
     p.source.feed("on screen");
     // The first frame shows the screen, before the history is complete.
     const std::string first = p.update();
@@ -1380,13 +1508,16 @@ TEST(StateSync, AScreenLargerThanTheBudgetGoesInSeveralFrames)
     // past the budget: no frame may be much larger than it.
     Pair p(60, 20, 0, 4096);
     std::string row;
-    for (int x = 0; x < 59; ++x) row += "a\xcc\x81\xcc\x82\xcc\x83";
-    for (int y = 0; y < 20; ++y) p.source.feed(row + (y < 19 ? "\r\n" : ""));
+    for (int x = 0; x < 59; ++x)
+        row += "a\xcc\x81\xcc\x82\xcc\x83";
+    for (int y = 0; y < 20; ++y)
+        p.source.feed(row + (y < 19 ? "\r\n" : ""));
     std::size_t largest = 0;
     int frames = 0;
     for (int guard = 0; guard < 1000; ++guard) {
         const std::string frame = p.update();
-        if (frame.empty() && !p.writer.pending()) break;
+        if (frame.empty() && !p.writer.pending())
+            break;
         ++frames;
         largest = std::max(largest, frame.size());
         std::string error;
@@ -1405,12 +1536,14 @@ TEST(StateSync, RowsThatAFrameLeftOutGoFirstInTheNext)
     // not only once the top rows rest.
     Pair p(30, 20, 0, 1500);
     std::string marks;
-    for (int x = 0; x < 25; ++x) marks += "a\xcc\x81\xcc\x82\xcc\x83";
+    for (int x = 0; x < 25; ++x)
+        marks += "a\xcc\x81\xcc\x82\xcc\x83";
     ASSERT_TRUE(p.sync());
     p.source.feed("\x1b[20;1Hbottom");
     bool reached = false;
     for (int frame = 0; frame < 6 && !reached; ++frame) {
-        for (int y = 1; y <= 10; ++y) p.source.feed("\x1b[" + std::to_string(y) + ";1H" + std::to_string(frame) + marks);
+        for (int y = 1; y <= 10; ++y)
+            p.source.feed("\x1b[" + std::to_string(y) + ";1H" + std::to_string(frame) + marks);
         const std::string update = p.update();
         std::string error;
         ASSERT_TRUE(p.reader.apply(p.replica, update, &error)) << error;
@@ -1454,7 +1587,8 @@ TEST(StateSync, AlternateScreenAndBack)
 TEST(StateSync, AResizeStartsTheScreenOver)
 {
     Pair p(40, 8, 200);
-    for (int i = 0; i < 60; ++i) p.source.feed("a fairly long line number " + std::to_string(i) + "\r\n");
+    for (int i = 0; i < 60; ++i)
+        p.source.feed("a fairly long line number " + std::to_string(i) + "\r\n");
     ASSERT_TRUE(p.sync());
     p.source.resize(25, 8, 0, 0);
     std::string error;
@@ -1468,11 +1602,13 @@ TEST(StateSync, AResizeStartsTheScreenOver)
 TEST(StateSync, ClearedAndDroppedHistory)
 {
     Pair p(30, 5, 40, 1024);
-    for (int i = 0; i < 100; ++i) p.source.feed("x" + std::to_string(i) + "\r\n");
+    for (int i = 0; i < 100; ++i)
+        p.source.feed("x" + std::to_string(i) + "\r\n");
     ASSERT_TRUE(p.sync());
     // Many more rows than the history holds, between two frames: the rows
     // that scrolled out before a frame could carry them leave a gap.
-    for (int i = 0; i < 400; ++i) p.source.feed("y" + std::to_string(i) + "\r\n");
+    for (int i = 0; i < 400; ++i)
+        p.source.feed("y" + std::to_string(i) + "\r\n");
     std::string error;
     ASSERT_TRUE(p.sync(&error)) << error;
     EXPECT_EQ(differs(p.source, p.replica), "");
@@ -1486,7 +1622,8 @@ TEST(StateSync, AReplicaWithLessHistoryKeepsTheNewestRows)
 {
     // A window whose Terminal.scrollback is lower than the daemon's.
     Pair p(30, 4, 300, 2048, 50);
-    for (int i = 0; i < 280; ++i) p.source.feed("row " + std::to_string(i) + "\r\n");
+    for (int i = 0; i < 280; ++i)
+        p.source.feed("row " + std::to_string(i) + "\r\n");
     std::string error;
     ASSERT_TRUE(p.sync(&error)) << error;
     const Screen& replica = p.replica.primaryScreen();
@@ -1526,10 +1663,12 @@ TEST(StateSync, AMarkOfTheTextIsReachedWhileRowsKeepComing)
 {
     std::string error;
     Pair p(30, 6, 5000, 2048);
-    for (int i = 0; i < 50; ++i) p.source.feed("old " + std::to_string(i) + "\r\n");
+    for (int i = 0; i < 50; ++i)
+        p.source.feed("old " + std::to_string(i) + "\r\n");
     ASSERT_TRUE(p.sync(&error)) << error;
     // Held: the rows that come meanwhile wait.
-    for (int i = 0; i < 300; ++i) p.source.feed("held " + std::to_string(i) + "\r\n");
+    for (int i = 0; i < 300; ++i)
+        p.source.feed("held " + std::to_string(i) + "\r\n");
     ASSERT_TRUE(p.reader.apply(p.replica, p.writer.updateHeld(p.source), &error)) << error;
     EXPECT_FALSE(p.writer.textMarked());
     p.writer.markText();
@@ -1541,13 +1680,15 @@ TEST(StateSync, AMarkOfTheTextIsReachedWhileRowsKeepComing)
         ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
         // More rows than a frame of 2 KiB carries: the history never
         // catches up while they come.
-        for (int i = 0; i < 200; ++i) p.source.feed("new " + std::to_string(line) + "." + std::to_string(i) + "\r\n");
+        for (int i = 0; i < 200; ++i)
+            p.source.feed("new " + std::to_string(line) + "." + std::to_string(i) + "\r\n");
     }
     EXPECT_TRUE(p.writer.pending());
     // Every row that the terminal had at the mark is in the replica.
     EXPECT_TRUE(p.reader.received(p.replica.primaryScreen().rowsDropped(), marked - 1));
     const std::string all = p.replica.text(Terminal::TextScope::All);
-    for (int i = 0; i < 300; ++i) EXPECT_NE(all.find("held " + std::to_string(i) + "\n"), std::string::npos) << i;
+    for (int i = 0; i < 300; ++i)
+        EXPECT_NE(all.find("held " + std::to_string(i) + "\n"), std::string::npos) << i;
     // A new mark waits for the rows that came since.
     p.writer.markText();
     EXPECT_FALSE(p.writer.textMarked());
@@ -1569,34 +1710,117 @@ TEST(StateSync, RandomOutputStaysEqual)
     // Larger than the state frames of every run: it comes in parts.
     const std::string large = AfterglowProto::base64Encode(rgba(40, 40, 40, 50, 60));
     const std::vector<std::string> pieces = {
-        "abc", "hello world ", "\r\n", "\n", "\r", "\t", "\b", "\xe4\xb8\xad", "e\xcc\x81", "\xf0\x9f\x91\x8d\xf0\x9f\x8f\xbd",
-        "\x1b[1m", "\x1b[0m", "\x1b[3%dm", "\x1b[4%dm", "\x1b[38;5;%dm", "\x1b[48;2;%d;40;50m", "\x1b[7m", "\x1b[4:2m",
-        "\x1b[%d;%dH", "\x1b[%dA", "\x1b[%dC", "\x1b[K", "\x1b[1K", "\x1b[2J", "\x1b[J", "\x1b[%dL", "\x1b[%dM", "\x1b[%d@",
-        "\x1b[%dP", "\x1b[%dX", "\x1b[%dS", "\x1b[%dT", "\x1b[2;%dr", "\x1b[r", "\x1b\x4d", "\x1b\x44", "\x1b\x37", "\x1b\x38",
-        "\x1b[?1049h", "\x1b[?1049l", "\x1b[?47h", "\x1b[?47l", "\x1b[?25l", "\x1b[?25h", "\x1b[?1000h", "\x1b[?1006h",
-        "\x1b[?2004h", "\x1b[?7l", "\x1b[?7h", "\x1b]8;;https://x/%d\x1b\\", "\x1b]8;;\x1b\\", "\x1b]4;%d;rgb:10/20/30\x1b\\",
-        "\x1b]2;title %d\x1b\\", "\x1b#6", "\x1b#3", "\x1b]66;s=2;ab\x1b\\", "\x1b[3J", "\x1b[%d q", "\x1b\x63",
+        "abc",
+        "hello world ",
+        "\r\n",
+        "\n",
+        "\r",
+        "\t",
+        "\b",
+        "\xe4\xb8\xad",
+        "e\xcc\x81",
+        "\xf0\x9f\x91\x8d\xf0\x9f\x8f\xbd",
+        "\x1b[1m",
+        "\x1b[0m",
+        "\x1b[3%dm",
+        "\x1b[4%dm",
+        "\x1b[38;5;%dm",
+        "\x1b[48;2;%d;40;50m",
+        "\x1b[7m",
+        "\x1b[4:2m",
+        "\x1b[%d;%dH",
+        "\x1b[%dA",
+        "\x1b[%dC",
+        "\x1b[K",
+        "\x1b[1K",
+        "\x1b[2J",
+        "\x1b[J",
+        "\x1b[%dL",
+        "\x1b[%dM",
+        "\x1b[%d@",
+        "\x1b[%dP",
+        "\x1b[%dX",
+        "\x1b[%dS",
+        "\x1b[%dT",
+        "\x1b[2;%dr",
+        "\x1b[r",
+        "\x1b\x4d",
+        "\x1b\x44",
+        "\x1b\x37",
+        "\x1b\x38",
+        "\x1b[?1049h",
+        "\x1b[?1049l",
+        "\x1b[?47h",
+        "\x1b[?47l",
+        "\x1b[?25l",
+        "\x1b[?25h",
+        "\x1b[?1000h",
+        "\x1b[?1006h",
+        "\x1b[?2004h",
+        "\x1b[?7l",
+        "\x1b[?7h",
+        "\x1b]8;;https://x/%d\x1b\\",
+        "\x1b]8;;\x1b\\",
+        "\x1b]4;%d;rgb:10/20/30\x1b\\",
+        "\x1b]2;title %d\x1b\\",
+        "\x1b#6",
+        "\x1b#3",
+        "\x1b]66;s=2;ab\x1b\\",
+        "\x1b[3J",
+        "\x1b[%d q",
+        "\x1b\x63",
         // What a frame carries besides the screens: shell marks, program
         // status, contexts, extra cursors, and scrolls of a region with
         // margins.
-        "\x1b]133;A;click_events=1\x1b\\$ ", "\x1b]133;B\x1b\\", "\x1b]133;C\x1b\\", "\x1b]133;D;%d\x1b\\",
-        "\x1b]133;D;-%d\x1b\\", "\x1b]7501;id=j%d:state=working:progress=%d\x1b\\", "\x1b]7501;state=done\x1b\\",
-        "\x1b]7501;id=j%d:state=blocked:kind=question\x1b\\", "\x1b]3008;start=c%d;type=shell;user=u;hostname=h\x1b\\",
-        "\x1b]3008;end=c%d\x1b\\", "\x1b]1337;RemoteHost=u@far%d\x07", "\x1b[>%d;2:%d:%d q", "\x1b[>0;4 q",
-        "\x1b[>40;2:%d:0:0 q", "\x1b[?69h\x1b[2;%ds", "\x1b[?69l",
-        "\x1b_Ga=T,f=32,s=2,v=2,i=%d,q=2;" + pixels + "\x1b\\", "\x1b_Ga=p,i=%d,q=2\x1b\\", "\x1b_Ga=d,d=I,i=%d,q=2\x1b\\",
+        "\x1b]133;A;click_events=1\x1b\\$ ",
+        "\x1b]133;B\x1b\\",
+        "\x1b]133;C\x1b\\",
+        "\x1b]133;D;%d\x1b\\",
+        "\x1b]133;D;-%d\x1b\\",
+        "\x1b]7501;id=j%d:state=working:progress=%d\x1b\\",
+        "\x1b]7501;state=done\x1b\\",
+        "\x1b]7501;id=j%d:state=blocked:kind=question\x1b\\",
+        "\x1b]3008;start=c%d;type=shell;user=u;hostname=h\x1b\\",
+        "\x1b]3008;end=c%d\x1b\\",
+        "\x1b]1337;RemoteHost=u@far%d\x07",
+        "\x1b[>%d;2:%d:%d q",
+        "\x1b[>0;4 q",
+        "\x1b[>40;2:%d:0:0 q",
+        "\x1b[?69h\x1b[2;%ds",
+        "\x1b[?69l",
+        "\x1b_Ga=T,f=32,s=2,v=2,i=%d,q=2;" + pixels + "\x1b\\",
+        "\x1b_Ga=p,i=%d,q=2\x1b\\",
+        "\x1b_Ga=d,d=I,i=%d,q=2\x1b\\",
         "\x1b_Ga=T,f=32,s=40,v=40,i=%d,q=2;" + large + "\x1b\\",
-        "\x1b_Ga=f,f=32,s=2,v=2,i=%d,q=2;" + pixels + "\x1b\\", "\x1b_Ga=a,i=%d,s=3,q=2\x1b\\", "\x1b_Ga=d,d=A,q=2\x1b\\",
+        "\x1b_Ga=f,f=32,s=2,v=2,i=%d,q=2;" + pixels + "\x1b\\",
+        "\x1b_Ga=a,i=%d,s=3,q=2\x1b\\",
+        "\x1b_Ga=d,d=A,q=2\x1b\\",
         "\x1bPq#1;2;100;0;0#1~~\x1b\\",
         // The colours that programs set, reset, save and restore.
-        "\x1b]21;transparent_background_color1=red@-1\x1b\\", "\x1b]21;transparent_background_color2=#102030@0.5\x1b\\",
-        "\x1b]21;transparent_background_color%d=#a0b0c0\x1b\\", "\x1b]21;transparent_background_color1=\x1b\\",
-        "\x1b]10;rgb:%d/f/f\x1b\\", "\x1b]11;rgb:%d/0/0\x1b\\", "\x1b]17;rgb:%d/20/30\x1b\\", "\x1b]19;rgb:%d/40/50\x1b\\",
-        "\x1b]110\x1b\\", "\x1b]111\x1b\\", "\x1b]112\x1b\\", "\x1b]117\x1b\\", "\x1b]119\x1b\\", "\x1b]104;%d\x1b\\",
-        "\x1b[#P", "\x1b[#Q", "\x1b]30001\x1b\\", "\x1b]30101\x1b\\",
+        "\x1b]21;transparent_background_color1=red@-1\x1b\\",
+        "\x1b]21;transparent_background_color2=#102030@0.5\x1b\\",
+        "\x1b]21;transparent_background_color%d=#a0b0c0\x1b\\",
+        "\x1b]21;transparent_background_color1=\x1b\\",
+        "\x1b]10;rgb:%d/f/f\x1b\\",
+        "\x1b]11;rgb:%d/0/0\x1b\\",
+        "\x1b]17;rgb:%d/20/30\x1b\\",
+        "\x1b]19;rgb:%d/40/50\x1b\\",
+        "\x1b]110\x1b\\",
+        "\x1b]111\x1b\\",
+        "\x1b]112\x1b\\",
+        "\x1b]117\x1b\\",
+        "\x1b]119\x1b\\",
+        "\x1b]104;%d\x1b\\",
+        "\x1b[#P",
+        "\x1b[#Q",
+        "\x1b]30001\x1b\\",
+        "\x1b]30101\x1b\\",
         // Clicks on the command line, kitty's unscroll and DECCARA.
-        "\x1b]133;A;click_events=2\x1b\\> ", "\x1b]133;A;k=s\x1b\\> ", "\x1b]133;A;special_key=1\x1b\\$ ",
-        "\x1b[%d+T", "\x1b[2;1;%d;%d;1;4:3;3%d$r",
+        "\x1b]133;A;click_events=2\x1b\\> ",
+        "\x1b]133;A;k=s\x1b\\> ",
+        "\x1b]133;A;special_key=1\x1b\\$ ",
+        "\x1b[%d+T",
+        "\x1b[2;1;%d;%d;1;4:3;3%d$r",
     };
     for (unsigned seed = 1; seed <= 60; ++seed) {
         std::mt19937 rng(seed);
@@ -1617,7 +1841,8 @@ TEST(StateSync, RandomOutputStaysEqual)
         std::uint64_t markEpoch = 0;
         std::uint64_t markRewinds = 0;
         const auto takeMark = [&] {
-            if (!markWanted) return;
+            if (!markWanted)
+                return;
             markWanted = false;
             markChecked = false;
             const AfterglowVt::Screen& s = p.source.primaryScreen();
@@ -1631,19 +1856,25 @@ TEST(StateSync, RandomOutputStaysEqual)
         // history rows came back to the screen and its last rows went, or
         // the replica's history let them go.
         const auto checkMark = [&] {
-            if (markChecked || !p.writer.textMarked()) return std::string();
+            if (markChecked || !p.writer.textMarked())
+                return std::string();
             markChecked = true;
-            if (p.source.primaryScreen().layoutEpoch() != markEpoch) return std::string();
-            if (p.source.primaryScreen().historyRewinds() != markRewinds) return std::string();
+            if (p.source.primaryScreen().layoutEpoch() != markEpoch)
+                return std::string();
+            if (p.source.primaryScreen().historyRewinds() != markRewinds)
+                return std::string();
             const std::uint64_t first = std::max(markFloor, p.replica.primaryScreen().rowsDropped());
-            if (first > markLast || p.reader.received(first, markLast)) return std::string();
+            if (first > markLast || p.reader.received(first, markLast))
+                return std::string();
             return "rows " + std::to_string(first) + " to " + std::to_string(markLast) + " of the mark did not come";
         };
         for (int step = 0; step < 1500; ++step) {
             std::string piece = pieces[rng() % pieces.size()];
-            for (std::size_t at; (at = piece.find("%d")) != std::string::npos;) piece.replace(at, 2, std::to_string(rng() % 20));
+            for (std::size_t at; (at = piece.find("%d")) != std::string::npos;)
+                piece.replace(at, 2, std::to_string(rng() % 20));
             p.source.feed(piece);
-            if (heldSteps == 0 && rng() % 60 == 0) heldSteps = 1 + int(rng() % 50);
+            if (heldSteps == 0 && rng() % 60 == 0)
+                heldSteps = 1 + int(rng() % 50);
             if (rng() % 40 == 0) {
                 p.writer.markText();
                 marked = true;
@@ -1654,14 +1885,17 @@ TEST(StateSync, RandomOutputStaysEqual)
                 // when the next output replaces it. A held one keeps the
                 // scrolls for the next update().
                 std::string error;
-                if (heldSteps == 0) takeMark();
+                if (heldSteps == 0)
+                    takeMark();
                 const std::string frame = heldSteps > 0 ? p.writer.updateHeld(p.source) : p.update();
-                ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << "seed " << seed << " step " << step << ": " << error;
+                ASSERT_TRUE(p.reader.apply(p.replica, frame, &error))
+                    << "seed " << seed << " step " << step << ": " << error;
                 const std::string mark = checkMark();
                 ASSERT_TRUE(mark.empty()) << "seed " << seed << " step " << step << ": " << mark;
             }
             // Also in a run of held frames: the next update() takes the size.
-            if (step == 700) p.source.resize(15 + int(rng() % 40), 3 + int(rng() % 10), 10, 20);
+            if (step == 700)
+                p.source.resize(15 + int(rng() % 40), 3 + int(rng() % 10), 10, 20);
             if (heldSteps > 0) {
                 --heldSteps;
                 continue;
@@ -1711,7 +1945,8 @@ TEST(StateSync, ReaderRefusesBrokenFrames)
     std::mt19937 rng(7);
     for (int i = 0; i < 2000; ++i) {
         std::string bad = frame;
-        for (int k = 0; k < 1 + int(rng() % 4); ++k) bad[1 + rng() % (bad.size() - 1)] = char(rng());
+        for (int k = 0; k < 1 + int(rng() % 4); ++k)
+            bad[1 + rng() % (bad.size() - 1)] = char(rng());
         RecordingHost host;
         Terminal replica(20, 4, host, withScrollback(10));
         StateReader reader;
@@ -1779,7 +2014,8 @@ TEST(StateSync, AHistoryRowLargerThanTheBudgetStillGoes)
     Pair p(200, 4, 30, 512);
     for (int i = 0; i < 20; ++i) {
         std::string line;
-        for (int x = 0; x < 200; ++x) line += "\x1b[3" + std::to_string(x % 8) + "m" + char('a' + x % 26);
+        for (int x = 0; x < 200; ++x)
+            line += "\x1b[3" + std::to_string(x % 8) + "m" + char('a' + x % 26);
         p.source.feed(line + "\x1b[0m\r\n");
     }
     std::string error;
@@ -1800,7 +2036,8 @@ TEST(StateSync, TheDefinitionsOfHistoryRowsCountInTheBudget)
     std::size_t largest = 0;
     for (int guard = 0; guard < 1000; ++guard) {
         const std::string frame = p.update();
-        if (frame.empty() && !p.writer.pending()) break;
+        if (frame.empty() && !p.writer.pending())
+            break;
         largest = std::max(largest, frame.size());
         std::string error;
         ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << error;
@@ -1813,20 +2050,23 @@ TEST(StateSync, TheDefinitionsOfHistoryRowsCountInTheBudget)
 TEST(StateSync, AScrolledBackViewStaysOnItsRows)
 {
     Pair p(30, 5, 200);
-    for (int i = 0; i < 50; ++i) p.source.feed("line " + std::to_string(i) + "\r\n");
+    for (int i = 0; i < 50; ++i)
+        p.source.feed("line " + std::to_string(i) + "\r\n");
     ASSERT_TRUE(p.sync());
     p.source.scrollViewport(10);
     p.replica.scrollViewport(10);
     const Screen& replica = p.replica.screen();
     const std::string top = rowText(replica, replica.absoluteRow(replica.viewportTop()));
-    for (int i = 0; i < 3; ++i) p.source.feed("more " + std::to_string(i) + "\r\n");
+    for (int i = 0; i < 3; ++i)
+        p.source.feed("more " + std::to_string(i) + "\r\n");
     std::string error;
     ASSERT_TRUE(p.sync(&error)) << error;
     EXPECT_EQ(replica.viewportOffset(), p.source.screen().viewportOffset());
     EXPECT_EQ(rowText(replica, replica.absoluteRow(replica.viewportTop())), top);
     // More rows than the history holds: the view ends on the oldest row, as
     // it does in the terminal that parsed them.
-    for (int i = 0; i < 300; ++i) p.source.feed("flood\r\n");
+    for (int i = 0; i < 300; ++i)
+        p.source.feed("flood\r\n");
     ASSERT_TRUE(p.sync(&error)) << error;
     EXPECT_EQ(replica.viewportOffset(), p.source.screen().viewportOffset());
     EXPECT_EQ(differs(p.source, p.replica), "");
@@ -1839,7 +2079,8 @@ TEST(StateSync, AScrolledBackViewStaysOnItsRowsOverAnUnscroll)
     for (const std::size_t budget : {std::size_t(1) << 20, std::size_t(600)}) {
         SCOPED_TRACE(budget);
         Pair p(30, 5, 200, budget);
-        for (int i = 0; i < 50; ++i) p.source.feed("line " + std::to_string(i) + "\r\n");
+        for (int i = 0; i < 50; ++i)
+            p.source.feed("line " + std::to_string(i) + "\r\n");
         std::string error;
         ASSERT_TRUE(p.sync(&error)) << error;
         p.source.scrollViewport(10);
@@ -1861,7 +2102,8 @@ TEST(StateSync, AScrolledBackViewStaysOnItsRowsOverAnUnscroll)
 TEST(StateSync, AScrolledBackViewStaysOnItsRowsOverTwoUnscrolls)
 {
     Pair p(30, 5, 200, 600);
-    for (int i = 0; i < 50; ++i) p.source.feed("line " + std::to_string(i) + "\r\n");
+    for (int i = 0; i < 50; ++i)
+        p.source.feed("line " + std::to_string(i) + "\r\n");
     std::string error;
     ASSERT_TRUE(p.sync(&error)) << error;
     p.source.scrollViewport(10);
@@ -1895,7 +2137,8 @@ TEST(StateSync, MarginsRemoteHostsLargeExitCodesAndPendingWraps)
     // An iTerm2 host, an exit code of two varint bytes (the terminal keeps
     // none below 0), and a mark one past the last column, after a full row.
     p.source.feed("\x1b]1337;RemoteHost=user@far\x07");
-    p.source.feed("\x1b]133;A\x1b\\" + std::string(20, 'x') + "\x1b]133;B\x1b\\\r\n\x1b]133;C\x1b\\out\r\n\x1b]133;D;200\x1b\\");
+    p.source.feed("\x1b]133;A\x1b\\" + std::string(20, 'x')
+                  + "\x1b]133;B\x1b\\\r\n\x1b]133;C\x1b\\out\r\n\x1b]133;D;200\x1b\\");
     ASSERT_TRUE(p.sync(&error)) << error;
     ASSERT_EQ(p.replicaHost.scrolls.size(), 1u);
     const RegionScroll& theirs = p.sourceHost.scrolls[0].second;
@@ -1917,7 +2160,8 @@ TEST(StateSync, TheReplicaNumbersItsRowsAsTheWriterWhileTheHistoryCatchesUp)
     Pair p(20, 4, 1000, 600);
     std::string error;
     ASSERT_TRUE(p.sync(&error)) << error;
-    for (int i = 0; i < 300; ++i) p.source.feed("line " + std::to_string(i) + "\r\n");
+    for (int i = 0; i < 300; ++i)
+        p.source.feed("line " + std::to_string(i) + "\r\n");
     p.source.feed("\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\\x1b[1;3r\x1b[3;1H\n\x1b[r\x1b[4;1H");
     const auto firstVisible = [](const Terminal& t) {
         const Screen& s = t.primaryScreen();
@@ -1926,7 +2170,8 @@ TEST(StateSync, TheReplicaNumbersItsRowsAsTheWriterWhileTheHistoryCatchesUp)
     bool lagged = false;
     for (int guard = 0; guard < 10000; ++guard) {
         const std::string frame = p.update();
-        if (frame.empty() && !p.writer.pending()) break;
+        if (frame.empty() && !p.writer.pending())
+            break;
         ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << error;
         lagged = lagged || p.writer.pending();
         // Every row has the writer's id at every frame: the marks and the
@@ -1948,7 +2193,8 @@ TEST(StateSync, AnUnscrollStartsTheReplicasRowsOverInTheSameNumbering)
     Pair p(20, 4, 1000, 600);
     std::string error;
     ASSERT_TRUE(p.sync(&error)) << error;
-    for (int i = 0; i < 300; ++i) p.source.feed("line " + std::to_string(i) + "\r\n");
+    for (int i = 0; i < 300; ++i)
+        p.source.feed("line " + std::to_string(i) + "\r\n");
     ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
     ASSERT_TRUE(p.writer.pending());
     const std::uint64_t epoch = p.replica.primaryScreen().layoutEpoch();
@@ -1997,15 +2243,18 @@ TEST(StateSync, RowsOfLinksNeverMakeAFrameTooLarge)
     ASSERT_TRUE(p.sync(&error)) << error;
     const auto heavyRow = [](char c) {
         std::string row;
-        for (int i = 0; i < 40; ++i) row += "\x1b]8;;https://example.com/" + std::string(1500, c) + "\x1b\\" + c + "\x1b]8;;\x1b\\";
+        for (int i = 0; i < 40; ++i)
+            row += "\x1b]8;;https://example.com/" + std::string(1500, c) + "\x1b\\" + c + "\x1b]8;;\x1b\\";
         return row;
     };
     p.source.feed("\x1b[?1049h" + heavyRow('z') + "\x1b[?1049l");
-    for (int i = 0; i < 6; ++i) p.source.feed(heavyRow(char('a' + i)) + "\r\n");
+    for (int i = 0; i < 6; ++i)
+        p.source.feed(heavyRow(char('a' + i)) + "\r\n");
     std::size_t largest = 0;
     for (int guard = 0; guard < 1000; ++guard) {
         const std::string frame = p.update();
-        if (frame.empty() && !p.writer.pending()) break;
+        if (frame.empty() && !p.writer.pending())
+            break;
         largest = std::max(largest, frame.size());
         ASSERT_TRUE(p.reader.apply(p.replica, frame, &error)) << error;
     }
@@ -2023,18 +2272,23 @@ TEST(StateSync, AReplicaThatKeepsLessHistoryGetsNoOlderRows)
     const auto bytes = [](std::size_t replicaHistory) {
         Pair p(20, 4, 1000, 1 << 20, 10);
         p.writer.setReplicaHistory(replicaHistory);
-        for (int i = 0; i < 500; ++i) p.source.feed("row " + std::to_string(i) + "\r\n");
+        for (int i = 0; i < 500; ++i)
+            p.source.feed("row " + std::to_string(i) + "\r\n");
         std::size_t total = 0;
         for (int guard = 0; guard < 1000; ++guard) {
             const std::string frame = p.update();
-            if (frame.empty() && !p.writer.pending()) break;
+            if (frame.empty() && !p.writer.pending())
+                break;
             total += frame.size();
             std::string error;
-            if (!p.reader.apply(p.replica, frame, &error)) return std::size_t(0);
+            if (!p.reader.apply(p.replica, frame, &error))
+                return std::size_t(0);
         }
         // The replica keeps the newest rows either way.
         const Screen& s = p.replica.primaryScreen();
-        if (s.historySize() != 10 || s.rowsDropped() + 10 != p.source.primaryScreen().rowsDropped() + p.source.primaryScreen().historySize()) {
+        if (s.historySize() != 10
+            || s.rowsDropped() + 10
+                != p.source.primaryScreen().rowsDropped() + p.source.primaryScreen().historySize()) {
             return std::size_t(0);
         }
         return total;
@@ -2102,7 +2356,8 @@ TEST(StateSync, TheReaderTellsOutputFromHistoryThatCatchesUp)
     Pair p(20, 4, 1000, 400);
     std::string error;
     ASSERT_TRUE(p.sync(&error)) << error;
-    for (int i = 0; i < 200; ++i) p.source.feed("line\r\n");
+    for (int i = 0; i < 200; ++i)
+        p.source.feed("line\r\n");
     ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
     EXPECT_TRUE(p.reader.screenChanged());
     ASSERT_TRUE(p.writer.pending());
@@ -2119,7 +2374,8 @@ TEST(StateSync, LinksWithoutAnIdStayApartOnTheReplica)
     std::string error;
     const auto links = [](int count) {
         std::string row;
-        for (int i = 0; i < count; ++i) row += "\x1b]8;;https://same\x1b\\x\x1b]8;;\x1b\\";
+        for (int i = 0; i < count; ++i)
+            row += "\x1b]8;;https://same\x1b\\x\x1b]8;;\x1b\\";
         return row;
     };
     p.source.feed(links(4) + "\r\n" + links(4));
@@ -2136,7 +2392,8 @@ TEST(StateSync, LinksWithoutAnIdStayApartOnTheReplica)
             for (int x = 0; x < a.cols(); ++x) {
                 const std::uint32_t theirs = a.styles().get(a.row(y).at(x).styleId()).link;
                 const std::uint32_t ours = b.styles().get(b.row(y).at(x).styleId()).link;
-                if (!theirs) continue;
+                if (!theirs)
+                    continue;
                 ASSERT_NE(ours, 0u) << "round " << round << " row " << y << " cell " << x;
                 EXPECT_EQ(writerToReplica.emplace(theirs, ours).first->second, ours) << "round " << round;
                 EXPECT_EQ(replicaToWriter.emplace(ours, theirs).first->second, theirs) << "round " << round;
@@ -2152,8 +2409,11 @@ TEST(StateSync, TheReaderTellsWhichRowsCame)
     Pair p(20, 4, 1000, 300);
     std::string error;
     ASSERT_TRUE(p.sync(&error)) << error;
-    for (int i = 0; i < 200; ++i) p.source.feed("line " + std::to_string(i) + "\r\n");
-    const auto firstVisible = [&] { return p.replica.primaryScreen().rowsDropped() + p.replica.primaryScreen().historySize(); };
+    for (int i = 0; i < 200; ++i)
+        p.source.feed("line " + std::to_string(i) + "\r\n");
+    const auto firstVisible = [&] {
+        return p.replica.primaryScreen().rowsDropped() + p.replica.primaryScreen().historySize();
+    };
     // While the history comes: the rows above the screen did not.
     ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
     ASSERT_TRUE(p.writer.pending());
@@ -2188,7 +2448,8 @@ TEST(StateSync, TheReaderTellsWhichRowsCame)
     StateReader smallReader;
     for (int guard = 0; guard < 1000; ++guard) {
         const std::string frame = p.writer.update(p.source, 300);
-        if (frame.empty() && !p.writer.pending()) break;
+        if (frame.empty() && !p.writer.pending())
+            break;
         ASSERT_TRUE(smallReader.apply(small, frame, &error)) << error;
     }
     EXPECT_EQ(small.primaryScreen().historySize(), 50u);
@@ -2204,7 +2465,8 @@ TEST(StateSync, RowsPendingLeavesOutHistoryAndImages)
         // A screen that does not fit a frame: its rows wait.
         Pair p(400, 50, 0, 4096);
         std::string text;
-        for (int row = 0; row < 50; ++row) text += std::string(400, char('a' + row % 26));
+        for (int row = 0; row < 50; ++row)
+            text += std::string(400, char('a' + row % 26));
         p.source.feed(text);
         ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
         EXPECT_TRUE(p.writer.rowsPending());
@@ -2212,7 +2474,8 @@ TEST(StateSync, RowsPendingLeavesOutHistoryAndImages)
         EXPECT_FALSE(p.writer.rowsPending());
         // The same on the alternate screen.
         std::string other = "\x1b[?1049h";
-        for (int row = 0; row < 50; ++row) other += std::string(400, char('z' - row % 26));
+        for (int row = 0; row < 50; ++row)
+            other += std::string(400, char('z' - row % 26));
         p.source.feed(other);
         ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
         EXPECT_TRUE(p.writer.rowsPending());
@@ -2220,7 +2483,8 @@ TEST(StateSync, RowsPendingLeavesOutHistoryAndImages)
     {
         // History that waits for later frames.
         Pair p(30, 8, 1000, 4096);
-        for (int i = 0; i < 600; ++i) p.source.feed("line " + std::to_string(i) + "\r\n");
+        for (int i = 0; i < 600; ++i)
+            p.source.feed("line " + std::to_string(i) + "\r\n");
         ASSERT_TRUE(p.reader.apply(p.replica, p.update(), &error)) << error;
         EXPECT_TRUE(p.writer.pending());
         EXPECT_FALSE(p.writer.rowsPending());
@@ -2251,7 +2515,8 @@ TEST(StateSync, AHeldFrameLeavesTheScreensForTheNextUpdate)
     EXPECT_FALSE(p.writer.screensHeld());
     p.replicaHost.scrolls.clear();
     p.source.feed("\x1b[2;4r\x1b[S\x1b[r\x1b[6;1H");
-    for (int i = 0; i < 20; ++i) p.source.feed("\r\nflood " + std::to_string(i));
+    for (int i = 0; i < 20; ++i)
+        p.source.feed("\r\nflood " + std::to_string(i));
     p.source.feed(apc("a=T,f=32,s=2,v=2,i=7,q=2", rgba(2, 2, 255, 0, 0)));
     p.source.feed("\x1b]2;building\x07\x1b]7;file:///tmp\x07\x1b]7501;state=working:progress=40\x1b\\\x1b]133;A\x07");
     const std::string held = p.writer.updateHeld(p.source);
@@ -2284,7 +2549,8 @@ TEST(StateSync, AHeldFrameLeavesTheScreensForTheNextUpdate)
     // new replica.
     Pair q(30, 6, 100);
     q.source.resize(30, 6, 10, 20);
-    q.source.feed("text" + apc("a=T,f=32,s=2,v=2,i=9,q=2", rgba(2, 2, 0, 0, 255)) + "\x1b]2;first\x07\x1b[2;4r\x1b[S\x1b[r");
+    q.source.feed("text" + apc("a=T,f=32,s=2,v=2,i=9,q=2", rgba(2, 2, 0, 0, 255))
+                  + "\x1b]2;first\x07\x1b[2;4r\x1b[S\x1b[r");
     EXPECT_TRUE(q.writer.screensHeld());
     ASSERT_TRUE(q.reader.apply(q.replica, q.writer.updateHeld(q.source), &error)) << error;
     EXPECT_EQ(q.replica.title(), "first");

@@ -104,18 +104,33 @@ public:
     /// window's call takes no byte of the stream.
     void adopt(int fd, std::string unsent);
 
-    const std::string& session() const { return m_session; }
+    const std::string& session() const
+    {
+        return m_session;
+    }
     /// Finds a pane of any session of the daemon by its ID: the answers of
     /// the window to the calls of a pane that went to another session
     /// before the window heard of it still reach the pane's program.
-    void setPaneFinder(std::function<MuxPane*(std::uint32_t)> find) { m_findPane = std::move(find); }
+    void setPaneFinder(std::function<MuxPane*(std::uint32_t)> find)
+    {
+        m_findPane = std::move(find);
+    }
     /// The window's stream started: it wrote its first bytes.
-    bool connected() const { return m_stream != nullptr; }
+    bool connected() const
+    {
+        return m_stream != nullptr;
+    }
     /// finish() ran: the session no longer shows here.
-    bool finishing() const { return m_finish.has_value(); }
+    bool finishing() const
+    {
+        return m_finish.has_value();
+    }
 
     /// The stream failed: the attachment is over.
-    bool failed() const { return m_failed; }
+    bool failed() const
+    {
+        return m_failed;
+    }
     /// The descriptor to poll and its events.
     pollfd pollFd() const;
     /// Handles what the poll saw on pollFd(), and sends what changed in
@@ -154,7 +169,10 @@ public:
     /// attachment to send what waits; -1 when neither waits.
     int timeoutMs() const;
     /// The window asked to end the session (Attach::InputType::Kill). Once.
-    bool takeKill() { return std::exchange(m_kill, false); }
+    bool takeKill()
+    {
+        return std::exchange(m_kill, false);
+    }
 
     /// Takes the pane whose program exited: its last frames go, then its
     /// channel closes and PaneClosed follows.
@@ -169,12 +187,18 @@ public:
     /// not get them. The bytes that it holds for @p moved, and those that the
     /// window sends it before it hears, still go to its program
     /// (setPaneFinder()), also once the attachment finished.
-    void paneRemoved(std::uint32_t id, MuxPane* moved = nullptr) { panesRemoved({{id, moved}}); }
+    void paneRemoved(std::uint32_t id, MuxPane* moved = nullptr)
+    {
+        panesRemoved({{id, moved}});
+    }
     /// paneRemoved() for each pane, with one pass over what waits.
     void panesRemoved(const std::vector<std::pair<std::uint32_t, MuxPane*>>& panes);
     /// Whether pane @p id left this window for another session, and the
     /// window still holds it: it cannot come back into this stream yet.
-    bool stillLeaving(std::uint32_t id) const { return m_leftPanes.contains(id); }
+    bool stillLeaving(std::uint32_t id) const
+    {
+        return m_leftPanes.contains(id);
+    }
     /// Ends the attachment: its input for the session no longer counts but
     /// as takeLate() says, and once the panes that closed sent their last
     /// frames, @p type is the last event. A window that did not connect yet
@@ -202,19 +226,37 @@ public:
     /// in each pane's queue past it (MuxPane::setWindow). While the queue is
     /// below it, each pane in turn takes its share of what is left, and at
     /// least one call, so the queue can pass it by one call.
-    void setEventQueue(std::size_t bytes) { m_eventQueue = bytes; }
-    std::size_t eventQueue() const { return m_eventQueue; }
+    void setEventQueue(std::size_t bytes)
+    {
+        m_eventQueue = bytes;
+    }
+    std::size_t eventQueue() const
+    {
+        return m_eventQueue;
+    }
     /// The most history rows that the window keeps for each pane: the
     /// frames carry no older ones (StateWriter::setReplicaHistory).
-    void setReplicaHistory(std::size_t rows) { m_replicaHistory = rows; }
+    void setReplicaHistory(std::size_t rows)
+    {
+        m_replicaHistory = rows;
+    }
     /// A window shows the session's panes now: connected, and not finishing.
-    bool showing() const { return m_stream && !m_finish && !m_failed; }
+    bool showing() const
+    {
+        return m_stream && !m_finish && !m_failed;
+    }
     /// The window got the session's layout (the first event): a layout of
     /// another window no longer changes what it shows.
-    bool layoutSent() const { return m_layoutSent; }
+    bool layoutSent() const
+    {
+        return m_layoutSent;
+    }
     /// A number that no other attachment of the daemon has: which window a
     /// pane's host calls wait for (MuxPane::setWindow).
-    std::uint64_t serial() const { return m_serial; }
+    std::uint64_t serial() const
+    {
+        return m_serial;
+    }
     /// A call of the control target for the window to answer (an
     /// Attach::EventType::Control event): @p json is its {"id", "fn", "args"}
     /// and, for a call of a client, its "client" (MuxStream.h). One that has
@@ -222,20 +264,32 @@ public:
     /// run a call whose client hears that it failed.
     void sendControl(std::string json);
     /// The answers of the window to those calls, as their JSON, oldest first.
-    std::vector<std::string> takeControlReplies() { return std::exchange(m_controlReplies, {}); }
+    std::vector<std::string> takeControlReplies()
+    {
+        return std::exchange(m_controlReplies, {});
+    }
     /// A part of a command connection that the window serves (an
     /// Attach::EventType::Commands event).
     void sendRelay(const Attach::RelayFrame& frame);
     /// The events that wait for the window are under eventQueue(): the
     /// daemon reads the next line of a command client. A client that sends
     /// faster than the window takes waits in its socket.
-    bool relayRoom() const { return m_waitingBytes < m_eventQueue; }
+    bool relayRoom() const
+    {
+        return m_waitingBytes < m_eventQueue;
+    }
     /// The parts of command connections that the window sent, oldest first:
     /// Bytes and End only.
-    std::vector<Attach::RelayFrame> takeRelayFrames() { return std::exchange(m_relayFrames, {}); }
+    std::vector<Attach::RelayFrame> takeRelayFrames()
+    {
+        return std::exchange(m_relayFrames, {});
+    }
     /// Input of the window for pane @p pane waits for room in its PTY: input
     /// of another client would pass it.
-    bool holdsInput(std::uint32_t pane) const { return m_heldInput.contains(pane); }
+    bool holdsInput(std::uint32_t pane) const
+    {
+        return m_heldInput.contains(pane);
+    }
 
 private:
     struct PaneLink

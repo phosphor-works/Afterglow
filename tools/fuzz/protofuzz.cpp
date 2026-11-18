@@ -364,7 +364,8 @@ void json(std::string_view input)
     // A stdin part is a start of the input, under the limit once written,
     // and ends on a piece: never inside a UTF-8 sequence. The first byte
     // gives the limit, so that short input fills parts too.
-    if (input.empty()) return;
+    if (input.empty())
+        return;
     namespace Run = AfterglowProto::Run;
     const std::size_t limit = 8 + std::uint8_t(input[0]) % 64;
     const std::string_view data = input.substr(1);
@@ -375,7 +376,8 @@ void json(std::string_view input)
         std::size_t bytes = 2;
         while (end < part) {
             const std::size_t piece = Json::nextStringPiece(data, end);
-            if (!piece) break;
+            if (!piece)
+                break;
             bytes += piece;
         }
         if (part > data.size() || end != part || bytes > limit) {
@@ -394,7 +396,8 @@ void json(std::string_view input)
         if (!eof && part == 0) {
             std::size_t position = 0;
             std::size_t total = 2;
-            while (data.size() - position >= 4) total += Json::nextStringPiece(data, position);
+            while (data.size() - position >= 4)
+                total += Json::nextStringPiece(data, position);
             if (total > limit) {
                 __builtin_trap();
             }
@@ -473,8 +476,8 @@ void remote(std::string_view input)
         const auto sent = replyPayload(sequence, false);
         const auto read = sent ? Remote::parseReply(*sent) : std::nullopt;
         const Remote::Answer expected = Remote::validPath(given.path) ? Remote::Answer{given.path, Remote::Error::Off}
-            : given.path.empty()                                       ? Remote::Answer{{}, Remote::Error::Forward}
-                                                                       : Remote::Answer{{}, Remote::Error::Off};
+            : given.path.empty()                                      ? Remote::Answer{{}, Remote::Error::Forward}
+                                                                      : Remote::Answer{{}, Remote::Error::Off};
         if (read != expected) {
             __builtin_trap();
         }
@@ -546,8 +549,7 @@ void ipcServer(std::string_view input)
             server.send(AfterglowProto::ipcReply(request.id.value_or(0), nullptr));
         }
         // The client reads the answers, so the server's output never waits long.
-        while (::recv(pair[1], answers, sizeof answers, MSG_DONTWAIT) > 0) {
-        }
+        while (::recv(pair[1], answers, sizeof answers, MSG_DONTWAIT) > 0) { }
         server.flush();
     }
     ::close(pair[1]);

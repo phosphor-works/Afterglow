@@ -217,7 +217,9 @@ std::string dndQueryReply(std::string_view command)
 bool dndValidMime(std::string_view mime)
 {
     return !mime.empty() && mime.find('/') != std::string_view::npos && mime.size() <= 255
-        && std::all_of(mime.begin(), mime.end(), [](unsigned char c) { return c > 32 && c < 127; });
+        && std::all_of(mime.begin(), mime.end(), [](unsigned char c) {
+               return c > 32 && c < 127;
+           });
 }
 
 std::string dndMachineId(std::string_view machineIdContents)

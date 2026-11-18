@@ -49,11 +49,11 @@ TEST(Input, ApplicationKeypadCoversEveryKey)
     Modes modes;
     modes.keypadApp = true;
     const std::pair<Key, char> cases[] = {
-        {Key::Keypad0, 'p'}, {Key::Keypad1, 'q'}, {Key::Keypad2, 'r'}, {Key::Keypad3, 's'},
-        {Key::Keypad4, 't'}, {Key::Keypad5, 'u'}, {Key::Keypad6, 'v'}, {Key::Keypad7, 'w'},
-        {Key::Keypad8, 'x'}, {Key::Keypad9, 'y'}, {Key::KeypadDecimal, 'n'}, {Key::KeypadDivide, 'o'},
-        {Key::KeypadMultiply, 'j'}, {Key::KeypadSubtract, 'm'}, {Key::KeypadAdd, 'k'},
-        {Key::KeypadEnter, 'M'}, {Key::KeypadEqual, 'X'}, {Key::KeypadSeparator, 'l'},
+        {Key::Keypad0, 'p'},        {Key::Keypad1, 'q'},         {Key::Keypad2, 'r'},       {Key::Keypad3, 's'},
+        {Key::Keypad4, 't'},        {Key::Keypad5, 'u'},         {Key::Keypad6, 'v'},       {Key::Keypad7, 'w'},
+        {Key::Keypad8, 'x'},        {Key::Keypad9, 'y'},         {Key::KeypadDecimal, 'n'}, {Key::KeypadDivide, 'o'},
+        {Key::KeypadMultiply, 'j'}, {Key::KeypadSubtract, 'm'},  {Key::KeypadAdd, 'k'},     {Key::KeypadEnter, 'M'},
+        {Key::KeypadEqual, 'X'},    {Key::KeypadSeparator, 'l'},
     };
     for (const auto& [code, final] : cases) {
         EXPECT_EQ(encodeKey(key(code), modes), std::string("\x1bO") + final);
@@ -132,7 +132,8 @@ TEST(Input, MouseLeaveGoesInTheSgrPixelFormatOnly)
         EXPECT_EQ(encodeMouse(e, m), "") << int(format);
     }
     m.mouseFormat = MouseFormat::SgrPixels;
-    for (const MouseTracking tracking : {MouseTracking::None, MouseTracking::X10, MouseTracking::Normal, MouseTracking::Any}) {
+    for (const MouseTracking tracking :
+         {MouseTracking::None, MouseTracking::X10, MouseTracking::Normal, MouseTracking::Any}) {
         m.mouseTracking = tracking;
         EXPECT_EQ(encodeMouse(e, m), "\x1b[<308;42;23M") << int(tracking);
     }
@@ -323,12 +324,15 @@ TEST(Input, KittyHyperAndMetaKeys)
                                                 {Key::RightHyper, "\x1b[57451u"},
                                                 {Key::RightMeta, "\x1b[57452u"}};
     Modes m;
-    for (const auto& [k, sent] : keys) EXPECT_EQ(encodeKey(key(k), m), "") << int(k);
+    for (const auto& [k, sent] : keys)
+        EXPECT_EQ(encodeKey(key(k), m), "") << int(k);
     // A key that is no modifier gets a code here (KittyLevelShiftAndMediaKeys).
     m.kittyKeyboard = KittyFlag::Disambiguate;
-    for (const auto& [k, sent] : keys) EXPECT_EQ(encodeKey(key(k), m), "") << int(k);
+    for (const auto& [k, sent] : keys)
+        EXPECT_EQ(encodeKey(key(k), m), "") << int(k);
     m.kittyKeyboard = KittyFlag::Disambiguate | KittyFlag::ReportAllKeys;
-    for (const auto& [k, sent] : keys) EXPECT_EQ(encodeKey(key(k), m), sent) << int(k);
+    for (const auto& [k, sent] : keys)
+        EXPECT_EQ(encodeKey(key(k), m), sent) << int(k);
 }
 
 TEST(Input, KittyEventTypes)
@@ -371,8 +375,8 @@ TEST(Input, KittyAssociatedTextHasNoControls)
 TEST(Input, KittyReportAllKeysWithText)
 {
     Modes m;
-    m.kittyKeyboard = KittyFlag::Disambiguate | KittyFlag::ReportAllKeys | KittyFlag::ReportText
-                      | KittyFlag::ReportAlternates;
+    m.kittyKeyboard =
+        KittyFlag::Disambiguate | KittyFlag::ReportAllKeys | KittyFlag::ReportText | KittyFlag::ReportAlternates;
     EXPECT_EQ(encodeKey(key(Key::Text, 0, "a", U'a'), m), "\x1b[97;1;97u");
     KeyEvent shifted = key(Key::Text, Mod::Shift, "A", U'a');
     shifted.shifted = U'A';

@@ -48,10 +48,16 @@ public:
     SrgbConverter& operator=(const SrgbConverter&) = delete;
 
     /// The pixels change: convert() has work to do.
-    bool active() const noexcept { return m_transform != nullptr; }
+    bool active() const noexcept
+    {
+        return m_transform != nullptr;
+    }
     /// The colour space is one that the converter takes: after convert(),
     /// or as they are, the pixels are sRGB.
-    bool known() const noexcept { return m_known; }
+    bool known() const noexcept
+    {
+        return m_known;
+    }
     /// @p in to @p out, @p pixels of 4 bytes each.
     void convert(const unsigned char* in, unsigned char* out, std::size_t pixels) const;
 

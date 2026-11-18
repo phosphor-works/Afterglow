@@ -33,7 +33,8 @@ namespace {
 /// caller adds its buttons, then puts it over the pane (keepDialogOverPane).
 /// It goes when it closes. Its lambdas must not capture the window: the
 /// dialog follows the pane to another window, and outlives this one.
-QMessageBox* paneQuestion(const QString& title, const QString& text, QMessageBox::StandardButtons buttons = QMessageBox::NoButton)
+QMessageBox* paneQuestion(const QString& title, const QString& text,
+                          QMessageBox::StandardButtons buttons = QMessageBox::NoButton)
 {
     auto* dialog = new QMessageBox(QMessageBox::Question, title, text, buttons);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
@@ -56,11 +57,13 @@ QString uniqueDownloadPath(const QString& directory, const QString& name)
     QDir().mkpath(directory);
     const QDir dir(directory);
     const auto taken = [](const QString& path) {
-        return QFileInfo::exists(path) || QFileInfo(path).isSymLink() || QFileInfo::exists(path + QStringLiteral(".part"));
+        return QFileInfo::exists(path) || QFileInfo(path).isSymLink()
+            || QFileInfo::exists(path + QStringLiteral(".part"));
     };
     for (int n = 0; n < DownloadNames; ++n) {
         const QString path = dir.filePath(numberedDownloadName(name, n));
-        if (!taken(path)) return path;
+        if (!taken(path))
+            return path;
     }
     return {};
 }
@@ -71,8 +74,9 @@ void saveDownloadIn(Pane* pane, const QString& directory, const QString& file, q
 {
     const QString path = uniqueDownloadPath(directory, file);
     if (path.isEmpty())
-        NotificationCenter::instance().showNotice(pane, TerminalWindow::tr("Download not saved"),
-                                                  TerminalWindow::tr("%1 has no free name for “%2”.").arg(directory, sanitizedText(file, 200)));
+        NotificationCenter::instance().showNotice(
+            pane, TerminalWindow::tr("Download not saved"),
+            TerminalWindow::tr("%1 has no free name for “%2”.").arg(directory, sanitizedText(file, 200)));
     pane->answerDownload(path, serial);
 }
 } // namespace
@@ -82,7 +86,8 @@ void TerminalWindow::askDownload(Pane* pane, const QString& name, qint64 size, q
     const Settings& settings = m_settings.settings();
     // Settings::read expanded a ~ of the config.
     QString directory = settings.downloadDirectory;
-    if (directory.isEmpty()) directory = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    if (directory.isEmpty())
+        directory = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     const QString file = name.isEmpty() ? QStringLiteral("download.bin") : name;
     switch (settings.downloads) {
     case Settings::Permission::Deny:
@@ -102,7 +107,8 @@ void TerminalWindow::askDownload(Pane* pane, const QString& name, qint64 size, q
         : tr("%1 wants to save the file “%2”. Its size is not known.").arg(clipboardAsker(pane), shown);
     QMessageBox* dialog = paneQuestion(tr("Download"), text);
     // The root directory has no name of its own.
-    const QString place = QDir(directory).dirName().isEmpty() ? QDir::toNativeSeparators(directory) : QDir(directory).dirName();
+    const QString place =
+        QDir(directory).dirName().isEmpty() ? QDir::toNativeSeparators(directory) : QDir(directory).dirName();
     QPushButton* save = dialog->addButton(tr("Save to %1").arg(place), QMessageBox::AcceptRole);
     QPushButton* saveAs = dialog->addButton(tr("Save As…"), QMessageBox::ActionRole);
     QPushButton* refuse = dialog->addButton(tr("Refuse"), QMessageBox::RejectRole);
@@ -113,16 +119,21 @@ void TerminalWindow::askDownload(Pane* pane, const QString& name, qint64 size, q
     // The answer names its question: a later download of the pane waits
     // for an answer of its own.
     connect(dialog, &QDialog::finished, dialog, [guard, dialog, save, saveAs, directory, file, serial] {
-        if (!guard) return;
-        if (dialog->clickedButton() == save) saveDownloadIn(guard, directory, file, serial);
-        else if (dialog->clickedButton() == saveAs) saveDownloadAs(guard, directory, file, serial);
-        else guard->answerDownload({}, serial);
+        if (!guard)
+            return;
+        if (dialog->clickedButton() == save)
+            saveDownloadIn(guard, directory, file, serial);
+        else if (dialog->clickedButton() == saveAs)
+            saveDownloadAs(guard, directory, file, serial);
+        else
+            guard->answerDownload({}, serial);
     });
     // The download ended before the answer, or the pane closed.
     connect(pane, &Pane::downloadCancelled, dialog, &QDialog::reject);
     connect(pane, &QObject::destroyed, dialog, &QDialog::reject);
     dialog->open();
-    if (!isActive()) alert(0);
+    if (!isActive())
+        alert(0);
 }
 
 void TerminalWindow::askUpload(Pane* pane)
@@ -140,8 +151,9 @@ void TerminalWindow::askUpload(Pane* pane)
     // The picker is the consent, as in iTerm2. A question first: a folder
     // and files are two pickers, and Refuse is the default, so a Return
     // typed for the shell refuses.
-    const QString text = tr("%1 asks for files. The files that you choose go to it as typed input, at most %2 MiB compressed.")
-                             .arg(clipboardAsker(pane), QString::number(limit >> 20));
+    const QString text =
+        tr("%1 asks for files. The files that you choose go to it as typed input, at most %2 MiB compressed.")
+            .arg(clipboardAsker(pane), QString::number(limit >> 20));
     QMessageBox* dialog = paneQuestion(tr("Upload"), text);
     QPushButton* files = dialog->addButton(tr("Choose Files…"), QMessageBox::AcceptRole);
     QPushButton* folder = dialog->addButton(tr("Choose a Folder…"), QMessageBox::ActionRole);
@@ -151,7 +163,8 @@ void TerminalWindow::askUpload(Pane* pane)
     keepDialogOverPane(dialog, pane);
     const QPointer<Pane> guard(pane);
     connect(dialog, &QDialog::finished, dialog, [guard, dialog, files, folder, limit] {
-        if (!guard) return;
+        if (!guard)
+            return;
         const bool directory = dialog->clickedButton() == folder;
         if (!directory && dialog->clickedButton() != files) {
             guard->answerUpload(std::nullopt);
@@ -167,10 +180,12 @@ void TerminalWindow::askUpload(Pane* pane)
         auto answered = std::make_shared<bool>(false);
         connect(picker, &QFileDialog::filesSelected, picker, [guard, answered, limit](const QStringList& paths) {
             *answered = true;
-            if (guard) sendUpload(guard, paths, limit);
+            if (guard)
+                sendUpload(guard, paths, limit);
         });
         connect(picker, &QDialog::finished, picker, [guard, answered] {
-            if (!*answered && guard) guard->answerUpload(std::nullopt);
+            if (!*answered && guard)
+                guard->answerUpload(std::nullopt);
         });
         connect(guard, &Pane::uploadCancelled, picker, &QDialog::reject);
         connect(guard, &QObject::destroyed, picker, &QDialog::reject);
@@ -180,7 +195,8 @@ void TerminalWindow::askUpload(Pane* pane)
     connect(pane, &Pane::uploadCancelled, dialog, &QDialog::reject);
     connect(pane, &QObject::destroyed, dialog, &QDialog::reject);
     dialog->open();
-    if (!isActive()) alert(0);
+    if (!isActive())
+        alert(0);
 }
 
 void TerminalWindow::sendUpload(Pane* pane, const QStringList& paths, std::size_t limit)
@@ -200,14 +216,16 @@ void TerminalWindow::sendUpload(Pane* pane, const QStringList& paths, std::size_
             pane->answerUpload(std::nullopt);
             NotificationCenter::instance().showNotice(pane, tr("Upload refused"), made.error);
         } else if (!pane->answerUpload(made.answer)) {
-            NotificationCenter::instance().showNotice(pane, tr("Upload refused"),
-                                                      tr("The files did not go to the program. Its input was full, and it got "
-                                                         "Ctrl+C, or the command that asked for them ended."));
+            NotificationCenter::instance().showNotice(
+                pane, tr("Upload refused"),
+                tr("The files did not go to the program. Its input was full, and it got "
+                   "Ctrl+C, or the command that asked for them ended."));
         }
     });
     watcher->setFuture(QtConcurrent::run([paths, limit] {
         Made made;
-        if (const auto archive = UploadArchive::build(paths, limit, made.error)) made.answer = UploadArchive::answer(*archive);
+        if (const auto archive = UploadArchive::build(paths, limit, made.error))
+            made.answer = UploadArchive::answer(*archive);
         return made;
     }));
 }
@@ -228,18 +246,20 @@ void TerminalWindow::saveDownloadAs(Pane* pane, const QString& directory, const 
     // The dialog asked before it replaces a file: the download replaces it.
     connect(dialog, &QFileDialog::fileSelected, dialog, [guard, answered, serial](const QString& path) {
         *answered = true;
-        if (guard) guard->answerDownload(path, serial, true);
+        if (guard)
+            guard->answerDownload(path, serial, true);
     });
     connect(dialog, &QDialog::finished, dialog, [guard, answered, serial] {
-        if (!*answered && guard) guard->answerDownload({}, serial);
+        if (!*answered && guard)
+            guard->answerDownload({}, serial);
     });
     connect(pane, &Pane::downloadCancelled, dialog, &QDialog::reject);
     connect(pane, &QObject::destroyed, dialog, &QDialog::reject);
     dialog->open();
 }
 
-void TerminalWindow::askFileTransfer(Pane* pane, const QString& token, bool writing, const QStringList& paths, int total,
-                                     bool othersRefused)
+void TerminalWindow::askFileTransfer(Pane* pane, const QString& token, bool writing, const QStringList& paths,
+                                     int total, bool othersRefused)
 {
     // Asked by the transfer itself, so the worker exists already.
     const QPointer<FileTransfer> guard = pane->fileTransfers();
@@ -252,18 +272,24 @@ void TerminalWindow::askFileTransfer(Pane* pane, const QString& token, bool writ
     // The dialog keeps the paths that it shows: a Yes approves those, and
     // the files that come later get a dialog of their own, unless the
     // worker refuses them.
-    const FileTransfer::Question question = FileTransfer::question(writing, paths, total, othersRefused, clipboardAsker(pane));
+    const FileTransfer::Question question =
+        FileTransfer::question(writing, paths, total, othersRefused, clipboardAsker(pane));
     QMessageBox* dialog = paneQuestion(tr("File transfer"), question.text, QMessageBox::Yes | QMessageBox::No);
     dialog->setDefaultButton(QMessageBox::No);
-    if (!question.detail.isEmpty()) dialog->setDetailedText(question.detail);
+    if (!question.detail.isEmpty())
+        dialog->setDetailedText(question.detail);
     // This window closes. A pane that moved to another window still asks, over that one.
     keepDialogOverPane(dialog, pane);
     connect(dialog, &QDialog::finished, dialog, [guard, token](int result) {
-        if (guard) guard->approve(token, result == QMessageBox::Yes);
+        if (guard)
+            guard->approve(token, result == QMessageBox::Yes);
     });
     if (guard) {
         connect(guard, &QObject::destroyed, dialog, &QDialog::reject);
-        connect(guard, &FileTransfer::sessionClosed, dialog, [dialog, token](const QString& closed) { if (closed == token) dialog->reject(); });
+        connect(guard, &FileTransfer::sessionClosed, dialog, [dialog, token](const QString& closed) {
+            if (closed == token)
+                dialog->reject();
+        });
     }
     dialog->open();
 }
@@ -279,27 +305,33 @@ bool TerminalWindow::showOutputInPager(Pane* pane, std::optional<std::uint64_t> 
     // this computer is not.
     if (m_session && m_session->remote()) {
         return fail(tr("Could not show the output"),
-                    tr("Session %1 runs on another host, and a pane there cannot read a file of this computer.").arg(m_session->session()));
+                    tr("Session %1 runs on another host, and a pane there cannot read a file of this computer.")
+                        .arg(m_session->session()));
     }
     auto command = QProcess::splitCommand(m_settings.settings().pager);
     if (command.isEmpty() || QStandardPaths::findExecutable(command.front()).isEmpty()) {
-        return fail(tr("No pager"), command.isEmpty() ? tr("Terminal.pager is empty.")
-                                                      : tr("The pager %1 was not found.").arg(command.front()));
+        return fail(tr("No pager"),
+                    command.isEmpty() ? tr("Terminal.pager is empty.")
+                                      : tr("The pager %1 was not found.").arg(command.front()));
     }
     const std::size_t limit = m_settings.settings().pagerOutputLimit;
     // The last output, or a command's output region: the first on the
     // screen, the one last visited, or the one under the pointer.
-    const auto output = region ? pane->readRegion(*region, limit) : pane->readText(AfterglowVt::Terminal::TextScope::LastOutput, limit);
+    const auto output =
+        region ? pane->readRegion(*region, limit) : pane->readText(AfterglowVt::Terminal::TextScope::LastOutput, limit);
     if (!region && pane->lastOutputArriving()) {
-        return fail(tr("No command output"), tr("The output of the command is still on its way from the session. Try again in a moment."));
+        return fail(tr("No command output"),
+                    tr("The output of the command is still on its way from the session. Try again in a moment."));
     }
     if (!output.value(QStringLiteral("available")).toBool()) {
         // A session pane's region can be on its way from the daemon, as the last output can.
         if (region && pane->regionArriving(*region)) {
-            return fail(tr("No command output"), tr("The output of the command is still on its way from the session. Try again in a moment."));
+            return fail(tr("No command output"),
+                        tr("The output of the command is still on its way from the session. Try again in a moment."));
         }
-        return fail(tr("No command output"), region ? tr("The output of the command is no longer in the history.")
-                                                    : tr("Shell integration has not recorded a command yet."));
+        return fail(tr("No command output"),
+                    region ? tr("The output of the command is no longer in the history.")
+                           : tr("Shell integration has not recorded a command yet."));
     }
     auto file = std::make_unique<QTemporaryFile>();
     const QByteArray bytes = output.value(QStringLiteral("text")).toString().toUtf8();
@@ -307,7 +339,8 @@ bool TerminalWindow::showOutputInPager(Pane* pane, std::optional<std::uint64_t> 
         return fail(tr("Could not show the output"), tr("The temporary file could not be written."));
     }
     if (output.value(QStringLiteral("truncated")).toBool()) {
-        file->write(tr("\n[Afterglow: output limited to %1]\n").arg(QLocale().formattedDataSize(qint64(limit))).toUtf8());
+        file->write(
+            tr("\n[Afterglow: output limited to %1]\n").arg(QLocale().formattedDataSize(qint64(limit))).toUtf8());
     }
     const QString path = file->fileName();
     file->close();
@@ -336,7 +369,8 @@ bool TerminalWindow::showOutputInPager(Pane* pane, std::optional<std::uint64_t> 
     m_unsavedLaunch = pager;
     Pane* created = newTab(focusedDirectory(), command, {}, &error);
     m_unsavedLaunch.reset();
-    if (!created) return fail(tr("Could not show the output"), error);
+    if (!created)
+        return fail(tr("Could not show the output"), error);
     created->setLaunch(created->launchDirectory(), {});
     // The file goes with the pane, whose program ends with it. In a
     // session the shell of the pane removes it once it is open, and the

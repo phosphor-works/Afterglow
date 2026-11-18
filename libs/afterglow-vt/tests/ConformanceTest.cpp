@@ -22,7 +22,10 @@ namespace {
 
 struct ResizingHost : RecordingHost
 {
-    bool requestResize(int, int) override { return true; }
+    bool requestResize(int, int) override
+    {
+        return true;
+    }
 };
 
 /// As the esctest host runs it: screen readback (DECRQCRA) on.
@@ -43,7 +46,10 @@ struct Term
     {
         t.resize(cols, rows, 10, 20);
     }
-    void feed(std::string_view s) { t.feed(s); }
+    void feed(std::string_view s)
+    {
+        t.feed(s);
+    }
     std::string take()
     {
         std::string out;
@@ -117,9 +123,13 @@ TEST(Conformance, InsertAndDeleteColumns)
 TEST(Conformance, BackAndForwardIndex)
 {
     Term t(4, 1);
-    t.feed("abcd\x1b[1;1H\x1b" "6"); // DECBI at the left margin scrolls right
+    t.feed(
+        "abcd\x1b[1;1H\x1b"
+        "6"); // DECBI at the left margin scrolls right
     EXPECT_EQ(rowText(t.t, 0), " abc");
-    t.feed("\x1b[1;4H\x1b" "9"); // DECFI at the right margin scrolls left
+    t.feed(
+        "\x1b[1;4H\x1b"
+        "9"); // DECFI at the right margin scrolls left
     EXPECT_EQ(rowText(t.t, 0), "abc");
 }
 
@@ -185,9 +195,13 @@ TEST(Conformance, SoftResetClearsCursorsSavedCursorMarginsAndProtection)
     EXPECT_TRUE(t.t.extraCursors().empty());
 
     // The saved cursor goes, and the style its pen held is released.
-    t.feed("\x1b[3;5H\x1b[31m\x1b" "7\x1b[0m");
+    t.feed(
+        "\x1b[3;5H\x1b[31m\x1b"
+        "7\x1b[0m");
     ASSERT_GT(t.t.screen().styles().liveCount(), 1u);
-    t.feed("\x1b[!p\x1b" "8X"); // DECRC with nothing saved: home, default rendition
+    t.feed(
+        "\x1b[!p\x1b"
+        "8X"); // DECRC with nothing saved: home, default rendition
     EXPECT_EQ(t.t.screen().row(0).at(0).codepoint(), U'X');
     EXPECT_EQ(t.t.screen().row(0).at(0).styleId(), StyleTable::DefaultId);
     t.feed("\x1b[2J");
@@ -265,7 +279,9 @@ TEST(Conformance, XtsaveOf1048SavesTheCursor)
     // 1048 is an action (xterm): XTSAVE saves the cursor and XTRESTORE
     // restores that one, not one DECSC saved before.
     Term t(20, 6);
-    t.feed("\x1b[4;4H\x1b" "7\x1b[2;3H\x1b[?1048s\x1b[5;9H\x1b[?1048r\x1b[6n");
+    t.feed(
+        "\x1b[4;4H\x1b"
+        "7\x1b[2;3H\x1b[?1048s\x1b[5;9H\x1b[?1048r\x1b[6n");
     EXPECT_EQ(t.take(), "\x1b[2;3R");
 }
 
@@ -276,7 +292,9 @@ TEST(Conformance, ResetReports132ColumnsWhileThePageKeepsThem)
     Term t(132, 4);
     t.feed("\x1b[?40h\x1b[?3h\x1b[?3$p");
     ASSERT_EQ(t.take(), "\x1b[?3;1$y");
-    t.feed("\x1b" "c\x1b[?3$p");
+    t.feed(
+        "\x1b"
+        "c\x1b[?3$p");
     EXPECT_EQ(t.t.cols(), 132);
     EXPECT_EQ(t.take(), "\x1b[?3;1$y");
 }
@@ -333,7 +351,9 @@ TEST(Conformance, ColumnModeNeedsPermissionAndClears)
     t.feed("\x1b[?40h\x1b[?3h");
     EXPECT_EQ(t.t.cols(), 132);
     EXPECT_EQ(rowText(t.t, 0), "");
-    t.feed("\x1b" "c"); // RIS returns to 80
+    t.feed(
+        "\x1b"
+        "c"); // RIS returns to 80
     EXPECT_EQ(t.t.cols(), 80);
 }
 
@@ -385,14 +405,19 @@ TEST(Conformance, Vt52Mode)
 {
     Term t(20, 5);
     t.feed("\x1b[?2l"); // into VT52 mode
-    t.feed("\x1bY\"%ab\x1b" "D\x1b" "DX"); // row 2, column 5; back twice
+    t.feed(
+        "\x1bY\"%ab\x1b"
+        "D\x1b"
+        "DX"); // row 2, column 5; back twice
     EXPECT_EQ(rowText(t.t, 2), "     Xb");
     t.feed("\x1bY~#"); // row off the screen: only the column moves
     EXPECT_EQ(t.t.screen().cursor.y, 2);
     EXPECT_EQ(t.t.screen().cursor.x, 3);
     t.feed("\x1bZ");
     EXPECT_EQ(t.take(), "\x1b/Z");
-    t.feed("\x1bH\x1b" "Fa\x1bGa"); // graphics character set on and off
+    t.feed(
+        "\x1bH\x1b"
+        "Fa\x1bGa"); // graphics character set on and off
     EXPECT_EQ(rowText(t.t, 0), "\u2592a");
     t.feed("\x1b<\x1b[?2$p"); // back to ANSI; DECRQM works again
     EXPECT_EQ(t.take(), "\x1b[?2;1$y");
@@ -417,7 +442,8 @@ TEST(Conformance, KittyColorControl)
     Term t(10, 2);
     t.feed("\x1b]21;foreground=#102030;7=rgb:ff/00/00\x1b\\");
     t.feed("\x1b]21;foreground=?;7=?;cursor=?;selection_background=?;bogus=?\x1b\\");
-    EXPECT_EQ(t.take(), "\x1b]21;foreground=rgb:10/20/30;7=rgb:ff/00/00;cursor=;selection_background=;unknown=Ym9ndXM\x1b\\");
+    EXPECT_EQ(t.take(),
+              "\x1b]21;foreground=rgb:10/20/30;7=rgb:ff/00/00;cursor=;selection_background=;unknown=Ym9ndXM\x1b\\");
     t.feed("\x1b]21;foreground;cursor=#abcdef\x07\x1b]21;cursor=?\x07"); // bare key resets
     EXPECT_EQ(t.take(), "\x1b]21;cursor=rgb:ab/cd/ef\x07");
     EXPECT_EQ(t.t.defaultForeground(), TerminalOptions{}.defaultForeground);
@@ -457,7 +483,8 @@ TEST(Conformance, ConfiguredSelectionAndCursorTextColours)
     o.cursorTextColor = Rgb{0x01, 0x02, 0x03};
     t.t.setOptions(o);
     t.feed("\x1b]17;?\x07\x1b]21;selection_background=?;cursor_text=?\x07");
-    EXPECT_EQ(t.take(), "\x1b]17;rgb:2020/4040/6060\x07\x1b]21;selection_background=rgb:20/40/60;cursor_text=rgb:01/02/03\x07");
+    EXPECT_EQ(t.take(),
+              "\x1b]17;rgb:2020/4040/6060\x07\x1b]21;selection_background=rgb:20/40/60;cursor_text=rgb:01/02/03\x07");
     // Programs override the configured colour, and resetting returns to it.
     t.feed("\x1b]17;#ffffff\x07");
     EXPECT_EQ(t.t.selectionBackground()->r, 0xff);
@@ -471,7 +498,9 @@ TEST(Conformance, RectangleAttributes)
 {
     Term t(10, 3);
     t.feed("abcdefghij\r\nabcdefghij\r\nabcdefghij");
-    auto styleAt = [&](int x, int y) { return t.t.screen().styles().get(t.t.screen().row(y).at(x).styleId()); };
+    auto styleAt = [&](int x, int y) {
+        return t.t.screen().styles().get(t.t.screen().row(y).at(x).styleId());
+    };
     t.feed("\x1b[2*x\x1b[1;2;2;3;1;4$r"); // rectangle: bold and underline on rows 1-2, columns 2-3
     EXPECT_TRUE(styleAt(1, 0).has(Attr::Bold));
     EXPECT_EQ(styleAt(2, 1).underline, UnderlineStyle::Single);
@@ -493,7 +522,9 @@ TEST(Conformance, RectangleAttributesTakeEverySgrCode)
     t.feed("abcdefghij\r\nabcdefghij\r\n");
     // A protected character and a link on the last row.
     t.feed("\x1b[1\"qP\x1b[0\"q\x1b]8;;http://example.com\x1b\\L\x1b]8;;\x1b\\");
-    auto styleAt = [&](int x, int y) { return t.t.screen().styles().get(t.t.screen().row(y).at(x).styleId()); };
+    auto styleAt = [&](int x, int y) {
+        return t.t.screen().styles().get(t.t.screen().row(y).at(x).styleId());
+    };
     t.feed("\x1b[2*x\x1b[1;2;2;3;44;3;38:2::1:2:3$r\x1b[*x");
     EXPECT_EQ(styleAt(1, 0).bg, Color::palette(4));
     EXPECT_EQ(styleAt(2, 1).fg, Color::rgb(1, 2, 3));
@@ -517,11 +548,15 @@ TEST(Conformance, RectangleAttributesOverManyStylesKeepWhatTheCodesLeave)
 {
     Term t(40, 2);
     // Each cell a style of its own: bold or italic, and its own foreground.
-    for (int x = 0; x < 40; ++x) t.feed("\x1b[0;" + std::string(x % 2 ? "1" : "3") + ";38;5;" + std::to_string(x) + "mx");
+    for (int x = 0; x < 40; ++x)
+        t.feed("\x1b[0;" + std::string(x % 2 ? "1" : "3") + ";38;5;" + std::to_string(x) + "mx");
     std::string codes;
-    for (int i = 0; i < 1000; ++i) codes += ";4;24";
+    for (int i = 0; i < 1000; ++i)
+        codes += ";4;24";
     t.feed("\x1b[2*x\x1b[1;1;1;40" + codes + ";48;5;9;27;2;4:3$r");
-    auto styleAt = [&](int x) { return t.t.screen().styles().get(t.t.screen().row(0).at(x).styleId()); };
+    auto styleAt = [&](int x) {
+        return t.t.screen().styles().get(t.t.screen().row(0).at(x).styleId());
+    };
     for (int x = 0; x < 40; ++x) {
         const Style st = styleAt(x);
         EXPECT_EQ(st.fg, Color::palette(std::uint8_t(x))) << x;
@@ -574,7 +609,10 @@ TEST(Conformance, LegacySynchronizedUpdatesAndFlash)
     struct FlashHost : RecordingHost
     {
         int flashes = 0;
-        void flash() override { ++flashes; }
+        void flash() override
+        {
+            ++flashes;
+        }
     };
     FlashHost host;
     Terminal t(10, 2, host);
@@ -711,7 +749,10 @@ TEST(Conformance, ModifyOtherKeysResetsWithoutParameters)
 TEST(Conformance, CursorRestoreKeepsOriginModeInsideTheMargins)
 {
     Term t(10, 12);
-    t.feed("\x1b[5;10r\x1b[?6h\x1b" "7\x1b[8;10r\x1b" "8\x1b[6n");
+    t.feed(
+        "\x1b[5;10r\x1b[?6h\x1b"
+        "7\x1b[8;10r\x1b"
+        "8\x1b[6n");
     EXPECT_EQ(t.take(), "\x1b[1;1R");
 }
 
@@ -746,7 +787,9 @@ TEST(Conformance, Decst8cResetsTheTabStopsToEveryEightColumns)
 TEST(Conformance, CursorRestoreWithNothingSavedResetsCharsets)
 {
     Term t(10, 2);
-    t.feed("\x1b(0\x1b" "8q");
+    t.feed(
+        "\x1b(0\x1b"
+        "8q");
     EXPECT_EQ(rowText(t.t, 0), "q");
 }
 

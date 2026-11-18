@@ -66,34 +66,45 @@ public:
     bool read(std::string_view bytes)
     {
         m_bytes = bytes;
-        if (bytes.size() < 8) return false;
+        if (bytes.size() < 8)
+            return false;
         if (bytes.starts_with(std::string_view("II*\0", 4))) {
             m_little = true;
         } else if (!bytes.starts_with(std::string_view("MM\0*", 4))) {
             return false;
         }
         const std::size_t start = number(4, 4);
-        if (start < 8 || start > bytes.size() - 2) return false;
+        if (start < 8 || start > bytes.size() - 2)
+            return false;
         const std::size_t entries = number(start, 2);
-        if (entries > (bytes.size() - start - 2) / 12) return false;
+        if (entries > (bytes.size() - start - 2) / 12)
+            return false;
         for (std::size_t i = 0; i < entries; ++i) {
             const std::size_t entry = start + 2 + 12 * i;
             Field field;
             field.type = std::uint16_t(number(entry + 2, 2));
             field.count = number(entry + 4, 4);
             const std::uint64_t size = std::uint64_t(field.count) * typeSize(field.type);
-            if (size == 0) continue;
+            if (size == 0)
+                continue;
             field.offset = size <= 4 ? entry + 8 : number(entry + 8, 4);
             // A field whose values are not in the file is left out: a field
             // that the image needs then refuses it.
-            if (field.offset > bytes.size() || size > bytes.size() - field.offset) continue;
+            if (field.offset > bytes.size() || size > bytes.size() - field.offset)
+                continue;
             m_fields.emplace(std::uint16_t(number(entry, 2)), field);
         }
         return true;
     }
 
-    bool little() const { return m_little; }
-    bool has(Tag tag) const { return m_fields.contains(tag); }
+    bool little() const
+    {
+        return m_little;
+    }
+    bool has(Tag tag) const
+    {
+        return m_fields.contains(tag);
+    }
     std::uint32_t count(Tag tag) const
     {
         const auto it = m_fields.find(tag);
@@ -103,20 +114,26 @@ public:
     std::uint32_t value(Tag tag, std::uint32_t fallback = 0, std::uint32_t index = 0) const
     {
         const auto it = m_fields.find(tag);
-        if (it == m_fields.end() || index >= it->second.count) return fallback;
+        if (it == m_fields.end() || index >= it->second.count)
+            return fallback;
         const Field& f = it->second;
         switch (f.type) {
         case 1:
-        case 7: return at(m_bytes, f.offset + index);
-        case 3: return number(f.offset + 2 * std::size_t(index), 2);
-        case 4: return number(f.offset + 4 * std::size_t(index), 4);
-        default: return fallback;
+        case 7:
+            return at(m_bytes, f.offset + index);
+        case 3:
+            return number(f.offset + 2 * std::size_t(index), 2);
+        case 4:
+            return number(f.offset + 4 * std::size_t(index), 4);
+        default:
+            return fallback;
         }
     }
     std::string_view bytes(Tag tag) const
     {
         const auto it = m_fields.find(tag);
-        if (it == m_fields.end() || typeSize(it->second.type) != 1) return {};
+        if (it == m_fields.end() || typeSize(it->second.type) != 1)
+            return {};
         return m_bytes.substr(it->second.offset, it->second.count);
     }
     std::uint32_t number(std::size_t index, int count) const
@@ -128,11 +145,24 @@ private:
     static std::uint64_t typeSize(std::uint16_t type)
     {
         switch (type) {
-        case 1: case 2: case 6: case 7: return 1;
-        case 3: case 8: return 2;
-        case 4: case 9: case 11: return 4;
-        case 5: case 10: case 12: return 8;
-        default: return 0;
+        case 1:
+        case 2:
+        case 6:
+        case 7:
+            return 1;
+        case 3:
+        case 8:
+            return 2;
+        case 4:
+        case 9:
+        case 11:
+            return 4;
+        case 5:
+        case 10:
+        case 12:
+            return 8;
+        default:
+            return 0;
         }
     }
 
@@ -164,7 +194,8 @@ void unpackBits(std::string_view in, std::vector<std::uint8_t>& out, std::size_t
 bool inflateData(std::string_view in, std::vector<std::uint8_t>& out, std::size_t& size)
 {
     z_stream stream{};
-    if (inflateInit(&stream) != Z_OK) return false;
+    if (inflateInit(&stream) != Z_OK)
+        return false;
     stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in.data()));
     stream.avail_in = uInt(std::min<std::size_t>(in.size(), UINT32_MAX));
     stream.next_out = out.data();
@@ -200,7 +231,8 @@ public:
         constexpr std::uint32_t Clear = 256;
         constexpr std::uint32_t End = 257;
         size = 0;
-        if (in.size() >= 2 && at(in, 0) == 0 && (at(in, 1) & 1)) return false;
+        if (in.size() >= 2 && at(in, 0) == 0 && (at(in, 1) & 1))
+            return false;
         // The codes from 258 are written before they are read: a code past
         // the next one is refused.
         std::uint32_t next = 258;
@@ -214,17 +246,20 @@ public:
                 bits = bits << 8 | at(in, pos++);
                 held += 8;
             }
-            if (held < width) break;
+            if (held < width)
+                break;
             const std::uint32_t code = std::uint32_t(bits >> (held - width)) & ((1u << width) - 1);
             held -= width;
-            if (code == End) break;
+            if (code == End)
+                break;
             if (code == Clear) {
                 next = 258;
                 width = 9;
                 previous = -1;
                 continue;
             }
-            if (code > next || (code == next && previous < 0)) return false;
+            if (code > next || (code == next && previous < 0))
+                return false;
             if (previous >= 0 && next < 4096) {
                 // The new string: the previous one and the first byte of this
                 // one, which is its own first byte when it is the new one.
@@ -245,7 +280,8 @@ public:
             std::copy_n(m_string.begin(), copied, out.begin() + std::ptrdiff_t(size));
             size += copied;
             previous = int(code);
-            if (next + 1 >= (1u << width) && width < 12) ++width;
+            if (next + 1 >= (1u << width) && width < 12)
+                ++width;
         }
         return true;
     }
@@ -260,7 +296,10 @@ private:
 
 /// The high byte, as libtiff and kitten read samples and palettes of 16
 /// bits: a palette of 8-bit colours often holds them times 256.
-std::uint8_t scale16(std::uint32_t value) { return std::uint8_t(value >> 8); }
+std::uint8_t scale16(std::uint32_t value)
+{
+    return std::uint8_t(value >> 8);
+}
 
 /// The 16-bit sample @p i of @p row.
 std::uint32_t sample16(const std::uint8_t* row, std::uint64_t i, bool little)
@@ -280,7 +319,8 @@ Probe probeTiff(std::string_view bytes, int& width, int& height)
 {
     width = height = 0;
     Directory directory;
-    if (!directory.read(bytes)) return Probe::Unknown;
+    if (!directory.read(bytes))
+        return Probe::Unknown;
     return sized(directory.value(ImageWidth), directory.value(ImageLength), width, height);
 }
 
@@ -288,11 +328,13 @@ ColorSpace tiffColorSpace(std::string_view bytes)
 {
     ColorSpace space;
     Directory directory;
-    if (!directory.read(bytes)) return space;
+    if (!directory.read(bytes))
+        return space;
     const std::uint32_t kind = kindOf(directory, directory.value(SamplesPerPixel, 1));
     space.grey = kind == WhiteIsZero || kind == BlackIsZero;
     const std::string_view icc = directory.bytes(IccProfile);
-    if (icc.size() <= MaxIcc) space.icc.assign(icc);
+    if (icc.size() <= MaxIcc)
+        space.icc.assign(icc);
     return space;
 }
 
@@ -305,7 +347,8 @@ bool decodeTiff(std::string_view bytes, const FrameSink& sink, const Options&, s
         error = "the TIFF has no valid header";
         return false;
     }
-    if (refused(sized(d.value(ImageWidth), d.value(ImageLength), width, height), "TIFF", error)) return false;
+    if (refused(sized(d.value(ImageWidth), d.value(ImageLength), width, height), "TIFF", error))
+        return false;
     const std::uint32_t samples = d.value(SamplesPerPixel, 1);
     const std::uint32_t bits = d.value(BitsPerSample, 1);
     // Before the samples are read one by one: a count from the file bounds
@@ -331,7 +374,8 @@ bool decodeTiff(std::string_view bytes, const FrameSink& sink, const Options&, s
         break;
     case Palette:
         colours = 1;
-        depthValid = (bits == 1 || bits == 2 || bits == 4 || bits == 8) && samples == 1 && d.count(ColorMap) == 3u << bits;
+        depthValid =
+            (bits == 1 || bits == 2 || bits == 4 || bits == 8) && samples == 1 && d.count(ColorMap) == 3u << bits;
         break;
     case Rgb:
         colours = 3;
@@ -346,7 +390,8 @@ bool decodeTiff(std::string_view bytes, const FrameSink& sink, const Options&, s
         return false;
     }
     if (!depthValid || samples < colours) {
-        error = "the TIFF has a depth of " + std::to_string(bits) + " bits in " + std::to_string(samples) + " samples, which is not supported";
+        error = "the TIFF has a depth of " + std::to_string(bits) + " bits in " + std::to_string(samples)
+            + " samples, which is not supported";
         return false;
     }
     if (samples > 1 && d.value(PlanarConfiguration, 1) != 1) {
@@ -378,7 +423,8 @@ bool decodeTiff(std::string_view bytes, const FrameSink& sink, const Options&, s
     // Strips are tiles as wide as the image.
     const bool tiled = d.has(TileWidth);
     const std::uint64_t blockWidth = tiled ? d.value(TileWidth) : std::uint64_t(width);
-    const std::uint64_t blockHeight = tiled ? d.value(TileLength) : std::min<std::uint64_t>(d.value(RowsPerStrip, UINT32_MAX), std::uint64_t(height));
+    const std::uint64_t blockHeight =
+        tiled ? d.value(TileLength) : std::min<std::uint64_t>(d.value(RowsPerStrip, UINT32_MAX), std::uint64_t(height));
     const std::uint64_t across = blockWidth ? (std::uint64_t(width) + blockWidth - 1) / blockWidth : 0;
     const std::uint64_t down = blockHeight ? (std::uint64_t(height) + blockHeight - 1) / blockHeight : 0;
     // Each block is read whole, also where it is past the image: the pixels
@@ -389,8 +435,10 @@ bool decodeTiff(std::string_view bytes, const FrameSink& sink, const Options&, s
     const std::uint64_t blockPixels = across * blockWidth * down * std::min(blockHeight, std::uint64_t(height));
     const std::uint64_t edgePixels = (std::uint64_t(width) + std::min<std::uint64_t>(blockWidth, 512))
         * (std::uint64_t(height) + std::min<std::uint64_t>(blockHeight, 512));
-    if (blockWidth == 0 || blockHeight == 0 || blockWidth > std::uint64_t(MaxSide) || blockHeight > std::uint64_t(MaxSide)
-        || blockPixels > std::max(4 * std::uint64_t(width) * std::uint64_t(height) + (std::uint64_t(1) << 20), edgePixels)) {
+    if (blockWidth == 0 || blockHeight == 0 || blockWidth > std::uint64_t(MaxSide)
+        || blockHeight > std::uint64_t(MaxSide)
+        || blockPixels
+            > std::max(4 * std::uint64_t(width) * std::uint64_t(height) + (std::uint64_t(1) << 20), edgePixels)) {
         error = "the TIFF has strips or tiles of no valid size";
         return false;
     }
@@ -410,7 +458,8 @@ bool decodeTiff(std::string_view bytes, const FrameSink& sink, const Options&, s
         const std::uint32_t size = 1u << bits;
         palette.resize(size);
         for (std::uint32_t i = 0; i < size; ++i) {
-            palette[i] = {scale16(d.value(ColorMap, 0, i)), scale16(d.value(ColorMap, 0, size + i)), scale16(d.value(ColorMap, 0, 2 * size + i))};
+            palette[i] = {scale16(d.value(ColorMap, 0, i)), scale16(d.value(ColorMap, 0, size + i)),
+                          scale16(d.value(ColorMap, 0, 2 * size + i))};
         }
     }
     const std::uint32_t maximum = (1u << std::min<std::uint32_t>(bits, 16)) - 1;
@@ -447,10 +496,16 @@ bool decodeTiff(std::string_view bytes, const FrameSink& sink, const Options&, s
             size = std::min(in.size(), block.size());
             std::copy_n(in.begin(), size, block.begin());
             break;
-        case 5: read = lzw.unpack(in, block, size); break;
+        case 5:
+            read = lzw.unpack(in, block, size);
+            break;
         case 8:
-        case 32946: read = inflateData(in, block, size); break;
-        case 32773: unpackBits(in, block, size); break;
+        case 32946:
+            read = inflateData(in, block, size);
+            break;
+        case 32773:
+            unpackBits(in, block, size);
+            break;
         }
         if (!read || size < needed) {
             error = compression == 1 ? "the TIFF is truncated" : "the TIFF has corrupt data";
@@ -461,22 +516,28 @@ bool decodeTiff(std::string_view bytes, const FrameSink& sink, const Options&, s
             // The predictor stores each sample as its difference from the
             // same sample of the pixel before.
             if (predictor == 2 && bits == 8) {
-                for (std::uint64_t i = samples; i < blockWidth * samples; ++i) row[i] = std::uint8_t(row[i] + row[i - samples]);
+                for (std::uint64_t i = samples; i < blockWidth * samples; ++i)
+                    row[i] = std::uint8_t(row[i] + row[i - samples]);
             } else if (predictor == 2) {
                 for (std::uint64_t i = samples; i < blockWidth * samples; ++i) {
-                    const std::uint32_t value = (sample16(row, i, d.little()) + sample16(row, i - samples, d.little())) & 0xFFFF;
+                    const std::uint32_t value =
+                        (sample16(row, i, d.little()) + sample16(row, i - samples, d.little())) & 0xFFFF;
                     row[2 * i] = std::uint8_t(d.little() ? value : value >> 8);
                     row[2 * i + 1] = std::uint8_t(d.little() ? value >> 8 : value);
                 }
             }
             const auto sample = [&](std::uint64_t i) -> std::uint32_t {
-                if (bits == 8) return row[i];
-                if (bits == 16) return sample16(row, i, d.little());
+                if (bits == 8)
+                    return row[i];
+                if (bits == 16)
+                    return sample16(row, i, d.little());
                 const std::uint64_t bit = i * bits;
                 return std::uint32_t(row[bit / 8] >> (8 - bits - bit % 8)) & maximum;
             };
             const auto eight = [&](std::uint32_t value) {
-                return bits == 16 ? scale16(value) : bits == 8 ? std::uint8_t(value) : std::uint8_t(value * 255 / maximum);
+                return bits == 16 ? scale16(value)
+                    : bits == 8   ? std::uint8_t(value)
+                                  : std::uint8_t(value * 255 / maximum);
             };
             const std::uint64_t columns = std::min(blockWidth, std::uint64_t(width) - x0);
             for (std::uint64_t x = 0; x < columns; ++x) {
@@ -493,18 +554,21 @@ bool decodeTiff(std::string_view bytes, const FrameSink& sink, const Options&, s
                     std::copy_n(palette[sample(s)].begin(), 3, out);
                     break;
                 case Rgb:
-                    for (int c = 0; c < 3; ++c) out[c] = eight(sample(s + std::uint64_t(c)));
+                    for (int c = 0; c < 3; ++c)
+                        out[c] = eight(sample(s + std::uint64_t(c)));
                     break;
                 case Cmyk: {
                     const std::uint32_t k = 255 - eight(sample(s + 3));
-                    for (int c = 0; c < 3; ++c) out[c] = std::uint8_t((255 - eight(sample(s + std::uint64_t(c)))) * k / 255);
+                    for (int c = 0; c < 3; ++c)
+                        out[c] = std::uint8_t((255 - eight(sample(s + std::uint64_t(c)))) * k / 255);
                     break;
                 }
                 }
                 out[3] = alpha ? eight(sample(s + colours)) : 255;
                 if (alpha && premultiplied) {
                     const std::uint32_t a = out[3];
-                    for (int c = 0; c < 3; ++c) out[c] = a == 0 ? 0 : std::uint8_t(std::min<std::uint32_t>(255, (out[c] * 255u + a / 2) / a));
+                    for (int c = 0; c < 3; ++c)
+                        out[c] = a == 0 ? 0 : std::uint8_t(std::min<std::uint32_t>(255, (out[c] * 255u + a / 2) / a));
                 }
             }
         }

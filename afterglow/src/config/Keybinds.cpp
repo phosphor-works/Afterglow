@@ -48,7 +48,11 @@ const ActionInfo Actions[] = {
     {Action::SwapUp, "swap_up", "Swap Pane Above", OfPane, {}},
     {Action::SwapDown, "swap_down", "Swap Pane Below", OfPane, {}},
     {Action::RotatePanesClockwise, "rotate_panes_clockwise", "Rotate Panes Clockwise", 0, {"Ctrl+Shift+]"}},
-    {Action::RotatePanesCounterclockwise, "rotate_panes_counterclockwise", "Rotate Panes Counterclockwise", 0, {"Ctrl+Shift+["}},
+    {Action::RotatePanesCounterclockwise,
+     "rotate_panes_counterclockwise",
+     "Rotate Panes Counterclockwise",
+     0,
+     {"Ctrl+Shift+["}},
     {Action::PaneOverview, "pane_overview", "Pane Overview", 0, {"Ctrl+Shift+D"}},
     {Action::UsePackageShaders, "use_package_shaders", "Use Package Shaders…", ThisComputer, {}},
     {Action::MovePaneToTab, "move_pane_to_tab", "Move Pane to New Tab", OfPane | Structural, {}},
@@ -84,12 +88,21 @@ const ActionInfo Actions[] = {
     {Action::NextTab, "next_tab", "Next Tab", 0, {"Ctrl+Tab", "Ctrl+PgDown"}},
     {Action::PreviousTab, "previous_tab", "Previous Tab", 0, {"Ctrl+Shift+Tab", "Ctrl+PgUp"}},
     {Action::ShowHints, "show_hints", "Select Text or File Reference", OfPane, {"Ctrl+Shift+H"}},
-    {Action::ShowLastOutput, "show_last_output", "View Last Command Output in Pager",
-     OfPane | ReadsText | ThisComputer | Structural, {}},
-    {Action::ShowFirstOutputOnScreen, "show_first_output_on_screen", "View First Command Output on Screen in Pager",
-     OfPane | ReadsText | ThisComputer | Structural, {}},
-    {Action::ShowLastVisitedOutput, "show_last_visited_output", "View Last Visited Command Output in Pager",
-     OfPane | ReadsText | ThisComputer | Structural, {}},
+    {Action::ShowLastOutput,
+     "show_last_output",
+     "View Last Command Output in Pager",
+     OfPane | ReadsText | ThisComputer | Structural,
+     {}},
+    {Action::ShowFirstOutputOnScreen,
+     "show_first_output_on_screen",
+     "View First Command Output on Screen in Pager",
+     OfPane | ReadsText | ThisComputer | Structural,
+     {}},
+    {Action::ShowLastVisitedOutput,
+     "show_last_visited_output",
+     "View Last Visited Command Output in Pager",
+     OfPane | ReadsText | ThisComputer | Structural,
+     {}},
     {Action::CopyMode, "copy_mode", "Keyboard Copy Mode", OfPane, {"Ctrl+Shift+Space"}},
     {Action::Copy, "copy", "Copy", OfPane | ReadsText | ThisComputer, {"Ctrl+Shift+C"}},
     {Action::Paste, "paste", "Paste", OfPane | ReadsText | ThisComputer, {"Ctrl+Shift+V"}},
@@ -128,7 +141,9 @@ const ActionInfo Actions[] = {
 
 const ActionInfo* infoOf(Action action)
 {
-    const auto it = std::find_if(std::begin(Actions), std::end(Actions), [&](const ActionInfo& a) { return a.action == action; });
+    const auto it = std::find_if(std::begin(Actions), std::end(Actions), [&](const ActionInfo& a) {
+        return a.action == action;
+    });
     return it == std::end(Actions) ? nullptr : it;
 }
 
@@ -146,9 +161,12 @@ QString keyText(int combo)
 int hexDigit(QChar c)
 {
     const char16_t u = c.unicode();
-    if (u >= '0' && u <= '9') return u - '0';
-    if (u >= 'a' && u <= 'f') return u - 'a' + 10;
-    if (u >= 'A' && u <= 'F') return u - 'A' + 10;
+    if (u >= '0' && u <= '9')
+        return u - '0';
+    if (u >= 'a' && u <= 'f')
+        return u - 'a' + 10;
+    if (u >= 'A' && u <= 'F')
+        return u - 'A' + 10;
     return -1;
 }
 
@@ -162,7 +180,9 @@ QString Keybinds::token(Action action)
 
 Action Keybinds::fromToken(const QString& token)
 {
-    const auto it = std::find_if(std::begin(Actions), std::end(Actions), [&](const ActionInfo& a) { return token == QLatin1String(a.token); });
+    const auto it = std::find_if(std::begin(Actions), std::end(Actions), [&](const ActionInfo& a) {
+        return token == QLatin1String(a.token);
+    });
     return it == std::end(Actions) ? Action::None : it->action;
 }
 
@@ -228,7 +248,8 @@ Keybinds Keybinds::defaults()
 bool Keybinds::usesLeader(const QString& sequence)
 {
     const QString text = sequence.trimmed();
-    if (!text.startsWith(QLatin1String("Leader"), Qt::CaseInsensitive)) return false;
+    if (!text.startsWith(QLatin1String("Leader"), Qt::CaseInsensitive))
+        return false;
     const QString rest = text.mid(6).trimmed();
     return rest.isEmpty() || rest.startsWith(QLatin1Char(','));
 }
@@ -246,7 +267,8 @@ std::optional<int> Keybinds::parse(const QString& sequence, const QString& targe
         }
         return std::nullopt;
     }
-    if (seq.count() > 1) return std::nullopt; // handled by KeyModes
+    if (seq.count() > 1)
+        return std::nullopt; // handled by KeyModes
     return QKeyCombination(seq[0].keyboardModifiers() & RelevantMods, seq[0].key()).toCombined();
 }
 
@@ -260,16 +282,21 @@ void Keybinds::unbind(int combo)
 Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
 {
     auto error = [errors](const QString& text) {
-        if (errors) errors->append(text);
+        if (errors)
+            errors->append(text);
     };
     auto sequencesOf = [&](const QString& target, const QVariant& v) {
-        if (v.typeId() == QMetaType::QString) return QStringList{v.toString()};
+        if (v.typeId() == QMetaType::QString)
+            return QStringList{v.toString()};
         QStringList out;
-        if (v.typeId() == QMetaType::QStringList) return v.toStringList();
+        if (v.typeId() == QMetaType::QStringList)
+            return v.toStringList();
         if (v.typeId() == QMetaType::QVariantList) {
             for (const QVariant& item : v.toList()) {
-                if (item.typeId() == QMetaType::QString) out << item.toString();
-                else error(QStringLiteral("binding for %1 must be a key string or a list of them").arg(target));
+                if (item.typeId() == QMetaType::QString)
+                    out << item.toString();
+                else
+                    error(QStringLiteral("binding for %1 must be a key string or a list of them").arg(target));
             }
             return out;
         }
@@ -281,7 +308,8 @@ Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
     // Defaults first: a key the config binds explicitly then takes the key
     // away from the default that held it, whatever the table order.
     for (const ActionInfo& a : Actions) {
-        if (map.contains(QLatin1String(a.token))) continue;
+        if (map.contains(QLatin1String(a.token)))
+            continue;
         for (const char* d : a.defaults) {
             if (const auto combo = parse(QString::fromLatin1(d), QLatin1String(a.token), errors)) {
                 kb.unbind(*combo);
@@ -293,7 +321,8 @@ Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
     QHash<int, QString> explicitOwner;
     auto claim = [&](const QString& sequence, const QString& target) -> std::optional<int> {
         const auto combo = parse(sequence, target, errors);
-        if (!combo) return std::nullopt;
+        if (!combo)
+            return std::nullopt;
         if (const auto owner = explicitOwner.constFind(*combo); owner != explicitOwner.constEnd()) {
             if (*owner != target) {
                 error(QStringLiteral("%1 binds %2, which %3 already uses").arg(target, keyText(*combo), *owner));
@@ -308,12 +337,15 @@ Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
     for (auto it = map.constBegin(); it != map.constEnd(); ++it) {
         const QString& target = it.key();
         // Key tables and their exit live in KeyModes.
-        if (target.startsWith(TablePrefix) || target == PopKeyTable) continue;
-        const auto action = std::find_if(std::begin(Actions), std::end(Actions),
-                                          [&](const ActionInfo& a) { return target == QLatin1String(a.token); });
+        if (target.startsWith(TablePrefix) || target == PopKeyTable)
+            continue;
+        const auto action = std::find_if(std::begin(Actions), std::end(Actions), [&](const ActionInfo& a) {
+            return target == QLatin1String(a.token);
+        });
         if (action != std::end(Actions)) {
             for (const QString& s : sequencesOf(target, it.value())) {
-                if (const auto combo = claim(s, target)) kb.m_byKey.insert(*combo, action->action);
+                if (const auto combo = claim(s, target))
+                    kb.m_byKey.insert(*combo, action->action);
             }
         } else if (target.startsWith(ScriptPrefix)) {
             // "script:foo" would bind a key that only ever fails to run.
@@ -333,7 +365,8 @@ Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
                 continue;
             }
             for (const QString& s : sequencesOf(target, it.value())) {
-                if (const auto combo = claim(s, target)) kb.m_textByKey.insert(*combo, bytes);
+                if (const auto combo = claim(s, target))
+                    kb.m_textByKey.insert(*combo, bytes);
             }
         } else {
             error(QStringLiteral("unknown action \"%1\"").arg(target));
@@ -349,10 +382,12 @@ QList<int> Keybinds::combinations(const QKeyEvent* event, char32_t base)
     QList<int> result{QKeyCombination(mods, Qt::Key(key)).toCombined()};
     auto add = [&result](Qt::KeyboardModifiers m, int k) {
         const int combined = QKeyCombination(m, Qt::Key(k)).toCombined();
-        if (!result.contains(combined)) result << combined;
+        if (!result.contains(combined))
+            result << combined;
     };
     // Qt reports Shift+Tab as Backtab, while bindings name it Shift+Tab.
-    if (key == Qt::Key_Backtab) add(mods | Qt::ShiftModifier, Qt::Key_Tab);
+    if (key == Qt::Key_Backtab)
+        add(mods | Qt::ShiftModifier, Qt::Key_Tab);
     int baseKey = 0;
     if (base >= 0x20 && base < 0x7F) {
         baseKey = (base >= 'a' && base <= 'z') ? int(base - 'a' + 'A') : int(base);
@@ -362,14 +397,16 @@ QList<int> Keybinds::combinations(const QKeyEvent* event, char32_t base)
     // also matches a binding that names the symbol alone. A letter's key is
     // the same with and without Shift, so Ctrl+Shift+A never matches Ctrl+A.
     const bool symbol = key > 0x20 && key < 0x7F && !(key >= Qt::Key_A && key <= Qt::Key_Z);
-    if ((mods & Qt::ShiftModifier) && symbol && key != baseKey) add(mods & ~Qt::ShiftModifier, key);
+    if ((mods & Qt::ShiftModifier) && symbol && key != baseKey)
+        add(mods & ~Qt::ShiftModifier, key);
     return result;
 }
 template<typename T>
 static const T* lookup(const QHash<int, T>& map, const QKeyEvent* event, char32_t base)
 {
     for (int key : Keybinds::combinations(event, base)) {
-        if (auto it = map.constFind(key); it != map.constEnd()) return &*it;
+        if (auto it = map.constFind(key); it != map.constEnd())
+            return &*it;
     }
     return nullptr;
 }
@@ -398,11 +435,13 @@ QByteArray Keybinds::unescape(const QString& text)
     for (qsizetype i = 0; i < text.size(); ++i) {
         if (text[i] != QLatin1Char('\\')) {
             if (text[i].isHighSurrogate()) {
-                if (i + 1 >= text.size() || !text[i + 1].isLowSurrogate()) return {};
+                if (i + 1 >= text.size() || !text[i + 1].isLowSurrogate())
+                    return {};
                 out += text.mid(i, 2).toUtf8();
                 ++i;
             } else {
-                if (text[i].isLowSurrogate()) return {};
+                if (text[i].isLowSurrogate())
+                    return {};
                 out += QString(text[i]).toUtf8();
             }
             continue;
@@ -452,14 +491,18 @@ QByteArray Keybinds::unescape(const QString& text)
             break;
         case 'u': {
             auto value = hex(4);
-            if (!value) return {};
+            if (!value)
+                return {};
             if (*value >= 0xD800 && *value <= 0xDBFF) {
-                if (text.mid(i + 1, 2) != QLatin1String("\\u")) return {};
+                if (text.mid(i + 1, 2) != QLatin1String("\\u"))
+                    return {};
                 i += 2;
                 const auto low = hex(4);
-                if (!low || *low < 0xDC00 || *low > 0xDFFF) return {};
+                if (!low || *low < 0xDC00 || *low > 0xDFFF)
+                    return {};
                 *value = 0x10000 + ((*value - 0xD800) << 10) + (*low - 0xDC00);
-            } else if (*value >= 0xDC00 && *value <= 0xDFFF) return {};
+            } else if (*value >= 0xDC00 && *value <= 0xDFFF)
+                return {};
             out += QString::fromUcs4(&*value, 1).toUtf8();
             break;
         }
@@ -472,7 +515,8 @@ QByteArray Keybinds::unescape(const QString& text)
 
 bool Keybinds::isScriptTarget(const QString& target)
 {
-    if (!target.startsWith(ScriptPrefix)) return false;
+    if (!target.startsWith(ScriptPrefix))
+        return false;
     // ScriptHost splits the command at the first dot, as here.
     const qsizetype dot = target.indexOf(QLatin1Char('.'), ScriptPrefix.size());
     return dot > ScriptPrefix.size() && dot < target.size() - 1;

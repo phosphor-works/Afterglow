@@ -26,8 +26,10 @@ struct Saved
     }
     ~Saved()
     {
-        if (wasSet) qputenv(name, value);
-        else qunsetenv(name);
+        if (wasSet)
+            qputenv(name, value);
+        else
+            qunsetenv(name);
     }
     Saved(const Saved&) = delete;
     Saved& operator=(const Saved&) = delete;

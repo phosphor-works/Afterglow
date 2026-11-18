@@ -62,7 +62,8 @@ struct Listener : IPtyListener
     }
     void ptyOutput(std::string_view bytes) override
     {
-        if (outputDelay.count() > 0) std::this_thread::sleep_for(outputDelay);
+        if (outputDelay.count() > 0)
+            std::this_thread::sleep_for(outputDelay);
         std::lock_guard lock(mutex);
         outputAfterClose |= closed;
         output.append(bytes);
@@ -85,7 +86,9 @@ struct Listener : IPtyListener
     bool waitClosed()
     {
         std::unique_lock lock(mutex);
-        return changed.wait_for(lock, 10s, [this] { return closed; });
+        return changed.wait_for(lock, 10s, [this] {
+            return closed;
+        });
     }
 };
 
@@ -97,13 +100,16 @@ public:
     Variable(const char* name, const char* value)
         : m_name(name)
     {
-        if (const char* old = std::getenv(name)) m_old = old;
+        if (const char* old = std::getenv(name))
+            m_old = old;
         ::setenv(name, value, 1);
     }
     ~Variable()
     {
-        if (m_old) ::setenv(m_name, m_old->c_str(), 1);
-        else ::unsetenv(m_name);
+        if (m_old)
+            ::setenv(m_name, m_old->c_str(), 1);
+        else
+            ::unsetenv(m_name);
     }
     Variable(const Variable&) = delete;
     Variable& operator=(const Variable&) = delete;
@@ -126,7 +132,8 @@ SpawnOptions shell(const std::string& script)
 bool processDirectoriesShown()
 {
     const pid_t child = ::fork();
-    if (child < 0) return true;
+    if (child < 0)
+        return true;
     if (child == 0) {
         ::pause();
         ::_exit(0);
@@ -150,11 +157,13 @@ int openDescriptors()
 {
     int count = 0;
 #if defined(__linux__)
-    for ([[maybe_unused]] const auto& entry : std::filesystem::directory_iterator("/proc/self/fd")) ++count;
+    for ([[maybe_unused]] const auto& entry : std::filesystem::directory_iterator("/proc/self/fd"))
+        ++count;
 #else
     // No /proc: ask each descriptor that the process may have.
     for (int fd = 0, end = ::getdtablesize(); fd < end; ++fd)
-        if (::fcntl(fd, F_GETFD) != -1) ++count;
+        if (::fcntl(fd, F_GETFD) != -1)
+            ++count;
 #endif
     return count;
 }
@@ -162,7 +171,8 @@ int openDescriptors()
 std::string numberedLines(std::size_t atLeast)
 {
     std::string text;
-    for (int i = 0; text.size() < atLeast; ++i) text += "line " + std::to_string(i) + '\n';
+    for (int i = 0; text.size() < atLeast; ++i)
+        text += "line " + std::to_string(i) + '\n';
     return text;
 }
 
@@ -191,8 +201,9 @@ TEST(Pty, PipedInputAndOutputStayApartFromTheTerminal)
 
 TEST(Pty, TheTerminalStaysTheControllingTerminalAndStandardError)
 {
-    SpawnOptions options = shell("[ -t 0 ] && echo in-tty >&2; [ -t 1 ] && echo out-tty >&2; [ -t 2 ] && echo err-tty >&2;"
-                                 " exec 3</dev/tty && echo has-tty >&2");
+    SpawnOptions options = shell(
+        "[ -t 0 ] && echo in-tty >&2; [ -t 1 ] && echo out-tty >&2; [ -t 2 ] && echo err-tty >&2;"
+        " exec 3</dev/tty && echo has-tty >&2");
     options.input = std::string();
     options.captureOutput = true;
     Listener listener;
@@ -221,7 +232,8 @@ TEST(Pty, WithoutInheritanceTheChildGetsOnlyTheGivenEnvironment)
         auto pty = Pty::spawn(options, listener);
         // Not ASSERT: the other row still runs.
         EXPECT_TRUE(pty);
-        if (!pty || !listener.waitClosed()) continue;
+        if (!pty || !listener.waitClosed())
+            continue;
         std::lock_guard lock(listener.mutex);
         const auto lineEnd = listener.output.find('\n');
         EXPECT_EQ(listener.output.substr(0, lineEnd), inherit ? "[1][yes]" : "[][yes]");
@@ -301,7 +313,8 @@ TEST(Pty, TheChildGetsTheGivenMask)
         Listener listener;
         auto pty = Pty::spawn(options, listener);
         EXPECT_TRUE(pty);
-        if (!pty || !listener.waitClosed()) continue;
+        if (!pty || !listener.waitClosed())
+            continue;
         std::lock_guard lock(listener.mutex);
         EXPECT_EQ(listener.output, mask < 0 ? "0022\n" : "0077\n");
     }
@@ -324,8 +337,11 @@ TEST(Pty, TheChildGetsTheGivenSoftFileLimit)
         Listener listener;
         auto pty = Pty::spawn(options, listener);
         EXPECT_TRUE(pty);
-        if (!pty || !listener.waitClosed()) continue;
-        const auto shown = [](rlim_t value) { return value == RLIM_INFINITY ? std::string("unlimited") : std::to_string(value); };
+        if (!pty || !listener.waitClosed())
+            continue;
+        const auto shown = [](rlim_t value) {
+            return value == RLIM_INFINITY ? std::string("unlimited") : std::to_string(value);
+        };
         std::lock_guard lock(listener.mutex);
         EXPECT_EQ(listener.output, shown(limit < 0 ? parent.rlim_cur : given) + ' ' + shown(parent.rlim_max) + '\n');
     }
@@ -365,7 +381,8 @@ TEST(Pty, LargeInputAndOutputPassThroughThePipes)
     // More than a pipe holds, both ways at once: the I/O thread feeds and
     // reads without blocking on either.
     std::string input;
-    for (int i = 0; i < 200000; ++i) input += "line " + std::to_string(i) + '\n';
+    for (int i = 0; i < 200000; ++i)
+        input += "line " + std::to_string(i) + '\n';
     SpawnOptions options = shell("cat");
     options.input = input;
     options.captureOutput = true;
@@ -411,10 +428,13 @@ TEST(Pty, AWriteThatTheFullQueueRefusedHearsOfRoom)
         EXPECT_EQ(listener.writable, 0) << "room without a refusal";
     }
     bool refused = false;
-    for (std::size_t sent = 0; sent <= 2 * Pty::MaxPendingInput && !refused; sent += part.size()) refused = !pty->write(part);
+    for (std::size_t sent = 0; sent <= 2 * Pty::MaxPendingInput && !refused; sent += part.size())
+        refused = !pty->write(part);
     ASSERT_TRUE(refused);
     std::unique_lock lock(listener.mutex);
-    ASSERT_TRUE(listener.changed.wait_for(lock, 20s, [&] { return listener.writable > 0; }));
+    ASSERT_TRUE(listener.changed.wait_for(lock, 20s, [&] {
+        return listener.writable > 0;
+    }));
     lock.unlock();
     EXPECT_LE(pty->pendingInput(), Pty::MaxPendingInput / 2);
     EXPECT_TRUE(pty->write(part));
@@ -430,11 +450,14 @@ TEST(Pty, AWriterThatWaitsHearsThatTheTerminalTakesNoMore)
     ASSERT_TRUE(pty);
     const std::string part(64 * 1024, 'x');
     bool refused = false;
-    for (std::size_t sent = 0; sent <= 2 * Pty::MaxPendingInput && !refused; sent += part.size()) refused = !pty->write(part);
+    for (std::size_t sent = 0; sent <= 2 * Pty::MaxPendingInput && !refused; sent += part.size())
+        refused = !pty->write(part);
     ASSERT_TRUE(refused);
     EXPECT_TRUE(pty->accepting());
     std::unique_lock lock(listener.mutex);
-    ASSERT_TRUE(listener.changed.wait_for(lock, 20s, [&] { return listener.writable > 0; }));
+    ASSERT_TRUE(listener.changed.wait_for(lock, 20s, [&] {
+        return listener.writable > 0;
+    }));
     EXPECT_FALSE(listener.closed) << "the child still runs";
     lock.unlock();
     EXPECT_FALSE(pty->accepting());
@@ -470,7 +493,9 @@ TEST(Pty, AFastProducerIsReadToItsEnd)
     ASSERT_TRUE(listener.waitClosed());
     std::lock_guard lock(listener.mutex);
     EXPECT_EQ(listener.output.size(), Size);
-    EXPECT_TRUE(std::all_of(listener.output.begin(), listener.output.end(), [](char c) { return c == '\0'; }));
+    EXPECT_TRUE(std::all_of(listener.output.begin(), listener.output.end(), [](char c) {
+        return c == '\0';
+    }));
     ASSERT_TRUE(WIFEXITED(listener.status)) << listener.status;
     EXPECT_EQ(WEXITSTATUS(listener.status), 0);
 }
@@ -510,7 +535,9 @@ TEST(Pty, ADeferredStartFeedsAndReadsThePipes)
         // No callback before start(): a reader that ran before it would have
         // fed cat its input and read the echo by the end of this wait.
         std::unique_lock lock(listener.mutex);
-        EXPECT_FALSE(listener.changed.wait_for(lock, 300ms, [&listener] { return !listener.output.empty() || listener.closed; }));
+        EXPECT_FALSE(listener.changed.wait_for(lock, 300ms, [&listener] {
+            return !listener.output.empty() || listener.closed;
+        }));
     }
     ASSERT_TRUE(pty->start(&error)) << error;
     ASSERT_TRUE(listener.waitClosed());
@@ -571,11 +598,16 @@ TEST(Pty, TheChildGetsOnlyTheStandardStreams)
     struct Descriptor
     {
         int fd;
-        ~Descriptor() { if (fd >= 0) ::close(fd); }
+        ~Descriptor()
+        {
+            if (fd >= 0)
+                ::close(fd);
+        }
     } inherited{::open("/dev/null", O_RDONLY)};
     ASSERT_GE(inherited.fd, 3);
-    const std::string probe = "leaks=; n=3; while [ $n -lt 256 ]; do [ -e /proc/self/fd/$n ] && leaks=\"$leaks $n\";"
-                              " n=$((n+1)); done; echo \"leaks:[$leaks]\" >&2";
+    const std::string probe =
+        "leaks=; n=3; while [ $n -lt 256 ]; do [ -e /proc/self/fd/$n ] && leaks=\"$leaks $n\";"
+        " n=$((n+1)); done; echo \"leaks:[$leaks]\" >&2";
     for (const bool pipes : {false, true}) {
         SCOPED_TRACE(pipes ? "with pipes" : "plain");
         SpawnOptions options = shell(probe);
@@ -588,10 +620,12 @@ TEST(Pty, TheChildGetsOnlyTheStandardStreams)
         auto pty = Pty::spawn(std::move(options), listener, &error);
         // Not ASSERT: the other row still runs.
         EXPECT_TRUE(pty) << error;
-        if (!pty) continue;
+        if (!pty)
+            continue;
         const bool closed = listener.waitClosed();
         EXPECT_TRUE(closed);
-        if (!closed) continue;
+        if (!closed)
+            continue;
         std::lock_guard lock(listener.mutex);
         EXPECT_NE(listener.terminal.find("leaks:[]"), std::string::npos) << listener.terminal;
     }
@@ -610,9 +644,9 @@ TEST(Pty, TheChildStartsWithNoBlockedOrIgnoredSignalAndTheCallerKeepsItsMask)
     sigaddset(&blocked, SIGUSR1);
     sigset_t before;
     ASSERT_EQ(pthread_sigmask(SIG_SETMASK, &blocked, &before), 0);
-    struct sigaction ignore {};
+    struct sigaction ignore{};
     ignore.sa_handler = SIG_IGN;
-    struct sigaction previous {};
+    struct sigaction previous{};
     ASSERT_EQ(sigaction(SIGUSR2, &ignore, &previous), 0);
 
     SpawnOptions options;
@@ -643,7 +677,8 @@ bool exemptFromProcessLimit()
     std::ifstream status("/proc/self/status");
     std::string line;
     while (std::getline(status, line)) {
-        if (!line.starts_with("CapEff:")) continue;
+        if (!line.starts_with("CapEff:"))
+            continue;
         const std::uint64_t caps = std::stoull(line.substr(7), nullptr, 16);
         return (caps >> 24 & 1) != 0 || (caps >> 21 & 1) != 0;
     }
@@ -658,19 +693,24 @@ TEST(Pty, AFailedForkReportsWhyAndLeavesNoDescriptor)
     // of this user fail with EAGAIN, and the limit stays with the process.
     // The kernel does not apply the limit to root, nor to a process with
     // CAP_SYS_RESOURCE or CAP_SYS_ADMIN.
-    if (geteuid() == 0) GTEST_SKIP() << "RLIMIT_NPROC does not limit root";
-    if (exemptFromProcessLimit()) GTEST_SKIP() << "RLIMIT_NPROC does not limit a process with CAP_SYS_RESOURCE or CAP_SYS_ADMIN";
+    if (geteuid() == 0)
+        GTEST_SKIP() << "RLIMIT_NPROC does not limit root";
+    if (exemptFromProcessLimit())
+        GTEST_SKIP() << "RLIMIT_NPROC does not limit a process with CAP_SYS_RESOURCE or CAP_SYS_ADMIN";
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     EXPECT_EXIT(
         {
             rlimit limit{};
             getrlimit(RLIMIT_NPROC, &limit);
             limit.rlim_cur = 0;
-            if (setrlimit(RLIMIT_NPROC, &limit) != 0) std::_Exit(2);
+            if (setrlimit(RLIMIT_NPROC, &limit) != 0)
+                std::_Exit(2);
             if (const pid_t probe = fork(); probe >= 0) {
-                if (probe == 0) std::_Exit(0);
+                if (probe == 0)
+                    std::_Exit(0);
                 waitpid(probe, nullptr, 0);
-                std::fprintf(stderr, "[a fork works with RLIMIT_NPROC 0: the process has CAP_SYS_RESOURCE or CAP_SYS_ADMIN]\n");
+                std::fprintf(stderr,
+                             "[a fork works with RLIMIT_NPROC 0: the process has CAP_SYS_RESOURCE or CAP_SYS_ADMIN]\n");
                 std::_Exit(3);
             }
             const int before = openDescriptors();
@@ -731,7 +771,8 @@ TEST(Pty, TheDescriptorsThatProcListsCloseFromTheFirst)
 {
     rlimit files{};
     ASSERT_EQ(::getrlimit(RLIMIT_NOFILE, &files), 0);
-    if (files.rlim_max != RLIM_INFINITY && files.rlim_max < 512) GTEST_SKIP() << "the hard limit of open files is below 512";
+    if (files.rlim_max != RLIM_INFINITY && files.rlim_max < 512)
+        GTEST_SKIP() << "the hard limit of open files is below 512";
     const pid_t child = ::fork();
     ASSERT_GE(child, 0);
     if (child == 0) {
@@ -741,31 +782,38 @@ TEST(Pty, TheDescriptorsThatProcListsCloseFromTheFirst)
             ::setrlimit(RLIMIT_NOFILE, &files);
         }
         const int kept = ::open("/dev/null", O_RDONLY);
-        if (kept < 0) ::_exit(10);
+        if (kept < 0)
+            ::_exit(10);
         int first = -1;
         int last = -1;
         for (int i = 0; i < 400; ++i) {
             const int fd = ::dup(kept);
-            if (fd < 0) ::_exit(11);
-            if (first < 0) first = fd;
+            if (fd < 0)
+                ::_exit(11);
+            if (first < 0)
+                first = fd;
             last = fd;
         }
 #if defined(__FreeBSD__)
         // No /proc to list them: closeFrom() is a system call there.
         closeFrom(first);
 #else
-        if (!closeListed(first)) ::_exit(12);
+        if (!closeListed(first))
+            ::_exit(12);
 #endif
-        if (::fcntl(kept, F_GETFD) < 0) ::_exit(13);
+        if (::fcntl(kept, F_GETFD) < 0)
+            ::_exit(13);
         for (int fd = first; fd <= last; ++fd) {
-            if (::fcntl(fd, F_GETFD) >= 0) ::_exit(14);
+            if (::fcntl(fd, F_GETFD) >= 0)
+                ::_exit(14);
         }
         // A range closes and leaves what is around it.
         const int a = ::dup(kept);
         const int b = ::dup(kept);
         const int c = ::dup(kept);
         closeRange(b, b);
-        if (::fcntl(a, F_GETFD) < 0 || ::fcntl(b, F_GETFD) >= 0 || ::fcntl(c, F_GETFD) < 0) ::_exit(15);
+        if (::fcntl(a, F_GETFD) < 0 || ::fcntl(b, F_GETFD) >= 0 || ::fcntl(c, F_GETFD) < 0)
+            ::_exit(15);
         ::_exit(0);
     }
     int status = 0;
@@ -794,10 +842,12 @@ TEST(Pty, SignalsByNameOrNumber)
     EXPECT_EQ(signalNumber("rtmax-1"), SIGRTMAX - 1);
     EXPECT_EQ(signalNumber("RTMAX"), SIGRTMAX);
     // 32 and 33 are glibc's own, below SIGRTMIN.
-    for (int reserved = 32; reserved < SIGRTMIN; ++reserved) EXPECT_FALSE(signalNumber(std::to_string(reserved))) << reserved;
-    for (const std::string& bad : {std::string(""), std::string("0"), std::to_string(SIGRTMAX + 1), std::string("1000"), std::string("SIG"),
-                                  std::string("SIGNOPE"), std::string("-9"), std::string("9x"), std::string("+9"), std::string("RTMIN-1"),
-                                  std::string("RTMAX+1"), "RTMIN+" + std::to_string(SIGRTMAX - SIGRTMIN + 1), std::string("RTMIN+")}) {
+    for (int reserved = 32; reserved < SIGRTMIN; ++reserved)
+        EXPECT_FALSE(signalNumber(std::to_string(reserved))) << reserved;
+    for (const std::string& bad :
+         {std::string(""), std::string("0"), std::to_string(SIGRTMAX + 1), std::string("1000"), std::string("SIG"),
+          std::string("SIGNOPE"), std::string("-9"), std::string("9x"), std::string("+9"), std::string("RTMIN-1"),
+          std::string("RTMAX+1"), "RTMIN+" + std::to_string(SIGRTMAX - SIGRTMIN + 1), std::string("RTMIN+")}) {
         EXPECT_FALSE(signalNumber(bad)) << bad;
     }
 }
@@ -814,7 +864,8 @@ TEST(Pty, ForegroundIsTheLeaderOfTheGroupWithItsArguments)
     std::optional<ForegroundProcess> process;
     for (int i = 0; i < 500; ++i) {
         process = pty->foreground();
-        if (process && !process->cmdline.empty() && process->cmdline.front() == "/bin/sh") break;
+        if (process && !process->cmdline.empty() && process->cmdline.front() == "/bin/sh")
+            break;
         std::this_thread::sleep_for(10ms);
     }
     ASSERT_TRUE(process);
@@ -833,7 +884,8 @@ TEST(Pty, ForegroundIsTheLeaderOfTheGroupWithItsArguments)
 // once, and the group runs on in the foreground. A signal still reaches it.
 TEST(Pty, SignalsAForegroundGroupWhoseLeaderExited)
 {
-    if (::access("/bin/bash", X_OK) != 0) GTEST_SKIP() << "no /bin/bash";
+    if (::access("/bin/bash", X_OK) != 0)
+        GTEST_SKIP() << "no /bin/bash";
     SpawnOptions options;
     options.argv = {"/bin/bash", "--norc", "--noprofile", "-c", "set -m; true | sleep 30; echo DONE $?"};
     Listener listener;
@@ -845,19 +897,22 @@ TEST(Pty, SignalsAForegroundGroupWhoseLeaderExited)
         for (std::filesystem::directory_iterator it("/proc", ec), end; !ec && it != end; it.increment(ec)) {
             const std::string name = it->path().filename().string();
             pid_t pid = 0;
-            if (std::from_chars(name.data(), name.data() + name.size(), pid).ec != std::errc{}) continue;
+            if (std::from_chars(name.data(), name.data() + name.size(), pid).ec != std::errc{})
+                continue;
             std::ifstream comm(it->path() / "comm");
             std::string command;
             std::getline(comm, command);
             const auto stat = processStat(pid);
-            if (command == "sleep" && stat && stat->session == pty->pid() && stat->group != pid) return pid_t(stat->group);
+            if (command == "sleep" && stat && stat->session == pty->pid() && stat->group != pid)
+                return pid_t(stat->group);
         }
         return 0;
     };
     pid_t group = 0;
     for (int i = 0; i < 500; ++i) {
         group = groupOfSleep();
-        if (group > 0 && ::kill(group, 0) != 0 && errno == ESRCH) break;
+        if (group > 0 && ::kill(group, 0) != 0 && errno == ESRCH)
+            break;
         group = 0;
         std::this_thread::sleep_for(10ms);
     }
@@ -875,7 +930,8 @@ TEST(Pty, SignalsAForegroundGroupWhoseLeaderExited)
 TEST(Pty, PausedOutputStillWritesInput)
 {
 #if defined(__FreeBSD__)
-    GTEST_SKIP() << "FreeBSD drops the output that the master did not read about a second after the last close of the terminal: a pause over the exit loses it";
+    GTEST_SKIP() << "FreeBSD drops the output that the master did not read about a second after the last close of the "
+                    "terminal: a pause over the exit loses it";
 #endif
     std::string directory = (std::filesystem::temp_directory_path() / "afterglow-pause-XXXXXX").string();
     ASSERT_TRUE(::mkdtemp(directory.data()));
@@ -903,7 +959,8 @@ TEST(Pty, PausedOutputStillWritesInput)
                 emptyAt = terminal.size();
             }
             Listener::ptyData(bytes);
-            if (bytes.find("READY") != std::string_view::npos) pty->pauseOutput(true);
+            if (bytes.find("READY") != std::string_view::npos)
+                pty->pauseOutput(true);
         }
     } listener;
     SpawnOptions options = shell("printf READY; read x; printf '%s' \"$x\" > '" + file + "'; printf AFTER");
@@ -914,7 +971,9 @@ TEST(Pty, PausedOutputStillWritesInput)
     ASSERT_TRUE(pty->start());
     {
         std::unique_lock lock(listener.mutex);
-        ASSERT_TRUE(listener.changed.wait_for(lock, 10s, [&] { return listener.terminal.find("READY") != std::string::npos; }));
+        ASSERT_TRUE(listener.changed.wait_for(lock, 10s, [&] {
+            return listener.terminal.find("READY") != std::string::npos;
+        }));
     }
     ASSERT_TRUE(pty->write("typed\n"));
     std::string typed;
@@ -932,7 +991,8 @@ TEST(Pty, PausedOutputStillWritesInput)
     for (int i = 0; i < 500 && !zombie; ++i) {
         const auto stat = processStat(child);
         zombie = stat && stat->state == 'Z';
-        if (!zombie) std::this_thread::sleep_for(10ms);
+        if (!zombie)
+            std::this_thread::sleep_for(10ms);
     }
     EXPECT_TRUE(zombie);
     // Nothing tells when the reader has acted on the wake, so give it a

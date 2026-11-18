@@ -19,23 +19,51 @@ namespace AfterglowVt {
 class Color
 {
 public:
-    enum class Kind : std::uint8_t { Default, Palette, Rgb };
+    enum class Kind : std::uint8_t {
+        Default,
+        Palette,
+        Rgb
+    };
 
     constexpr Color() = default;
 
-    static constexpr Color palette(std::uint8_t index) { return Color(Kind::Palette, index); }
+    static constexpr Color palette(std::uint8_t index)
+    {
+        return Color(Kind::Palette, index);
+    }
     static constexpr Color rgb(std::uint8_t r, std::uint8_t g, std::uint8_t b)
     {
         return Color(Kind::Rgb, (std::uint32_t(r) << 16) | (std::uint32_t(g) << 8) | b);
     }
 
-    constexpr Kind kind() const { return static_cast<Kind>(m_bits >> 24); }
-    constexpr bool isDefault() const { return kind() == Kind::Default; }
-    constexpr std::uint8_t index() const { return static_cast<std::uint8_t>(m_bits & 0xFF); }
-    constexpr std::uint8_t r() const { return static_cast<std::uint8_t>((m_bits >> 16) & 0xFF); }
-    constexpr std::uint8_t g() const { return static_cast<std::uint8_t>((m_bits >> 8) & 0xFF); }
-    constexpr std::uint8_t b() const { return static_cast<std::uint8_t>(m_bits & 0xFF); }
-    constexpr std::uint32_t bits() const { return m_bits; }
+    constexpr Kind kind() const
+    {
+        return static_cast<Kind>(m_bits >> 24);
+    }
+    constexpr bool isDefault() const
+    {
+        return kind() == Kind::Default;
+    }
+    constexpr std::uint8_t index() const
+    {
+        return static_cast<std::uint8_t>(m_bits & 0xFF);
+    }
+    constexpr std::uint8_t r() const
+    {
+        return static_cast<std::uint8_t>((m_bits >> 16) & 0xFF);
+    }
+    constexpr std::uint8_t g() const
+    {
+        return static_cast<std::uint8_t>((m_bits >> 8) & 0xFF);
+    }
+    constexpr std::uint8_t b() const
+    {
+        return static_cast<std::uint8_t>(m_bits & 0xFF);
+    }
+    constexpr std::uint32_t bits() const
+    {
+        return m_bits;
+    }
 
     constexpr bool operator==(const Color&) const = default;
 
@@ -48,7 +76,14 @@ private:
     std::uint32_t m_bits = 0;
 };
 
-enum class UnderlineStyle : std::uint8_t { None, Single, Double, Curly, Dotted, Dashed };
+enum class UnderlineStyle : std::uint8_t {
+    None,
+    Single,
+    Double,
+    Curly,
+    Dotted,
+    Dashed
+};
 
 namespace Attr {
 inline constexpr std::uint16_t Bold = 1 << 0;
@@ -74,7 +109,10 @@ struct Style
     /// OSC 8 hyperlink, an index into the StyleTable's links; 0 for none.
     std::uint32_t link = 0;
 
-    bool has(std::uint16_t attr) const { return (attrs & attr) != 0; }
+    bool has(std::uint16_t attr) const
+    {
+        return (attrs & attr) != 0;
+    }
     bool operator==(const Style&) const = default;
 };
 
@@ -140,9 +178,15 @@ public:
         }
     }
 
-    const Style& get(std::uint32_t id) const noexcept { return m_styles[id]; }
+    const Style& get(std::uint32_t id) const noexcept
+    {
+        return m_styles[id];
+    }
     /// Styles that something holds, the default included.
-    std::size_t liveCount() const noexcept { return m_lookup.size() + 1 - m_idleCount; }
+    std::size_t liveCount() const noexcept
+    {
+        return m_lookup.size() + 1 - m_idleCount;
+    }
 
     /// Interns an OSC 8 hyperlink for use in a Style. A link lives as long as
     /// some live style refers to it. Links with the same id and URI share an
@@ -150,9 +194,18 @@ public:
     /// link) when a new entry would pass MaxLinkBytes.
     std::uint32_t internLink(std::string_view uri, std::string_view id);
     std::string_view linkUri(std::uint32_t link) const noexcept;
-    std::string_view linkId(std::uint32_t link) const noexcept { return link < m_links.size() ? m_links[link].id : std::string_view{}; }
-    std::size_t liveLinks() const noexcept { return m_linkLookup.size(); }
-    std::size_t linkBytes() const noexcept { return m_linkBytes; }
+    std::string_view linkId(std::uint32_t link) const noexcept
+    {
+        return link < m_links.size() ? m_links[link].id : std::string_view{};
+    }
+    std::size_t liveLinks() const noexcept
+    {
+        return m_linkLookup.size();
+    }
+    std::size_t linkBytes() const noexcept
+    {
+        return m_linkBytes;
+    }
 
 private:
     struct Link
@@ -186,7 +239,10 @@ private:
         std::uint32_t find(const Style& style, std::uint32_t hash, const std::vector<Style>& styles) const noexcept;
         void insert(std::uint32_t hash, std::uint32_t id);
         void erase(std::uint32_t hash, std::uint32_t id) noexcept;
-        std::size_t size() const noexcept { return m_size; }
+        std::size_t size() const noexcept
+        {
+            return m_size;
+        }
 
     private:
         struct Slot
