@@ -274,6 +274,7 @@ if(BUILD_TESTING AND TARGET afterglow)
     # A list as one argument with no semicolon: a colon separates the
     # directories, as in the environment variable CMAKE_PREFIX_PATH.
     string(JOIN ":" AGLOW_ONLY_PREFIX_PATH ${CMAKE_PREFIX_PATH})
+    string(JOIN ":" AGLOW_ONLY_STATIC_RUNTIME_DIRS ${AFTERGLOW_STATIC_RUNTIME_DIRS})
     string(JOIN "," AGLOW_ONLY_MUX_LIBS ${AFTERGLOW_MUX_PRIVATE_LIBS})
     # The flags of each build type too, as the check of a static link at the
     # top of this file reads them: CONFIGS names the types, and each has its
@@ -302,6 +303,7 @@ if(BUILD_TESTING AND TARGET afterglow)
                      "-DLINKER_FLAGS=${CMAKE_EXE_LINKER_FLAGS}"
                      "-DCONFIGS=${AGLOW_ONLY_CONFIGS}" ${AGLOW_ONLY_CONFIG_FLAGS}
                      "-DCPM_CACHE=${CPM_SOURCE_CACHE}" "-DDEPS_ARCHIVES=${AFTERGLOW_DEPS_ARCHIVES}"
+                     "-DSTATIC_RUNTIME_DIRS=${AGLOW_ONLY_STATIC_RUNTIME_DIRS}"
                      "-DPREFIX_PATH=${AGLOW_ONLY_PREFIX_PATH}" "-DPKG_CONFIG=${PKG_CONFIG_EXECUTABLE}"
                      "-DTOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}" "-DSYSROOT=${CMAKE_SYSROOT}"
                      "-DMUX_LIBS=${AGLOW_ONLY_MUX_LIBS}"
