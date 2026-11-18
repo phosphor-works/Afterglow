@@ -31,7 +31,7 @@ namespace AfterglowMux {
 /// (AfterglowVt::StateCodec, StateSync.h) change with it. MuxProtocolTest
 /// pins the keys of the options to this number, so that a new key changes it
 /// too.
-inline constexpr int ProtocolVersion = 29;
+inline constexpr int ProtocolVersion = 30;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -39,9 +39,10 @@ inline constexpr const char* Target = "mux";
 /// The events of the control target, of a window (ControlApi's signals) and
 /// of a session in the daemon, to which `afterglow ctl watch` subscribes.
 /// The application's ControlSocketTest checks that they are ControlApi's.
-inline constexpr std::array<std::string_view, 12> ControlEvents{
-    "paneCreated",     "paneMoved",     "paneClosed",   "titleChanged",   "bell",           "commandStarted",
-    "commandFinished", "statusChanged", "focusChanged", "userVarChanged", "contextChanged", "shellChanged"};
+inline constexpr std::array<std::string_view, 13> ControlEvents{
+    "paneCreated",    "paneMoved",       "paneClosed",    "titleChanged", "bell",
+    "commandStarted", "commandFinished", "statusChanged", "focusChanged", "userVarChanged",
+    "contextChanged", "shellChanged",    "textChanged"};
 
 /// The text scopes of the getText call of the control target, as the error
 /// for another scope names them: a window and the daemon say the same.

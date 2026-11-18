@@ -4972,10 +4972,11 @@ struct Watcher
         signals[id] = signal;
         return request({{"type", "subscribe"}, {"id", id}, {"target", "control"}, {"signal", signal}});
     }
-    /// The next line: an event as "signal args", or an error as "error ID CODE MESSAGE".
-    std::string next()
+    /// The next line: an event as "signal args", or an error as "error ID
+    /// CODE MESSAGE". Empty when none comes in @p timeoutMs.
+    std::string next(int timeoutMs = 5000)
     {
-        const auto line = Json::parse(client.line());
+        const auto line = Json::parse(client.line(timeoutMs));
         if (!line)
             return {};
         if ((*line)["type"].toString() == "error") {
@@ -7192,6 +7193,68 @@ TEST(MuxControl, TheDaemonTellsTheShellsStateRegionsAndTextSinceAMark)
     EXPECT_EQ(ctl.error.code, IpcErrorCode::InvalidArg);
     EXPECT_FALSE(ctl.call("mark", Json::Array{pane, 1}));
     EXPECT_EQ(ctl.error.code, IpcErrorCode::InvalidArg);
+}
+
+// textChanged comes when a pane's text changes, merged to one in each
+// Control.eventInterval, and none while the text stays: a client waits for
+// text without reading it again and again. It carries no text.
+TEST(MuxControl, TextChangedIsMergedAndComesOnlyForAChange)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    // Read access only for the waits on the screen: the event needs none.
+    SessionOptions options = shellOptions(daemon, "t");
+    options.control.allowReadText = true;
+    options.control.eventInterval = 300;
+    ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("t"), "");
+    const std::int64_t pane = firstPane(ctl);
+    ASSERT_NE(pane, 0);
+    const std::string event = "textChanged [" + std::to_string(pane) + "]";
+    ASSERT_TRUE(waitFor([&] {
+        const auto text = ctl.call("getText", Json::Array{pane, "screen"});
+        return text && contains((*text)["text"].toString(), "$");
+    }));
+    Watcher watcher(daemon, "t");
+    EXPECT_EQ(watcher.subscribe(2, "textChanged")["type"].toString(), "reply");
+    // A pane whose text stays tells nothing.
+    EXPECT_EQ(watcher.next(800), "");
+    // A flood of output for a few seconds: one event in each interval, not
+    // one for each read of the output.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "yes | head -c 30000000; echo d''one\n"})) << ctl.error.message;
+    const auto start = std::chrono::steady_clock::now();
+    int events = 0;
+    for (std::string line = watcher.next(1500); !line.empty(); line = watcher.next(1500)) {
+        EXPECT_EQ(line, event);
+        ++events;
+    }
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+    ASSERT_TRUE(screenShows(ctl, pane, "done"));
+    EXPECT_GE(events, 2);
+    // The last read ended 1.5 s of quiet after the last event.
+    EXPECT_LE(events, elapsed / 300 + 2) << elapsed << " ms";
+
+    // With no interval, each change goes at once, and a flood still keeps
+    // the connection: the changes that wait for the daemon are one.
+    ControlClient eager(daemon);
+    SessionOptions now = shellOptions(daemon, "n");
+    now.control.allowReadText = true;
+    now.control.eventInterval = 0;
+    ASSERT_TRUE(daemon.newSession(now)) << daemon.lastError();
+    ASSERT_EQ(eager.select("n"), "");
+    const std::int64_t other = firstPane(eager);
+    Watcher fast(daemon, "n");
+    EXPECT_EQ(fast.subscribe(2, "textChanged")["type"].toString(), "reply");
+    ASSERT_TRUE(eager.call("sendText", Json::Array{other, "yes | head -c 30000000; echo d''one\n"}))
+        << eager.error.message;
+    int fastEvents = 0;
+    while (fast.next(1500) == "textChanged [" + std::to_string(other) + "]")
+        ++fastEvents;
+    EXPECT_GE(fastEvents, 2);
+    EXPECT_FALSE(fast.client.ended());
+    ASSERT_TRUE(screenShows(eager, other, "done"));
 }
 
 // The paste call sends text as a paste in a window: between the paste marks

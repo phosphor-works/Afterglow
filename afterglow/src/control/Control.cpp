@@ -218,6 +218,9 @@ void Control::attachPane(Pane* pane)
     connect(pane, &Pane::shellStateChanged, this, [this, id](AfterglowVt::ShellState state) {
         Q_EMIT shellChanged(id, QString::fromLatin1(AfterglowVt::shellStateName(state)));
     });
+    connect(pane, &Pane::textChanged, this, [this, id] {
+        Q_EMIT textChanged(id);
+    });
     connect(pane, &Pane::statusChanged, this, [this, id, guard = QPointer<Pane>(pane)] {
         if (!guard) {
             return;

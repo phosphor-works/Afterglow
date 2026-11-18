@@ -72,7 +72,9 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 29) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 30) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 30 added the textChanged event (AttachTest).
+    EXPECT_NE(std::find(ControlEvents.begin(), ControlEvents.end(), "textChanged"), ControlEvents.end());
     // Version 29 added the paste call of the control target, which sends
     // text as a paste in a window does (AttachTest).
     // Version 28 gave the control target the shell's state: shell, input and
