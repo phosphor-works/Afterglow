@@ -2178,6 +2178,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
         QRectF uv;
         bool focused;
         bool highlighted;
+        bool highlightOrigin;
         float openProgress = 1.0f;
         int openEdge = 0;
         int context = 0;
@@ -2343,9 +2344,10 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
             if (st.rect.isEmpty())
                 continue;
             cards.push_back({m_overview.currentTab, int(regions.size()), st.rect, 0, toUv(st.rect), pane.params.focused,
-                             pane.params.highlighted, pane.params.openProgress, pane.params.openEdge,
-                             pane.params.context, pane.params.previousContext, pane.params.contextProgress,
-                             pane.params.pulseProgress, pane.params.pulseEffect, pane.params.pulseColor});
+                             pane.params.highlighted, pane.params.highlightOrigin, pane.params.openProgress,
+                             pane.params.openEdge, pane.params.context, pane.params.previousContext,
+                             pane.params.contextProgress, pane.params.pulseProgress, pane.params.pulseEffect,
+                             pane.params.pulseColor});
             regions.push_back(st);
             if (maps && pane.params.id != 0)
                 maps->show(pane.params.id, st.rect, m_post->chains().pane, st.shaderParameters);
@@ -2388,8 +2390,9 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
                 }
                 const auto& params = drawn[i].params;
                 cards.push_back({slice.tab, indexInTab++, r, slice.sharp ? 1 : 2, uv, false, params.highlighted,
-                                 params.openProgress, params.openEdge, params.context, params.previousContext,
-                                 params.contextProgress, params.pulseProgress, params.pulseEffect, params.pulseColor});
+                                 params.highlightOrigin, params.openProgress, params.openEdge, params.context,
+                                 params.previousContext, params.contextProgress, params.pulseProgress,
+                                 params.pulseEffect, params.pulseColor});
             }
         }
         // Cards in tab order, then layout order within each tab.
@@ -2422,6 +2425,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& giv
                 paneBlock.uPaneState[1] = index;
             if (card.highlighted)
                 paneBlock.uPaneState[2] = index;
+            if (card.highlightOrigin)
+                paneBlock.uTabState[2] = index;
             tabs.insert(card.tab);
         }
         paneBlock.uTabState[0] = int(tabs.size());

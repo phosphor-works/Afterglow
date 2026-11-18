@@ -5,7 +5,8 @@ find_package(GTest REQUIRED)
 
 # Application sources compiled again into a test keep the definitions they
 # ship with. The tests themselves build strings from literals.
-set_source_files_properties(../src/ProjectStore.cpp ../src/SplitTree.cpp ../src/DockArea.cpp ../src/animation/MomentumScroll.cpp
+set_source_files_properties(../src/ProjectStore.cpp ../src/SplitTree.cpp ../src/OverviewNavigation.cpp ../src/DockArea.cpp
+    ../src/animation/MomentumScroll.cpp
     ../src/desktop/FileTransfer.cpp ../src/desktop/DragDrop.cpp ../src/desktop/UploadArchive.cpp ../src/desktop/Download.cpp
     PROPERTIES COMPILE_DEFINITIONS QT_NO_CAST_FROM_ASCII)
 
@@ -14,6 +15,8 @@ qt_add_executable(afterglow_app_tests
     ../src/ProjectStore.cpp
     SplitTreeTest.cpp
     ../src/SplitTree.cpp
+    OverviewNavigationTest.cpp
+    ../src/OverviewNavigation.cpp
     DockAreaTest.cpp
     ../src/DockArea.cpp
     MomentumScrollTest.cpp

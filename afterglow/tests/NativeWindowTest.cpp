@@ -5915,12 +5915,30 @@ TEST_F(NativeWindow, PaneOverviewChoosesWithKeysAndKeepsZoom)
     }));
     // Every pane is a card while the overview is open, zoom or not.
     EXPECT_FALSE(window->accessiblePaneRect(third).isEmpty());
+    // The default overview draws the panes where they are in the tab: the
+    // first on the left, the second over the third on the right. An arrow
+    // goes to the pane in its direction, as the focus actions do, and stays
+    // when no pane is there.
     ASSERT_TRUE(pressKey(window, Qt::Key_Right));
     EXPECT_EQ(window->overviewHighlight(), second);
+    ASSERT_TRUE(pressKey(window, Qt::Key_Down));
+    EXPECT_EQ(window->overviewHighlight(), third);
     ASSERT_TRUE(pressKey(window, Qt::Key_Right));
-    ASSERT_TRUE(pressKey(window, Qt::Key_Right));
-    EXPECT_EQ(window->overviewHighlight(), first); // wraps
+    EXPECT_EQ(window->overviewHighlight(), third);
+    ASSERT_TRUE(pressKey(window, Qt::Key_Down));
+    EXPECT_EQ(window->overviewHighlight(), third);
     ASSERT_TRUE(pressKey(window, Qt::Key_Left));
+    EXPECT_EQ(window->overviewHighlight(), first);
+    ASSERT_TRUE(pressKey(window, Qt::Key_K, Qt::NoModifier, QStringLiteral("k")));
+    EXPECT_EQ(window->overviewHighlight(), first);
+    ASSERT_TRUE(pressKey(window, Qt::Key_L, Qt::NoModifier, QStringLiteral("l")));
+    EXPECT_EQ(window->overviewHighlight(), second);
+    // Tab and Shift+Tab step through the panes in their order, and wrap.
+    ASSERT_TRUE(pressKey(window, Qt::Key_Tab));
+    EXPECT_EQ(window->overviewHighlight(), third);
+    ASSERT_TRUE(pressKey(window, Qt::Key_Tab));
+    EXPECT_EQ(window->overviewHighlight(), first); // wraps
+    ASSERT_TRUE(pressKey(window, Qt::Key_Backtab, Qt::ShiftModifier));
     EXPECT_EQ(window->overviewHighlight(), third);
     // Keys never reach the shells while the overview is open. A key that got
     // through would go to the focused pane, the first, whose cat holds it
@@ -5948,7 +5966,7 @@ TEST_F(NativeWindow, PaneOverviewChoosesWithKeysAndKeepsZoom)
     ASSERT_TRUE(settleQueued());
     ASSERT_TRUE(window->overviewOpen());
     EXPECT_EQ(window->overviewHighlight(), third);
-    ASSERT_TRUE(pressKey(window, Qt::Key_Right));
+    ASSERT_TRUE(pressKey(window, Qt::Key_Tab));
     EXPECT_EQ(window->overviewHighlight(), first); // wraps
     ASSERT_TRUE(pressKey(window, Qt::Key_Escape));
     EXPECT_FALSE(window->overviewOpen());
@@ -5979,18 +5997,25 @@ TEST_F(NativeWindow, PaneOverviewSpansTabsAndSwitchesToTheChosenTab)
     ASSERT_TRUE(window->runAction(second, Action::PaneOverview));
     ASSERT_TRUE(settleQueued());
     EXPECT_EQ(window->overviewHighlight(), second);
-    // Cards run in tab order: Left from the second tab's first pane reaches the first tab.
+    // The default overview draws the two tabs side by side: Left from the
+    // second tab's left pane goes on to the first tab, and Right comes back
+    // to the pane that faces it.
+    ASSERT_TRUE(pressKey(window, Qt::Key_Left));
+    EXPECT_EQ(window->overviewHighlight(), first);
     ASSERT_TRUE(pressKey(window, Qt::Key_Left));
     EXPECT_EQ(window->overviewHighlight(), first);
     ASSERT_TRUE(pressKey(window, Qt::Key_Right));
+    EXPECT_EQ(window->overviewHighlight(), second);
     ASSERT_TRUE(pressKey(window, Qt::Key_Right));
     EXPECT_EQ(window->overviewHighlight(), third);
-    // Up and Down jump to the first pane of the previous or next tab.
+    // No tab is above or below these two: the highlight stays.
     ASSERT_TRUE(pressKey(window, Qt::Key_Up));
-    EXPECT_EQ(window->overviewHighlight(), first);
+    EXPECT_EQ(window->overviewHighlight(), third);
     ASSERT_TRUE(pressKey(window, Qt::Key_Down));
-    EXPECT_EQ(window->overviewHighlight(), second);
-    ASSERT_TRUE(pressKey(window, Qt::Key_Up));
+    EXPECT_EQ(window->overviewHighlight(), third);
+    ASSERT_TRUE(pressKey(window, Qt::Key_Left));
+    ASSERT_TRUE(pressKey(window, Qt::Key_Left));
+    EXPECT_EQ(window->overviewHighlight(), first);
     // The chosen tab shows while the close runs: the cards close onto its
     // layout, and the current tab never changes back first. Every switch
     // until the close has settled goes to it.
@@ -6012,6 +6037,52 @@ TEST_F(NativeWindow, PaneOverviewSpansTabsAndSwitchesToTheChosenTab)
     ASSERT_FALSE(switches.empty());
     for (const quint32 to : switches)
         EXPECT_EQ(to, chosen);
+}
+
+TEST_F(NativeWindow, AnOverviewOfCardsInARingStepsThroughThemAndJumpsBetweenTabs)
+{
+    // Pane Deck, an example pack, draws the cards round a ring and does not
+    // ask for arrows by direction: Left and Right step through the cards in
+    // order, and Up and Down go to the first pane of the previous or next tab.
+    ASSERT_TRUE(installExamplePack(directory, QStringLiteral("pane-deck")));
+    restartApplication(QStringLiteral("deck.conf"),
+                       testSettings({{QStringLiteral("Shaders"),
+                                      QJsonObject{{QStringLiteral("overview"), QStringLiteral("pane-deck")}}}}),
+                       {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure())
+        return;
+    auto* first = window->focusedPane();
+    ASSERT_TRUE(window->runAction(first, Action::NewTab));
+    ASSERT_TRUE(waitFor([&] {
+        return !window->tabSwitching();
+    }));
+    auto* second = window->focusedPane();
+    ASSERT_NE(second, first);
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* third = window->splitPane(second, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(third, nullptr);
+    window->revealPane(second);
+    ASSERT_TRUE(settleQueued());
+    ASSERT_TRUE(window->runAction(second, Action::PaneOverview));
+    ASSERT_TRUE(settleQueued());
+    ASSERT_TRUE(window->overviewOpen());
+    EXPECT_EQ(window->overviewHighlight(), second);
+    ASSERT_TRUE(pressKey(window, Qt::Key_Left));
+    EXPECT_EQ(window->overviewHighlight(), first);
+    ASSERT_TRUE(pressKey(window, Qt::Key_Left));
+    EXPECT_EQ(window->overviewHighlight(), third); // wraps
+    ASSERT_TRUE(pressKey(window, Qt::Key_Right));
+    EXPECT_EQ(window->overviewHighlight(), first); // wraps
+    ASSERT_TRUE(pressKey(window, Qt::Key_Right));
+    ASSERT_TRUE(pressKey(window, Qt::Key_Right));
+    EXPECT_EQ(window->overviewHighlight(), third);
+    ASSERT_TRUE(pressKey(window, Qt::Key_Up));
+    EXPECT_EQ(window->overviewHighlight(), first);
+    ASSERT_TRUE(pressKey(window, Qt::Key_Down));
+    EXPECT_EQ(window->overviewHighlight(), second);
+    ASSERT_TRUE(pressKey(window, Qt::Key_Escape));
+    EXPECT_FALSE(window->overviewOpen());
 }
 
 TEST_F(NativeWindow, TabSwitchAnimatesAndSettles)

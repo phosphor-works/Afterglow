@@ -7,7 +7,7 @@ Afterglow uses Phosphor ShaderRegistry metadata, source containment, include res
 Terminal shaders are a Phosphor shader family, like Phosphor's animation, pointer and surface families and Phosphor's `overlay` shader family.
 In the rest of this document, an overlay is a program that runs over a pane. See [overlay transitions](#overlay-transitions).
 Afterglow's PostChain renders them in terminal QRhi composition passes.
-Afterglow reads its own metadata keys from pack metadata: `highDynamicRange`, `windowBackground`, `settleSeconds` and `geometryPasses`.
+Afterglow reads its own metadata keys from pack metadata: `highDynamicRange`, `windowBackground`, `settleSeconds`, `overviewNavigation` and `geometryPasses`.
 
 ## The terminal contract
 
@@ -132,6 +132,7 @@ A shader that reads `iMouse` or `uWindowMouse`, and nothing in the lists above, 
 | `highDynamicRange` | `true` keeps values above 1 between passes. |
 | `windowBackground` | `true` shares one background across the window's panes. |
 | `settleSeconds` | Above 0, at most 600. The default is 2. How long a shader that reads only event ages renders after an event. A value outside the range rejects the pack. |
+| `overviewNavigation` | `order` or `direction`, for an overview pack. The default is `order`. See [panes and the overview](#panes-and-the-overview). Another value rejects the pack. |
 
 ## Pass order and coordinates
 
@@ -387,6 +388,7 @@ Panes after the 32nd, in tab order, do not appear in the overview.
 | `overviewOpen()` | True while the overview is open. False while it closes. |
 | `overviewAmount()` | 0 for the flat window, 1 when the overview is open. A spring can pass 1 briefly. |
 | `highlightPosition()` | The highlight's position in cards. It is fractional while the highlight moves. It counts on past the last card when the highlight wraps around, so motion continues. Take it modulo `paneCount()`. |
+| `highlightOrigin()` | The card that the highlight last left, or -1 when it has not moved since the overview opened. |
 | `tabTransitionActive()`, `tabTransitionProgress()`, `tabTransitionDirection()` | The tab switch, while it runs. |
 | `previousTabTexel(uv)` | The tab being left, at a window uv, during a tab switch. |
 | `overlayTransitionActive()`, `overlayTransitionProgress()`, `overlayHostTexel(uv)` | An overlay that fades in or out: see [overlay transitions](#overlay-transitions). |
@@ -446,6 +448,18 @@ Scripts play pulses with `afterglow.pulse`. `panePulse(i)` runs from 0 to 1, lin
 While any pane is away from here, the pack also runs on each frame Afterglow draws. Those frames come only from changes, so a static mark costs no extra frames.
 [The flat pane effects](../data/shaders/shared/flat_panes.glsl) of Phosphor Panes and Plain Panes fade panes in and out, and mark a pane that is away with a line at its edge.
 The example pack [Pane Effects](../examples/shaders/pane-effects/effect.frag) shows a hinge and a picture tube, and a ring and a vortex for the context change.
+
+The arrow keys of the overview follow the layout that the pack draws. The pack names it with `overviewNavigation` in its metadata.
+With `order`, the default, Left and Right step through the cards in order and wrap round. Up and Down go to the first pane of the previous or next tab.
+This fits cards in a row or round a ring, where `highlightPosition()` moves over each card on its way.
+With `direction`, an arrow key goes to the pane in that direction, and stays when no pane is there.
+A pack with `direction` must draw each tab as a picture of its layout, with each pane at its `paneRect()` in the tab.
+It must draw the tabs in a grid in tab order, with as many columns as the smallest whole number whose square holds the tabs, and the last row centered.
+`flat_overview.glsl` draws this layout.
+In a tab, the key goes where the `focus_left` action and its like go. At the edge of a tab, it goes on to the nearest pane of another tab in that direction.
+The highlight then can go to a card that is not next in the count. `highlightPosition()` still counts the short way through the cards between them.
+Such a pack fades its highlight from `highlightOrigin()` to `highlightedPane()` and lights no card between them.
+Tab and Shift+Tab step through the cards in order with both values.
 
 Input does not reach the panes while the overview is open.
 The highlighted pane is the one the user chooses, so a pack needs no hit testing.

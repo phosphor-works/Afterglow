@@ -10,8 +10,12 @@
 // so a pixel finds its cards with rectangle tests and no rays.
 //
 // The highlighted pane grows into the gap round it and its rim takes a
-// colour. The highlight follows highlightPosition(), which Afterglow eases,
-// so the rim fades from one pane to the next.
+// colour. When the highlight moves, the rim fades from the pane that it left
+// (highlightOrigin()) to the pane that it is on, by how far
+// highlightPosition() has gone, which Afterglow eases. It lights no pane
+// between the two. A pack with this layout sets "overviewNavigation":
+// "direction" in its metadata, so that an arrow key goes to the pane that
+// this file draws in that direction.
 //
 // At overviewAmount() 0 every card is exactly where its pane is, with other
 // tabs one window width per tab to the side, so opening and closing start
@@ -73,7 +77,7 @@ Layout tabGrid(int n) {
     return g;
 }
 
-// The highlight: the card it is on, or the two cards it moves between, and
+// The highlight: the card it is on, or the two cards it fades between, and
 // how close it is to each, 0 to 1. Every other card has a focus of 0, so a
 // pixel works these out once and not for each card.
 struct Highlight {
@@ -87,10 +91,30 @@ Highlight highlight(int n) {
     h.to = -1;
     h.toAmount = 0.0;
     // With no highlighted card, the focused pane has it.
-    h.from = focusedPane();
-    if (highlightedPane() < 0 || n < 2) return h;
+    int target = highlightedPane();
+    h.from = target >= 0 ? target : focusedPane();
+    if (target < 0 || n < 2) return h;
     // The highlight keeps counting past the last card when it wraps around.
     float position = mod(highlightPosition(), float(n));
+    int origin = highlightOrigin();
+    if (origin >= 0 && origin < n && origin != target) {
+        // The pane that the highlight left need not be the next card in the
+        // count: an arrow key goes to the pane in its direction. The rim
+        // fades from that pane to this one and lights no card between them,
+        // by the part of the way that the position has gone.
+        float left = abs(position - float(target));
+        left = min(left, float(n) - left);
+        float whole = abs(float(origin - target));
+        whole = max(min(whole, float(n) - whole), left);
+        float arrived = clamp(1.0 - left / whole, 0.0, 1.0);
+        if (arrived < 1.0) {
+            h.from = origin;
+            h.to = target;
+            h.toAmount = arrived;
+        }
+        return h;
+    }
+    // No pane to fade from: the rim follows the position from card to card.
     h.from = min(int(floor(position)), n - 1);
     h.toAmount = clamp(position - float(h.from), 0.0, 1.0);
     if (h.toAmount > 0.0) h.to = (h.from + 1) % n;

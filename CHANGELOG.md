@@ -109,7 +109,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Ctrl+Shift+Alt+= equalizes the splits of a tab. Ctrl++ and Ctrl+= make the font larger.
 - Animated splits whose motion takes any Phosphor curve, such as a spring or a cubic Bézier.
 - Phosphor curves for the cursor, scrolling, the visual bell and the quick terminal (`Animation.cursorCurve`, `scrollCurve`, `bellCurve` and `QuickTerminal.curve`).
-- A pane overview that shows each tab as a live picture of its panes to choose from, drawn by a replaceable shader pack.
+- A pane overview that shows each tab as a live picture of its panes to choose from, drawn by a replaceable shader pack. The arrow keys go to the pane in their direction.
 - Animated tab switches, drawn by a replaceable shader pack: the new tab slides in over the tab being left, or the two fade.
 - Panes that fade in as they split and fade out as they close, with a rim in the Phosphor spectrum that is bright at once and then fades.
 - A thin line at the edge of a pane whose shell moves to another host, user or container, in a color for each. The line is bright at the change and stays while the pane is away. `Animation.contextDuration` sets the time of the change.

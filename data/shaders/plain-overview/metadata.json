@@ -6,6 +6,7 @@
     "author": "afterglow",
     "version": "1.0",
     "fragmentShader": "effect.frag",
+    "overviewNavigation": "direction",
     "parameters": [
         {"id": "margin", "name": "Margin (share of the window)", "group": "Layout", "type": "float", "default": 0.07, "min": 0.0, "max": 0.3},
         {"id": "tabGap", "name": "Gap between tabs (share of a tab)", "group": "Layout", "type": "float", "default": 0.08, "min": 0.0, "max": 0.4},
