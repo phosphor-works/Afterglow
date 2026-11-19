@@ -12,8 +12,8 @@ through afterglow, against the option tables in tools/aglow (the names, which op
 of icat --engine), the options of aglow run against libs/afterglow-proto/src/Run.cpp, the commands and options of
 afterglow ctl against runCtl in afterglow/src/control/Ctl.cpp, the keybind actions of ctl action against
 afterglow/src/config/Keybinds.cpp, the signals of ctl signal-program against libs/afterglow-pty/src/Pty.cpp, the keys
-of ctl send-key against libs/afterglow-vt/src/KeyNames.cpp, and the commands and options of afterglow mux against
-afterglow/src/control/Mux.cpp.
+of ctl send-key against libs/afterglow-vt/src/KeyNames.cpp, the commands and options of afterglow mux against
+afterglow/src/control/Mux.cpp, and the options of afterglow mcp against afterglow/src/mcp/Mcp.cpp.
 """
 import os
 import pty
@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[2]
 COMPLETIONS = ROOT / 'data/completions'
 CTL = ROOT / 'afterglow/src/control/Ctl.cpp'
 MUX = ROOT / 'afterglow/src/control/Mux.cpp'
+MCP = ROOT / 'afterglow/src/mcp/Mcp.cpp'
 KEYBINDS = ROOT / 'afterglow/src/config/Keybinds.cpp'
 PTY = ROOT / 'libs/afterglow-pty/src/Pty.cpp'
 KEY_NAMES = ROOT / 'libs/afterglow-vt/src/KeyNames.cpp'
@@ -216,6 +217,17 @@ def mux_commands():
             found.add('--ssh')
         options[command] = found
     return list(commands), options
+
+
+def mcp_options():
+    """The options of afterglow mcp, as runMcp in Mcp.cpp reads them, without its usage."""
+    run = re.search(r'^int runMcp\(.*?^\}', MCP.read_text(), re.M | re.S)
+    if not run:
+        raise SystemExit(f'FAIL: no runMcp in {MCP}')
+    found = set(re.findall(r'\barg == QLatin1String\("(--[a-z-]+)"\)', run.group(0))) - {'--help'}
+    if not found:
+        raise SystemExit(f'FAIL: no options in runMcp in {MCP}')
+    return found
 
 
 def keybind_actions():
@@ -630,6 +642,18 @@ def mux_cases(commands, options):
     yield 'afterglow mux server --ssh ', set()
 
 
+def mcp_cases(options):
+    """(line, expected) pairs for afterglow mcp. OPTIONS are those of Mcp.cpp."""
+    yield 'afterglow mcp -', options | {'-h', '--help'}
+    yield 'afterglow mcp --adopt -', lambda got: options - {'--adopt'} <= got and '--adopt' not in got
+    yield 'afterglow mcp --session x -', lambda got: options - {'--session'} <= got and '--session' not in got
+    # No program lists the sessions.
+    yield 'afterglow mcp --session ', set()
+    yield 'afterglow mcp --cwd ', {'adir'}
+    # The usage is the whole command line.
+    yield 'afterglow mcp --help -', lambda got: not got & options
+
+
 def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mux, open_project, ctl_first, source):
     """(line, expected) pairs. A set is the exact result, a callable checks the result."""
     files = FILES
@@ -650,7 +674,7 @@ def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mu
     _, _, reads, window_only = ctl_launch(source)
     window_only |= reads if reads & window_only else set()
     scopes = {option[2:] for option in group('get-text')}
-    yield 'afterglow ', {'ctl', 'mux', 'run', 'ssh', 'transfer', 'dnd', 'icat', 'clipboard'}
+    yield 'afterglow ', {'ctl', 'mux', 'mcp', 'run', 'ssh', 'transfer', 'dnd', 'icat', 'clipboard'}
     # The word at the cursor is the subcommand itself.
     yield 'afterglow ss', {'ssh'}
     # A subcommand only comes first.
@@ -668,6 +692,7 @@ def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mu
     yield 'afterglow --config ', files
     yield from run_cases('afterglow', run)
     yield from mux_cases(*mux)
+    yield from mcp_cases(mcp_options())
     yield 'afterglow ctl ', set(ctl_commands)
     yield 'afterglow ctl -', ctl_first
     # The word --session itself, at the cursor.

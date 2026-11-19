@@ -135,6 +135,17 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | `openWith` | `""` |  | Command for opening links. Afterglow splits it into words, adds the URL as the last argument and runs it without a shell. Quotes keep spaces in one word. An empty value uses the desktop browser. |
 | `schemes` | `["http", "https", "mailto", "ftp", "file"]` |  | URL schemes that open without a prompt. Links with other schemes ask first. |
 
+## Mcp
+
+| Key | Default | Range or choices | Meaning |
+| --- | --- | --- | --- |
+| `endSessionOnExit` | `true` |  | End the session of afterglow mcp when the server exits, also when it crashes. When two servers use one session, it ends when the last of them exits. When this is off, the session keeps running, and a new server can use it again with --session. A session that a server adopted with --adopt never ends with the server. |
+| `maxWaitTimeout` | `3600000` | 1000–86400000 | The longest time in milliseconds that a call of the run and wait tools of afterglow mcp can ask for. A longer timeout uses this value. A command that runs longer goes on, and the agent calls wait again. |
+| `outputLimit` | `65536` | 1024–1048576 | The most bytes of UTF-8 text that one result of the run, wait and read tools of afterglow mcp carries. A longer text loses its start, and the result says that it was cut. |
+| `screenshotMaxSize` | `2048` | 64–16384 | The longest side in pixels of a screenshot that the screenshot tool of afterglow mcp returns. Afterglow scales a larger image down. |
+| `tailLines` | `200` | 1–1000000 | The number of lines at the end of the output that the run and wait tools of afterglow mcp return when the call gives no tail_lines. |
+| `waitTimeout` | `120000` | 1000–86400000 | Milliseconds that the run and wait tools of afterglow mcp wait when the call gives no timeout. A value above Mcp.maxWaitTimeout uses Mcp.maxWaitTimeout. The server reads its settings when it starts. |
+
 ## Mouse
 
 | Key | Default | Range or choices | Meaning |

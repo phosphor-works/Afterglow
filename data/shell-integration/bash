@@ -168,6 +168,11 @@ __afterglow_prompt() {
     if [[ $__afterglow_features != *" no-cursor "* && :$SHELLOPTS: != *:vi:* ]]; then
         end+="\\[\\e[${__afterglow_cursor} q\\]" start+=$'\e[0 q'
     fi
+    # The end of the line before in a paste of several lines, with its exit
+    # code: bash prints PS0 before each line that it runs, and $? there is
+    # the status of the line before. At the first line no command runs, and
+    # the terminal takes no D. Without promptvars, $? would stay text.
+    (( __afterglow_marks )) && shopt -q promptvars && start=$'\e]133;D;$?\a'$start
     if [[ $__afterglow_features != *" no-title "* ]]; then
         end+="\\[\\e]2;${__afterglow_host}\\w\\a\\]"
         # Without promptvars, PS0 would show the substitution as text.
