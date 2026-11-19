@@ -26,7 +26,7 @@ if not options.private_bus:
 exit_on_sigterm()
 with tempfile.TemporaryDirectory(prefix='afterglow-l3-') as tmp:
     root = Path(tmp); (root / '.bashrc').write_text("PS1='T3> '\n")
-    conf = root / 'afterglow'; (conf / 'scripts').mkdir(parents=True)
+    conf = root / 'phosphor-works/afterglow'; (conf / 'scripts').mkdir(parents=True)
     package = conf / 'scripts/project-navigator'
     source = Path(__file__).resolve().parents[2] / 'examples/packages/project-navigator'
     shutil.copytree(source, package)

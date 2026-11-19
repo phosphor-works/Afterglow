@@ -1,6 +1,6 @@
 -- SPDX-FileCopyrightText: 2026 fuddlesworth
 -- SPDX-License-Identifier: GPL-3.0-or-later
--- Install in ~/.config/afterglow/scripts/. Run "Inspect last build output"
+-- Install in ~/.config/phosphor-works/afterglow/scripts/. Run "Inspect last build output"
 -- from the command palette after a compiler command, or
 -- `aglow run build-inspector inspect` in the pane. Requires shell marks.
 -- Opens selected file:line diagnostics in a new tab running vi.

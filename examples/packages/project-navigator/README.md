@@ -7,15 +7,15 @@ This Luau package provides project discovery and selection.
 It uses ideas from [sessionizer.wezterm](https://github.com/mikkasendke/sessionizer.wezterm).
 It uses native selectors, asynchronous jobs, project layouts and persistent state.
 
-Copy this complete directory into `~/.config/afterglow/scripts/project-navigator/`.
+Copy this complete directory into `~/.config/phosphor-works/afterglow/scripts/project-navigator/`.
 When you use a custom configuration file, use the `scripts/` directory beside that file.
 Loading the package does not run commands.
 
 From the repository root, install it with:
 
 ```bash
-mkdir -p ~/.config/afterglow/scripts
-cp -r examples/packages/project-navigator ~/.config/afterglow/scripts/
+mkdir -p ~/.config/phosphor-works/afterglow/scripts
+cp -r examples/packages/project-navigator ~/.config/phosphor-works/afterglow/scripts/
 ```
 
 The destination must contain `scripts/project-navigator/package.json`, not

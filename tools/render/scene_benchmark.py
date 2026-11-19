@@ -24,7 +24,7 @@ parser.add_argument('--family', default='Monaspace Neon Var', help='font family 
 args = parser.parse_args()
 repo = Path(__file__).resolve().parents[2]
 out = args.output.resolve(); out.mkdir(parents=True, exist_ok=True)
-config = out / 'config/afterglow/shaders'
+config = out / 'config/phosphor-works/afterglow/shaders'
 shutil.copytree(repo / 'examples/phosphor/shaders', config, dirs_exist_ok=True)
 # The example packs that the scenes use.
 for pack in ['feedback-glow', 'mesh-reactor']:

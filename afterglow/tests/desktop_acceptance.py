@@ -39,8 +39,8 @@ T = 'org.a11y.atspi.Text'
 P = 'org.freedesktop.DBus.Properties'
 with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
     root = Path(tmp)
-    config = root / 'afterglow'
-    config.mkdir()
+    config = root / 'phosphor-works/afterglow'
+    config.mkdir(parents=True)
     (config / 'config.json').write_text(json.dumps({
         'Terminal': {'shell': '/bin/bash', 'env': {'HOME': tmp}, 'confirmClose': False},
         'Control': {'allowReadText': True}, 'QuickTerminal': {'shortcut': ''},

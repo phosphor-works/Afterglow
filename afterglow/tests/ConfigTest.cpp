@@ -2527,15 +2527,15 @@ TEST_F(ConfigTest, BuildTreeThemesComeBeforeTheDataDirectories)
     // An installed copy in ~/.local/share must not shadow the checkout's
     // theme that a build-tree binary is testing. This test runs from the
     // build tree.
-    ASSERT_TRUE(QDir().mkpath(m_home.filePath(QStringLiteral("data-home/afterglow/themes"))));
-    write(QStringLiteral("data-home/afterglow/themes/nord.json"),
+    ASSERT_TRUE(QDir().mkpath(m_home.filePath(QStringLiteral("data-home/phosphor-works/afterglow/themes"))));
+    write(QStringLiteral("data-home/phosphor-works/afterglow/themes/nord.json"),
           R"({"background": "#010101", "foreground": "#ffffff"})");
     SettingsStore store(write(QStringLiteral("config.json"), R"({"Colors": {"theme": "nord"}})"));
     EXPECT_TRUE(same(store.settings().terminal.defaultBackground, {0x2e, 0x34, 0x40}));
     const QStringList dirs = Themes::searchDirs();
     ASSERT_GE(dirs.size(), 3);
     // The user's own config directory still comes first.
-    EXPECT_EQ(dirs.first(), m_home.path() + QStringLiteral("/afterglow/themes"));
+    EXPECT_EQ(dirs.first(), m_home.path() + QStringLiteral("/phosphor-works/afterglow/themes"));
 }
 
 TEST_F(ConfigTest, FirstRunWritesNoFile)
@@ -3376,9 +3376,9 @@ TEST_F(ConfigTest, AProblemIsLoggedWhenItAppears)
 
 TEST_F(ConfigTest, ThemeDirectoriesThatDoNotExistYetAreWatched)
 {
-    // A theme saved into ~/.local/share/afterglow/themes, made after the
+    // A theme saved into ~/.local/share/phosphor-works/afterglow/themes, made after the
     // start, must reload: the watch lists the directory before it exists.
-    const QString dir = m_home.filePath(QStringLiteral("data-home/afterglow/themes"));
+    const QString dir = m_home.filePath(QStringLiteral("data-home/phosphor-works/afterglow/themes"));
     ASSERT_FALSE(QFileInfo::exists(dir));
     const auto app = watchApplication();
     SettingsStore store(write(QStringLiteral("config.json"), R"({"Colors": {"theme": "later"}})"));
@@ -3386,7 +3386,7 @@ TEST_F(ConfigTest, ThemeDirectoriesThatDoNotExistYetAreWatched)
     EXPECT_TRUE(Themes::searchDirs().contains(dir));
     // Listed is not enough: the directory and the theme come, and it applies.
     ASSERT_TRUE(QDir().mkpath(dir));
-    write(QStringLiteral("data-home/afterglow/themes/later.json"), R"({"foreground": "#405060"})");
+    write(QStringLiteral("data-home/phosphor-works/afterglow/themes/later.json"), R"({"foreground": "#405060"})");
     EXPECT_TRUE(waitUntil([&] {
         return same(store.settings().terminal.defaultForeground, {0x40, 0x50, 0x60});
     }));
@@ -4012,16 +4012,17 @@ TEST_F(ConfigTest, AConfigLinkOrALinkedDirectoryThatIsRetargetedReloads)
 TEST_F(ConfigTest, ThemesComeFromBesideTheConfigFile)
 {
     ASSERT_TRUE(QDir().mkpath(m_home.filePath(QStringLiteral("elsewhere/themes"))));
-    ASSERT_TRUE(QDir().mkpath(m_home.filePath(QStringLiteral("afterglow/themes"))));
+    ASSERT_TRUE(QDir().mkpath(m_home.filePath(QStringLiteral("phosphor-works/afterglow/themes"))));
     write(QStringLiteral("elsewhere/themes/mine.json"), R"({"foreground": "#102030"})");
-    write(QStringLiteral("afterglow/themes/mine.json"), R"({"foreground": "#405060"})");
+    write(QStringLiteral("phosphor-works/afterglow/themes/mine.json"), R"({"foreground": "#405060"})");
     SettingsStore elsewhere(write(QStringLiteral("elsewhere/config.json"), R"({"Colors": {"theme": "mine"}})"));
     EXPECT_TRUE(same(elsewhere.settings().terminal.defaultForeground, {0x10, 0x20, 0x30}));
     const QStringList dirs = Themes::searchDirs(m_home.filePath(QStringLiteral("elsewhere")));
     EXPECT_EQ(dirs.first(), m_home.filePath(QStringLiteral("elsewhere/themes")));
-    EXPECT_FALSE(dirs.contains(m_home.filePath(QStringLiteral("afterglow/themes"))));
+    EXPECT_FALSE(dirs.contains(m_home.filePath(QStringLiteral("phosphor-works/afterglow/themes"))));
     // The default config file has the user's own directory.
-    SettingsStore usual(write(QStringLiteral("afterglow/config.json"), R"({"Colors": {"theme": "mine"}})"));
+    SettingsStore usual(
+        write(QStringLiteral("phosphor-works/afterglow/config.json"), R"({"Colors": {"theme": "mine"}})"));
     EXPECT_TRUE(same(usual.settings().terminal.defaultForeground, {0x40, 0x50, 0x60}));
 }
 

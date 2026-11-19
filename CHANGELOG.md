@@ -227,7 +227,7 @@ See [performance measurements](docs/PERFORMANCE.md) for workloads, conditions an
 - Accessibility clients can run the pane actions of the command palette, open the context menu of a pane and give a pane the focus. They can also press the items of a script's docked area. Pane actions do nothing while a prompt or a keyboard mode has the keys.
 - Input-method support with surrounding text for the cursor row.
 - Tabs, menus and prompts in the desktop Qt style.
-- Settings in `~/.config/afterglow/config.json` that reload when the file changes, and `-o` overrides for one launch.
+- Settings in `~/.config/phosphor-works/afterglow/config.json` that reload when the file changes, and `-o` overrides for one launch.
 - With no settings file, every setting has its default. The first change of a setting creates the file, which holds only the values that differ from the defaults. Only its owner can read the file.
 - Problems in the settings file show as a notice. Examples are an unknown key, a value of the wrong type and a value that is not a color.
 - A settings file that does not parse is never replaced. The current settings stay until it is correct. At start, Afterglow then uses the defaults, with `Scripts.enabled` and `Control.enabled` off until the file holds a JSON object or is deleted. A file that becomes empty before that does not turn them on. An `-o` override of either key with a boolean value still sets it.

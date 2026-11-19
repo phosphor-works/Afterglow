@@ -171,9 +171,9 @@ int main(int argc, char** argv)
     qputenv("XDG_DATA_HOME", home.filePath(QStringLiteral("data-home")).toUtf8());
     // The example packs are the user's packs of this test, through a link:
     // the library makes its preset directory beside them.
-    if (!QDir().mkpath(home.filePath(QStringLiteral("config/afterglow")))
+    if (!QDir().mkpath(home.filePath(QStringLiteral("config/phosphor-works/afterglow")))
         || !QFile::link(QStringLiteral(AFTERGLOW_EXAMPLE_SHADERS),
-                        home.filePath(QStringLiteral("config/afterglow/shaders"))))
+                        home.filePath(QStringLiteral("config/phosphor-works/afterglow/shaders"))))
         return 1;
     QGuiApplication app(argc, argv);
     AfterglowRender::Testing::Device made = AfterglowRender::Testing::makeDevice();

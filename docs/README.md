@@ -32,7 +32,7 @@ Afterglow is a Linux terminal with GPU rendering, tabs, splits, shell integratio
 
 ## First configuration
 
-The usual configuration path is `~/.config/afterglow/config.json`.
+The usual configuration path is `~/.config/phosphor-works/afterglow/config.json`.
 See the [configuration file](APPEARANCE.md#configuration-file) for its format and an example.
 
 Afterglow reloads configuration changes automatically.
@@ -40,7 +40,7 @@ Shell integration starts automatically for supported Bash, Zsh and Fish versions
 The command palette contains prompt navigation, output, search and project actions.
 
 Example files do not activate themselves.
-Copy a complete package directory into `~/.config/afterglow/scripts/` to install it.
+Copy a complete package directory into `~/.config/phosphor-works/afterglow/scripts/` to install it.
 Keep the directory name, manifest ID and module filenames unchanged.
 Follow the package's instructions for required settings.
 Reopen the palette after reload to see new commands.

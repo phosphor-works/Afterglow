@@ -18,14 +18,14 @@ A pack in a later row replaces a pack with the same ID in an earlier row.
 | Directory | Contents |
 | --- | --- |
 | `data/shaders/` in the source tree | Bundled packs, in a development build only. |
-| `afterglow/shaders/` in each XDG data directory, such as `/usr/share/afterglow/shaders/` | Installed packs. |
-| `~/.config/afterglow/shaders/` | Your own packs. Afterglow creates this directory. With `afterglow --config DIR/config.json`, this is `DIR/shaders/`. |
+| `phosphor-works/shaders/terminal/` in each XDG data directory, such as `/usr/share/phosphor-works/shaders/terminal/` | Installed packs. |
+| `~/.config/phosphor-works/afterglow/shaders/` | Your own packs. Afterglow creates this directory. With `afterglow --config DIR/config.json`, this is `DIR/shaders/`. |
 
 A binary that runs from the build tree puts the checkout's `data/shaders/` after the XDG data directories in this table.
 Thus a pack in the checkout replaces an installed pack with the same ID, and you test the pack that you edit.
-Your own packs in `~/.config/afterglow/shaders/` still replace the packs of the checkout.
+Your own packs in `~/.config/phosphor-works/afterglow/shaders/` still replace the packs of the checkout.
 
-Put each pack in its own subdirectory, such as `~/.config/afterglow/shaders/my-pack/metadata.json`.
+Put each pack in its own subdirectory, such as `~/.config/phosphor-works/afterglow/shaders/my-pack/metadata.json`.
 Put include files that several packs share in a `shared/` subdirectory of the same directory.
 Afterglow looks for an include file in this order:
 
@@ -144,7 +144,7 @@ The five layer chains are empty by default, so Afterglow draws the terminal with
 
 The [example packs](../examples/shaders/README.md) in the source repository show other looks and the rest of the shader API.
 These include a CRT screen, a tilted screen, a carousel overview and a cube tab switch.
-Copy one into `~/.config/afterglow/shaders/` to use it.
+Copy one into `~/.config/phosphor-works/afterglow/shaders/` to use it.
 [The Phosphor scene](../examples/phosphor/README.md) combines a 3D core, text afterimages and command reactions.
 [Glasshouse](../examples/glasshouse/README.md) provides another complete desktop scene.
 
@@ -327,7 +327,7 @@ An update past this limit fails with an error.
 Hidden windows catch up when they render again.
 
 [shader-parameters.luau](../examples/scripts/shader-parameters.luau) adds Bloom boost and reset commands.
-Install it in `~/.config/afterglow/scripts/` and enable Bloom in a shader chain.
+Install it in `~/.config/phosphor-works/afterglow/scripts/` and enable Bloom in a shader chain.
 It targets the current tab, or the window for a window effect.
 It reports when Bloom is absent.
 
@@ -342,7 +342,7 @@ It reports when Bloom is absent.
 | `save_shader_preset(pane, instance, name)` | Save a preset. Return `data.id` and `data.name`. |
 
 `@defaults` applies pack defaults. An empty `shader_parameters` table releases only the calling script's changes.
-Saved presets use Phosphor's schema and registry in `~/.config/afterglow/shader-presets/surface/`.
+Saved presets use Phosphor's schema and registry in `~/.config/phosphor-works/afterglow/shader-presets/surface/`.
 With `afterglow --config DIR/config.json`, they are in `DIR/shader-presets/surface/`.
 This directory is separate from PlasmaZones.
 Pack presets are read-only. Saves create new named entries that survive restarts.

@@ -2,7 +2,7 @@
 -- SPDX-License-Identifier: GPL-3.0-or-later
 --
 -- Notifies when a command that ran for ten seconds or more finishes in a pane
--- you are not looking at. Copy to ~/.config/afterglow/scripts/ to use it.
+-- you are not looking at. Copy to ~/.config/phosphor-works/afterglow/scripts/ to use it.
 -- Needs shell integration (OSC 133), which fish and most prompts provide.
 
 local script = {}

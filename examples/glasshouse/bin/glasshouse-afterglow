@@ -8,14 +8,14 @@
 #                                    switch afterglow's colours to a world; open
 #                                    windows follow at once (the config reloads live)
 #
-# Settings are merged into ~/.config/afterglow/config.json with jq; what you
+# Settings are merged into ~/.config/phosphor-works/afterglow/config.json with jq; what you
 # have set elsewhere stays. The file is replaced atomically, and left alone
 # if anything fails. A symlinked config.json is written through the link and
 # keeps its mode.
 set -Eeuo pipefail
 
 here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-conf="${XDG_CONFIG_HOME:-$HOME/.config}/afterglow"
+conf="${XDG_CONFIG_HOME:-$HOME/.config}/phosphor-works/afterglow"
 config="$conf/config.json"
 
 merge() (

@@ -91,7 +91,7 @@ def main():
         # A pack that draws its input as it is: what the window shows with an
         # event's state and no effect. A pane that closes is not in the window
         # of afterglow_renderpng, so the picture with no pack is not that.
-        through = root / "config/afterglow/shaders/through"
+        through = root / "config/phosphor-works/afterglow/shaders/through"
         through.mkdir(parents=True)
         (through / "metadata.json").write_text('{"id": "through", "name": "Through", "fragmentShader": "effect.frag"}')
         (through / "effect.frag").write_text("vec4 pTerminal(vec2 uv) { return terminalTexel(uv); }\n")

@@ -4,10 +4,12 @@
 #include "ShaderLibrary.h"
 
 #include "app/BuildTree.h"
+#include "config/AppPaths.h"
 #include "scripting/ScriptNames.h"
 
 #include <PhosphorAnimation/CurveRegistry.h>
 #include <PhosphorFsLoader/ContainedFileReader.h>
+#include <PhosphorPaths/SuiteDirectories.h>
 #include <PhosphorShaders/ShaderIncludeResolver.h>
 #include <PhosphorShaders/ShaderRegistry.h>
 #include <PhosphorShaders/ShaderPresetStore.h>
@@ -491,9 +493,7 @@ struct ShaderLibrary::PackIndex
 };
 
 ShaderLibrary::ShaderLibrary(QObject* parent)
-    : ShaderLibrary(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
-                        + QStringLiteral("/afterglow"),
-                    parent)
+    : ShaderLibrary(PhosphorPaths::appConfigDir(), parent)
 {
 }
 
@@ -513,8 +513,8 @@ ShaderLibrary::ShaderLibrary(const QString& configDirectory, QObject* parent)
     if (!checkout && !bundled.isEmpty()) {
         dirs << bundled;
     }
-    const QStringList system = QStandardPaths::locateAll(
-        QStandardPaths::GenericDataLocation, QStringLiteral("afterglow/shaders"), QStandardPaths::LocateDirectory);
+    const QStringList system = QStandardPaths::locateAll(QStandardPaths::GenericDataLocation, shaderDataSubdir(),
+                                                         QStandardPaths::LocateDirectory);
     for (auto it = system.crbegin(); it != system.crend(); ++it) {
         dirs << *it;
     }

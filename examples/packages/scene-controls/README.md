@@ -6,8 +6,8 @@
 Install the package:
 
 ```sh
-mkdir -p ~/.config/afterglow/scripts
-cp -r examples/packages/scene-controls ~/.config/afterglow/scripts/
+mkdir -p ~/.config/phosphor-works/afterglow/scripts
+cp -r examples/packages/scene-controls ~/.config/phosphor-works/afterglow/scripts/
 ```
 
 ## Edit a scene
@@ -22,7 +22,7 @@ Selectors and prompts use native controls, keyboard input and the system theme.
 Escape cancels. Changes target the current tab, or the whole window for window effects.
 Shader changes expire the selection. Reopen the editor after a shader change.
 
-Presets use Phosphor's registry and schema in `~/.config/afterglow/shader-presets/surface/`.
+Presets use Phosphor's registry and schema in `~/.config/phosphor-works/afterglow/shader-presets/surface/`.
 The surface namespace is separate from PlasmaZones presets.
 Pack presets are read-only. Save makes a new preset, with a UUID as its file name.
 Saved presets survive restart. Active script overrides do not.

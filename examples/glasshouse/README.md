@@ -59,8 +59,8 @@ Run from this example directory:
 bin/glasshouse-afterglow install
 ```
 
-`install` copies the four packs and the script into `~/.config/afterglow`.
-It adds `glasshouse.glsl` to `~/.config/afterglow/shaders/shared/` and replaces an older copy there.
+`install` copies the four packs and the script into `~/.config/phosphor-works/afterglow`.
+It adds `glasshouse.glsl` to `~/.config/phosphor-works/afterglow/shaders/shared/` and replaces an older copy there.
 Other files in `shared/` remain unchanged.
 
 `install` also merges these settings into `config.json`:
@@ -92,7 +92,7 @@ This permits rollback after failure:
 ```bash
 MUTABLE=(
     ...
-    "${HOME}/.config/afterglow/config.json"
+    "${HOME}/.config/phosphor-works/afterglow/config.json"
 )
 ```
 

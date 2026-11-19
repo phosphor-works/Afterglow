@@ -219,3 +219,17 @@ if(AFTERGLOW_BUILD_AGLOW)
     afterglow_test_runs(afterglow_dnd_tests AFTERGLOW_AGLOW aglow)
 endif()
 gtest_discover_tests(afterglow_dnd_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Every test executable here names Afterglow's folder before main(), as
+# afterglow does (AppDirectory.cpp): PhosphorPaths aborts on a path read before
+# the folder has a name, and the tests read their paths as the application does.
+add_library(afterglow_test_app_directory OBJECT AppDirectory.cpp)
+target_compile_definitions(afterglow_test_app_directory PRIVATE QT_NO_CAST_FROM_ASCII)
+target_link_libraries(afterglow_test_app_directory PUBLIC afterglow_paths)
+get_property(afterglow_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(test IN LISTS afterglow_test_targets)
+    get_target_property(type ${test} TYPE)
+    if(type STREQUAL "EXECUTABLE")
+        target_link_libraries(${test} PRIVATE afterglow_test_app_directory)
+    endif()
+endforeach()

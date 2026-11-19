@@ -104,7 +104,7 @@ The keybinding action names are `save_project` and `switch_project`.
 ## Project files
 
 Layouts are in `projects/` beside the active configuration file.
-The usual path is `~/.config/afterglow/projects/`.
+The usual path is `~/.config/phosphor-works/afterglow/projects/`.
 Names contain 1–64 letters, digits, underscores or hyphens.
 Saves replace files atomically. Symlink files are not permitted.
 
