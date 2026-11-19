@@ -14,6 +14,7 @@ Afterglow is a Linux terminal with GPU rendering, tabs, splits, shell integratio
 | Move panes or save layouts | [Projects](PROJECTS.md) |
 | Keep terminal sessions running, and show them in windows | [The mux daemon](MUX.md) |
 | Control a running instance | [Command line and control socket](CONTROL.md) |
+| Give an agent such as Claude Code a terminal session of its own | [The MCP server](MCP.md) |
 | Run the commands of scripts from a shell with `aglow run` | [Script commands](CONTROL.md#script-commands) |
 | Run script commands from a remote host in an `afterglow ssh` session | [Remote commands](CONTROL.md#remote-commands) |
 | Run a program such as fzf over a pane, or in a popup | [Overlays](SCRIPTING.md#overlays) and [`afterglow ctl overlay`](CONTROL.md#overlays) |
@@ -48,5 +49,6 @@ Reopen the palette after reload to see new commands.
 `afterglow --help` lists launch options.
 `afterglow ctl --help` lists live control commands.
 `afterglow mux --help` lists the commands of `afterglow mux`, which create, list and end the sessions of the mux daemon.
+`afterglow mcp --help` lists the options of the MCP server for agents.
 `afterglow --config-reference` prints the runtime schema without a window or user configuration.
 Use the option alone.

@@ -712,7 +712,7 @@ The results of `open-directory`, `open-project` and `save-project` also use the 
 
 ### Agent sessions
 
-An agent session is the session of a program that drives its panes for an agent, such as `afterglow mcp`.
+An agent session is the session of a program that drives its panes for an agent, such as [`afterglow mcp`](MCP.md).
 `afterglow mux new --agent` also makes one.
 
 | What | An agent session | Another session |

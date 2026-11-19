@@ -114,6 +114,12 @@ target_include_directories(afterglow_mux_client_tests PRIVATE ${PROJECT_SOURCE_D
 afterglow_test_runs(afterglow_mux_client_tests AFTERGLOW_MUX aglow-mux)
 gtest_discover_tests(afterglow_mux_client_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
+# The tool definitions of afterglow mcp, with no daemon. The tools run
+# against a daemon of their own in mcp_session.py.
+qt_add_executable(afterglow_mcp_tests McpToolsTest.cpp)
+target_link_libraries(afterglow_mcp_tests PRIVATE afterglow_app GTest::gtest_main)
+gtest_discover_tests(afterglow_mcp_tests)
+
 # A popup as the window's settings make it look, rendered offscreen.
 qt_add_executable(afterglow_popup_tests PopupLookTest.cpp)
 # The device of the renderer's tests (GpuTestDevice.h).
@@ -155,6 +161,11 @@ if(Python3_Interpreter_FOUND)
     # The shell completions against a stub afterglow. Exit status 77: no shell to test.
     add_test(NAME afterglow_shell_completion COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/completion_test.py)
     set_tests_properties(afterglow_shell_completion PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+    # afterglow mcp as an MCP client drives it, against a daemon of its own in
+    # directories under /tmp. Bash is required. Zsh and gdb cases skip without them.
+    add_test(NAME afterglow_mcp_session
+        COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/mcp_session.py $<TARGET_FILE:afterglow>)
+    set_tests_properties(afterglow_mcp_session PROPERTIES TIMEOUT 600)
     # Fails when docs/CONFIGURATION.md is not what the schema generates.
     add_test(NAME afterglow_configuration_reference
         COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tools/generate-reference.py --check $<TARGET_FILE:afterglow>)

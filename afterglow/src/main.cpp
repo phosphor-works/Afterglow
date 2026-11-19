@@ -12,6 +12,7 @@
 #include "control/Ctl.h"
 #include "control/Mux.h"
 #include "control/IpcClient.h"
+#include "mcp/Mcp.h"
 #include "mux/MuxClient.h"
 #include "shell/Aglow.h"
 #include "shell/Ssh.h"
@@ -166,6 +167,10 @@ int main(int argc, char** argv)
     if (argc >= 2 && std::strcmp(argv[1], "mux") == 0) {
         return Afterglow::runMux(argc - 1, argv + 1);
     }
+    // afterglow mcp ...: an MCP server for an agent, on a session of the mux daemon, no GUI.
+    if (argc >= 2 && std::strcmp(argv[1], "mcp") == 0) {
+        return Afterglow::runMcp(argc - 1, argv + 1);
+    }
     // afterglow COMMAND ... for each of Aglow::Commands: the aglow next to this executable, no GUI.
     if (argc >= 2 && Afterglow::Aglow::handles(argv[1])) {
         return Afterglow::Aglow::run(argc, argv);
@@ -186,6 +191,7 @@ int main(int argc, char** argv)
         "Commands that run before a window starts:\n"
         "  afterglow ctl ...       Control a running Afterglow.\n"
         "  afterglow mux ...       Keep terminal sessions running, and show them in windows.\n"
+        "  afterglow mcp ...       Give an agent a terminal session of its own (MCP server).\n"
         "  afterglow ssh ...       Run ssh with the remote side prepared for Afterglow.\n");
     if (Afterglow::Aglow::built()) {
         for (const Afterglow::Aglow::Command& command : Afterglow::Aglow::Commands) {

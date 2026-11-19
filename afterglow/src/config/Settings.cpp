@@ -72,6 +72,7 @@ const QString Animation = QStringLiteral("Animation");
 const QString Quick = QStringLiteral("QuickTerminal");
 const QString ControlGroup = QStringLiteral("Control");
 const QString MuxGroup = QStringLiteral("Mux");
+const QString McpGroup = QStringLiteral("Mcp");
 const QString AudioGroup = QStringLiteral("Audio");
 const QString ScriptsGroup = QStringLiteral("Scripts");
 const QString MouseGroup = QStringLiteral("Mouse");
@@ -971,6 +972,31 @@ PhosphorConfig::Schema buildSchema()
         colorKey(QStringLiteral("agentColor"), {},
                  QStringLiteral("The color of the badge of an agent session. An empty value uses the bright "
                                 "magenta of the palette (color13), so that a theme sets it.")),
+    };
+    schema.groups[McpGroup] = {
+        intKey(QStringLiteral("waitTimeout"), d.mcp.waitTimeout, McpSettings::MinTimeout, McpSettings::MaxTimeout,
+               QStringLiteral("Milliseconds that the run and wait tools of afterglow mcp wait when the call gives no "
+                              "timeout. A value above Mcp.maxWaitTimeout uses Mcp.maxWaitTimeout. The server reads "
+                              "its settings when it starts.")),
+        intKey(QStringLiteral("maxWaitTimeout"), d.mcp.maxWaitTimeout, McpSettings::MinTimeout, McpSettings::MaxTimeout,
+               QStringLiteral("The longest time in milliseconds that a call of the run and wait tools of afterglow "
+                              "mcp can ask for. A longer timeout uses this value. A command that runs longer goes "
+                              "on, and the agent calls wait again.")),
+        intKey(QStringLiteral("outputLimit"), d.mcp.outputLimit, 1024, McpSettings::MaxOutputLimit,
+               QStringLiteral("The most bytes of UTF-8 text that one result of the run, wait and read tools of "
+                              "afterglow mcp carries. A longer text loses its start, and the result says that it "
+                              "was cut.")),
+        intKey(QStringLiteral("tailLines"), d.mcp.tailLines, 1, 1000000,
+               QStringLiteral("The number of lines at the end of the output that the run and wait tools of "
+                              "afterglow mcp return when the call gives no tail_lines.")),
+        intKey(QStringLiteral("screenshotMaxSize"), d.mcp.screenshotMaxSize, 64, 16384,
+               QStringLiteral("The longest side in pixels of a screenshot that the screenshot tool of afterglow "
+                              "mcp returns. Afterglow scales a larger image down.")),
+        {QStringLiteral("endSessionOnExit"), d.mcp.endSessionOnExit, QMetaType::Bool,
+         QStringLiteral("End the session of afterglow mcp when the server exits, also when it crashes. When two "
+                        "servers use one session, it ends when the last of them exits. When this is off, the "
+                        "session keeps running, and a new server can use it again with --session. A session that "
+                        "a server adopted with --adopt never ends with the server.")},
     };
     schema.groups[ControlGroup] = {
         {QStringLiteral("enabled"), d.control.enabled, QMetaType::Bool,
@@ -2382,6 +2408,14 @@ Settings SettingsStore::read()
     s.mux.agentLabel = st.read<QString>(MuxGroup, QStringLiteral("agentLabel"));
     if (const QString agent = st.read<QString>(MuxGroup, QStringLiteral("agentColor")); !agent.isEmpty())
         s.mux.agentColor = toRgb(agent, {});
+
+    // Mcp: afterglow mcp reads them once, at its start.
+    s.mcp.waitTimeout = st.read<int>(McpGroup, QStringLiteral("waitTimeout"));
+    s.mcp.maxWaitTimeout = st.read<int>(McpGroup, QStringLiteral("maxWaitTimeout"));
+    s.mcp.outputLimit = st.read<int>(McpGroup, QStringLiteral("outputLimit"));
+    s.mcp.tailLines = st.read<int>(McpGroup, QStringLiteral("tailLines"));
+    s.mcp.screenshotMaxSize = st.read<int>(McpGroup, QStringLiteral("screenshotMaxSize"));
+    s.mcp.endSessionOnExit = st.read<bool>(McpGroup, QStringLiteral("endSessionOnExit"));
 
     // Control
     s.control.enabled = st.read<bool>(ControlGroup, QStringLiteral("enabled"));

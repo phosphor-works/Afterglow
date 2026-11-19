@@ -375,6 +375,26 @@ _afterglow_mux()
     esac
 }
 
+# afterglow mcp [--session NAME] [--adopt] [--cwd DIR]: its options, and the
+# directory of --cwd. No session name is offered for --session: a completion
+# runs no program but aglow run --complete.
+_afterglow_mcp()
+{
+    case $prev in
+    --cwd)
+        _afterglow_files -d
+        return
+        ;;
+    --session) return ;;
+    esac
+    local start=2
+    if ((cword == 2)) && [[ $cur == -* ]]; then
+        _afterglow_matching -h --help
+    fi
+    # The usage is the whole command line.
+    _afterglow_given -h || _afterglow_given --help || _afterglow_unused --session --adopt --cwd
+}
+
 # Whether the option $1 is on the command line before the cursor.
 _afterglow_given()
 {
@@ -424,6 +444,10 @@ _afterglow()
             ;;
         mux)
             _afterglow_mux
+            return
+            ;;
+        mcp)
+            _afterglow_mcp
             return
             ;;
         run | transfer | dnd | icat | clipboard)
@@ -483,7 +507,7 @@ _afterglow()
     --title | -o | --override | --class) return ;;
     esac
     if ((cword == 1)) && [[ $cur != -* ]]; then
-        _afterglow_matching ctl mux run ssh transfer dnd icat clipboard
+        _afterglow_matching ctl mux mcp run ssh transfer dnd icat clipboard
         return
     fi
     local start=1

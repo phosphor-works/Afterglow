@@ -522,11 +522,34 @@ TEST_P(ShellFeatures, TheMarksTellTheShellsState)
         EXPECT_TRUE(until(state(ShellState::Continuation))) << o.take();
         ASSERT_TRUE(s.pty->write("b\"\r"));
         EXPECT_TRUE(until(state(ShellState::Prompt))) << o.take();
-        // Ctrl+C at the secondary prompt: the next primary one.
+        // Ctrl+C at the secondary prompt: the next primary one. The echo of a
+        // typed key says that the line editor reads: the shell prints the
+        // mark as it draws PS2, before the editor starts.
         ASSERT_TRUE(s.pty->write("echo \"\r"));
         EXPECT_TRUE(until(state(ShellState::Continuation))) << o.take();
+        o.take();
+        ASSERT_TRUE(s.pty->write("q"));
+        EXPECT_TRUE(o.wait("q")) << o.take();
         ASSERT_TRUE(s.pty->write("\x03"));
-        EXPECT_TRUE(until(state(ShellState::Prompt))) << o.take();
+        // Readline's SIGINT handler only sets a flag that its loop checks:
+        // a signal between that check and the blocking read() waits for the
+        // next key (1 run in 30 for bash here). A user's next key draws the
+        // prompt; a second Ctrl+C, at a prompt or not, is that key here.
+        std::unique_lock lock(o.mutex);
+        if (!o.changed.wait_for(lock, std::chrono::seconds(3), [&o] {
+                return o.terminal.shellState() == ShellState::Prompt;
+            })) {
+            lock.unlock();
+            ASSERT_TRUE(s.pty->write("\x03"));
+        } else {
+            lock.unlock();
+        }
+        EXPECT_TRUE(until(state(ShellState::Prompt)))
+            << shell << " screen:\n"
+            << [&o] {
+                   std::lock_guard screen(o.mutex);
+                   return o.terminal.text(AfterglowVt::Terminal::TextScope::Screen);
+               }();
     }
     o.exit();
 }
@@ -566,9 +589,16 @@ TEST_P(ShellFeatures, APasteOfTwoLinesRunsBoth)
     })) << o.text;
     EXPECT_EQ(o.terminal.lastExitCode(), std::optional<int>(1));
     std::size_t outputs = 0;
+    std::vector<std::optional<int>> codes;
     for (const AfterglowVt::SemanticRegion& region : o.terminal.semanticRegions()) {
-        if (region.id > before && region.kind == AfterglowVt::SemanticZoneKind::Output)
+        if (region.id > before && region.kind == AfterglowVt::SemanticZoneKind::Output) {
             ++outputs;
+            codes.push_back(region.exitCode);
+        }
+    }
+    // Each line's own exit code: bash's PS0 ends the line before with its D.
+    if (GetParam() == "bash") {
+        EXPECT_EQ(codes, (std::vector<std::optional<int>>{0, 1}));
     }
     // Bash runs each line as a command of its own. Zsh and Fish run the
     // command line that the paste made as one.
