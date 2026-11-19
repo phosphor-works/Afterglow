@@ -296,7 +296,7 @@ install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 set(AFTERGLOW_PRIVATE_LIBS ${AFTERGLOW_MUX_PRIVATE_LIBS} AfterglowRender
     PhosphorConfig PhosphorFsLoader PhosphorRegistry PhosphorShaders PhosphorRendering
     PhosphorWayland PhosphorLayer PhosphorAnimation PhosphorShortcuts
-    PhosphorDBus PhosphorIpc PhosphorScripting PhosphorAudio)
+    PhosphorDBus PhosphorIpc PhosphorMcp PhosphorScripting PhosphorAudio)
 set_target_properties(${AFTERGLOW_PRIVATE_LIBS} PROPERTIES INSTALL_RPATH "$ORIGIN")
 set_target_properties(phosphorwayland-qpa PROPERTIES INSTALL_RPATH "$ORIGIN/../..")
 install(TARGETS ${AFTERGLOW_PRIVATE_LIBS} LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR} NAMELINK_SKIP)
