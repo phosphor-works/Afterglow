@@ -394,9 +394,11 @@ void answerSessionCall(Control& control, const Settings& settings, TerminalWindo
         if (!scope)
             return reply(failed(QStringLiteral("scope is pane, tab or window")));
         // The permission goes first, as for the control target: it holds
-        // for every pane.
+        // for every pane. An agent session keeps its read access, which the
+        // daemon checked: the window marks it, and does not ask its own.
+        const bool agent = window.showsAgentSession();
         QString code;
-        if (const QString refused = control.captureRefusal(code); !refused.isEmpty())
+        if (const QString refused = agent ? QString() : control.captureRefusal(code); !refused.isEmpty())
             return reply(failed(refused, code));
         Pane* pane = paneAt(window, args, 0);
         if (!pane)
@@ -406,7 +408,7 @@ void answerSessionCall(Control& control, const Settings& settings, TerminalWindo
             [reply](const QString& error, const QString& code, const QJsonObject& result) {
                 reply(error.isEmpty() ? MuxClient::ControlAnswer{result, {}} : failed(error, code));
             },
-            code);
+            code, agent);
         if (!error.isEmpty())
             return reply(failed(error, code));
         return;

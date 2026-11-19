@@ -357,7 +357,7 @@ _afterglow_mux()
             ;;
         --name) return ;;
         esac
-        _afterglow_unused --name --cwd --detach --ssh
+        _afterglow_unused --name --cwd --detach --agent --ssh
         ;;
     kill | attach | detach | ls)
         if [[ $prev == --ssh ]]; then

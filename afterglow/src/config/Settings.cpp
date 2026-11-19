@@ -964,6 +964,13 @@ PhosphorConfig::Schema buildSchema()
                    "take at most 256 KiB, and a larger one keeps no icon. A pane also keeps a bell and a flash, "
                    "whatever this value. The session does not keep clipboard writes. The value 0 keeps no "
                    "notifications. A change applies at once to a session that a window shows.")),
+        stringKey(QStringLiteral("agentLabel"), d.mux.agentLabel,
+                  QStringLiteral("The text of the badge on each tab of a window that shows an agent session, and "
+                                 "of the prefix in its title, such as [agent]. An agent session is the session of "
+                                 "afterglow mcp. An empty value shows no badge and no prefix.")),
+        colorKey(QStringLiteral("agentColor"), {},
+                 QStringLiteral("The color of the badge of an agent session. An empty value uses the bright "
+                                "magenta of the palette (color13), so that a theme sets it.")),
     };
     schema.groups[ControlGroup] = {
         {QStringLiteral("enabled"), d.control.enabled, QMetaType::Bool,
@@ -2372,6 +2379,9 @@ Settings SettingsStore::read()
     }
     s.mux.signInTimeout = st.read<int>(MuxGroup, QStringLiteral("signInTimeout"));
     s.mux.keptNotifications = st.read<int>(MuxGroup, QStringLiteral("keptNotifications"));
+    s.mux.agentLabel = st.read<QString>(MuxGroup, QStringLiteral("agentLabel"));
+    if (const QString agent = st.read<QString>(MuxGroup, QStringLiteral("agentColor")); !agent.isEmpty())
+        s.mux.agentColor = toRgb(agent, {});
 
     // Control
     s.control.enabled = st.read<bool>(ControlGroup, QStringLiteral("enabled"));

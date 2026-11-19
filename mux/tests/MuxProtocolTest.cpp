@@ -72,7 +72,15 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 30) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 31) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 31 added agent sessions: the agent option of a session, the
+    // agent and bound of listSessions, the agent of the attach answer, the
+    // adoptSession, bindSession and unbindSession calls, and the daemon's
+    // call agent to the window that shows a session that an agent adopted
+    // (AttachTest).
+    EXPECT_EQ(std::string(Fn::AdoptSession), "adoptSession");
+    EXPECT_EQ(std::string(Fn::BindSession), "bindSession");
+    EXPECT_EQ(std::string(Fn::UnbindSession), "unbindSession");
     // Version 30 added the textChanged event (AttachTest).
     EXPECT_NE(std::find(ControlEvents.begin(), ControlEvents.end(), "textChanged"), ControlEvents.end());
     // Version 29 added the paste call of the control target, which sends
@@ -490,7 +498,7 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     // until it has its key, its place in the round trip and a new version.
     SessionOptions fields;
     [[maybe_unused]] auto& [name, sessionEnvironment, callerEnvironment, umask, launch, size, terminal,
-                            notificationCapabilities, controlOptions, keptNotifications] = fields;
+                            notificationCapabilities, controlOptions, keptNotifications, sessionAgent] = fields;
     [[maybe_unused]] auto& [controlEnabled, allowReadText, remoteCommandsOff, eventInterval] = fields.control;
     [[maybe_unused]] auto& [argv, cwd, environment, unset, launchedProgram, command] = fields.launch;
     [[maybe_unused]] auto& [cols, rows, cellWidth, cellHeight] = fields.size;
@@ -499,12 +507,13 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
                             ambiguousWide, bidi, cursorShape, cursorBlink, allowScreenReadback, graphicsQuota,
                             graphicsFileTransfer] = fields.terminal;
     SessionInfo info;
-    [[maybe_unused]] auto& [infoName, attached, panes, jobs] = info;
+    [[maybe_unused]] auto& [infoName, attached, panes, jobs, agent, bound] = info;
 
     const Json::Value options = toJson(SessionOptions{});
-    EXPECT_EQ(keys(options),
-              (std::vector<std::string>{"name", "environment", "callerEnvironment", "umask", "launch", "size",
-                                        "terminal", "notificationCapabilities", "control", "keptNotifications"}));
+    EXPECT_EQ(
+        keys(options),
+        (std::vector<std::string>{"name", "environment", "callerEnvironment", "umask", "launch", "size", "terminal",
+                                  "notificationCapabilities", "control", "keptNotifications", "agent"}));
     EXPECT_EQ(keys(options["control"]),
               (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff", "eventInterval"}));
     EXPECT_EQ(keys(options["launch"]),
@@ -516,7 +525,8 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
                                   "selectionForeground", "selectionBackground", "boldIsBright", "minimumContrast",
                                   "wordBoundaries", "ambiguousWide", "bidi", "cursorShape", "cursorBlink",
                                   "allowScreenReadback", "graphicsQuota", "graphicsFileTransfer"}));
-    EXPECT_EQ(keys(toJson(SessionInfo{})), (std::vector<std::string>{"name", "attached", "panes", "jobs"}));
+    EXPECT_EQ(keys(toJson(SessionInfo{})),
+              (std::vector<std::string>{"name", "attached", "panes", "jobs", "agent", "bound"}));
 }
 
 namespace {
@@ -780,6 +790,7 @@ TEST(MuxProtocol, SessionOptionsRoundTrip)
     o.notificationCapabilities = "a=focus:p=title";
     o.control = {false, true, "remote commands are off (Terminal.sshRemoteCommands)", 250};
     o.keptNotifications = 0;
+    o.agent = true;
     AfterglowVt::TerminalOptions& t = o.terminal;
     t.maxScrollback = 1234;
     t.defaultForeground = {4, 5, 6};
@@ -837,6 +848,7 @@ TEST(MuxProtocol, SessionOptionsRoundTrip)
     EXPECT_EQ(back->control.eventInterval, 250);
     EXPECT_TRUE(back->control == o.control);
     EXPECT_EQ(back->keptNotifications, 0);
+    EXPECT_TRUE(back->agent);
     EXPECT_TRUE(back->terminal == o.terminal);
     // Unset colors go as null and come back unset.
     SessionOptions unset;
@@ -1057,13 +1069,16 @@ TEST(MuxProtocol, TheFirstErrorIsTheOneReported)
 
 TEST(MuxProtocol, SessionInfoRoundTrip)
 {
-    SessionInfo info{"2", true, 3, {"vim", "make"}};
+    SessionInfo info{"2", true, 3, {"vim", "make"}, true, 2};
     const auto back = sessionInfo(toJson(info));
     ASSERT_TRUE(back);
     EXPECT_EQ(back->name, "2");
     EXPECT_TRUE(back->attached);
     EXPECT_EQ(back->panes, 3);
     EXPECT_EQ(back->jobs, info.jobs);
+    EXPECT_TRUE(back->agent);
+    EXPECT_EQ(back->bound, 2);
+    EXPECT_FALSE(sessionInfo(with(toJson(info), "bound", -1)));
     EXPECT_FALSE(sessionInfo(Json::Object{{"name", "x"}}));
     EXPECT_FALSE(sessionInfo(with(toJson(info), "panes", -1)));
     EXPECT_FALSE(sessionInfo(with(toJson(info), "jobs", Json::Array{1})));

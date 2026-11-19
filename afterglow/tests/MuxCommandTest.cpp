@@ -755,7 +755,8 @@ TEST_F(MuxCommandTest, CreatesListsAndKillsASessionAndTheDaemonEndsWithIt)
 
     const Result listed = mux({"ls"});
     EXPECT_EQ(listed.status, 0) << listed.err;
-    EXPECT_NE(listed.out.find("NAME  STATE     PANES\n1     detached      1\n"), std::string::npos) << listed.out;
+    EXPECT_NE(listed.out.find("NAME  STATE     PANES  AGENT\n1     detached      1  \n"), std::string::npos)
+        << listed.out;
 
     // A program runs and stdin is no terminal: no question, a refusal.
     const Result refused = mux({"kill", "1"});

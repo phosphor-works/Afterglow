@@ -333,6 +333,7 @@ _afterglow_mux() {
             '--name[the session name]:name:' \
             "$cwd" \
             '--detach[create the session without a window]' \
+            '--agent[create an agent session]' \
             "$ssh"
         ;;
     kill)

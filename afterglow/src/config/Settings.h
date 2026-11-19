@@ -237,6 +237,11 @@ struct MuxSettings
     /// window shows the session, for the next window. The default equals
     /// AfterglowMux::DefaultKeptNotifications, which ConfigTest checks.
     int keptNotifications = 8;
+    /// The text of the badge on each tab of a window that shows an agent
+    /// session, and of the title's prefix. Empty: no marker.
+    QString agentLabel = QStringLiteral("agent");
+    /// The badge's color; none: the palette's bright magenta (color13).
+    std::optional<AfterglowVt::Rgb> agentColor;
     bool operator==(const MuxSettings&) const = default;
 };
 

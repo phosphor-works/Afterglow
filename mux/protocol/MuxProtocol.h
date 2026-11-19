@@ -31,7 +31,7 @@ namespace AfterglowMux {
 /// (AfterglowVt::StateCodec, StateSync.h) change with it. MuxProtocolTest
 /// pins the keys of the options to this number, so that a new key changes it
 /// too.
-inline constexpr int ProtocolVersion = 30;
+inline constexpr int ProtocolVersion = 31;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -81,6 +81,15 @@ inline constexpr const char* NewSession =
 inline constexpr const char* CallerEnvironment = "callerEnvironment";
 inline constexpr const char* ListSessions = "listSessions"; ///< () -> [session]
 inline constexpr const char* KillSession = "killSession"; ///< (name) -> null
+/// (name) -> null: session `name` becomes an agent session, for the rest of
+/// its life. It can then not be bound: it is the user's.
+inline constexpr const char* AdoptSession = "adoptSession";
+/// (name) -> null: the agent session `name` ends when the last connection
+/// that bound it closes, also when its client is killed. A session that was
+/// adopted is refused.
+inline constexpr const char* BindSession = "bindSession";
+/// (name) -> null: the session no longer ends with this connection.
+inline constexpr const char* UnbindSession = "unbindSession";
 /// (protocol, name, {takeover, eventQueue, history}) -> {name, window,
 /// environment}: after the answer, the connection of the call carries the
 /// session's stream (MuxStream.h). The client sends nothing after the call
@@ -332,6 +341,11 @@ struct SessionOptions
     /// Mux.keptNotifications of the client: the most notifications that
     /// each pane keeps for the next window, 0 to MaxKeptNotifications.
     int keptNotifications = int(DefaultKeptNotifications);
+    /// An agent drives the session (`afterglow mcp`): it keeps
+    /// Control.allowReadText whatever the windows send, a window that shows
+    /// it marks it and takes its screenshots, and Fn::BindSession can tie
+    /// its end to the connections of the agent.
+    bool agent = false;
 };
 
 /// The variables of an environment as SessionOptions and Launch send them:
@@ -382,6 +396,9 @@ struct SessionInfo
     /// question of `afterglow mux kill`. Their names are the programs' own
     /// choice: show them as plain text.
     std::vector<std::string> jobs;
+    bool agent = false; ///< SessionOptions::agent, or adopted (Fn::AdoptSession)
+    /// The connections that the session ends with (Fn::BindSession).
+    int bound = 0;
 };
 
 AfterglowProto::Json::Value toJson(const SessionInfo& info);
