@@ -98,6 +98,7 @@ afterglow_add_phosphor_libs(
     phosphor-scripting
     phosphor-config
     phosphor-fsloader
+    phosphor-mcp
     phosphor-registry
     phosphor-shaders
     phosphor-rendering
