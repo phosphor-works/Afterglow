@@ -94,10 +94,10 @@ A signal that the daemon gets as ignored stays ignored. Thus `nohup afterglow mu
 
 | Command | Function |
 | --- | --- |
-| `afterglow mux new` | Creates a session and shows it in a window. Options: `--name NAME`, `--cwd DIR`, `--detach`, `--ssh DESTINATION`, `-- COMMAND...`. |
+| `afterglow mux new` | Creates a session and shows it in a window. Options: `--name NAME`, `--cwd DIR`, `--detach`, `--agent`, `--ssh DESTINATION`, `-- COMMAND...`. With `--agent`, an [agent session](#agent-sessions). |
 | `afterglow mux attach [NAME]` | Shows a session in a window. Options: `--no-takeover`, `--ssh DESTINATION`. |
 | `afterglow mux detach [NAME]` | Closes the window of the session. The session keeps running. Option: `--ssh DESTINATION`. |
-| `afterglow mux ls` | Lists the sessions, with the columns `NAME`, `STATE` and `PANES`. Option: `--ssh DESTINATION`. |
+| `afterglow mux ls` | Lists the sessions, with the columns `NAME`, `STATE`, `PANES` and `AGENT`. `AGENT` is `yes` for an [agent session](#agent-sessions), with the number of agents that it ends with. Option: `--ssh DESTINATION`. |
 | `afterglow mux kill NAME` | Ends a session and its programs. Options: `--force`, `--ssh DESTINATION`. |
 | `afterglow mux server` | Runs `aglow-mux` in the foreground |
 | `afterglow mux --help` | Prints the usage |
@@ -617,6 +617,7 @@ It acts on them as on the panes of other windows.
 A pane ID in the daemon and a pane ID in a window can have the same value.
 
 The daemon follows `Control.enabled` and `Control.allowReadText` of the window that showed the session last, else those of the Afterglow that started the session.
+An [agent session](#agent-sessions) keeps its read access.
 A window that answers a command follows its own settings too.
 
 | Command | No window shows the session | A window shows the session |
@@ -652,7 +653,7 @@ The overlay of `afterglow ctl overlay` runs on the computer of the window, over 
 Its program and its `--cwd` are of that computer.
 It belongs to the client that asked for it, and it closes when that client goes.
 The standard input of `afterglow ctl overlay` goes to the window in parts.
-`screenshot` needs `Control.allowReadText`, of the session and of the window.
+`screenshot` needs `Control.allowReadText`, of the session and of the window. For an [agent session](#agent-sessions), only that of the session, which it keeps.
 
 `afterglow ctl watch` gets the [events](CONTROL.md#events) of the panes of the session from the daemon, also while no window shows it.
 
@@ -708,6 +709,30 @@ Without `--cwd`, and for `split`, the new pane starts where `Window.workingDirec
 With `inherit`, the default, it starts in the directory of the program in the foreground of its pane.
 `new-window` opens a window outside the session in the Afterglow of the window, and prints the ID of its pane there.
 The results of `open-directory`, `open-project` and `save-project` also use the IDs of that Afterglow for their window and its panes.
+
+### Agent sessions
+
+An agent session is the session of a program that drives its panes for an agent, such as `afterglow mcp`.
+`afterglow mux new --agent` also makes one.
+
+| What | An agent session | Another session |
+| --- | --- | --- |
+| Read access (`getText`, `screenshot`, the commands in events) | Always. A window that shows the session does not take it away. | `Control.allowReadText` of the window that showed it last |
+| `Control.enabled` | Applies. Turn it off to stop the agents. | Applies |
+| The window that shows it | A badge on each tab (`Mux.agentLabel`, `Mux.agentColor`) and `[agent] ` before the title | No badge |
+| `screenshot` | The window takes it without its own `Control.allowReadText` | The window needs its own `Control.allowReadText` too |
+| End | With the last connection that bound it, when one did (see below) | With its last program, or `afterglow mux kill` |
+
+These calls of the `mux` target change a session:
+
+| Call | Arguments | Result |
+| --- | --- | --- |
+| `adoptSession` | name | Makes the session an agent session, for the rest of its life. A window that shows it marks it at once. An adopted session is never bound: it is yours. |
+| `bindSession` | name | The session ends when the last connection that bound it closes, also when its client crashes or is killed. Only for an agent session that was made as one. |
+| `unbindSession` | name | The session no longer ends with this connection |
+
+The text of a pane is the input of the agent. A program in a pane can write text that tries to steer the agent.
+An agent session limits what the agent reaches through its tools to the panes of that session, but it is no security boundary: an agent that runs commands can also run `afterglow ctl`.
 
 ### Script commands in a session pane
 

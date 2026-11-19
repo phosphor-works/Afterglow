@@ -479,6 +479,7 @@ Json::Value toJson(const SessionOptions& o)
         {"notificationCapabilities", o.notificationCapabilities},
         {"control", toJson(o.control)},
         {"keptNotifications", o.keptNotifications},
+        {"agent", o.agent},
     };
 }
 
@@ -571,6 +572,7 @@ std::optional<SessionOptions> sessionOptions(const Json::Value& value, std::stri
         readControl(r, *control, o.control);
     if (const auto kept = r.integer("keptNotifications", 0, MaxKeptNotifications))
         o.keptNotifications = int(*kept);
+    r.boolean("agent", o.agent);
     r.noOtherKeys();
     if (r.failed())
         return std::nullopt;
@@ -580,10 +582,9 @@ std::optional<SessionOptions> sessionOptions(const Json::Value& value, std::stri
 Json::Value toJson(const SessionInfo& info)
 {
     return Json::Object{
-        {"name", info.name},
-        {"attached", info.attached},
-        {"panes", info.panes},
-        {"jobs", Json::Array(info.jobs.begin(), info.jobs.end())},
+        {"name", info.name},   {"attached", info.attached},
+        {"panes", info.panes}, {"jobs", Json::Array(info.jobs.begin(), info.jobs.end())},
+        {"agent", info.agent}, {"bound", info.bound},
     };
 }
 
@@ -601,6 +602,9 @@ std::optional<SessionInfo> sessionInfo(const Json::Value& value)
     if (const auto n = r.integer("panes", 0, 1 << 20))
         info.panes = int(*n);
     r.strings("jobs", info.jobs);
+    r.boolean("agent", info.agent);
+    if (const auto n = r.integer("bound", 0, 1 << 20))
+        info.bound = int(*n);
     r.noOtherKeys();
     if (r.failed())
         return std::nullopt;

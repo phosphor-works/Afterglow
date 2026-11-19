@@ -273,6 +273,10 @@ private:
     std::string callerEnvironment(const AfterglowProto::IpcRequest& request,
                                   const AfterglowProto::IpcServerConnection& connection);
     std::string killSession(const AfterglowProto::IpcRequest& request);
+    std::string adoptSession(const AfterglowProto::IpcRequest& request);
+    /// bindSession (@p bind) and unbindSession.
+    std::string bindSession(const AfterglowProto::IpcRequest& request,
+                            const AfterglowProto::IpcServerConnection& connection, bool bind);
     /// The connection of the call becomes the window's stream once the
     /// answer went (m_attaching).
     std::string attach(const AfterglowProto::IpcRequest& request);
@@ -459,6 +463,12 @@ private:
         std::string name;
     };
     std::map<const AfterglowProto::IpcServerConnection*, Selected> m_selected;
+    /// The connections that each agent session, by serial, ends with
+    /// (Fn::BindSession): the session ends when the last one closes.
+    std::map<std::uint64_t, std::set<const AfterglowProto::IpcServerConnection*>> m_bound;
+    /// The sessions whose last bound connection closed: forget() runs
+    /// within the loop over the connections, and run() ends them after it.
+    std::vector<std::uint64_t> m_unbound;
     /// The environment that each connection's caller sent (callerEnvironment()).
     std::map<const AfterglowProto::IpcServerConnection*, std::vector<std::pair<std::string, std::string>>>
         m_callerEnvironments;

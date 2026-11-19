@@ -1074,6 +1074,14 @@ void Daemon::holdForAnswers(IpcServerConnection& connection)
 
 void Daemon::forget(const IpcServerConnection* connection)
 {
+    for (auto bound = m_bound.begin(); bound != m_bound.end();) {
+        if (bound->second.erase(connection) && bound->second.empty()) {
+            m_unbound.push_back(bound->first);
+            bound = m_bound.erase(bound);
+        } else {
+            ++bound;
+        }
+    }
     // First what names the connection, which needs no allocation: a failure
     // below (out of memory) leaves no pointer to it behind.
     m_selected.erase(connection);

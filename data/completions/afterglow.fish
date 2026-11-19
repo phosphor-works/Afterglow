@@ -384,6 +384,7 @@ function __afterglow_mux
             contains -- --name $argv; or set -a offer --name\t'The session name'
             contains -- --cwd $argv; or set -a offer --cwd\t'Start in the directory'
             contains -- --detach $argv; or set -a offer --detach\t'Create the session without a window'
+            contains -- --agent $argv; or set -a offer --agent\t'Create an agent session'
         case attach
             string match -q -- '-*' "$cur"
             and not contains -- --no-takeover $argv

@@ -18415,6 +18415,61 @@ TEST_F(NativeWindow, ASessionOfAnotherHostRunsNoProgramHere)
         << (split ? screenOf(split).toStdString() : std::string("the pane closed"));
 }
 
+// A window that shows an agent session marks it: a badge on each tab and a
+// prefix in the title. It takes the screenshots of its panes without its own
+// Control.allowReadText, as the agent's session keeps read access. A plain
+// session gets neither, until an agent adopts it.
+TEST_F(NativeWindow, AnAgentSessionsWindowMarksItAndTakesItsScreenshots)
+{
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    AfterglowMux::SessionOptions options = MuxTest::shellOptions(daemon, "agent-1");
+    options.agent = true;
+    ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
+    ASSERT_TRUE(daemon.newSession(MuxTest::shellOptions(daemon, "plain"))) << daemon.lastError();
+    QString error;
+    QPointer<TerminalWindow> agent = showSession(*application, daemon, QStringLiteral("agent-1"), &error);
+    ASSERT_NE(agent, nullptr) << error.toStdString();
+    const auto closeAgent = qScopeGuard([&agent] {
+        delete agent;
+    });
+    QPointer<TerminalWindow> plain = showSession(*application, daemon, QStringLiteral("plain"), &error);
+    ASSERT_NE(plain, nullptr) << error.toStdString();
+    const auto closePlain = qScopeGuard([&plain] {
+        delete plain;
+    });
+    const auto badge = [](TerminalWindow* w) {
+        auto* chrome = w ? w->findChild<ChromeController*>() : nullptr;
+        return chrome ? chrome->agentMarker().value(QStringLiteral("label")).toString() : QString();
+    };
+    EXPECT_TRUE(waitFor([&] {
+        return agent && badge(agent) == QStringLiteral("agent")
+            && agent->title().startsWith(QStringLiteral("[agent] "));
+    })) << (agent ? agent->title().toStdString() : std::string());
+    ASSERT_TRUE(plain);
+    EXPECT_EQ(badge(plain), QString());
+    EXPECT_FALSE(plain->title().startsWith(QStringLiteral("[agent] "))) << plain->title().toStdString();
+
+    // The window's own Control.allowReadText is off (the fixture's default):
+    // the agent session's screenshot still comes, the plain one's does not.
+    SessionCtl agentCtl(daemon, "agent-1");
+    ASSERT_TRUE(agentCtl.ready()) << agentCtl.failure().message;
+    const auto shot = agentCtl.call("screenshot", MuxTest::Json::Array{0, "pane"});
+    ASSERT_TRUE(shot) << agentCtl.failure().message;
+    EXPECT_FALSE((*shot)["png"].toString().empty());
+    SessionCtl plainCtl(daemon, "plain");
+    ASSERT_TRUE(plainCtl.ready()) << plainCtl.failure().message;
+    EXPECT_FALSE(plainCtl.call("screenshot", MuxTest::Json::Array{0, "pane"}));
+
+    // An agent adopts the plain session: its window marks it from then on.
+    MuxTest::IpcConnection::Error adoptError;
+    ASSERT_TRUE(daemon.call(AfterglowMux::Fn::AdoptSession, MuxTest::Json::Array{"plain"}, &adoptError))
+        << adoptError.message;
+    EXPECT_TRUE(waitFor([&] {
+        return plain && badge(plain) == QStringLiteral("agent");
+    }));
+}
+
 // A session pane tells the same shell state in its window as in its daemon:
 // the window's replica gets the marks and regions of the daemon's terminal,
 // and the window's shellChanged comes with them.

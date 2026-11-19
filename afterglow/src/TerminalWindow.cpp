@@ -5,6 +5,7 @@
 #include "NestedLoop.h"
 #include "DockArea.h"
 #include <QQuickItem>
+#include <QColor>
 #include "desktop/FileDrop.h"
 #include "desktop/PointerShape.h"
 #include "desktop/FileTransfer.h"
@@ -501,6 +502,10 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         // The session follows the settings of the window that shows it, and
         // one of this computer takes its variables.
         m_session->sendSettings(sessionSettings(m_settings.settings(), !m_session->remote()));
+        // An agent drives the session: its tabs and the title say so, also
+        // when an agent adopts the session later.
+        connect(m_session.get(), &MuxClient::agentChanged, this, &TerminalWindow::updateAgentMarker);
+        updateAgentMarker();
         restoreSession();
     } else if (!options.empty)
         newTab(options.directoryGiven ? options.workingDirectory : startDirectory(options.workingDirectory),
@@ -1092,6 +1097,11 @@ void TerminalWindow::restoreSession()
 QString TerminalWindow::sessionName() const
 {
     return m_session ? m_session->session() : QString();
+}
+
+bool TerminalWindow::showsAgentSession() const
+{
+    return m_session && m_session->agent();
 }
 
 void TerminalWindow::keepSessionOnClose(bool keep)
@@ -2723,7 +2733,26 @@ void TerminalWindow::updateTitle()
     if (const QString context = m_focused ? m_focused->contextLabel() : QString(); !context.isEmpty()) {
         t = QLatin1Char('[') + context + QStringLiteral("] ") + t;
     }
+    // An agent drives this window's session: first, before all else.
+    if (const QString agent = m_controller->agentMarker().value(QStringLiteral("label")).toString(); !agent.isEmpty()) {
+        t = QLatin1Char('[') + agent + QStringLiteral("] ") + t;
+    }
     setTitle(t);
+}
+
+void TerminalWindow::updateAgentMarker()
+{
+    const Settings& settings = m_settings.settings();
+    QVariantMap marker;
+    if (m_session && m_session->agent() && !settings.mux.agentLabel.isEmpty()) {
+        const AfterglowVt::Rgb color = settings.mux.agentColor.value_or(settings.terminal.basePalette[13]);
+        marker = {{QStringLiteral("label"), settings.mux.agentLabel},
+                  {QStringLiteral("color"), QColor(color.r, color.g, color.b)}};
+    }
+    if (marker == m_controller->agentMarker())
+        return;
+    m_controller->setAgentMarker(marker);
+    updateTitle();
 }
 
 void TerminalWindow::restartBlink()
@@ -5567,6 +5596,7 @@ void TerminalWindow::applySettings(const Settings& previous)
     }
     if (m_session)
         m_session->sendSettings(sessionSettings(now, !m_session->remote()));
+    updateAgentMarker();
     if (now.colors != previous.colors) {
         for (Pane* p : findChildren<Pane*>()) {
             applySearchColors(p);
