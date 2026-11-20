@@ -1,6 +1,6 @@
 -- SPDX-FileCopyrightText: 2026 fuddlesworth
 -- SPDX-License-Identifier: GPL-3.0-or-later
--- Copy into ~/.config/afterglow/scripts. Needs Shaders.paneEffects.
+-- Copy into ~/.config/phosphor-works/afterglow/scripts. Needs Shaders.paneEffects.
 -- Pulses panes: a red flash when a command fails, a green portal when a
 -- command of ten seconds or more succeeds, and a shake on the bell. Ctrl+C
 -- (130) is not a failure, and -1 means that the shell gave no exit code.

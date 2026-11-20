@@ -1,6 +1,6 @@
 -- SPDX-FileCopyrightText: 2026 fuddlesworth
 -- SPDX-License-Identifier: GPL-3.0-or-later
--- Copy into ~/.config/afterglow/scripts, then run "Split and title" in the palette.
+-- Copy into ~/.config/phosphor-works/afterglow/scripts, then run "Split and title" in the palette.
 local script = {}
 script.metadata = {
     id = "create-and-title",

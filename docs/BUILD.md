@@ -293,7 +293,7 @@ A [build of aglow and aglow-mux alone](#build-aglow-and-aglow-mux-alone) also do
 When `readelf` is installed, the build of a static `aglow` prints the oldest Linux kernel that it needs, and on x86-64 the processor level.
 When the compiler or linker flags contain `-fsanitize`, such as in the `debug` preset, `aglow` links dynamically.
 A static program cannot use the sanitizer runtimes.
-Private libraries go in an `afterglow` directory in the library directory, for example `lib/afterglow/` or `lib64/afterglow/`.
+Private libraries go in a `phosphor-works/afterglow` directory in the library directory, for example `lib/phosphor-works/afterglow/` or `lib64/phosphor-works/afterglow/`.
 This location does not replace libraries from a system Phosphor installation.
 
 | Shell | Completion file of `afterglow` | Completion file of `aglow` |

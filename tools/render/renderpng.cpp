@@ -31,6 +31,7 @@
 #include <AfterglowVt/Search.h>
 #include <AfterglowVt/Selection.h>
 #include <AfterglowVt/Terminal.h>
+#include <config/AppPaths.h>
 #include <config/Settings.h>
 #include <config/Theme.h>
 #include <scripting/OverlaySpec.h>
@@ -302,7 +303,7 @@ int run(QGuiApplication& app)
                       QStringLiteral("dir")});
     parser.addOption({QStringLiteral("shader-dir"),
                       QStringLiteral("Take the user's packs from this directory, such as examples/shaders, and not "
-                                     "from ~/.config/afterglow/shaders."),
+                                     "from ~/.config/phosphor-works/afterglow/shaders."),
                       QStringLiteral("dir")});
     parser.addOption({QStringLiteral("overview"),
                       QStringLiteral("Pane overview shader, shown open (or closing, with --overview-closing)."),
@@ -1603,6 +1604,7 @@ int run(QGuiApplication& app)
 
 int main(int argc, char** argv)
 {
+    Afterglow::setAppDirectory();
     QGuiApplication app(argc, argv);
     // No Vulkan device, or an allocation that fails: a message, not an abort.
     // On a machine without Vulkan as the device asks for it, every error is

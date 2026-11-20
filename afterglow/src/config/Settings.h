@@ -461,7 +461,7 @@ struct Settings
     bool operator==(const Settings&) const = default;
 };
 
-/// The config file (~/.config/afterglow/config.json) on phosphor-config,
+/// The config file (~/.config/phosphor-works/afterglow/config.json) on phosphor-config,
 /// with live reload when the file changes. The file holds only the values
 /// that differ from the defaults; a missing file means every default, and so
 /// does an empty one that held no settings (an empty file that held settings

@@ -42,7 +42,7 @@ artifacts = args.artifacts
 
 with tempfile.TemporaryDirectory(prefix="afterglow-shader-parameters-") as temp:
     root = Path(temp)
-    config = root / "afterglow"
+    config = root / "phosphor-works/afterglow"
     read_state = install_inspector(config)
     source = Path(__file__).resolve().parents[2]
     shutil.copytree(source / "examples/packages/scene-controls", config / "scripts/scene-controls")

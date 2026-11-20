@@ -247,8 +247,8 @@ The renderer finds packs in the shader search path. The Phosphor packs are not i
 Copy the packs, including `shared/`, into a separate configuration directory, and set `XDG_CONFIG_HOME` to it:
 
 ```sh
-mkdir -p /tmp/phosphor-render/afterglow/shaders
-cp -r examples/phosphor/shaders/* /tmp/phosphor-render/afterglow/shaders/
+mkdir -p /tmp/phosphor-render/phosphor-works/afterglow/shaders
+cp -r examples/phosphor/shaders/* /tmp/phosphor-render/phosphor-works/afterglow/shaders/
 XDG_CONFIG_HOME=/tmp/phosphor-render afterglow_renderpng --background-shader phosphor-field \
     --background-shader phosphor-lens --dpr 2 --time 10 \
     --signal 0=1@0 --frames 48 --fps 24 input.ansi fracture.png

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 # cmake -DSOURCE=<dir> -DBINARY=<dir> -DGENERATOR=<name> -DPHOSPHOR_LIBS=<dir> -DMUX_LIBS=<library>,...
+#       -DPRIVATE_SUBDIR=<dir>
 #       [-DMAKE_PROGRAM=<path>]
 #       [-DBUILD_TYPE=<type>] [-DC_COMPILER=<path>] [-DCXX_COMPILER=<path>]
 #       [-DC_FLAGS=<flags>] [-DCXX_FLAGS=<flags>] [-DLINKER_FLAGS=<flags>]
@@ -26,7 +27,7 @@
 #     which are only configured;
 #   - the build without the tests succeeds;
 #   - the prefix holds bin/aglow and bin/aglow-mux, the private libraries of
-#     aglow-mux (MUX_LIBS), the completions of aglow and the license notices
+#     aglow-mux (MUX_LIBS, in LIBDIR/PRIVATE_SUBDIR), the completions of aglow and the license notices
 #     of both, and nothing else;
 #   - the installed aglow and aglow-mux run.
 #
@@ -44,10 +45,10 @@
 # colon between the directories. The link time optimization of afterglow-vt is off: GCC's
 # -flto=auto would run a job for each processor, beyond JOBS.
 
-foreach(required SOURCE BINARY GENERATOR PHOSPHOR_LIBS MUX_LIBS)
+foreach(required SOURCE BINARY GENERATOR PHOSPHOR_LIBS MUX_LIBS PRIVATE_SUBDIR)
     if(NOT ${required})
         message(FATAL_ERROR "usage: cmake -DSOURCE=<dir> -DBINARY=<dir> -DGENERATOR=<name> -DPHOSPHOR_LIBS=<dir> "
-                            "-DMUX_LIBS=<library>,... -P ${CMAKE_CURRENT_LIST_FILE}")
+                            "-DMUX_LIBS=<library>,... -DPRIVATE_SUBDIR=<dir> -P ${CMAKE_CURRENT_LIST_FILE}")
     endif()
 endforeach()
 if(NOT JOBS)
@@ -186,9 +187,9 @@ file(GLOB_RECURSE installed LIST_DIRECTORIES false RELATIVE "${prefix}" "${prefi
 string(REPLACE "," ";" libraries "${MUX_LIBS}")
 foreach(library IN LISTS libraries)
     set(found ${installed})
-    list(FILTER found INCLUDE REGEX "^${libdir}/afterglow/lib${library}\\.so\\.[0-9.]+$")
+    list(FILTER found INCLUDE REGEX "^${libdir}/${PRIVATE_SUBDIR}/lib${library}\\.so\\.[0-9.]+$")
     if(NOT found)
-        message(FATAL_ERROR "The installation of aglow-mux alone has no lib${library} in ${libdir}/afterglow.")
+        message(FATAL_ERROR "The installation of aglow-mux alone has no lib${library} in ${libdir}/${PRIVATE_SUBDIR}.")
     endif()
     list(APPEND expected ${found})
 endforeach()

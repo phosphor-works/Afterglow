@@ -10,8 +10,8 @@ It uses ideas from [tabline.wez](https://github.com/michaelbrusegard/tabline.wez
 Install from the repository root:
 
 ```bash
-mkdir -p ~/.config/afterglow/scripts
-cp -r examples/packages/tab-line ~/.config/afterglow/scripts/
+mkdir -p ~/.config/phosphor-works/afterglow/scripts
+cp -r examples/packages/tab-line ~/.config/phosphor-works/afterglow/scripts/
 ```
 
 When you use a custom configuration file, use the `scripts/` directory beside that file.

@@ -30,7 +30,8 @@
 #include <QKeySequence>
 #include <QLoggingCategory>
 #include <QRegularExpression>
-#include <QStandardPaths>
+
+#include <PhosphorPaths/SuiteDirectories.h>
 #include <QStyleHints>
 
 #include <algorithm>
@@ -512,8 +513,9 @@ PhosphorConfig::Schema buildSchema()
             QStringLiteral("theme"), {},
             QStringLiteral(
                 "Theme name or file path. An empty value uses no theme. Afterglow searches the themes "
-                "directory beside the config file (~/.config/afterglow/themes), then afterglow/themes in "
-                "each XDG data directory. Then it searches the bundled themes, such as nord and afterglow-light, "
+                "directory beside the config file (~/.config/phosphor-works/afterglow/themes), then "
+                "phosphor-works/afterglow/themes in each XDG data directory. Then it searches the bundled "
+                "themes, such as nord and afterglow-light, "
                 "and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use "
                 "plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme "
                 "over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, "
@@ -1000,10 +1002,10 @@ PhosphorConfig::Schema buildSchema()
              "read pane text. In a script command that runs for a client, such as aglow run or afterglow run, "
              "read_text, read_region and semantic_regions also need Control.allowReadText.")},
         {QStringLiteral("enabled"), d.scripts, QMetaType::Bool,
-         QStringLiteral(
-             "Run Luau scripts from the scripts directory beside the config file and from afterglow/scripts in "
-             "each XDG data directory. The aglow run command also needs Control.enabled. A value other than true, "
-             "false, yes, no, on, off, 1 or 0 turns it off.")},
+         QStringLiteral("Run Luau scripts from the scripts directory beside the config file and from "
+                        "phosphor-works/afterglow/scripts in each XDG data directory. The aglow run command "
+                        "also needs Control.enabled. A value other than true, false, yes, no, on, off, 1 or 0 "
+                        "turns it off.")},
         intKey(
             QStringLiteral("commandTimeout"), d.scriptCommandTimeout, 1000, 3600000,
             QStringLiteral("Longest time in milliseconds that one run of a script command can take. This includes runs "
@@ -1458,8 +1460,7 @@ QVariantList defaultHintPatterns()
 
 QString SettingsStore::defaultPath()
 {
-    return QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
-        + QStringLiteral("/afterglow/config.json");
+    return PhosphorPaths::appConfigDir() + QStringLiteral("/config.json");
 }
 
 PhosphorConfig::Schema SettingsStore::schema()

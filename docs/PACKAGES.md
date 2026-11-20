@@ -252,6 +252,6 @@ The stored data remains available for a later installation.
 | [Scripted overview](../examples/packages/scripted-overview/README.md) | Drives the pane overview from its own keys, with its own overview shader |
 | [fzf picker](../examples/packages/fzf-picker/README.md) | Picks a saved project or a file with fzf in a popup overlay, or with the select dialog without fzf |
 
-Copy a complete package directory into `~/.config/afterglow/scripts/` to install it.
-A package in a system data directory, such as `/usr/share/afterglow/scripts`, also loads.
+Copy a complete package directory into `~/.config/phosphor-works/afterglow/scripts/` to install it.
+A package in a system data directory, such as `/usr/share/phosphor-works/afterglow/scripts`, also loads.
 Use the package instructions for configuration and commands.

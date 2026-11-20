@@ -41,8 +41,8 @@ exit_on_sigterm()
 args.artifacts.mkdir(parents=True, exist_ok=True)
 with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
     root = Path(temp)
-    config = root / "afterglow"
-    config.mkdir()
+    config = root / "phosphor-works/afterglow"
+    config.mkdir(parents=True)
     (root / ".bashrc").write_text("PS1='L3> '\n")
     (config / "config.json").write_text(json.dumps({
         "Terminal": {"shell": "/bin/bash", "env": {"HOME": temp}, "confirmClose": False},

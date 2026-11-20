@@ -5,13 +5,13 @@
 
 Afterglow uses Luau API version 1.
 The [typed declarations](../afterglow/src/scripting/afterglow.d.luau) define helper signatures, events, snapshots and results.
-Installed declarations are in `share/afterglow/api/afterglow.d.luau`.
+Installed declarations are in `share/phosphor-works/afterglow/api/afterglow.d.luau`.
 The [examples](../examples/README.md) are in the source repository, in `examples/scripts` and `examples/packages`.
 
 ## Install a script
 
 Copy a `.luau` file into `scripts/` beside the active configuration file.
-The usual directory is `~/.config/afterglow/scripts/`.
+The usual directory is `~/.config/phosphor-works/afterglow/scripts/`.
 A script can handle terminal events and add [commands](#commands).
 Run a command with `aglow run <id> <command>`, from the command palette, from the context menu, with a key or with `afterglow ctl action`.
 A command that a script marks `remote` can also run from a remote host, with `aglow run` in an `afterglow ssh` session.
@@ -30,11 +30,11 @@ The script ID is `metadata.id`, or the file name without `.luau`.
 It has 1 to 64 letters, digits, `_` and `-`, and must not start with `-`.
 A script with an ID that breaks this rule does not load. `afterglow ctl scripts` shows the error.
 `metadata.name` is the name that `afterglow ctl scripts` shows. The default is the script ID.
-Afterglow also reads `afterglow/scripts` in each system data directory, such as `/usr/share/afterglow/scripts`.
+Afterglow also reads `phosphor-works/afterglow/scripts` in each system data directory, such as `/usr/share/phosphor-works/afterglow/scripts`.
 The directories have this priority, from low to high:
 
 1. The system data directories, in the reverse of their XDG order.
-2. `~/.local/share/afterglow/scripts`.
+2. `~/.local/share/phosphor-works/afterglow/scripts`.
 3. `scripts/` beside the active configuration file.
 
 When two scripts have the same ID, the script in the higher-priority directory loads.

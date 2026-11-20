@@ -6,8 +6,8 @@
 Install this package with the Phosphor example:
 
 ```sh
-mkdir -p ~/.config/afterglow/scripts
-cp -r examples/packages/contextual-scene ~/.config/afterglow/scripts/
+mkdir -p ~/.config/phosphor-works/afterglow/scripts
+cp -r examples/packages/contextual-scene ~/.config/phosphor-works/afterglow/scripts/
 ```
 
 Select **Toggle contextual Phosphor exposure** in the command palette.

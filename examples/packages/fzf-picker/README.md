@@ -14,8 +14,8 @@ Install it in the `scripts/` directory beside the configuration file.
 For the default configuration, run this from the repository root:
 
 ```bash
-mkdir -p ~/.config/afterglow/scripts
-cp -r examples/packages/fzf-picker ~/.config/afterglow/scripts/
+mkdir -p ~/.config/phosphor-works/afterglow/scripts
+cp -r examples/packages/fzf-picker ~/.config/phosphor-works/afterglow/scripts/
 ```
 
 Open the command palette and choose **Pick a project or file**.

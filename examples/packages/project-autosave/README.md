@@ -10,8 +10,8 @@ It does not run WezTerm plugins.
 Install from the repository root:
 
 ```sh
-mkdir -p ~/.config/afterglow/scripts
-cp -r examples/packages/project-autosave ~/.config/afterglow/scripts/
+mkdir -p ~/.config/phosphor-works/afterglow/scripts
+cp -r examples/packages/project-autosave ~/.config/phosphor-works/afterglow/scripts/
 ```
 
 When you use a custom configuration file, use the `scripts/` directory beside that file.

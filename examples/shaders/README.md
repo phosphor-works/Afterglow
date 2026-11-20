@@ -9,8 +9,8 @@ Afterglow does not install them. Its own packs are in [data/shaders](../../data/
 To use a pack, copy its directory into the `shaders` directory beside your configuration file:
 
 ```sh
-mkdir -p ~/.config/afterglow/shaders
-cp -r examples/shaders/crt-curve ~/.config/afterglow/shaders/
+mkdir -p ~/.config/phosphor-works/afterglow/shaders
+cp -r examples/shaders/crt-curve ~/.config/phosphor-works/afterglow/shaders/
 ```
 
 Then name the pack in a [shader chain](../../docs/SHADERS.md#shader-chains).

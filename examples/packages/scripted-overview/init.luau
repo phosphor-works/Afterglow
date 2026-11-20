@@ -1,7 +1,7 @@
 -- SPDX-FileCopyrightText: 2026 fuddlesworth
 -- SPDX-License-Identifier: GPL-3.0-or-later
 -- A package that ships a script and the shader it drives. Copy this folder
--- into ~/.config/afterglow/scripts, and run "Use Package Shaders…" (or
+-- into ~/.config/phosphor-works/afterglow/scripts, and run "Use Package Shaders…" (or
 -- `aglow run scripted-overview use-shaders`). The dialog lists the
 -- package's suggestion, Shaders.overview = scripted-overview.wall, and
 -- writes it when you choose it. Then bind "script:scripted-overview.open".

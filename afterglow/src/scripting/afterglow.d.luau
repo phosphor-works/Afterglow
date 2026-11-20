@@ -4,9 +4,11 @@
 -- Type definitions for afterglow scripts, for editors with Luau support.
 --
 -- A script is a .luau file that returns a module table, in a scripts
--- directory: scripts/ beside the configuration file (~/.config/afterglow/scripts/),
--- ~/.local/share/afterglow/scripts/, or afterglow/scripts/ in a system data
--- directory such as /usr/share. Of two scripts with one id, the one in the
+-- directory: scripts/ beside the configuration file
+-- (~/.config/phosphor-works/afterglow/scripts/),
+-- ~/.local/share/phosphor-works/afterglow/scripts/, or
+-- phosphor-works/afterglow/scripts/ in a system data directory such as
+-- /usr/share. Of two scripts with one id, the one in the
 -- directory earlier in this list loads:
 --
 --   local script = {}
