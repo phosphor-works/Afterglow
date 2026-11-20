@@ -105,7 +105,7 @@ __afterglow_funsub=0
 # Set while the prompt carries afterglow's marks, not those of a prompt that
 # has its own OSC 133 or 633 integration.
 __afterglow_marks=0
-__afterglow_begin='' __afterglow_end='' __afterglow_start='' __afterglow_entry=''
+__afterglow_begin='' __afterglow_end='' __afterglow_start='' __afterglow_entry='' __afterglow_secondary=''
 __afterglow_before_prompt() {
     __afterglow_status=$?
     (( __afterglow_marks )) && printf '\033]133;D;%d\007' "$__afterglow_status"
@@ -149,15 +149,19 @@ __afterglow_prompt() {
     # Every copy: a venv or conda activate puts its text before them.
     [[ -n $__afterglow_begin ]] && PS1=${PS1//"$__afterglow_begin"/}
     [[ -n $__afterglow_end ]] && PS1=${PS1//"$__afterglow_end"/}
+    [[ -n $__afterglow_secondary ]] && PS2=${PS2//"$__afterglow_secondary"/}
     local current=${PS0-}
     current=${current#"$__afterglow_start"}
-    local begin='' end='' start=''
+    local begin='' end='' start='' secondary=''
     # Checked at each prompt: a prompt that has its own marks keeps them.
     if [[ $__afterglow_features == *" no-prompt-mark "* || $PS1 == *']133;'* || $PS1 == *']633;'* ]]; then
         __afterglow_marks=0
     else
         __afterglow_marks=1
         begin='\[\e]133;A;redraw=1\a\]' start=$'\e]133;C\a'
+        # The prompt of a command that goes on (an open quote, a \ at the
+        # end): the shell waits for the rest of it.
+        secondary='\[\e]133;A;k=s\a\]'
     fi
     # A bar while the user edits the command, the configured cursor for it.
     # The vi mode sets its own cursors, with show-mode-in-prompt.
@@ -173,8 +177,9 @@ __afterglow_prompt() {
     fi
     # The end of the prompt last: the command line starts after it.
     (( __afterglow_marks )) && end+='\[\e]133;B\a\]'
-    __afterglow_begin=$begin __afterglow_end=$end __afterglow_start=$start
+    __afterglow_begin=$begin __afterglow_end=$end __afterglow_start=$start __afterglow_secondary=$secondary
     PS1=$begin$PS1$end
+    PS2=$secondary$PS2
     PS0=$start$current
     [[ $__afterglow_features == *" no-cwd "* ]] && return "$__afterglow_status"
     local LC_ALL=C path=$PWD encoded='' char hex i

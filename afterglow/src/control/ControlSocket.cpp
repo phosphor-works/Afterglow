@@ -3,6 +3,7 @@
 
 #include "ControlSocket.h"
 
+#include "MuxProtocol.h"
 #include "RemoteSockets.h"
 #include "../config/Settings.h"
 
@@ -150,27 +151,80 @@ void ControlApi::screenshot(double pane, const QString& scope)
         reply->fail(code, error);
 }
 
-QString ControlApi::getText(double pane, const QString& scope)
+void ControlApi::getText(double pane, const QString& scope)
 {
-    return getText(pane, scope, {});
+    getText(pane, scope, {});
 }
 
-QString ControlApi::getText(double pane, const QString& scope, const QVariantMap& options)
+void ControlApi::getText(double pane, const QString& scope, const QVariantMap& options)
 {
     const auto id = paneId(pane);
     if (!id)
-        return {};
+        return;
+    const bool since = scope == QLatin1String("since");
     const auto s = Control::scopeFromName(scope);
-    if (!s) {
-        failed(Control::BadTextScope);
-        return {};
+    if (!s && !since) {
+        failed(QStringLiteral("scope is ") + QLatin1String(AfterglowMux::GetTextScopeNames));
+        return;
     }
     AfterglowVt::TextFormat format;
-    if (failed(Control::textFormat(options, format)))
-        return {};
-    QString text;
-    failed(m_control.readText(*id, *s, text, format));
-    return text;
+    std::optional<AfterglowVt::SemanticPosition> mark;
+    if (failed(Control::textFormat(options, format, &mark)))
+        return;
+    if (since != mark.has_value()) {
+        failed(QLatin1String(AfterglowMux::MarkScopeError));
+        return;
+    }
+    // The answer goes from here, so that a refusal can have a code of its
+    // own: TRY_AGAIN for rows that a session pane still gets.
+    const PendingReply reply = deferCall(QStringLiteral("getText needs a client connection"));
+    if (!reply)
+        return;
+    // The end of a command's output and of what came since a mark holds
+    // its result: a cut keeps it.
+    format.keepEnd = since || *s == Control::TextScope::LastOutput;
+    QString text, code;
+    bool truncated = false, trimmed = false;
+    const QString error = since ? m_control.readTextSince(*id, *mark, format, text, truncated, trimmed, code)
+                                : m_control.readText(*id, *s, text, format, &truncated, &code);
+    if (!error.isEmpty()) {
+        if (code.isEmpty())
+            reply->fail(error);
+        else
+            reply->fail(code, error);
+        return;
+    }
+    QJsonObject answer{{QStringLiteral("text"), text}, {QStringLiteral("truncated"), truncated}};
+    if (since)
+        answer.insert(QStringLiteral("trimmed"), trimmed);
+    reply->finish(answer);
+}
+
+QVariantMap ControlApi::mark(double pane)
+{
+    QVariantMap mark;
+    if (const auto id = paneId(pane))
+        failed(m_control.markOfPane(*id, mark));
+    return mark;
+}
+
+QVariantList ControlApi::shellRegions(double pane)
+{
+    return shellRegions(pane, 0);
+}
+
+QVariantList ControlApi::shellRegions(double pane, double after)
+{
+    QVariantList regions;
+    const auto id = paneId(pane);
+    if (!id)
+        return regions;
+    if (!Control::isWhole(after) || after < 0 || after > double(1LL << 53)) {
+        failed(QStringLiteral("after is a region ID: a whole number from 0"));
+        return regions;
+    }
+    failed(m_control.shellRegions(*id, quint64(after), regions));
+    return regions;
 }
 
 uint ControlApi::split(double pane, const QString& direction, const QStringList& command)
@@ -602,6 +656,10 @@ ControlSocket::ControlSocket(Control& control, SettingsStore& settings, Phosphor
     });
     connect(&control, &Control::contextChanged, this, [this](quint32 p, const QString& context) {
         sendMerged("contextChanged", p, {}, {paneValue(p), context});
+    });
+    // At once, as the end of a command: a client waits for the prompt.
+    connect(&control, &Control::shellChanged, this, [this](quint32 p, const QString& state) {
+        sendNow("shellChanged", p, {paneValue(p), state});
     });
     // The value is gated when it goes out: a value that waits must not
     // leave after read access was taken away.

@@ -2174,15 +2174,26 @@ std::optional<bool> waitsInPoll(qint64 pid)
 // is given: (pane, scope) stays the call of plain text.
 TEST(CtlBinaryTest, TextAndLaunchOptionsGoInTheirCalls)
 {
-    const QJsonObject text{{QStringLiteral("type"), QStringLiteral("reply")},
-                           {QStringLiteral("result"), QStringLiteral("t")}};
+    const auto answer = [](bool truncated) {
+        return QJsonObject{
+            {QStringLiteral("type"), QStringLiteral("reply")},
+            {QStringLiteral("result"),
+             QJsonObject{{QStringLiteral("text"), QStringLiteral("t")}, {QStringLiteral("truncated"), truncated}}}};
+    };
+    const QJsonObject text = answer(false);
     const QJsonObject pane{{QStringLiteral("type"), QStringLiteral("reply")}, {QStringLiteral("result"), 9}};
     const auto args = lastArgs;
     const QStringList three{QStringLiteral("--pane"), QStringLiteral("3")};
     AgainstTarget r = ctlAgainst(text, three, {}, -1, {}, QStringLiteral("get-text"));
     EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
     EXPECT_EQ(r.outcome.out, QStringLiteral("t\n"));
+    EXPECT_TRUE(r.outcome.err.isEmpty()) << qPrintable(r.outcome.err);
     EXPECT_EQ(args(r), (QJsonArray{3, QStringLiteral("screen")}));
+    // A cut text still goes out whole, and the note goes to stderr.
+    r = ctlAgainst(answer(true), three, {}, -1, {}, QStringLiteral("get-text"));
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(r.outcome.out, QStringLiteral("t\n"));
+    EXPECT_TRUE(r.outcome.err.contains(QStringLiteral("cut at its limit"))) << qPrintable(r.outcome.err);
     r = ctlAgainst(text,
                    three
                        + QStringList{QStringLiteral("--last-visited-output"), QStringLiteral("--ansi"),

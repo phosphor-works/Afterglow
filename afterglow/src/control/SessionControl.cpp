@@ -235,9 +235,11 @@ MuxClient::ControlAnswer answerNow(Control& control, TerminalWindow& window, con
         if (const QString error = Control::textFormat(args.at(2).toObject().toVariantMap(), format); !error.isEmpty())
             return failed(error);
         QString text;
-        if (const QString error = control.readText(id, *scope, text, format); !error.isEmpty())
+        bool truncated = false;
+        if (const QString error = control.readText(id, *scope, text, format, &truncated); !error.isEmpty())
             return failed(error);
-        return {text, {}};
+        // As the daemon answers getText.
+        return {QJsonObject{{QStringLiteral("text"), text}, {QStringLiteral("truncated"), truncated}}, {}};
     }
     if (fn == QLatin1String("setTitle")) {
         if (const QString error = control.setTitle(id, args.at(1).toString()); !error.isEmpty())

@@ -79,9 +79,12 @@ function __afterglow_precmd {
     local result=$?
     emulate -L zsh
     local begin=$'%{\e]133;A;redraw=1\a%}' end=$'%{\e]133;B\a%}'
+    # The prompt of a command that goes on (an open quote, a \ at the end):
+    # the shell waits for the rest of it.
+    local secondary=$'%{\e]133;A;k=s\a%}'
     # Every copy of the last prompt's marks: a venv or conda activate puts its
     # text before them.
-    PS1=${PS1//"$begin"/}; PS1=${PS1//"$end"/}
+    PS1=${PS1//"$begin"/}; PS1=${PS1//"$end"/}; PS2=${PS2//"$secondary"/}
     # A bar while the user edits the command, and the directory as the title.
     [[ $__afterglow_features == *" no-cursor "* ]] || (( __afterglow_vi )) || printf '\033[%s q' "$__afterglow_cursor"
     [[ $__afterglow_features == *" no-title "* ]] || print -Pn -- "\e]2;${__afterglow_host//\%/%%}%~\a"
@@ -92,6 +95,7 @@ function __afterglow_precmd {
     else
         (( __afterglow_marks )) && printf '\033]133;D;%d\007' "$result"
         PS1=$begin$PS1$end
+        PS2=$secondary$PS2
         __afterglow_marks=1
     fi
     [[ $__afterglow_features == *" no-cwd "* ]] && return $result

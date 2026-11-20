@@ -214,6 +214,9 @@ void Control::attachPane(Pane* pane)
                 if (guard)
                     Q_EMIT commandFinished(id, c, code, ms);
             });
+    connect(pane, &Pane::shellStateChanged, this, [this, id](AfterglowVt::ShellState state) {
+        Q_EMIT shellChanged(id, QString::fromLatin1(AfterglowVt::shellStateName(state)));
+    });
     connect(pane, &Pane::statusChanged, this, [this, id, guard = QPointer<Pane>(pane)] {
         if (!guard) {
             return;
@@ -285,7 +288,10 @@ PaneInfo Control::describe(TerminalWindow* w, Pane* p, bool facts, bool cmdline)
     if (!facts)
         return info;
     info.facts = true;
-    info.atPrompt = p->atShellPrompt();
+    const Pane::ShellFacts shell = p->shellFacts();
+    info.shell = shell.state;
+    info.input = shell.input;
+    info.lastExit = shell.lastExit;
     info.userVars = p->userVars();
     if (const auto process = p->foreground(cmdline)) {
         PaneInfo::Foreground foreground{process->pid, {}, QString::fromStdString(process->cwd)};
@@ -460,7 +466,9 @@ QVariantMap Control::paneMap(const PaneInfo& p)
     QVariantMap neighbors;
     for (std::size_t side = 0; side < p.neighbors.size(); ++side)
         neighbors.insert(neighborName(Neighbors[side]), p.neighbors[side]);
-    map.insert(QStringLiteral("at_prompt"), p.atPrompt);
+    map.insert(QStringLiteral("shell"), QString::fromLatin1(AfterglowVt::shellStateName(p.shell)));
+    map.insert(QStringLiteral("input"), p.input);
+    map.insert(QStringLiteral("last_exit"), p.lastExit ? QVariant(*p.lastExit) : QVariant::fromValue(nullptr));
     map.insert(QStringLiteral("user_vars"), userVars);
     map.insert(QStringLiteral("foreground"), foreground);
     map.insert(QStringLiteral("neighbors"), neighbors);

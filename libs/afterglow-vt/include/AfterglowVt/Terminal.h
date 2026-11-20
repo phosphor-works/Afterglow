@@ -98,7 +98,36 @@ struct TextFormat
     /// At the end: the cursor's place on the screen (CUP), its shape
     /// (DECSCUSR) and whether it shows (DECTCEM).
     bool cursor = false;
+    /// A text over its limit keeps its end, from the start of a row, and
+    /// not its start: the end of a command's output holds its result. A
+    /// row longer than the limit alone is cut from its start, as without
+    /// it. TextScope::Screen ignores it: the rows of one screen fit.
+    bool keepEnd = false;
 };
+
+/// What the shell in a terminal does, from its OSC 133 marks.
+enum class ShellState : std::uint8_t {
+    None, ///< no prompt mark since the last reset: no shell integration
+    Prompt, ///< at a primary prompt or its command line (A or B, before C)
+    Continuation, ///< at a secondary prompt (A;k=s): the shell waits for the rest of a command
+    Running, ///< not at a prompt: a command runs, or the next prompt has not come yet
+};
+
+/// The name of @p state in the control target's pane objects and events.
+constexpr std::string_view shellStateName(ShellState state) noexcept
+{
+    switch (state) {
+    case ShellState::Prompt:
+        return "prompt";
+    case ShellState::Continuation:
+        return "continuation";
+    case ShellState::Running:
+        return "running";
+    case ShellState::None:
+        break;
+    }
+    return "none";
+}
 
 enum class MouseTracking : std::uint8_t {
     None,
@@ -579,6 +608,33 @@ public:
     {
         return m_semanticZone != SemanticZone::Output;
     }
+    /// What the shell does. Taken from the semantic regions and the zone
+    /// of the cursor: a reset (RIS) forgets them, and the state is None
+    /// until the shell marks its next prompt.
+    ShellState shellState() const noexcept;
+    /// True when the command line holds typed text: text between the input
+    /// mark (OSC 133 B) and the cursor, other than blanks. False without a
+    /// B mark (the shell marks no input), and while the user's cursor is at
+    /// the start of what they typed.
+    bool shellInput() const;
+    /// The exit code of the newest closed output region, if that region
+    /// has one (its D mark gave a code).
+    std::optional<int> lastExitCode() const;
+    /// The id of the newest prompt region (OSC 133 A or P), 0 for none. A
+    /// new one says that the shell drew a prompt, also when the state that
+    /// shellState() gives is the same as before: a command can start and
+    /// end between two reads of its output.
+    std::uint64_t lastPromptId() const noexcept;
+    /// The cursor's place on the primary screen, with its row as a stable
+    /// row id (as SemanticPosition): a mark for textSince().
+    SemanticPosition textMark() const;
+    /// The text of the primary screen from @p from to the cursor. The text
+    /// of the screen on the alternate screen, which has no history, and
+    /// when the cursor is before @p from (a program cleared the screen).
+    /// @p trimmed: the row of @p from left the scrollback, and the text
+    /// starts at the oldest row that is kept.
+    std::string textSince(SemanticPosition from, std::size_t maxBytes, bool* truncated, bool* trimmed,
+                          const TextFormat& format) const;
     /// A resize kept the prompt's previous layout for the shell to repaint,
     /// and the shell has not finished yet (OSC 133;B). Renderers can keep showing
     /// the previous frame meanwhile instead of showing a partial repaint.

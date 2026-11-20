@@ -4432,8 +4432,38 @@ std::string Terminal::textBetween(const Mark& from, const Mark& to, std::size_t 
     if (last < 0) {
         return {};
     }
-    const long long start = first < 0 ? 0 : first; // the start scrolled out of history
-    const int startCol = first < 0 ? 0 : from.col;
+    long long start = first < 0 ? 0 : first; // the start scrolled out of history
+    int startCol = first < 0 ? 0 : from.col;
+    bool startCut = false;
+    if (format.keepEnd) {
+        // The rows from the end that fit, each measured alone. Alone, a row
+        // can only take more than it does after the rows before it (a style
+        // that a wrapped row carries is set again), so the rows found fit.
+        std::size_t total = 0;
+        long long fit = last + 1;
+        while (fit > start) {
+            const long long i = fit - 1;
+            const Row& row = scr.absoluteRow(std::size_t(i));
+            const bool continues = row.wrapped && i < last;
+            TextWriter measure(scr, format, maxBytes - total);
+            if (!measure.row(row, i == start ? startCol : 0, i == last ? to.col : scr.cols(), continues,
+                             !continues && i < last))
+                break;
+            total += measure.take().size();
+            fit = i;
+        }
+        // Not even the last row fits: the cut from the start, as without
+        // keepEnd. All rows fit: nothing is cut.
+        if (fit > start && fit <= last) {
+            TextWriter blanks(scr, format, 0);
+            for (long long j = start; j < fit && !startCut; ++j) {
+                const Row& row = scr.absoluteRow(std::size_t(j));
+                startCut = !blanks.writesNothing(row, row.wrapped && j < last);
+            }
+            start = fit;
+            startCol = 0;
+        }
+    }
     TextWriter writer(scr, format, maxBytes);
     long long i = start;
     for (; i <= last; ++i) {
@@ -4453,6 +4483,7 @@ std::string Terminal::textBetween(const Mark& from, const Mark& to, std::size_t 
             }
             *truncated = lost;
         }
+        *truncated = *truncated || startCut;
     }
     return writer.take();
 }
@@ -5190,6 +5221,71 @@ std::optional<std::string> Terminal::semanticRegionText(std::uint64_t id, std::s
                            truncated, format);
     }
     return std::nullopt;
+}
+
+ShellState Terminal::shellState() const noexcept
+{
+    // A program that exited, a shell or not, has no prompt any more.
+    if (m_semanticRegions.empty() || m_programExited)
+        return ShellState::None;
+    if (m_semanticZone == SemanticZone::Output)
+        return ShellState::Running;
+    return m_secondaryPrompt.valid ? ShellState::Continuation : ShellState::Prompt;
+}
+
+bool Terminal::shellInput() const
+{
+    if (m_semanticZone != SemanticZone::Input || !m_inputStart.valid || m_modes.altScreen)
+        return false;
+    // To the cursor, not to the end of its row: a right prompt (zsh's
+    // RPROMPT) and an autosuggestion stand after it.
+    const std::string typed = textBetween(m_inputStart, cursorMark(), 4096);
+    return typed.find_first_not_of(" \n") != std::string::npos;
+}
+
+std::optional<int> Terminal::lastExitCode() const
+{
+    for (auto it = m_semanticRegions.rbegin(); it != m_semanticRegions.rend(); ++it) {
+        if (it->kind == SemanticZoneKind::Output && !it->open)
+            return it->exitCode;
+    }
+    return std::nullopt;
+}
+
+std::uint64_t Terminal::lastPromptId() const noexcept
+{
+    for (auto it = m_semanticRegions.rbegin(); it != m_semanticRegions.rend(); ++it) {
+        if (it->kind == SemanticZoneKind::Prompt)
+            return it->id;
+    }
+    return 0;
+}
+
+SemanticPosition Terminal::textMark() const
+{
+    const Mark mark = cursorMark();
+    return {mark.row, mark.col};
+}
+
+std::string Terminal::textSince(SemanticPosition from, std::size_t maxBytes, bool* truncated, bool* trimmed,
+                                const TextFormat& format) const
+{
+    if (trimmed)
+        *trimmed = false;
+    if (m_modes.altScreen)
+        return text(TextScope::Screen, maxBytes, truncated, format);
+    const Mark cursor = cursorMark();
+    // The cursor went above the mark: a program cleared the screen (ED 2
+    // and a cursor at its top) and wrote over the rows of the mark. What it
+    // wrote since is on the screen.
+    if (from.row > cursor.row || (from.row == cursor.row && from.col > cursor.col))
+        return text(TextScope::Screen, maxBytes, truncated, format);
+    if (trimmed && from.row < m_primary->rowsDropped())
+        *trimmed = true;
+    std::string out = textBetween({from.row, from.col, true}, cursor, maxBytes, truncated, format, true);
+    while (!out.empty() && out.back() == '\n')
+        out.pop_back();
+    return out;
 }
 
 std::optional<std::uint64_t> Terminal::commandOutputAt(std::uint64_t row) const

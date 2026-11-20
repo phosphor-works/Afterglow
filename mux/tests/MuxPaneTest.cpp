@@ -336,7 +336,7 @@ TEST(MuxPane, ADownloadAfterADecodeWakesTheDaemonAndKeepsTheOrder)
     const auto end = Clock::now() + std::chrono::seconds(10);
     const auto shown = [&stuck] {
         const auto text = stuck.pane->text(AfterglowVt::Terminal::TextScope::Screen);
-        return text && text->find("done") != std::string::npos;
+        return text && text->text.find("done") != std::string::npos;
     };
     while (Clock::now() < end && !shown())
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -508,11 +508,11 @@ TEST(MuxPane, AResetLeavesThePrompt)
     ASSERT_TRUE(shell.pane);
     ASSERT_TRUE(MuxTest::waitFor(
         [&] {
-            return shell.pane->facts().atPrompt;
+            return shell.pane->facts().shell == AfterglowVt::ShellState::Prompt;
         },
         std::chrono::seconds(10)));
     shell.pane->reset();
-    EXPECT_FALSE(shell.pane->facts().atPrompt);
+    EXPECT_EQ(shell.pane->facts().shell, AfterglowVt::ShellState::None);
 }
 
 // Past the limit of a watch's events, the newest title still takes the

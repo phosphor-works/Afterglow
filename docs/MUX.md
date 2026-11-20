@@ -640,7 +640,9 @@ In the refusal, `CALL` is the name of the [control call](CONTROL.md#control-call
 The daemon finds the `neighbors` of `ls` and the pane of `focus --direction` from the splits of the session's layout.
 It weighs distances as a window does, in the size of the pane that a window measured last, else in cells.
 The `foreground` of `ls` is the process in the daemon's terminal of the pane.
-While a pane decodes an image, `get-text`, `send-key`, `colors` and `set-colors` fail at once with `pane N decodes an image: try again`.
+While a pane decodes an image, `get-text`, `send-key`, `colors` and `set-colors` fail at once with the code `TRY_AGAIN` and `pane N decodes an image: try again`.
+So do the calls `mark` and `shellRegions`.
+The daemon also answers the calls `mark` and `shellRegions`, and `getText` with the scope `since`, while no window shows the session (see [text since a mark](CONTROL.md#text-since-a-mark)).
 A window waits up to 5 seconds for its own reads (see [limits](#limits)).
 The daemon checks the arguments in another order than a window does.
 `screenshot` fails with `denied` before the daemon checks the pane ID.
@@ -883,6 +885,7 @@ Another request gets the answer of a session that no window shows.
 | Socket path | 107 bytes | The daemon and the client leave out a socket with a longer path. When no socket is left, they stop and name the path. |
 | Open files | The hard limit of `RLIMIT_NOFILE`. The daemon raises its soft limit to the hard limit when it starts. | A new connection closes at once. A new session gets an error that says why its program cannot start. A PNG or iTerm2 image does not decode. |
 | Request line | 1 MiB, with its newline | The daemon answers `MALFORMED_REQUEST` and closes the connection. A new session sends the environment of `afterglow` in its request. A very large environment makes `afterglow mux new` fail with `the request is over 1 MiB`. |
+| Text of `getText` | 1 MiB of UTF-8, as in a window | The text is cut, and `truncated` is true. `last-output` and `since` keep the end of the text (see [limits of the control socket](CONTROL.md#limits)). |
 | Lines that do not parse, one after the other | 16 | Each line gets `MALFORMED_REQUEST`. The daemon closes the connection after its answer to the 17th line. |
 | Waiting output to one client | 32 MiB | The daemon closes the connection to a client that does not read its answers |
 | Environment, arguments and directory of a session | UTF-8 text | `afterglow mux new` changes each byte that is not UTF-8 to U+FFFD |

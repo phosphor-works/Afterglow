@@ -15,6 +15,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <chrono>
 #include <csignal>
@@ -470,6 +471,65 @@ protected:
         return s;
     }
 };
+// The terminal reads what the shell does from its marks: its prompt, a
+// command that runs, the exit code after it, and the secondary prompt of a
+// command that goes on (bash and zsh: Fish edits such a command in place).
+TEST_P(ShellFeatures, TheMarksTellTheShellsState)
+{
+    if (QStandardPaths::findExecutable(QString::fromStdString(GetParam())).isEmpty())
+        GTEST_SKIP() << GetParam() << " not installed";
+    const std::string shell = GetParam();
+    QTemporaryDir home(QDir::tempPath() + "/afterglow features-XXXXXX");
+    ASSERT_TRUE(home.isValid());
+    Started s = start(home.path(), QStringLiteral("enabled"));
+    ASSERT_TRUE(s.pty);
+    Output& o = *s.output;
+    using AfterglowVt::ShellState;
+    const auto until = [&o](const std::function<bool(const AfterglowVt::Terminal&)>& done) {
+        std::unique_lock lock(o.mutex);
+        return o.changed.wait_for(lock, std::chrono::seconds(8), [&] {
+            return done(o.terminal);
+        });
+    };
+    const auto state = [](ShellState wanted) {
+        return [wanted](const AfterglowVt::Terminal& t) {
+            return t.shellState() == wanted;
+        };
+    };
+    EXPECT_TRUE(until(state(ShellState::Prompt))) << o.take();
+    o.run("false");
+    EXPECT_TRUE(until([](const AfterglowVt::Terminal& t) {
+        return t.shellState() == ShellState::Prompt && t.lastExitCode() == std::optional<int>(1);
+    })) << o.take();
+    // Typed text, then erased: input only while it stands.
+    ASSERT_TRUE(s.pty->write("echo"));
+    EXPECT_TRUE(until([](const AfterglowVt::Terminal& t) {
+        return t.shellInput();
+    })) << o.take();
+    ASSERT_TRUE(s.pty->write("\x7f\x7f\x7f\x7f"));
+    EXPECT_TRUE(until([](const AfterglowVt::Terminal& t) {
+        return !t.shellInput() && t.shellState() == ShellState::Prompt;
+    })) << o.take();
+    // A command that runs.
+    ASSERT_TRUE(s.pty->write("sleep 2\r"));
+    EXPECT_TRUE(until(state(ShellState::Running))) << o.take();
+    EXPECT_TRUE(until([](const AfterglowVt::Terminal& t) {
+        return t.shellState() == ShellState::Prompt && t.lastExitCode() == std::optional<int>(0);
+    })) << o.take();
+    if (shell != "fish") {
+        ASSERT_TRUE(s.pty->write("echo \"a\r"));
+        EXPECT_TRUE(until(state(ShellState::Continuation))) << o.take();
+        ASSERT_TRUE(s.pty->write("b\"\r"));
+        EXPECT_TRUE(until(state(ShellState::Prompt))) << o.take();
+        // Ctrl+C at the secondary prompt: the next primary one.
+        ASSERT_TRUE(s.pty->write("echo \"\r"));
+        EXPECT_TRUE(until(state(ShellState::Continuation))) << o.take();
+        ASSERT_TRUE(s.pty->write("\x03"));
+        EXPECT_TRUE(until(state(ShellState::Prompt))) << o.take();
+    }
+    o.exit();
+}
+
 TEST_P(ShellFeatures, ACursorAndTitlesByDefaultAndNoneWithTheirSwitches)
 {
     if (QStandardPaths::findExecutable(QString::fromStdString(GetParam())).isEmpty())

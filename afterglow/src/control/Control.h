@@ -62,8 +62,11 @@ struct PaneInfo
     /// The facts below are known: listPanes gathers them, with a read of
     /// /proc for each pane, and the other users of a pane's map do not.
     bool facts = false;
-    /// The cursor is in a shell prompt or its input (OSC 133).
-    bool atPrompt = false;
+    /// What the shell does (OSC 133), whether its command line holds typed
+    /// text, and the exit code of its last command.
+    AfterglowVt::ShellState shell = AfterglowVt::ShellState::None;
+    bool input = false;
+    std::optional<int> lastExit;
     /// The values of OSC 1337 SetUserVar.
     QMap<QString, QString> userVars;
     /// The leader of the foreground process group, for a pane whose program
@@ -263,7 +266,21 @@ public:
     /// Honours Control.allowReadText.
     /// @p format: plain, or with styles, wrap markers or the cursor (not for
     /// a selection, which is plain text).
-    QString readText(quint32 pane, TextScope scope, QString& out, const AfterglowVt::TextFormat& format = {});
+    /// @p truncated: the limit of MaxText cut the text. @p code, with an
+    /// error: TRY_AGAIN for rows that a session pane still gets.
+    QString readText(quint32 pane, TextScope scope, QString& out, const AfterglowVt::TextFormat& format = {},
+                     bool* truncated = nullptr, QString* code = nullptr);
+    /// The text of the getText scope since: from @p mark (markOfPane) to
+    /// the cursor, as readText.
+    QString readTextSince(quint32 pane, AfterglowVt::SemanticPosition mark, const AfterglowVt::TextFormat& format,
+                          QString& out, bool& truncated, bool& trimmed, QString& code);
+    /// The error of a read of a session pane's rows that are still on
+    /// their way from the daemon.
+    static QString arrivingError(quint32 pane);
+    /// The control call mark: the cursor's place, for getText since.
+    QString markOfPane(quint32 pane, QVariantMap& mark);
+    /// The control call shellRegions: the regions after @p after.
+    QString shellRegions(quint32 pane, quint64 after, QVariantList& regions);
     /// Bounded script query, subject to Scripts.allowReadText. With
     /// @p clientRun, for a command run whose output goes to a client
     /// (`aglow run`, a socket call), also to Control.allowReadText: the
@@ -478,8 +495,11 @@ public:
     static const QString TextScopeNames;
     static const QString BadTextScope;
     /// The format that the options of getText ask for: ansi, cursor and
-    /// wrap_markers, each a boolean. An error for another key or type.
-    static QString textFormat(const QVariantMap& options, AfterglowVt::TextFormat& format);
+    /// wrap_markers, each a boolean, and the mark of the scope since in
+    /// @p mark. An error for another key or type, and for a mark with no
+    /// @p mark to take it.
+    static QString textFormat(const QVariantMap& options, AfterglowVt::TextFormat& format,
+                              std::optional<AfterglowVt::SemanticPosition>* mark = nullptr);
     static std::optional<TextScope> scopeFromName(const QString& name);
     /// The capture scope that @p name (pane, tab or window) names.
     static std::optional<CaptureScope> captureScopeFromName(const QString& name);
@@ -500,6 +520,8 @@ Q_SIGNALS:
     void userVarChanged(quint32 pane, const QString& name, const QString& value);
     /// Where the pane's shell runs changed (OSC 3008, RemoteHost).
     void contextChanged(quint32 pane, const QString& context);
+    /// What the pane's shell does changed (OSC 133): shellStateName().
+    void shellChanged(quint32 pane, const QString& state);
     /// A key for the script holding a window's key mode.
     void scriptKey(const QString& owner, quint32 pane, const QVariantMap& key);
     /// An event of a script's dock for the owner's @p handler; @p pane is a

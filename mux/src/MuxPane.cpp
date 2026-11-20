@@ -222,7 +222,10 @@ MuxPane::Facts MuxPane::facts(bool userVars) const
         if (userVars)
             facts.userVars = m_userVars;
     }
-    facts.atPrompt = m_atPrompt.load();
+    facts.shell = m_shellState.load();
+    facts.input = m_shellInput.load();
+    if (const int code = m_lastExit.load(); code != NoExitCode)
+        facts.lastExit = code;
     if (facts.directory.empty())
         facts.directory = directory();
     return facts;
@@ -234,29 +237,64 @@ void MuxPane::keepSizeLocked()
     m_size = {m_terminal.cols(), m_terminal.rows(), m_terminal.cellWidth(), m_terminal.cellHeight()};
 }
 
-std::optional<std::string> MuxPane::text(AfterglowVt::Terminal::TextScope scope,
-                                         const AfterglowVt::TextFormat& format) const
+std::optional<MuxPane::Text> MuxPane::text(AfterglowVt::Terminal::TextScope scope,
+                                           const AfterglowVt::TextFormat& format) const
 {
     std::lock_guard lock(m_mutex);
     if (m_decoding)
         return std::nullopt;
-    return m_terminal.text(scope, MaxText, nullptr, format);
+    Text text;
+    text.text = m_terminal.text(scope, MaxText, &text.truncated, format);
+    return text;
 }
 
-std::optional<std::string> MuxPane::firstOutputOnScreen(const AfterglowVt::TextFormat& format) const
+std::optional<MuxPane::Text> MuxPane::firstOutputOnScreen(const AfterglowVt::TextFormat& format) const
 {
     std::lock_guard lock(m_mutex);
     if (m_decoding)
         return std::nullopt;
     // The primary screen's rows that show; the alternate screen has no output.
     if (m_terminal.modes().altScreen)
-        return std::string();
+        return Text{};
     const AfterglowVt::Screen& screen = m_terminal.screen();
     const std::uint64_t top = screen.rowsDropped() + screen.viewportTop();
     const auto region = m_terminal.firstCommandOutputIn(top, top + std::uint64_t(screen.rows() - 1));
     if (!region)
-        return std::string();
-    return m_terminal.semanticRegionText(*region, MaxText, nullptr, format).value_or(std::string());
+        return Text{};
+    Text text;
+    text.text = m_terminal.semanticRegionText(*region, MaxText, &text.truncated, format).value_or(std::string());
+    return text;
+}
+
+std::optional<MuxPane::Text> MuxPane::textSince(AfterglowVt::SemanticPosition from,
+                                                const AfterglowVt::TextFormat& format) const
+{
+    std::lock_guard lock(m_mutex);
+    if (m_decoding)
+        return std::nullopt;
+    Text text;
+    text.text = m_terminal.textSince(from, MaxText, &text.truncated, &text.trimmed, format);
+    return text;
+}
+
+std::optional<AfterglowVt::SemanticPosition> MuxPane::textMark() const
+{
+    std::lock_guard lock(m_mutex);
+    if (m_decoding)
+        return std::nullopt;
+    return m_terminal.textMark();
+}
+
+std::optional<std::vector<AfterglowVt::SemanticRegion>> MuxPane::semanticRegions(std::uint64_t after) const
+{
+    std::lock_guard lock(m_mutex);
+    if (m_decoding)
+        return std::nullopt;
+    std::vector<AfterglowVt::SemanticRegion> regions = m_terminal.semanticRegions();
+    std::erase_if(regions, [after](const AfterglowVt::SemanticRegion& region) {
+        return region.id <= after;
+    });
+    return regions;
 }
 
 std::optional<std::vector<AfterglowVt::Terminal::NamedColor>> MuxPane::colors() const
@@ -1313,7 +1351,7 @@ void MuxPane::ptyData(std::string_view bytes)
         // command of the program, which the parse finishes first.
         deferred = runDeferredLocked() || deferred;
         // After the changes: a reset leaves the prompt.
-        m_atPrompt.store(m_terminal.atShellPrompt());
+        deferred = updateShellLocked() || deferred;
         if (std::exchange(m_reportChanged, false)) {
             reported = m_terminal.workingDirectory();
             if (!reported->starts_with("file://") && remoteContext(m_terminal.contexts(), hostName()))
@@ -1383,6 +1421,7 @@ MuxPane::Input MuxPane::input(std::string_view bytes)
 
 void MuxPane::change(std::function<void()> change)
 {
+    bool watched = false;
     {
         std::lock_guard lock(m_mutex);
         if (m_decoding) {
@@ -1392,10 +1431,27 @@ void MuxPane::change(std::function<void()> change)
             return;
         }
         change();
-        m_atPrompt.store(m_terminal.atShellPrompt());
+        watched = updateShellLocked();
     }
-    if (!m_changed.exchange(true))
+    if (!m_changed.exchange(true) || watched)
         m_wake();
+}
+
+bool MuxPane::updateShellLocked()
+{
+    m_shellInput.store(m_terminal.shellInput());
+    const std::optional<int> exit = m_terminal.lastExitCode();
+    m_lastExit.store(exit ? *exit : NoExitCode);
+    const AfterglowVt::ShellState state = m_terminal.shellState();
+    // A new prompt counts as a change: a short command starts and ends
+    // within one read, and its state is the prompt before and after it.
+    const std::uint64_t prompt = m_terminal.lastPromptId();
+    const bool newPrompt = prompt != m_promptId;
+    m_promptId = prompt;
+    if (m_shellState.exchange(state) == state && !newPrompt)
+        return false;
+    std::lock_guard lock(m_hostMutex);
+    return watchLocked({WatchEvent::Kind::Shell, std::string(AfterglowVt::shellStateName(state))});
 }
 
 bool MuxPane::watchLocked(WatchEvent event)
@@ -1408,11 +1464,13 @@ bool MuxPane::watchLocked(WatchEvent event)
         return false;
     const std::size_t bytes = event.name.size() + event.text.size();
     if (m_watchEvents.size() >= MaxWatchEvents || m_watchBytes + bytes > MaxWatchBytes) {
-        // Past the limits, the newest title, status or value of a variable
-        // still counts: it takes the place of the last one of its kind, at
-        // the end. Events waited already: the daemon wakes for the first.
+        // Past the limits, the newest title, status, shell state or value of
+        // a variable still counts: it takes the place of the last one of its
+        // kind, at the end. Events waited already: the daemon wakes for the
+        // first.
         using Kind = WatchEvent::Kind;
-        if (event.kind != Kind::Title && event.kind != Kind::Status && event.kind != Kind::UserVar)
+        if (event.kind != Kind::Title && event.kind != Kind::Status && event.kind != Kind::UserVar
+            && event.kind != Kind::Shell)
             return false;
         const auto same =
             std::find_if(m_watchEvents.rbegin(), m_watchEvents.rend(), [&event](const WatchEvent& waiting) {

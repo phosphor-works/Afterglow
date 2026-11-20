@@ -3026,7 +3026,7 @@ bool screenShows(ControlClient& ctl, std::int64_t pane, const std::string& part,
     return waitFor(
         [&] {
             const auto text = ctl.call("getText", Json::Array{pane, "screen"});
-            return text && contains(text->toString(), part);
+            return text && contains((*text)["text"].toString(), part);
         },
         wait);
 }
@@ -3940,8 +3940,7 @@ TEST(MuxControl, TheDaemonTypesKeysAndTellsThePanesFacts)
     ASSERT_TRUE(ctl.call("sendText", Json::Array{std::int64_t(first), "printf '\\033]133;A\\a'\n"}));
     EXPECT_TRUE(waitFor([&] {
         const auto listed = ctl.call("listPanes", {});
-        return listed && !listed->toArray().empty() && listed->toArray()[0]["at_prompt"].isBool()
-            && listed->toArray()[0]["at_prompt"].toBool();
+        return listed && !listed->toArray().empty() && listed->toArray()[0]["shell"].toString() == "prompt";
     }));
     const auto split = ctl.call("split", Json::Array{std::int64_t(first), "down", Json::Array{}});
     ASSERT_TRUE(split) << ctl.error.message;
@@ -3999,7 +3998,7 @@ TEST(MuxAttach, AnUploadRequestGoesToTheWindowOrGetsNothing)
     const std::string clear = "printf '\\033[H\\033[2J'\n";
     const auto readNothing = [&] {
         const auto text = ctl.call("getText", Json::Array{pane, "screen"});
-        return text && !contains(text->toString(), " 03") && !contains(text->toString(), " 78");
+        return text && !contains((*text)["text"].toString(), " 03") && !contains((*text)["text"].toString(), " 78");
     };
     ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, request("1")})) << ctl.error.message;
     ASSERT_TRUE(screenShows(ctl, pane, "end"));
@@ -4079,7 +4078,7 @@ TEST(MuxAttach, TheNextWindowAsksForAnUploadThatTheLastOneDidNotAnswer)
     }));
     const auto screen = ctl.call("getText", Json::Array{pane, "screen"});
     ASSERT_TRUE(screen) << ctl.error.message;
-    EXPECT_FALSE(contains(screen->toString(), "end")) << screen->toString();
+    EXPECT_FALSE(contains((*screen)["text"].toString(), "end")) << (*screen)["text"].toString();
     // The answer as a window sends one.
     Attach::Input answer;
     answer.type = Attach::InputType::UploadAnswer;
@@ -4150,7 +4149,7 @@ TEST(MuxAttach, AResetKeepsTheQuestionOfAnUpload)
     // The reset reached the terminal: the screen is clear of the command.
     ASSERT_TRUE(waitFor([&] {
         const auto text = ctl.call("getText", Json::Array{pane, "screen"});
-        return text && !contains(text->toString(), "RequestUpload");
+        return text && !contains((*text)["text"].toString(), "RequestUpload");
     })) << ctl.error.message;
     ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"r"})) << daemon.lastError();
     first.reset();
@@ -4447,10 +4446,10 @@ TEST(MuxControl, TheDaemonWritesTextWithItsStyles)
     ASSERT_TRUE(screenShows(ctl, pane, "\nred"));
     const auto styled = ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"ansi", true}}});
     ASSERT_TRUE(styled) << ctl.error.message;
-    EXPECT_TRUE(contains(styled->toString(), "\x1b[0;31mred\x1b[m")) << styled->toString();
+    EXPECT_TRUE(contains((*styled)["text"].toString(), "\x1b[0;31mred\x1b[m")) << (*styled)["text"].toString();
     const auto first = ctl.call("getText", Json::Array{pane, "first-output-on-screen"});
     ASSERT_TRUE(first) << ctl.error.message;
-    EXPECT_EQ(first->toString(), "\nred\n");
+    EXPECT_EQ((*first)["text"].toString(), "\nred\n");
     // The text of one output ends before the cursor's place: refused as a
     // window refuses it.
     for (const char* scope : {"first-output-on-screen", "last-visited-output"}) {
@@ -4461,17 +4460,17 @@ TEST(MuxControl, TheDaemonWritesTextWithItsStyles)
     EXPECT_EQ(ctl.error.message, "only a window that shows session 't' has its last-visited-output");
     const auto cursor = ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"cursor", true}}});
     ASSERT_TRUE(cursor) << ctl.error.message;
-    EXPECT_TRUE(contains(cursor->toString(), "\x1b[?25h")) << cursor->toString();
+    EXPECT_TRUE(contains((*cursor)["text"].toString(), "\x1b[?25h")) << (*cursor)["text"].toString();
     // A row that wraps ends with a carriage return with wrap_markers, and
     // runs on into the next row without.
     ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "printf '%0300d\\n' 0\n"})) << ctl.error.message;
     ASSERT_TRUE(screenShows(ctl, pane, std::string(300, '0')));
     const auto wrapped = ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"wrap_markers", true}}});
     ASSERT_TRUE(wrapped) << ctl.error.message;
-    EXPECT_TRUE(contains(wrapped->toString(), "0\r0")) << wrapped->toString();
-    EXPECT_FALSE(contains(wrapped->toString(), std::string(300, '0'))) << wrapped->toString();
+    EXPECT_TRUE(contains((*wrapped)["text"].toString(), "0\r0")) << (*wrapped)["text"].toString();
+    EXPECT_FALSE(contains((*wrapped)["text"].toString(), std::string(300, '0'))) << (*wrapped)["text"].toString();
     EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"bold", true}}}));
-    EXPECT_EQ(ctl.error.message, "unknown getText option bold: the options are ansi, cursor and wrap_markers");
+    EXPECT_EQ(ctl.error.message, "unknown getText option bold: the options are ansi, cursor, wrap_markers and mark");
     EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"ansi", 1}}}));
     EXPECT_EQ(ctl.error.message, "the getText option ansi is true or false");
 }
@@ -6148,8 +6147,7 @@ void commandLines(bool readText)
     EXPECT_EQ(listed->toArray()[0]["command"].toString(), shown);
     // Its output follows: no prompt. The command line of the process in the
     // foreground needs read access too.
-    EXPECT_TRUE(listed->toArray()[0]["at_prompt"].isBool()) << Json::write(*listed);
-    EXPECT_FALSE(listed->toArray()[0]["at_prompt"].toBool());
+    EXPECT_EQ(listed->toArray()[0]["shell"].toString(), "running") << Json::write(*listed);
     EXPECT_GT(listed->toArray()[0]["foreground"]["pid"].toInteger().value_or(0), 0) << Json::write(*listed);
     EXPECT_EQ(listed->toArray()[0]["foreground"]["cmdline"].toArray().empty(), !readText) << Json::write(*listed);
     ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "printf '\\033]133;D;3\\007'\n"})) << ctl.error.message;
@@ -6353,7 +6351,7 @@ TEST(MuxControl, ASplitOfAShellSessionRunsTheShellOfItsFirstLaunch)
         EXPECT_TRUE(waitFor([&] {
             const auto text = ctl.call("getText", Json::Array{*added->toInteger(), "screen"});
             if (text)
-                screen = text->toString();
+                screen = (*text)["text"].toString();
             // getText drops the space at the end of the prompt's line.
             return contains(screen, "argument --posix") && contains(screen, "$");
         })) << fn
@@ -6392,7 +6390,7 @@ TEST(MuxControl, ASplitOfAShellSessionRunsTheShellOfItsFirstLaunch)
             return waitFor([&] {
                 const auto text = ctl.call("getText", Json::Array{*split->toInteger(), "screen"});
                 if (text)
-                    screen = text->toString();
+                    screen = (*text)["text"].toString();
                 return contains(screen, part);
             });
         };
@@ -7067,6 +7065,135 @@ std::int64_t tabOf(ControlClient& ctl, std::uint32_t id)
 // pane of another session, a request that is no call, a scope and a launch
 // that it does not know. It reads each scope of a pane's text, and starts a
 // tab in the directory that the call names.
+// The shell's state in the pane objects and in shellChanged, its regions
+// with their exit codes, and the text since a mark. sh prints the marks
+// that shell integration would: A and B a prompt, C a command, D its end,
+// A;k=s the prompt of a command that goes on.
+TEST(MuxControl, TheDaemonTellsTheShellsStateRegionsAndTextSinceAMark)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "s")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("s"), "");
+    const auto pane = std::int64_t(firstPane(ctl));
+    ASSERT_NE(pane, 0);
+    const std::string id = std::to_string(pane);
+    const auto facts = [&ctl]() -> Json::Value {
+        const auto listed = ctl.call("listPanes", {});
+        return listed && !listed->toArray().empty() ? listed->toArray()[0] : Json::Value();
+    };
+    // No mark yet: no shell integration.
+    EXPECT_EQ(facts()["shell"].toString(), "none") << Json::write(facts());
+    EXPECT_TRUE(facts()["last_exit"].isNull()) << Json::write(facts());
+    // sh's own prompt would come after the B mark of the prompt that the
+    // test prints, as typed text: the marks are the prompt.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "PS1=''\n"})) << ctl.error.message;
+    Watcher watcher(daemon, "s");
+    EXPECT_EQ(watcher.subscribe(2, "shellChanged")["type"].toString(), "reply");
+
+    const std::string prompt = "printf '\\033]133;A\\007$ \\033]133;B\\007'";
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, prompt + "\n"})) << ctl.error.message;
+    EXPECT_EQ(watcher.next(), "shellChanged [" + id + ",\"prompt\"]");
+    EXPECT_EQ(facts()["shell"].toString(), "prompt");
+    EXPECT_FALSE(facts()["input"].toBool());
+
+    // A command, and its end with code 3: running, then the prompt.
+    const auto mark = ctl.call("mark", Json::Array{pane});
+    ASSERT_TRUE(mark) << ctl.error.message;
+    ASSERT_TRUE((*mark)["row"].toInteger() && (*mark)["col"].toInteger()) << Json::write(*mark);
+    ASSERT_TRUE(ctl.call("sendText",
+                         Json::Array{pane,
+                                     "printf '\\033]133;C\\007'; echo o''ne; echo t''wo; sleep 1; "
+                                     "printf '\\033]133;D;3\\007'; "
+                                         + prompt + "\n"}))
+        << ctl.error.message;
+    EXPECT_EQ(watcher.next(), "shellChanged [" + id + ",\"running\"]");
+    EXPECT_EQ(watcher.next(), "shellChanged [" + id + ",\"prompt\"]");
+    EXPECT_EQ(facts()["last_exit"].toInteger(), 3) << Json::write(facts());
+    // A client that comes later learns the code too.
+    ControlClient later(daemon);
+    ASSERT_EQ(later.select("s"), "");
+    const auto listed = later.call("listPanes", {});
+    ASSERT_TRUE(listed) << later.error.message;
+    EXPECT_EQ(listed->toArray()[0]["last_exit"].toInteger(), 3) << Json::write(*listed);
+
+    // The text since the mark, with the command's output.
+    const auto since = ctl.call("getText", Json::Array{pane, "since", Json::Object{{"mark", *mark}}});
+    ASSERT_TRUE(since) << ctl.error.message;
+    EXPECT_TRUE(contains((*since)["text"].toString(), "one\ntwo")) << Json::write(*since);
+    EXPECT_FALSE((*since)["truncated"].toBool());
+    EXPECT_FALSE((*since)["trimmed"].toBool());
+    const auto plain = ctl.call("getText", Json::Array{pane, "screen"});
+    ASSERT_TRUE(plain) << ctl.error.message;
+    EXPECT_FALSE((*plain)["truncated"].toBool());
+    EXPECT_EQ((*plain).find("trimmed"), nullptr) << Json::write(*plain);
+
+    // The regions: the output that ended with 3 is closed and has its code.
+    const auto regions = ctl.call("shellRegions", Json::Array{pane});
+    ASSERT_TRUE(regions) << ctl.error.message;
+    std::int64_t outputId = 0;
+    for (const Json::Value& region : regions->toArray()) {
+        if (region["kind"].toString() == "output") {
+            outputId = region["id"].toInteger().value_or(0);
+            EXPECT_FALSE(region["open"].toBool()) << Json::write(region);
+            EXPECT_EQ(region["exit_code"].toInteger(), 3) << Json::write(region);
+        }
+    }
+    ASSERT_NE(outputId, 0) << Json::write(*regions);
+    // Only the regions after the one given: the prompt after the output.
+    const auto after = ctl.call("shellRegions", Json::Array{pane, outputId});
+    ASSERT_TRUE(after) << ctl.error.message;
+    for (const Json::Value& region : after->toArray())
+        EXPECT_GT(region["id"].toInteger().value_or(0), outputId) << Json::write(*after);
+
+    // A command that starts and ends within one read, and an empty line (D
+    // with no command): the state is the prompt before and after, and the
+    // new prompt is the event.
+    // One printf, one write: the marks come in one read, almost always. A
+    // read that splits them adds the running between.
+    const auto nextPrompt = [&] {
+        std::string event = watcher.next();
+        if (event == "shellChanged [" + id + ",\"running\"]")
+            event = watcher.next();
+        return event;
+    };
+    ASSERT_TRUE(ctl.call("sendText",
+                         Json::Array{pane,
+                                     "printf '\\033]133;C\\007\\033]133;D;0\\007\\033]133;A\\007$ "
+                                     "\\033]133;B\\007'\n"}))
+        << ctl.error.message;
+    EXPECT_EQ(nextPrompt(), "shellChanged [" + id + ",\"prompt\"]");
+    EXPECT_EQ(facts()["last_exit"].toInteger(), 0) << Json::write(facts());
+    ASSERT_TRUE(
+        ctl.call("sendText", Json::Array{pane, "printf '\\033]133;D;0\\007\\033]133;A\\007$ \\033]133;B\\007'\n"}))
+        << ctl.error.message;
+    EXPECT_EQ(nextPrompt(), "shellChanged [" + id + ",\"prompt\"]");
+    // The prompt of a command that goes on, then the primary prompt.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "printf '\\033]133;A;k=s\\007> '\n"})) << ctl.error.message;
+    EXPECT_EQ(watcher.next(), "shellChanged [" + id + ",\"continuation\"]");
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, prompt + "\n"})) << ctl.error.message;
+    EXPECT_EQ(watcher.next(), "shellChanged [" + id + ",\"prompt\"]");
+
+    // The mark and the scope since go together.
+    EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "since"}));
+    EXPECT_EQ(ctl.error.message, AfterglowMux::MarkScopeError);
+    EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"mark", *mark}}}));
+    EXPECT_EQ(ctl.error.message, AfterglowMux::MarkScopeError);
+    for (const Json::Value& bad :
+         {Json::Value(Json::Object{{"row", -1}, {"col", 0}}), Json::Value(Json::Object{{"row", 1}}), Json::Value("1:0"),
+          Json::Value(Json::Object{{"row", 1}, {"col", 0}, {"x", 0}})}) {
+        EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "since", Json::Object{{"mark", bad}}})) << Json::write(bad);
+        EXPECT_EQ(ctl.error.message, AfterglowMux::MarkOptionError);
+    }
+    EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "since", Json::Object{{"mark", *mark}, {"cursor", true}}}));
+    EXPECT_EQ(ctl.error.message, AfterglowMux::CursorScopeError);
+    EXPECT_FALSE(ctl.call("shellRegions", Json::Array{pane, -1}));
+    EXPECT_EQ(ctl.error.code, IpcErrorCode::InvalidArg);
+    EXPECT_FALSE(ctl.call("mark", Json::Array{pane, 1}));
+    EXPECT_EQ(ctl.error.code, IpcErrorCode::InvalidArg);
+}
+
 TEST(MuxControl, TheDaemonChecksTheArgumentsOfItsControlCalls)
 {
     TestDaemon daemon;
@@ -7112,18 +7239,17 @@ TEST(MuxControl, TheDaemonChecksTheArgumentsOfItsControlCalls)
     ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "echo mar''k\n"})) << ctl.error.message;
     EXPECT_TRUE(waitFor([&] {
         const auto text = ctl.call("getText", Json::Array{pane, "scrollback"});
-        return text && contains(text->toString(), "\nmark");
+        return text && contains((*text)["text"].toString(), "\nmark");
     })) << ctl.error.message;
     const auto last = ctl.call("getText", Json::Array{pane, "last-output"});
     ASSERT_TRUE(last) << ctl.error.message;
-    EXPECT_TRUE(last->isString());
+    EXPECT_TRUE((*last)["text"].isString());
     EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "selection"}));
     EXPECT_EQ(ctl.error.code, IpcErrorCode::CallFailed);
     EXPECT_EQ(ctl.error.message, "only a window that shows session 's' has its selection");
     EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "everything"}));
     EXPECT_EQ(ctl.error.code, IpcErrorCode::CallFailed);
-    EXPECT_EQ(ctl.error.message,
-              "scope is screen, scrollback, selection, last-output, first-output-on-screen or last-visited-output");
+    EXPECT_EQ(ctl.error.message, std::string("scope is ") + AfterglowMux::GetTextScopeNames);
 
     // A launch that is no launch.
     EXPECT_FALSE(ctl.call("split", Json::Array{pane, "right", Json::Array{}, "sh"}));

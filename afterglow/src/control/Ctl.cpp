@@ -1052,13 +1052,14 @@ int runCtl(int argc, char** argv)
             return 0;
         }
         // TAB is the tab's position from 0, as in --json.
-        std::printf("%-5s %-4s %-4s %-30s %s\n", "PANE", "WIN", "TAB", "TITLE", "DIRECTORY");
+        std::printf("%-5s %-4s %-4s %-12s %-30s %s\n", "PANE", "WIN", "TAB", "SHELL", "TITLE", "DIRECTORY");
         for (const QJsonValue& value : panes) {
             const QJsonObject p = value.toObject();
             const QString id = QString::number(p.value(QLatin1String("id")).toInteger())
                 + (p.value(QLatin1String("focused")).toBool() ? QStringLiteral("*") : QString());
-            std::printf("%-5s %-4lld %-4lld %s %s\n", qPrintable(id), p.value(QLatin1String("window")).toInteger(),
-                        p.value(QLatin1String("tab")).toInteger(),
+            std::printf("%-5s %-4lld %-4lld %-12s %s %s\n", qPrintable(id),
+                        p.value(QLatin1String("window")).toInteger(), p.value(QLatin1String("tab")).toInteger(),
+                        qPrintable(printable(p.value(QLatin1String("shell")).toString())),
                         qPrintable(column(printable(p.value(QLatin1String("title")).toString()), 30)),
                         qPrintable(printable(p.value(QLatin1String("cwd")).toString())));
         }
@@ -1305,8 +1306,14 @@ int runCtl(int argc, char** argv)
             const auto result = client.call(QStringLiteral("getText"), callArgs);
             if (!result)
                 return 1;
-            const QByteArray text = result->toString().toUtf8();
+            const QJsonObject answer = result->toObject();
+            const QByteArray text = answer.value(QLatin1String("text")).toString().toUtf8();
             std::fwrite(text.constData(), 1, std::size_t(text.size()), stdout);
+            if (answer.value(QLatin1String("truncated")).toBool()) {
+                // On stderr: the text on stdout stays the pane's.
+                std::fprintf(stderr, "afterglow ctl: the text of pane %lld is cut at its limit of 1 MiB\n",
+                             static_cast<long long>(pane));
+            }
             // A line feed after the cursor's sequences would move the
             // cursor that they put back.
             if (!text.endsWith('\n') && !options.contains(QLatin1String("cursor"))) {
@@ -1742,7 +1749,7 @@ int runCtl(int argc, char** argv)
                 const auto text = client.call(QStringLiteral("getText"), textArgs);
                 if (!text)
                     return 1;
-                overlayInput = text->toString().toUtf8();
+                overlayInput = text->toObject().value(QLatin1String("text")).toString().toUtf8();
             }
             if (overlayInput) {
                 // In parts before the call: a list can be larger than one request.

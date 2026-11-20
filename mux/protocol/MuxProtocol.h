@@ -31,7 +31,7 @@ namespace AfterglowMux {
 /// (AfterglowVt::StateCodec, StateSync.h) change with it. MuxProtocolTest
 /// pins the keys of the options to this number, so that a new key changes it
 /// too.
-inline constexpr int ProtocolVersion = 27;
+inline constexpr int ProtocolVersion = 28;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -39,18 +39,32 @@ inline constexpr const char* Target = "mux";
 /// The events of the control target, of a window (ControlApi's signals) and
 /// of a session in the daemon, to which `afterglow ctl watch` subscribes.
 /// The application's ControlSocketTest checks that they are ControlApi's.
-inline constexpr std::array<std::string_view, 11> ControlEvents{
-    "paneCreated",     "paneMoved",     "paneClosed",   "titleChanged",   "bell",          "commandStarted",
-    "commandFinished", "statusChanged", "focusChanged", "userVarChanged", "contextChanged"};
+inline constexpr std::array<std::string_view, 12> ControlEvents{
+    "paneCreated",     "paneMoved",     "paneClosed",   "titleChanged",   "bell",           "commandStarted",
+    "commandFinished", "statusChanged", "focusChanged", "userVarChanged", "contextChanged", "shellChanged"};
 
 /// The text scopes of the getText call of the control target, as the error
 /// for another scope names them: a window and the daemon say the same.
 inline constexpr const char* TextScopeNames =
     "screen, scrollback, selection, last-output, first-output-on-screen or last-visited-output";
+/// The scopes of getText itself: the text scopes, and since, which reads
+/// from a mark (the mark call) to the cursor.
+inline constexpr const char* GetTextScopeNames =
+    "screen, scrollback, selection, last-output, first-output-on-screen, last-visited-output or since";
 /// The error of getText for the cursor option with a scope of one output
 /// region (first-output-on-screen, last-visited-output), whose text ends
 /// before the cursor's place: a window and the daemon say the same.
 inline constexpr const char* CursorScopeError = "cursor is for the screen, scrollback and last-output scopes";
+/// The options of getText, as the error for another option names them.
+inline constexpr const char* TextOptionNames = "the options are ansi, cursor, wrap_markers and mark";
+/// The error of getText for a mark that is not one that the mark call gave.
+inline constexpr const char* MarkOptionError =
+    "the getText option mark is the object {row, col} that the mark call gives";
+/// The error of getText for the since scope without a mark, or a mark with
+/// another scope.
+inline constexpr const char* MarkScopeError = "the scope since takes the option mark, and no other scope takes it";
+/// The kinds of the semantic regions that shellRegions gives.
+inline constexpr std::array<std::string_view, 3> ShellRegionKinds{"prompt", "input", "output"};
 
 namespace Fn {
 inline constexpr const char* Version = "version"; ///< () -> {version, protocol}
@@ -162,6 +176,10 @@ inline constexpr const char* NotAttached = "NOT_ATTACHED";
 /// The session has MaxSessionPanes panes (MuxLayout.h): newPane, and the
 /// split and newTab of `afterglow ctl`, start none.
 inline constexpr const char* TooManyPanes = "TOO_MANY_PANES";
+/// A pane cannot answer now, and can a moment later: the daemon's pane
+/// decodes an image, or a window's session pane still gets its rows from
+/// the daemon. A window and the daemon give the same code.
+inline constexpr const char* TryAgain = "TRY_AGAIN";
 } // namespace Error
 
 /// The environment variable with the descriptor of a pipe that a client

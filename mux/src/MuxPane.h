@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -201,8 +202,11 @@ public:
         std::string directory;
         std::string command; ///< the running command (OSC 133), empty at the prompt
         PaneSize size;
-        /// The cursor is in a prompt or its input (OSC 133 A or B, before C).
-        bool atPrompt = false;
+        /// What the shell does (OSC 133), whether its command line holds
+        /// typed text, and the exit code of its last command.
+        AfterglowVt::ShellState shell = AfterglowVt::ShellState::None;
+        bool input = false;
+        std::optional<int> lastExit;
         /// The values of OSC 1337 SetUserVar.
         std::map<std::string, std::string> userVars;
     };
@@ -233,10 +237,11 @@ public:
             CommandStarted,
             CommandFinished,
             Title,
-            Status
+            Status,
+            Shell
         };
         Kind kind = Kind::Bell;
-        std::string name{}; ///< UserVar: its name. Status: the state.
+        std::string name{}; ///< UserVar: its name. Status, Shell: the state.
         std::string text{}; ///< UserVar: its value. A command, a title, a status: its text.
         int exitCode = 0; ///< CommandFinished
         std::uint64_t milliseconds = 0; ///< CommandFinished: how long it ran
@@ -249,17 +254,33 @@ public:
     void setWatched(bool watched);
     /// The events since the last take, oldest first.
     std::vector<WatchEvent> takeWatchEvents();
+    /// A text of the terminal, and whether its limit cut it. @p trimmed:
+    /// textSince() started at the oldest row that is kept, because the
+    /// row of its mark left the scrollback.
+    struct Text
+    {
+        std::string text;
+        bool truncated = false;
+        bool trimmed = false;
+    };
     /// The text of @p scope, for `afterglow ctl get-text`. Nothing while an
-    /// image decodes.
-    std::optional<std::string> text(AfterglowVt::Terminal::TextScope scope,
-                                    const AfterglowVt::TextFormat& format = {}) const;
-    /// The most bytes of text() and firstOutputOnScreen(), as the
-    /// terminal reads by default and a window's pane reads.
+    /// image decodes: the terminal is in the middle of a parse, whose lock
+    /// the decoder let go (decodeOutsideLock).
+    std::optional<Text> text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::TextFormat& format = {}) const;
+    /// The most bytes of text(), textSince() and firstOutputOnScreen(), as
+    /// the terminal reads by default and a window's pane reads.
     static constexpr std::size_t MaxText = 1024 * 1024;
     /// The first output with a row on the screen (kitty's
     /// first_cmd_output_on_screen), empty for none. Nothing while an image
     /// decodes, as text().
-    std::optional<std::string> firstOutputOnScreen(const AfterglowVt::TextFormat& format = {}) const;
+    std::optional<Text> firstOutputOnScreen(const AfterglowVt::TextFormat& format = {}) const;
+    /// Terminal::textSince(). Nothing while an image decodes, as text().
+    std::optional<Text> textSince(AfterglowVt::SemanticPosition from, const AfterglowVt::TextFormat& format) const;
+    /// Terminal::textMark(). Nothing while an image decodes, as text().
+    std::optional<AfterglowVt::SemanticPosition> textMark() const;
+    /// The semantic regions whose id is larger than @p after, oldest
+    /// first. Nothing while an image decodes, as text().
+    std::optional<std::vector<AfterglowVt::SemanticRegion>> semanticRegions(std::uint64_t after) const;
     /// The terminal's modes, which say how a key is sent: nothing while an
     /// image decodes, as text().
     std::optional<AfterglowVt::Modes> modes() const;
@@ -464,9 +485,19 @@ private:
     std::unique_ptr<AfterglowPty::Pty> m_pty;
     std::string m_launchedProgram;
     std::atomic<bool> m_exited{false};
-    /// Terminal::atShellPrompt after the last feed: facts() takes no lock
-    /// that the reader thread holds while an image decodes.
-    std::atomic<bool> m_atPrompt{false};
+    /// Terminal::shellState, shellInput and lastExitCode after the last
+    /// feed: facts() takes no lock that the reader thread holds while an
+    /// image decodes. NoExitCode stands for none.
+    static constexpr int NoExitCode = std::numeric_limits<int>::min();
+    std::atomic<AfterglowVt::ShellState> m_shellState{AfterglowVt::ShellState::None};
+    std::atomic<bool> m_shellInput{false};
+    std::atomic<int> m_lastExit{NoExitCode};
+    /// The newest prompt region that the watchers heard of. Under m_mutex.
+    std::uint64_t m_promptId = 0;
+    /// Takes the shell's state from the terminal, under m_mutex, and tells
+    /// the watchers of a change, or of a new prompt. True when the daemon
+    /// must wake for it.
+    bool updateShellLocked();
 
     /// A call that waits for the window. PointerShape, UserVar and
     /// ProtocolLost wait empty, and take their newest value when they go.
