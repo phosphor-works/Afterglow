@@ -26,11 +26,11 @@ constexpr qsizetype MaxRequestBytes = qsizetype(AfterglowProto::IpcConnection::M
 /// The longest line that the daemon sends (its output limit).
 constexpr qsizetype MaxFrameBytes = qsizetype(AfterglowProto::IpcConnection::MaxFrameBytes);
 
-QByteArray callLine(qint64 id, const QString& fn, const QJsonArray& args)
+QByteArray callLine(qint64 id, const QString& target, const QString& fn, const QJsonArray& args)
 {
     return QJsonDocument(QJsonObject{{QLatin1String("type"), QLatin1String("call")},
                                      {QLatin1String("id"), id},
-                                     {QLatin1String("target"), QLatin1String("control")},
+                                     {QLatin1String("target"), target},
                                      {QLatin1String("fn"), fn},
                                      {QLatin1String("args"), args}})
                .toJson(QJsonDocument::Compact)
@@ -59,16 +59,27 @@ DaemonLink::~DaemonLink()
         ::close(m_fd);
 }
 
-bool DaemonLink::fits(const QString& fn, const QJsonArray& args)
+bool DaemonLink::fits(const QString& fn, const QJsonArray& args, const QString& target)
 {
     // The id of a call has at most 19 digits, and the one here has one.
-    return callLine(0, fn, args).size() + 18 <= MaxRequestBytes;
+    return callLine(0, target, fn, args).size() + 18 <= MaxRequestBytes;
 }
 
 void DaemonLink::call(const QString& fn, const QJsonArray& args, Answer answer)
 {
+    call(QStringLiteral("control"), fn, args, std::move(answer));
+}
+
+void DaemonLink::call(const QString& target, const QString& fn, const QJsonArray& args, Answer answer)
+{
     const qint64 id = ++m_nextId;
-    send(callLine(id, fn, args), id, std::move(answer));
+    send(callLine(id, target, fn, args), id, std::move(answer));
+}
+
+void DaemonLink::notify(const QString& target, const QString& fn, const QJsonArray& args)
+{
+    const qint64 id = ++m_nextId;
+    send(callLine(id, target, fn, args), id, {});
 }
 
 void DaemonLink::subscribe(const QString& event, Answer answer)
@@ -87,19 +98,23 @@ void DaemonLink::subscribe(const QString& event, Answer answer)
 void DaemonLink::send(const QByteArray& line, qint64 id, Answer answer)
 {
     if (m_fd < 0) {
-        answerLater(std::move(answer), {{}, QStringLiteral("the connection to the mux daemon closed")});
+        if (answer)
+            answerLater(std::move(answer), {{}, QStringLiteral("the connection to the mux daemon closed")});
         return;
     }
     // The router closes a connection whose request line is longer.
     if (line.size() > MaxRequestBytes) {
         m_subscriptions.remove(id);
-        answerLater(
-            std::move(answer),
-            {QLatin1String(AfterglowProto::IpcConnection::RequestTooLong),
-             QStringLiteral("the request is longer than the %1 MiB that one call carries").arg(MaxRequestBytes >> 20)});
+        if (answer) {
+            answerLater(std::move(answer),
+                        {QLatin1String(AfterglowProto::IpcConnection::RequestTooLong),
+                         QStringLiteral("the request is longer than the %1 MiB that one call carries")
+                             .arg(MaxRequestBytes >> 20)});
+        }
         return;
     }
-    m_answers.insert(id, std::move(answer));
+    if (answer)
+        m_answers.insert(id, std::move(answer));
     m_out += line;
     writable();
 }
@@ -174,8 +189,13 @@ void DaemonLink::frame(const QByteArray& line)
     const QString type = object.value(QLatin1String("type")).toString();
     if (type == QLatin1String("event")) {
         const qint64 subscription = object.value(QLatin1String("subscriptionId")).toInteger(-1);
-        if (const auto it = m_subscriptions.constFind(subscription); it != m_subscriptions.constEnd())
+        if (const auto it = m_subscriptions.constFind(subscription); it != m_subscriptions.constEnd()) {
             Q_EMIT event(*it, object.value(QLatin1String("args")).toArray());
+        } else if (!object.contains(QLatin1String("subscriptionId"))) {
+            Q_EMIT targetEvent(object.value(QLatin1String("target")).toString(),
+                               object.value(QLatin1String("signal")).toString(),
+                               object.value(QLatin1String("args")).toArray(), line.size() + 1);
+        }
         return;
     }
     const QJsonValue idValue = object.value(QLatin1String("id"));

@@ -72,7 +72,10 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 31) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 32) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 32 added the layout call of the control target, and a client
+    // that selected an agent session reaches the commands of scripts of the
+    // window that shows it, with pane 0 in the Open of its relay (AttachTest).
     // Version 31 added agent sessions: the agent option of a session, the
     // agent and bound of listSessions, the agent of the attach answer, the
     // adoptSession, bindSession and unbindSession calls, and the daemon's
@@ -1259,6 +1262,10 @@ TEST(MuxProtocol, RelayFramesRoundTrip)
             continue;
         }
         EXPECT_EQ(remote->pane, 4u);
+        // A client in no pane of the session (afterglow mcp).
+        const auto unpaned =
+            Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Open, {}, 0}));
+        EXPECT_TRUE(unpaned && unpaned->pane == 0 && unpaned->kind == Attach::RelayKind::Commands);
         EXPECT_EQ(remote->kind, Attach::RelayKind::Remote);
         EXPECT_TRUE(remote->host == host);
         // The bytes of a connection, whatever they look like.
@@ -1299,7 +1306,7 @@ TEST(MuxProtocol, RelayFramesThatDoNotDecodeAreRefused)
         std::string_view("\x01\x00\x01", 3), // relay 0
         std::string_view("\x01\x01", 2), // Open without its pane
         std::string_view("\x01\x01\x01", 3), // Open without its kind
-        std::string_view("\x01\x01\x00\x00", 4), // Open of pane 0
+        std::string_view("\x01\x01\x00\x01h", 5), // the Open of a client of an ssh session in pane 0
         std::string_view("\x01\x01\x01\x02", 4), // the kind after Remote
         std::string_view("\x01\x01\x01\x00h", 5), // a byte after the Open of a client of the commands target
         std::string_view("\x01\x01\x01\x01", 4), // the Open of a client of an ssh session without its host

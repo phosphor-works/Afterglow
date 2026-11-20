@@ -7,6 +7,7 @@
 It gives the agent a [mux session](MUX.md) of its own.
 The panes of the session run with no window.
 The agent opens panes, runs commands, sends keys to interactive programs, and reads the text of the panes.
+It also opens and saves your [projects](PROJECTS.md), and runs the [commands of your scripts](SCRIPTING.md#commands).
 You can watch the session, or take it over, with `afterglow mux attach NAME`.
 
 The server speaks MCP revision 2026-07-28 on its standard input and output.
@@ -100,6 +101,10 @@ Each result has a short text and the same data as structured content.
 | `read` | `pane`, `scope` (`screen`, `scrollback` or `last_output`), `tail_lines`, `max_bytes` | `text`, `truncated` |
 | `screenshot` | `pane`, `scope` (`pane`, `tab` or `window`) | A PNG image, and `width`, `height` and `scaled` |
 | `close_pane` | `pane`, `end_session` | None |
+| `open_project` | `name` | `name`, `panes` and `warnings` |
+| `save_project` | `name`, `overwrite` | `name`, `path`, `panes` and `warnings` |
+| `list_script_commands` | None | `commands`: for each, `script`, `command`, `summary`, `usage` and `stdin` |
+| `run_script_command` | `pane`, `script`, `command`, `args`, `stdin`, `timeout_ms` | `exit_code`, `stdout`, `stderr`, `truncated` |
 
 The fields of a pane are those of the [pane object](CONTROL.md#pane-object), and `shell` has the [shell states](CONTROL.md#shell-states).
 
@@ -115,6 +120,10 @@ Each tool tells the client what it does with its hints.
 | `read` | Yes | No | Yes | No |
 | `screenshot` | Yes | No | Yes | No |
 | `close_pane` | No | Yes | No | No |
+| `open_project` | No | No | No | No |
+| `save_project` | No | Yes | Yes | No |
+| `list_script_commands` | Yes | No | Yes | No |
+| `run_script_command` | No | Yes | No | No |
 
 ### open_pane
 
@@ -249,6 +258,74 @@ An image with a side longer than `Mcp.screenshotMaxSize` is scaled down. `scaled
 `close_pane` closes a pane, and its program ends.
 The last pane of the session needs `end_session` true: the session ends with it.
 
+### open_project
+
+`open_project` opens a saved project in the session of the server.
+It reads the project from `projects/` beside the config file that the server read, as `afterglow ctl open-project` does (see [project files](PROJECTS.md#project-files)).
+The project opens into this session also when it has `"session": true`.
+It opens no window, and it changes no other session and no window of yours.
+
+The tabs of the project come after the tabs of the session.
+Each pane runs the command of the project in its directory, or your shell, as a window starts it.
+The panes have the size of the session's panes.
+Each split gives its new pane half of the room of the pane that it splits: the ratios of the project do not apply.
+The titles of the tabs and panes of the project do not apply either.
+The focus goes to the active pane of the active tab of the project.
+
+`panes` maps the ID of each pane in the project file to its pane ID in the session.
+`warnings` says what the open had to change, for example a command that is not installed, which starts your shell instead.
+
+| Problem | Result |
+| --- | --- |
+| No saved project has the name | A tool error that gives the names of the saved projects |
+| The project file breaks a [limit](PROJECTS.md#project-files) | A tool error that names the limit |
+| A pane has no room for its split while no window shows the session | A tool error that tells the agent to ask you to attach a window. The panes that the open made close. |
+| The daemon refuses a pane | A tool error. The panes that the open made close. |
+
+### save_project
+
+`save_project` saves the tabs, splits, ratios, focus and directories of the session as a project.
+It writes `projects/NAME.json` beside the config file that the server read, as `afterglow ctl save-project` does.
+It needs no window: the mux daemon keeps the layout of the session.
+
+| Field of a pane | Value |
+| --- | --- |
+| `cwd` | The directory that the shell reported, else the directory of its program, else your home directory |
+| `command` | The command that started the pane: the `argv` of `open_pane`, or the command of a project. Never a command that was typed in a shell. A command over the limits of a project saves as the shell, with a warning. |
+| `title` | The title that you gave the pane in a window |
+
+The project has `"session": true`, as the save of a window of a mux session of this computer has.
+Thus Switch Project opens it into a mux session.
+
+A saved project of the name stays, and the tool fails, unless `overwrite` is true.
+A project has at most 16 tabs and 32 panes. A save of a larger session fails, and names the limit.
+
+### list_script_commands
+
+`list_script_commands` lists the commands of the scripts that you enabled, as the window that shows the session has them.
+`stdin` is true for a command that reads standard input.
+
+### run_script_command
+
+`run_script_command` runs a command of a script, as `aglow run` runs it in `pane` (see [run a command](SCRIPTING.md#run-a-command)).
+The command gets `args`, and `stdin` when the script marks it `stdin = true`.
+`ev.source` is `shell`, and `ev.cwd` is the directory of the pane.
+The tool waits until the command ends, and returns its exit status and its output.
+`stdout` and `stderr` together are at most `Mcp.outputLimit` bytes, and `stderr` takes at most half of it.
+A cut removes the start of the text, and `truncated` is then true.
+
+The mux daemon runs no scripts. The window that shows the session runs the command, with its scripts and its settings (`Scripts.enabled` and the limits of `Scripts`).
+`pane` must be a pane of the session.
+
+| Problem | Result |
+| --- | --- |
+| No window shows the session | A tool error that tells the agent to ask you to run `afterglow mux attach NAME` |
+| No enabled script has the command | A tool error |
+| `stdin` for a command that reads no standard input | A tool error |
+| The timeout comes first (`timeout_ms`, else `Mcp.waitTimeout`) | A tool error. The server ends the run, as `aglow run` does at Ctrl+C. |
+| The client cancels the call | The server ends the run |
+| The window closes or detaches while the command runs | A tool error, and the run ends |
+
 ## Settings
 
 The server reads the settings of the default config file once, when it starts.
@@ -257,9 +334,9 @@ See the [configuration reference](CONFIGURATION.md#mcp).
 
 | Setting | Default | Function |
 | --- | --- | --- |
-| `Mcp.waitTimeout` | 120000 ms | The timeout of `run` and `wait` when the call gives none |
+| `Mcp.waitTimeout` | 120000 ms | The timeout of `run`, `wait` and `run_script_command` when the call gives none |
 | `Mcp.maxWaitTimeout` | 3600000 ms | The longest timeout that a call can ask for |
-| `Mcp.outputLimit` | 65536 bytes | The most UTF-8 text that one result carries |
+| `Mcp.outputLimit` | 65536 bytes | The most UTF-8 text that one result of `run`, `wait`, `read` or `run_script_command` carries |
 | `Mcp.tailLines` | 200 | The lines of output of `run` and `wait` when the call gives no `tail_lines` |
 | `Mcp.screenshotMaxSize` | 2048 px | The longest side of a screenshot |
 | `Mcp.endSessionOnExit` | true | End the session with the server |
@@ -275,7 +352,9 @@ Turn off `Control.enabled` to stop every agent.
 | A request line of the client | 13 MiB | The server answers with an error, and drops the line |
 | `keys` of `send` | 4096 | The tool fails |
 | `pattern` of `wait` | 1024 characters | The tool fails |
-| Panes of a session | 256 | `open_pane` fails |
+| Panes of a session | 256 | `open_pane` and `open_project` fail |
+| `args` of `run_script_command` | 256 arguments of 4096 UTF-16 units each, in one request of 1 MiB | The tool fails |
+| `stdin` of `run_script_command` | `Scripts.commandStdinLimit` of the window | The tool fails, and the command does not run |
 | `timeout_ms` | `Mcp.maxWaitTimeout` | The server uses the limit. A longer `quiet_ms` ends at the timeout. |
 
 ## Scope and safety
@@ -287,3 +366,13 @@ This is not a security boundary: an agent that runs commands can run `afterglow 
 The text of a pane is what its programs wrote. The agent must treat it as data, not as instructions.
 
 The session reads its text and takes screenshots without `Control.allowReadText`: an agent session keeps its read access.
+
+The tools cannot write, enable, load or install a script or a package.
+A script runs later with your rights, so `run_script_command` runs only the commands of the scripts that you enabled.
+A command can do all that its script can do.
+
+A project runs its commands when it opens.
+`save_project` writes the commands of the panes of the session, which the agent chose with `open_pane`, into a project file.
+When you open a project that an agent saved, its commands run with your rights.
+Examine the commands of the project file before you open it.
+`save_project` replaces a saved project only with `overwrite` true.
