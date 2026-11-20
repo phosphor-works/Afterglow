@@ -794,6 +794,30 @@ protected:
         expectNoQmlErrors();
     }
 };
+// The shell integration that the startup sets is Qt's in this process: the
+// windows have it, and the programs of the panes get the environment that
+// the process got. A Qt program started in a pane would ask for the plugin,
+// and one that links another PhosphorWayland than the plugin it finds
+// writes past the plugin's objects.
+TEST_F(NativeWindow, APaneGetsNoShellIntegrationThatTheStartupSet)
+{
+    EXPECT_TRUE(PhosphorWayland::LayerSurface::isSupported());
+    EXPECT_TRUE(qEnvironmentVariableIsEmpty("QT_WAYLAND_SHELL_INTEGRATION"));
+    restartApplication(QStringLiteral("environment.conf"), testSettings({}),
+                       {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                        QStringLiteral("printf '<%s>' \"${QT_WAYLAND_SHELL_INTEGRATION-unset}\"; exec cat")});
+    if (HasFatalFailure())
+        return;
+    QPointer<Pane> pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    EXPECT_TRUE(waitFor(
+        [&] {
+            return pane && screenOf(pane).contains(QStringLiteral("<unset>"));
+        },
+        5000))
+        << (pane ? screenOf(pane).toStdString() : std::string("the pane closed"));
+}
+
 TEST_F(NativeWindow, TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab)
 {
     auto* original = window->focusedPane();
@@ -20693,6 +20717,7 @@ int main(int argc, char** argv)
     // The plugin paths, the layer-shell integration and the names, as afterglow sets them.
     prepareApplication();
     QApplication app(argc, argv);
+    restoreEnvironment();
     if (argc > 1 && QByteArray(argv[1]) == "--drop-target")
         return runDropTarget(QCoreApplication::arguments());
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
