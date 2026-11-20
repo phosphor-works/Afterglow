@@ -3642,6 +3642,48 @@ TEST(MuxControl, AnAgentSessionKeepsReadAccessAndEndsWithItsBoundClients)
     EXPECT_TRUE(sessionNamed(daemon, "u"));
 }
 
+// The layout call gives the tabs and splits that the daemon keeps, with no
+// window: an agent saves a project from them. The commands of the panes
+// leave only with read access, as in listPanes.
+TEST(MuxControl, TheLayoutOfASessionComesFromTheDaemon)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    for (const bool readText : {false, true}) {
+        SCOPED_TRACE(readText);
+        const std::string name = readText ? "r" : "n";
+        SessionOptions o = shellOptions(daemon, name);
+        o.control.allowReadText = readText;
+        o.launch.command = {"sh"};
+        ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+        ControlClient ctl(daemon);
+        ASSERT_EQ(ctl.select(name), "");
+        const std::int64_t first = firstPane(ctl);
+        const auto added = ctl.call("split", Json::Array{first, "down", Json::Array{}});
+        ASSERT_TRUE(added) << ctl.error.message;
+        const auto tab = ctl.call("newTab", Json::Array{first, "", Json::Array{}});
+        ASSERT_TRUE(tab) << ctl.error.message;
+        EXPECT_FALSE(ctl.call("layout", Json::Array{1}));
+        const auto layout = ctl.call("layout", {});
+        ASSERT_TRUE(layout) << ctl.error.message;
+        std::string error;
+        const auto read = layoutFrom(*layout, &error);
+        ASSERT_TRUE(read) << error << ": " << Json::write(*layout);
+        ASSERT_EQ(read->tabs.size(), 2u);
+        const std::vector<LayoutNode> split{{0, true, 0.5},
+                                            {std::uint32_t(first), false, 0.5},
+                                            {std::uint32_t(added->toInteger().value_or(0)), false, 0.5}};
+        EXPECT_EQ(read->tabs[0].tree, split);
+        EXPECT_EQ(read->current, 1u);
+        EXPECT_EQ(read->tabs[1].focused, std::uint32_t(tab->toInteger().value_or(0)));
+        // A pane with no title and no command has no values.
+        const auto values = read->values.find(std::uint32_t(first));
+        const std::vector<std::string> command =
+            values == read->values.end() ? std::vector<std::string>{} : values->second.command;
+        EXPECT_EQ(command, readText ? std::vector<std::string>{"sh"} : std::vector<std::string>{});
+    }
+}
+
 TEST(MuxControl, TheSessionFollowsTheSettingsOfItsWindow)
 {
     TestDaemon daemon;
@@ -6912,6 +6954,59 @@ TEST(MuxAttach, ACommandClientOfASessionPaneReachesTheWindow)
     ASSERT_TRUE(w.relay(Attach::RelayFrame{open.relay, Attach::RelayPart::End}));
     ASSERT_TRUE(w.stream->flush(2000));
     EXPECT_EQ(agent.next(), "last");
+}
+
+// afterglow mcp runs in no pane of its agent session, and can run in a pane
+// of another session: the connection that selected the agent session reaches
+// the commands of the window that shows that session, and its runs name
+// their panes (pane 0 in the open). A connection that selected a session of
+// no agent still needs a session pane.
+TEST(MuxAttach, AClientThatSelectedAnAgentSessionReachesTheCommandsOfItsWindow)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    SessionOptions agentOptions = shellOptions(daemon, "a");
+    agentOptions.agent = true;
+    ASSERT_TRUE(daemon.newSession(agentOptions)) << daemon.lastError();
+    ASSERT_TRUE(shellSession(daemon, "p")) << daemon.lastError();
+    ControlClient plain(daemon);
+    ASSERT_EQ(plain.select("p"), "");
+    EXPECT_FALSE(plain.call("list", {}, AfterglowProto::Run::Target));
+    EXPECT_EQ(plain.error.message,
+              "only a client in a session pane reaches the mux daemon for the commands of scripts");
+    ControlClient early(daemon);
+    ASSERT_EQ(early.select("a"), "");
+    EXPECT_FALSE(early.call("list", {}, AfterglowProto::Run::Target));
+    EXPECT_EQ(early.error.message, "no window shows session 'a', and only a window runs the commands of scripts");
+
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "a"), "");
+    ASSERT_TRUE(w.until([&] {
+        return w.pane != 0;
+    }));
+    ControlClient agent(daemon);
+    ASSERT_EQ(agent.select("a"), "");
+    IpcConnection::Error error;
+    const auto id = agent.connection.send(AfterglowProto::Run::Target, "list", {}, &error);
+    ASSERT_TRUE(id) << error.message;
+    ASSERT_TRUE(w.until([&] {
+        return w.relays.size() >= 2;
+    }));
+    const Attach::RelayFrame open = w.relays[0];
+    EXPECT_EQ(open.part, Attach::RelayPart::Open);
+    EXPECT_EQ(open.pane, 0u);
+    EXPECT_EQ(open.kind, Attach::RelayKind::Commands);
+    EXPECT_EQ(w.relays[1].part, Attach::RelayPart::Bytes);
+    EXPECT_TRUE(contains(w.relays[1].bytes, R"("fn":"list")")) << w.relays[1].bytes;
+    ASSERT_TRUE(w.relay(Attach::RelayFrame{open.relay, Attach::RelayPart::Bytes,
+                                           R"({"type":"reply","id":)" + std::to_string(*id)
+                                               + R"(,"result":[]})"
+                                                 "\n"}));
+    ASSERT_TRUE(w.stream->flush(2000));
+    Json::Value frame;
+    ASSERT_EQ(agent.connection.next(frame, 5000), IpcConnection::Read::Frame);
+    EXPECT_TRUE(IpcConnection::answers(frame, *id)) << Json::write(frame);
+    EXPECT_TRUE(IpcConnection::answer(frame, &error)) << error.message;
 }
 
 namespace {

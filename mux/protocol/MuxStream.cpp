@@ -193,9 +193,13 @@ std::optional<RelayFrame> decodeRelay(std::string_view bytes)
     } else if (part == std::uint8_t(RelayPart::Open)) {
         frame.pane = std::uint32_t(r.varint(0xffffffffu));
         const std::uint8_t kind = r.byte();
-        if (!r.ok() || frame.pane == 0 || kind > std::uint8_t(RelayKind::Remote))
+        if (!r.ok() || kind > std::uint8_t(RelayKind::Remote))
             return std::nullopt;
         frame.kind = RelayKind(kind);
+        // A client of the commands target that selected an agent session
+        // runs in no pane of it. An ssh session always runs in one.
+        if (frame.pane == 0 && frame.kind == RelayKind::Remote)
+            return std::nullopt;
         if (frame.kind == RelayKind::Remote) {
             frame.host = std::string(r.rest());
             if (frame.host.empty())

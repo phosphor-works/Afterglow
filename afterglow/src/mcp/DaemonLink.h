@@ -56,17 +56,29 @@ public:
     {
         return m_fd >= 0;
     }
-    /// Whether a call of the control target with @p fn and @p args fits in
-    /// one request line (AfterglowProto::IpcConnection::MaxRequestBytes).
-    static bool fits(const QString& fn, const QJsonArray& args);
+    /// Whether a call of @p target with @p fn and @p args fits in one
+    /// request line (AfterglowProto::IpcConnection::MaxRequestBytes).
+    static bool fits(const QString& fn, const QJsonArray& args, const QString& target = QStringLiteral("control"));
     /// Calls @p fn of the control target of the selected session.
     void call(const QString& fn, const QJsonArray& args, Answer answer);
+    /// Calls @p fn of @p target: "mux" for the daemon's own calls, and
+    /// "commands" for the commands of scripts of the window that shows the
+    /// session, which the daemon relays.
+    void call(const QString& target, const QString& fn, const QJsonArray& args, Answer answer);
+    /// Sends a call of @p target whose answer nobody waits for: the
+    /// acknowledgements of the output of a run.
+    void notify(const QString& target, const QString& fn, const QJsonArray& args);
     /// Subscribes to the event @p event of the control target. @p answer
     /// tells whether the daemon took it. Its events come as event().
     void subscribe(const QString& event, Answer answer);
 
 Q_SIGNALS:
     void event(const QString& name, const QJsonArray& args);
+    /// An event of no subscription: the output of a run of the commands
+    /// target, which comes to the connection of the run. @p bytes is the
+    /// size of its line, the line end included, which the client
+    /// acknowledges.
+    void targetEvent(const QString& target, const QString& signal, const QJsonArray& args, qint64 bytes);
     /// The daemon ended the subscription to @p name: NO_SUCH_SESSION when
     /// the session ended, NO_SUCH_TARGET when Control.enabled went off.
     void subscriptionEnded(const QString& name, const QString& code, const QString& message);
@@ -75,6 +87,7 @@ Q_SIGNALS:
     void closed(const QString& reason);
 
 private:
+    /// @p answer empty: nobody waits for the answer, which is dropped.
     void send(const QByteArray& line, qint64 id, Answer answer);
     void readable();
     void writable();
