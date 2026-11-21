@@ -5,7 +5,8 @@ find_package(GTest REQUIRED)
 
 # Application sources compiled again into a test keep the definitions they
 # ship with. The tests themselves build strings from literals.
-set_source_files_properties(../src/ProjectStore.cpp ../src/SplitTree.cpp ../src/DockArea.cpp ../src/animation/MomentumScroll.cpp
+set_source_files_properties(../src/ProjectStore.cpp ../src/SplitTree.cpp ../src/OverviewNavigation.cpp ../src/DockArea.cpp
+    ../src/animation/MomentumScroll.cpp
     ../src/desktop/FileTransfer.cpp ../src/desktop/DragDrop.cpp ../src/desktop/UploadArchive.cpp ../src/desktop/Download.cpp
     PROPERTIES COMPILE_DEFINITIONS QT_NO_CAST_FROM_ASCII)
 
@@ -14,6 +15,8 @@ qt_add_executable(afterglow_app_tests
     ../src/ProjectStore.cpp
     SplitTreeTest.cpp
     ../src/SplitTree.cpp
+    OverviewNavigationTest.cpp
+    ../src/OverviewNavigation.cpp
     DockAreaTest.cpp
     ../src/DockArea.cpp
     MomentumScrollTest.cpp
@@ -29,16 +32,17 @@ gtest_discover_tests(afterglow_app_tests)
 qt_add_executable(afterglow_scripting_tests ScriptHostTest.cpp ScriptPackageTest.cpp)
 target_link_libraries(afterglow_scripting_tests PRIVATE afterglow_scripting GTest::gtest)
 target_compile_definitions(afterglow_scripting_tests PRIVATE
-    AFTERGLOW_EXAMPLE_PACKAGES="${PROJECT_SOURCE_DIR}/data/examples/packages"
-    AFTERGLOW_EXAMPLE_SCRIPTS="${PROJECT_SOURCE_DIR}/data/examples/scripts"
-    AFTERGLOW_PHOSPHOR_SCRIPTS="${PROJECT_SOURCE_DIR}/data/examples/phosphor/scripts"
-    AFTERGLOW_GLASSHOUSE_SCRIPTS="${PROJECT_SOURCE_DIR}/data/examples/glasshouse/scripts")
+    AFTERGLOW_EXAMPLE_PACKAGES="${PROJECT_SOURCE_DIR}/examples/packages"
+    AFTERGLOW_EXAMPLE_SCRIPTS="${PROJECT_SOURCE_DIR}/examples/scripts"
+    AFTERGLOW_PHOSPHOR_SCRIPTS="${PROJECT_SOURCE_DIR}/examples/phosphor/scripts"
+    AFTERGLOW_GLASSHOUSE_SCRIPTS="${PROJECT_SOURCE_DIR}/examples/glasshouse/scripts")
 gtest_discover_tests(afterglow_scripting_tests PROPERTIES TIMEOUT 60)
 
 qt_add_executable(afterglow_config_tests ConfigTest.cpp DesktopTest.cpp)
 # afterglow_mux_protocol: the bounds of the Mux settings are the daemon's.
 target_link_libraries(afterglow_config_tests PRIVATE afterglow_config afterglow_mux_protocol GTest::gtest_main)
-target_compile_definitions(afterglow_config_tests PRIVATE AFTERGLOW_THEME_DIR="${PROJECT_SOURCE_DIR}/data/themes")
+target_compile_definitions(afterglow_config_tests PRIVATE AFTERGLOW_THEME_DIR="${PROJECT_SOURCE_DIR}/data/themes"
+    AFTERGLOW_BUNDLED_SHADERS="${PROJECT_SOURCE_DIR}/data/shaders")
 gtest_discover_tests(afterglow_config_tests)
 
 qt_add_executable(afterglow_upload_tests UploadArchiveTest.cpp ../src/desktop/UploadArchive.cpp ../src/desktop/UploadArchive.h)
@@ -121,12 +125,13 @@ target_include_directories(afterglow_popup_tests PRIVATE ${PROJECT_SOURCE_DIR}/l
 target_link_libraries(afterglow_popup_tests PRIVATE afterglow_app GTest::gtest)
 gtest_discover_tests(afterglow_popup_tests PROPERTIES RESOURCE_LOCK gpu LABELS gpu TIMEOUT 60)
 
-# The pointer maps of the bundled packs against their pictures, offscreen.
+# The pointer maps of the bundled and example packs against their pictures, offscreen.
 qt_add_executable(afterglow_pointer_map_tests PointerMapTest.cpp)
 target_include_directories(afterglow_pointer_map_tests PRIVATE ${PROJECT_SOURCE_DIR}/libs/afterglow-render/tests)
 # The pack registry and the renderer: no window, no application.
 target_link_libraries(afterglow_pointer_map_tests PRIVATE afterglow_shaders GTest::gtest)
-target_compile_definitions(afterglow_pointer_map_tests PRIVATE AFTERGLOW_SOURCE_SHADERS="${PROJECT_SOURCE_DIR}/data/shaders")
+target_compile_definitions(afterglow_pointer_map_tests PRIVATE AFTERGLOW_SOURCE_SHADERS="${PROJECT_SOURCE_DIR}/data/shaders"
+    AFTERGLOW_EXAMPLE_SHADERS="${PROJECT_SOURCE_DIR}/examples/shaders")
 gtest_discover_tests(afterglow_pointer_map_tests PROPERTIES RESOURCE_LOCK gpu LABELS gpu TIMEOUT 60)
 
 qt_add_executable(afterglow_signal_tests QuitSignalsTest.cpp)
@@ -147,7 +152,8 @@ gtest_discover_tests(afterglow_shell_tests)
 
 qt_add_executable(afterglow_shader_tests ShaderControlsTest.cpp)
 target_link_libraries(afterglow_shader_tests PRIVATE afterglow_shaders GTest::gtest)
-target_compile_definitions(afterglow_shader_tests PRIVATE AFTERGLOW_SHADER_DATA_DIR="${PROJECT_SOURCE_DIR}/data")
+target_compile_definitions(afterglow_shader_tests PRIVATE AFTERGLOW_SHADER_DATA_DIR="${PROJECT_SOURCE_DIR}/data"
+    AFTERGLOW_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples")
 gtest_discover_tests(afterglow_shader_tests)
 
 find_package(Python3 COMPONENTS Interpreter)
@@ -213,3 +219,17 @@ if(AFTERGLOW_BUILD_AGLOW)
     afterglow_test_runs(afterglow_dnd_tests AFTERGLOW_AGLOW aglow)
 endif()
 gtest_discover_tests(afterglow_dnd_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Every test executable here names Afterglow's folder before main(), as
+# afterglow does (AppDirectory.cpp): PhosphorPaths aborts on a path read before
+# the folder has a name, and the tests read their paths as the application does.
+add_library(afterglow_test_app_directory OBJECT AppDirectory.cpp)
+target_compile_definitions(afterglow_test_app_directory PRIVATE QT_NO_CAST_FROM_ASCII)
+target_link_libraries(afterglow_test_app_directory PUBLIC afterglow_paths)
+get_property(afterglow_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(test IN LISTS afterglow_test_targets)
+    get_target_property(type ${test} TYPE)
+    if(type STREQUAL "EXECUTABLE")
+        target_link_libraries(${test} PRIVATE afterglow_test_app_directory)
+    endif()
+endforeach()

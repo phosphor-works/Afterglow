@@ -4,6 +4,7 @@
 #pragma once
 #include "PaneLaunchOptions.h"
 
+#include "OverviewNavigation.h"
 #include "Pane.h"
 #include "PaneOverlay.h"
 #include "ProjectStore.h"
@@ -1504,6 +1505,9 @@ private:
     {
         bool open = false;
         QPointer<Pane> highlighted;
+        /// The pane that the highlight last left, since the overview opened:
+        /// a pack fades the highlight from it (highlightOrigin()).
+        QPointer<Pane> movedFrom;
         QPointer<Pane> original; ///< focused when the overview opened
         /// Each tab's zoomed pane when the overview opened: the overview
         /// shows every pane, and closing zooms these tabs again.
@@ -1644,10 +1648,16 @@ private:
     /// Advances the tab switch and hands it to the renderer.
     void advanceTabTransition(std::uint8_t backgroundAlpha, bool& holding, bool& animating);
     bool m_overviewAvailable = false; ///< Shaders.overview compiled
+    /// The overview pack draws each tab as a picture of its layout
+    /// (ShaderProgram::overviewByDirection()): the arrow keys go by direction.
+    bool m_overviewByDirection = false;
     double m_overviewWheel = 0; ///< wheel travel (120 for a step) not yet a whole step
     /// The overview's cards: while it shows, every tab's panes in tab order,
     /// then layout order; otherwise the current tab's.
     std::vector<Pane*> overviewPanes() const;
+    /// Where each of overviewPanes() is in its tab, for the arrow keys of an
+    /// overview that goes by direction.
+    std::vector<OverviewCard> overviewLayout() const;
     /// True while the overview is open or still easing open or shut.
     bool overviewShowing() const;
     /// Applies the pane's script overrides (backgroundOpacity, cursorBlink)

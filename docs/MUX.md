@@ -103,7 +103,7 @@ A signal that the daemon gets as ignored stays ignored. Thus `nohup afterglow mu
 | `afterglow mux --help` | Prints the usage |
 
 `afterglow mux new` shows the new session in a window. With `--detach`, it creates the session without a window and prints its name.
-The `afterglow mux` commands read the settings of the default config file, `$XDG_CONFIG_HOME/afterglow/config.json`, not the `--config` or `-o` of a running Afterglow.
+The `afterglow mux` commands read the settings of the default config file, `$XDG_CONFIG_HOME/phosphor-works/afterglow/config.json`, not the `--config` or `-o` of a running Afterglow.
 The session starts in `DIR`, or in the current directory without `--cwd`. A directory that does not exist stops the command.
 Without `COMMAND`, the session runs the program of a new pane in a window: `Terminal.shell`, else your login shell.
 The pane has the size of a new window: `Window.initialColumns` by `Window.initialRows` cells.
@@ -700,7 +700,7 @@ Its calls come from a client on that host, in a pane of the session, for example
 | Inputs of `overlayInput` that wait for `overlay` | 4 for each client, 64 MiB for all the clients of sessions | The `overlayInput` call fails |
 
 For `split` and `new-tab`, `afterglow ctl` prepares the program with your settings, as `afterglow mux new` does.
-It reads the settings of the default config file, `$XDG_CONFIG_HOME/afterglow/config.json`, not the `--config` or `-o` of a running Afterglow.
+It reads the settings of the default config file, `$XDG_CONFIG_HOME/phosphor-works/afterglow/config.json`, not the `--config` or `-o` of a running Afterglow.
 It uses `Terminal.shell`, shell integration and `Terminal.env`, over the environment of the session.
 `afterglow ctl` takes that environment from the daemon, so a split from an ssh login or cron starts the shell of the session.
 `new-tab --cwd DIR` starts the new tab in `DIR`.

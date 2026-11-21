@@ -5,8 +5,8 @@
 
 ## Configuration file
 
-Afterglow reads `$XDG_CONFIG_HOME/afterglow/config.json`.
-The usual path is `~/.config/afterglow/config.json`.
+Afterglow reads `$XDG_CONFIG_HOME/phosphor-works/afterglow/config.json`.
+The usual path is `~/.config/phosphor-works/afterglow/config.json`.
 Afterglow reloads this file when it changes.
 A file that cannot be read, does not parse or does not hold a JSON object keeps the current settings.
 At the start there are no current settings to keep. Afterglow then uses the defaults, but with `Scripts.enabled` and `Control.enabled` off, because the file can turn them off.
@@ -138,9 +138,9 @@ A theme without a popup border color gets the color halfway from its background 
 With a theme, `Colors.divider` and `Colors.popupBorder` are not used.
 Without a theme, Afterglow derives an empty `Colors.divider` and `Colors.popupBorder` in the same way, from `Colors.background` and `Colors.foreground`.
 
-Afterglow first searches the `themes` directory beside the configuration file, normally `$XDG_CONFIG_HOME/afterglow/themes`.
+Afterglow first searches the `themes` directory beside the configuration file, normally `$XDG_CONFIG_HOME/phosphor-works/afterglow/themes`.
 With `--config DIR/config.json`, it searches `DIR/themes` instead.
-It then searches `afterglow/themes` in each XDG data directory, starting with `~/.local/share`.
+It then searches `phosphor-works/afterglow/themes` in each XDG data directory, starting with `~/.local/share`.
 It then searches the supplied themes in the table below.
 Last, it searches the themes that other terminals installed:
 

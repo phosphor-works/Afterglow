@@ -70,7 +70,8 @@ constexpr AfterglowVt::Rgb derivedPopupBorder(AfterglowVt::Rgb background, After
 QString pick(const QString& spec, bool dark);
 
 /// Where themes live, most important first: themes in @p configDirectory,
-/// the directory of the config file (empty for ~/.config/afterglow), then the XDG data directories' (from
+/// the directory of the config file (empty for ~/.config/phosphor-works/afterglow), then the XDG data directories'
+/// (from
 /// ~/.local/share on), then the bundled ones, then other terminals' themes:
 /// Ghostty's (~/.config/ghostty/themes, then ghostty/themes in each XDG data
 /// directory), Kitty's (~/.config/kitty/themes) and Konsole's (konsole in
