@@ -75,7 +75,9 @@ class Home:
         self.runtime = self.root / 'run'
         self.home = self.root / 'home'
         self.config = self.root / 'config'
-        for directory in (self.runtime, self.home, self.config / 'afterglow', self.root / 'state'):
+        # Afterglow's folder in XDG_CONFIG_HOME: the suite's folder holds it.
+        self.app = self.config / 'phosphor-works' / 'afterglow'
+        for directory in (self.runtime, self.home, self.app, self.root / 'state'):
             directory.mkdir(parents=True, mode=0o700)
         (self.home / '.bashrc').write_text(f"PS1='{PROMPT}'\nHISTFILE=/dev/null\n")
         (self.home / '.zshrc').write_text("PS1='mcp%# '\nHISTFILE=/dev/null\n")
@@ -96,7 +98,7 @@ class Home:
         """The config file that the next server reads, once, when it starts."""
         config = {'Terminal': {'shell': shell or self.bash, 'confirmClose': False},
                   'Control': {'eventInterval': 100}, 'Mcp': mcp}
-        (self.config / 'afterglow' / 'config.json').write_text(json.dumps(config))
+        (self.app / 'config.json').write_text(json.dumps(config))
 
     def log_file(self, name):
         log = open(self.root / f'{name}.log', 'w')
@@ -702,7 +704,7 @@ def zsh_paste(home):
 
 
 def write_project(home, name, document):
-    directory = home.config / 'afterglow' / 'projects'
+    directory = home.app / 'projects'
     directory.mkdir(exist_ok=True)
     (directory / f'{name}.json').write_text(json.dumps(document))
 
@@ -747,7 +749,7 @@ def projects(home):
 
     saved = s.tool('save_project', name='saved')
     path = Path(saved['path'])
-    check(path == home.config / 'afterglow' / 'projects' / 'saved.json' and saved['panes'] == 5, saved)
+    check(path == home.app / 'projects' / 'saved.json' and saved['panes'] == 5, saved)
     document = json.loads(path.read_text())
     check(document['session'] is True and len(document['tabs']) == 3, document)
     split = document['tabs'][1]['tree']
@@ -814,7 +816,7 @@ def script_command_through_a_window(home):
     for program in ('kwin_wayland', 'dbus-run-session'):
         if not shutil.which(program):
             raise Skip(f'{program} is not in PATH')
-    scripts = home.config / 'afterglow' / 'scripts'
+    scripts = home.app / 'scripts'
     scripts.mkdir(exist_ok=True)
     (scripts / 'mcptest.luau').write_text(SCRIPT)
     (home.config / 'kwinrc').write_text(KWINRC)

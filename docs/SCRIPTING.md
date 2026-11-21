@@ -5,13 +5,13 @@
 
 Afterglow uses Luau API version 1.
 The [typed declarations](../afterglow/src/scripting/afterglow.d.luau) define helper signatures, events, snapshots and results.
-Installed declarations are in `share/afterglow/api/afterglow.d.luau`.
-Installed examples are in `share/afterglow/examples/scripts`.
+Installed declarations are in `share/phosphor-works/afterglow/api/afterglow.d.luau`.
+The [examples](../examples/README.md) are in the source repository, in `examples/scripts` and `examples/packages`.
 
 ## Install a script
 
 Copy a `.luau` file into `scripts/` beside the active configuration file.
-The usual directory is `~/.config/afterglow/scripts/`.
+The usual directory is `~/.config/phosphor-works/afterglow/scripts/`.
 A script can handle terminal events and add [commands](#commands).
 Run a command with `aglow run <id> <command>`, from the command palette, from the context menu, with a key or with `afterglow ctl action`.
 A command that a script marks `remote` can also run from a remote host, with `aglow run` in an `afterglow ssh` session.
@@ -30,11 +30,11 @@ The script ID is `metadata.id`, or the file name without `.luau`.
 It has 1 to 64 letters, digits, `_` and `-`, and must not start with `-`.
 A script with an ID that breaks this rule does not load. `afterglow ctl scripts` shows the error.
 `metadata.name` is the name that `afterglow ctl scripts` shows. The default is the script ID.
-Afterglow also reads `afterglow/scripts` in each system data directory, such as `/usr/share/afterglow/scripts`.
+Afterglow also reads `phosphor-works/afterglow/scripts` in each system data directory, such as `/usr/share/phosphor-works/afterglow/scripts`.
 The directories have this priority, from low to high:
 
 1. The system data directories, in the reverse of their XDG order.
-2. `~/.local/share/afterglow/scripts`.
+2. `~/.local/share/phosphor-works/afterglow/scripts`.
 3. `scripts/` beside the active configuration file.
 
 When two scripts have the same ID, the script in the higher-priority directory loads.
@@ -104,8 +104,8 @@ Awaited results count toward the result limits.
 Exception: the result of an `afterglow.output` or `afterglow.output_error` with text to a run with a client is not counted each second (see [command limits](#command-limits)).
 Replacement, removal or disable discards waiting handlers. They do not continue.
 
-The [shell-region picker](../data/examples/scripts/semantic-regions.luau) waits for four results in one command.
-The [project navigator](../data/examples/packages/project-navigator/init.luau) runs its project searches together with `await_all`.
+The [shell-region picker](../examples/scripts/semantic-regions.luau) waits for four results in one command.
+The [project navigator](../examples/packages/project-navigator/init.luau) runs its project searches together with `await_all`.
 
 ## Effects and results
 
@@ -548,7 +548,7 @@ end
 Do not type the output of the program as it is.
 A line break runs the command line. fzf `--multi` writes one line for each choice, so each choice would run as a command.
 A control character in a name, such as Ctrl+D, acts as a key.
-The [fzf picker package](../data/examples/packages/fzf-picker/README.md) does not list such names.
+The [fzf picker package](../examples/packages/fzf-picker/README.md) does not list such names.
 
 `overlay(pane, command, options?)` takes the program and its arguments as `exec` does: a list of 1 to 64 strings of at most 4,096 characters each, or a string that names the program alone.
 
@@ -617,7 +617,7 @@ When the overlay closes, the focus goes back to the pane. The pane's cursor and 
 An overlay is not a pane of its own. `afterglow ctl ls` and the terminal snapshot do not show it.
 Effects that take a pane ID, such as `send_text` and `read_text`, act on the pane under the overlay, not on its program.
 `afterglow ctl overlay` opens an overlay from a shell (see [CONTROL.md](CONTROL.md#overlays)).
-The [fzf picker package](../data/examples/packages/fzf-picker/README.md) uses fzf when it is installed, and the select dialog when it is not.
+The [fzf picker package](../examples/packages/fzf-picker/README.md) uses fzf when it is installed, and the select dialog when it is not.
 
 ### Popups
 
@@ -735,7 +735,7 @@ A script can write only to its own runs. Output to a run that has ended, or that
 Exception: the handler of the run itself can still write after the run ends. That output goes nowhere (see [cancel](#cancel)).
 When you wait for output to a run that ends before the client gets the text, the result is `cancelled`.
 
-The [project navigator's](../data/examples/packages/project-navigator/init.luau) `import` command reads its stdin.
+The [project navigator's](../examples/packages/project-navigator/init.luau) `import` command reads its stdin.
 
 ```lua
 function script.run_command(command, ev)
@@ -829,7 +829,7 @@ A name that the manifest has, or a field that breaks a rule, refuses the complet
 return afterglow.set_commands({ deploy = { summary = "Deploy the branch", palette = "Deploy" } })
 ```
 
-The [projects example](../data/examples/scripts/projects.luau) adds a command for each saved project.
+The [projects example](../examples/scripts/projects.luau) adds a command for each saved project.
 
 ## Docked areas
 
@@ -1013,7 +1013,7 @@ When a window closes, its areas close with it.
 A new area past a count limit gets `rate_limited`. Remove an area to make room.
 New text for an existing area is not refused at the count limits.
 
-The [tab line package](../data/examples/packages/tab-line/init.luau) draws the tab bar of each window as a docked area.
+The [tab line package](../examples/packages/tab-line/init.luau) draws the tab bar of each window as a docked area.
 A click switches tabs, a middle click closes a tab and a right click opens its tab menu.
 The package also has a `+` button, moves through the tabs with the wheel and shows the tab under the pointer.
 Drag a tab to move it.
@@ -1114,7 +1114,7 @@ The snapshot's window records contain the same `overview` table.
 `cards` lists the pane IDs of every tab in tab order while the overview is open, otherwise the panes of the current tab.
 
 Combine these effects with a key mode to replace the overview's keys.
-The [scripted overview package](../data/examples/packages/scripted-overview/init.luau) moves with a, d, w and s, and ships its own overview shader.
+The [scripted overview package](../examples/packages/scripted-overview/init.luau) moves with a, d, w and s, and ships its own overview shader.
 A key mode that starts while the overview is open ends when the overview closes.
 This also applies when a click or the keyboard closes the overview, so the next key goes to the shell.
 A key mode that starts before the overview opens continues.
@@ -1122,12 +1122,12 @@ A key mode that starts before the overview opens continues.
 ## Pane pulses
 
 `pulse(pane, effect, options?)` plays an effect over the pane in `Shaders.paneEffects`.
-The bundled Pane Effects pack draws these effects:
+The bundled Phosphor Panes pack draws these effects:
 
 | Effect | Number | Look |
 | --- | --- | --- |
-| `portal` | 1 | A ring that sweeps out |
-| `flash` | 2 | A light that fades |
+| `portal` | 1 | A ring of light that sweeps out |
+| `flash` | 2 | A light at the rim of the pane that fades |
 | `shake` | 3 | The pane shakes |
 
 Numbers from 4 to 255 select effects that other packs define. Give an effect as its name, or as a number or a numeric string.
@@ -1135,7 +1135,7 @@ A `pulse` without an effect causes an error in the handler.
 `options.duration_ms` sets the time, a whole number of ms from 50 to 10,000. The default is 600 ms.
 `options.color` is a palette index from 0 to 255. The default is 4.
 A new pulse on the same pane replaces the old one.
-The [pulse example](../data/examples/scripts/pane-pulses.luau) flashes failed commands and shakes on the bell.
+The [pulse example](../examples/scripts/pane-pulses.luau) flashes failed commands and shakes on the bell.
 
 ## Launch options
 
@@ -1260,9 +1260,9 @@ A script can still give text to a run in other ways, for example in a module var
 The same is true for `Control.allowReadText` and a run with a local client.
 Install only scripts that you trust with the text of your panes.
 
-The [shell-region picker](../data/examples/scripts/semantic-regions.luau) copies a selected region, with a 256 KiB limit.
-The [build inspector](../data/examples/scripts/build-inspector.luau) finds compiler locations in command output.
-The [creation example](../data/examples/scripts/create-and-title.luau) uses launch options and a returned pane ID.
+The [shell-region picker](../examples/scripts/semantic-regions.luau) copies a selected region, with a 256 KiB limit.
+The [build inspector](../examples/scripts/build-inspector.luau) finds compiler locations in command output.
+The [creation example](../examples/scripts/create-and-title.luau) uses launch options and a returned pane ID.
 
 ## Diagnostics
 

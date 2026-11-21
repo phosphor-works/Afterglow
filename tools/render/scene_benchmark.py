@@ -24,11 +24,11 @@ parser.add_argument('--family', default='Monaspace Neon Var', help='font family 
 args = parser.parse_args()
 repo = Path(__file__).resolve().parents[2]
 out = args.output.resolve(); out.mkdir(parents=True, exist_ok=True)
-config = out / 'config/afterglow/shaders'
-shutil.copytree(repo / 'data/examples/phosphor/shaders', config, dirs_exist_ok=True)
-# Bundled packs are copied too, so an older installed copy cannot shadow them.
+config = out / 'config/phosphor-works/afterglow/shaders'
+shutil.copytree(repo / 'examples/phosphor/shaders', config, dirs_exist_ok=True)
+# The example packs that the scenes use.
 for pack in ['feedback-glow', 'mesh-reactor']:
-    shutil.copytree(repo / 'data/shaders' / pack, config / pack, dirs_exist_ok=True)
+    shutil.copytree(repo / 'examples/shaders' / pack, config / pack, dirs_exist_ok=True)
 source = out / 'input.ansi'
 source.write_text('\x1b[38;2;100;228;242mPHOSPHOR / REACTIVE SCENE\x1b[0m\r\n\r\n' +
     ''.join(f'  [{i:02d}]  build / render / verify    \x1b[32mPASS\x1b[0m\r\n' for i in range(24)) +

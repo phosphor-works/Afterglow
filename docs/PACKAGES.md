@@ -220,7 +220,7 @@ It writes the one you select to the configuration file. A chain key gains the pa
 A package names at most 32 pulses.
 A pulse name has 1 to 64 letters, digits, `_` and `-`. It cannot be only digits.
 The names `portal`, `flash` and `shake` are reserved.
-The [scripted overview](../data/examples/packages/scripted-overview/README.md) ships a key script and its own overview shader.
+The [scripted overview](../examples/packages/scripted-overview/README.md) ships a key script and its own overview shader.
 
 ## Reload and removal
 
@@ -244,14 +244,14 @@ The stored data remains available for a later installation.
 
 | Package | Function |
 | --- | --- |
-| [Project navigator](../data/examples/packages/project-navigator/README.md) | Finds directories and opens project layouts |
-| [Project autosave](../data/examples/packages/project-autosave/README.md) | Saves selected layouts periodically and supplies a restore selector |
-| [Tab line](../data/examples/packages/tab-line/README.md) | Draws the tab bar as a tab line with Git, directory, command and exit information |
-| [Scene controls](../data/examples/packages/scene-controls/README.md) | Selects, changes and saves shader parameters |
-| [Contextual scene](../data/examples/packages/contextual-scene/README.md) | Changes scene intensity from audio and history data |
-| [Scripted overview](../data/examples/packages/scripted-overview/README.md) | Drives the pane overview from its own keys, with its own overview shader |
-| [fzf picker](../data/examples/packages/fzf-picker/README.md) | Picks a saved project or a file with fzf in a popup overlay, or with the select dialog without fzf |
+| [Project navigator](../examples/packages/project-navigator/README.md) | Finds directories and opens project layouts |
+| [Project autosave](../examples/packages/project-autosave/README.md) | Saves selected layouts periodically and supplies a restore selector |
+| [Tab line](../examples/packages/tab-line/README.md) | Draws the tab bar as a tab line with Git, directory, command and exit information |
+| [Scene controls](../examples/packages/scene-controls/README.md) | Selects, changes and saves shader parameters |
+| [Contextual scene](../examples/packages/contextual-scene/README.md) | Changes scene intensity from audio and history data |
+| [Scripted overview](../examples/packages/scripted-overview/README.md) | Drives the pane overview from its own keys, with its own overview shader |
+| [fzf picker](../examples/packages/fzf-picker/README.md) | Picks a saved project or a file with fzf in a popup overlay, or with the select dialog without fzf |
 
-Copy a complete package directory into `~/.config/afterglow/scripts/` to install it.
-A package in a system data directory, such as `/usr/share/afterglow/scripts`, also loads.
+Copy a complete package directory into `~/.config/phosphor-works/afterglow/scripts/` to install it.
+A package in a system data directory, such as `/usr/share/phosphor-works/afterglow/scripts`, also loads.
 Use the package instructions for configuration and commands.

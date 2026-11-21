@@ -34,8 +34,9 @@ namespace Afterglow {
 /// Terminal shader packs by id: Phosphor shader packs (a directory with
 /// metadata.json and its stages) written against the terminal contract in
 /// data/shaders/shared. Packs come from the user's directory (the shaders
-/// directory beside the config file, ~/.config/afterglow/shaders), the system
-/// data directories and the bundled packs, and from loaded script packages'
+/// directory beside the config file, ~/.config/phosphor-works/afterglow/shaders),
+/// phosphor-works/shaders/terminal in the system data directories and the
+/// bundled packs, and from loaded script packages'
 /// shaders/ directories as "<package>.<pack>". When two packs answer to one
 /// name, the user's wins over the system's, and the system's over the bundled
 /// (a build-tree binary puts the checkout's packs above the system's). A
@@ -53,7 +54,7 @@ public:
     /// one window, may hold at once.
     static constexpr qint64 MaxDecodedImageBytes = 256LL * 1024 * 1024;
 
-    /// The user's packs and presets in ~/.config/afterglow.
+    /// The user's packs and presets in ~/.config/phosphor-works/afterglow.
     explicit ShaderLibrary(QObject* parent = nullptr);
     /// The user's packs in @p configDirectory/shaders and the saved presets in
     /// @p configDirectory/shader-presets, beside the config file:

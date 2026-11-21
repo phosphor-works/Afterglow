@@ -234,7 +234,8 @@ protected:
         std::string dir = "/tmp/" + std::string(RunPrefix) + std::to_string(::getpid()) + "-XXXXXX";
         ASSERT_TRUE(::mkdtemp(dir.data())) << std::strerror(errno);
         m_dir = dir;
-        for (const char* sub : {"/run", "/home", "/config", "/config/afterglow", "/far", "/far/run", "/no-ssh"}) {
+        for (const char* sub : {"/run", "/home", "/config", "/config/phosphor-works",
+                                "/config/phosphor-works/afterglow", "/far", "/far/run", "/no-ssh"}) {
             ASSERT_EQ(::mkdir((m_dir + sub).c_str(), 0700), 0) << sub << ": " << std::strerror(errno);
         }
         for (char** e = environ; *e; ++e) {
@@ -351,7 +352,7 @@ protected:
     /// Writes the configuration of afterglow, @p json.
     bool writeConfig(const std::string& json) const
     {
-        std::ofstream config(m_dir + "/config/afterglow/config.json", std::ios::trunc);
+        std::ofstream config(m_dir + "/config/phosphor-works/afterglow/config.json", std::ios::trunc);
         config << json;
         return bool(config.flush());
     }

@@ -35,7 +35,7 @@ grep -E "^(BUILD_TESTING|CMAKE_BUILD_TYPE|AFTERGLOW_[A-Z_]+):" build*/CMakeCache
 `AFTERGLOW_BUILD_MUX` (on by default), `libs/afterglow-vt`, `libs/afterglow-pty`, phosphor-channel and `mux/`: no Qt,
 and of the Phosphor checkout only phosphor-channel (none with `AFTERGLOW_BUILD_MUX=OFF`). It installs `bin/aglow`,
 its completions and its notices in `share/licenses/aglow`, and `bin/aglow-mux`, its private libraries in
-`lib/afterglow` and its notices in `share/licenses/aglow-mux`. `docs/BUILD.md` has the procedure.
+`lib/phosphor-works/afterglow` and its notices in `share/licenses/aglow-mux`. `docs/BUILD.md` has the procedure.
 
 `AFTERGLOW_BUILD_AGLOW` is on by default. `aglow` links statically, so the configuration needs `libc.a` and
 `libstdc++.a` (Fedora: `glibc-static` and `libstdc++-static`). Without them, the configuration stops with a message

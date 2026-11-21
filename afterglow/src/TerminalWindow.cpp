@@ -2907,6 +2907,7 @@ void TerminalWindow::renderNow()
         addPaneDocks(p, wp.params.rect, wp.docks);
         wp.params.focused = p == m_focused && m_windowFocused;
         wp.params.highlighted = overviewShowing() && p == m_overview.highlighted;
+        wp.params.highlightOrigin = overviewShowing() && p == m_overview.movedFrom;
         if (const auto opening = m_paneOpening.constFind(p); opening != m_paneOpening.constEnd()) {
             wp.params.openProgress = paneEffectProgress(opening->at);
             wp.params.openEdge = opening->edge;
@@ -5563,6 +5564,7 @@ void TerminalWindow::applyShaders()
                   AfterglowRender::ShaderChains::anyIn(chains.overlayTransition, audio)};
     m_readsMouse = chains.readsMouse();
     m_overviewAvailable = !chains.overview.empty();
+    m_overviewByDirection = m_overviewAvailable && chains.overview.front()->overviewByDirection();
     m_tabTransitionAvailable = !chains.tabTransition.empty();
     m_paneEffectsAvailable = !chains.paneEffects.empty();
     m_overlayTransitionAvailable = !chains.overlayTransition.empty();

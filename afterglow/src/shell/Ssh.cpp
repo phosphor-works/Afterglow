@@ -8,6 +8,7 @@
 #include <AfterglowProto/Socket.h>
 #include <AfterglowProto/Text.h>
 #include <AfterglowProto/Version.h>
+#include <PhosphorPaths/SuiteDirectories.h>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QElapsedTimer>
@@ -241,10 +242,7 @@ QString baseDirectory(const char* name)
 
 QString stateFile(const QString& name = QStringLiteral("ssh-terminfo"))
 {
-    QString state = baseDirectory("XDG_STATE_HOME");
-    if (state.isEmpty())
-        state = QDir::homePath() + QStringLiteral("/.local/state");
-    return state + QStringLiteral("/afterglow/") + name;
+    return PhosphorPaths::appStateDir() + QLatin1Char('/') + name;
 }
 
 // The hosts the helper has tried, oldest first: one hash for each, and

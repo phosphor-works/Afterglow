@@ -889,13 +889,16 @@ void MuxPane::commandStarted(std::string_view command)
 {
     std::string encoded = Host::encode(Host::make(Host::Kind::CommandStarted, {}, std::string(command)));
     bool wake = false;
-    bool watched = false;
+    // The terminal calls this from its feed, under m_mutex: the state that
+    // listPanes reads changes before the event leaves, not after the rest of
+    // the read, so a client that heard the event reads the state after it.
+    bool watched = updateShellLocked();
     {
         // With the state that a new window gets, under one lock: setWindow()
         // sends the start again.
         std::lock_guard lock(m_hostMutex);
         if (m_watched)
-            watched = watchLocked({WatchEvent::Kind::CommandStarted, {}, std::string(command)});
+            watched = watchLocked({WatchEvent::Kind::CommandStarted, {}, std::string(command)}) || watched;
         m_command = command;
         m_commandRunning = true;
         m_commandStart = std::chrono::steady_clock::now();
@@ -910,7 +913,8 @@ void MuxPane::commandStarted(std::string_view command)
 void MuxPane::commandFinished(int exitCode)
 {
     bool wake = false;
-    bool watched = false;
+    // As in commandStarted(): the exit code and the state before the event.
+    bool watched = updateShellLocked();
     {
         std::lock_guard lock(m_hostMutex);
         Host::Call call = Host::make(Host::Kind::CommandFinished, {}, {}, exitCode);
@@ -919,7 +923,7 @@ void MuxPane::commandFinished(int exitCode)
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_commandStart)
                 .count());
         if (m_watched)
-            watched = watchLocked({WatchEvent::Kind::CommandFinished, {}, m_command, exitCode, call.value});
+            watched = watchLocked({WatchEvent::Kind::CommandFinished, {}, m_command, exitCode, call.value}) || watched;
         m_commandRunning = false;
         m_command.clear();
         // The command that asked for files ended: its answer must not go to

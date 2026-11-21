@@ -49,7 +49,7 @@ When the tools are there and its own sshd cannot start, the test fails.
 | Option | Default | Function |
 | --- | --- | --- |
 | `BUILD_TESTING` | `ON` | Builds the unit and renderer tests. Requires GTest. |
-| `AFTERGLOW_BUILD_TOOLS` | `OFF` | Builds the benchmarks, `afterglow_renderpng`, the headless conformance host and the [TUI fuzzer](#tui-fuzzing). Adds the regression tests of the host and the fuzzer, [`afterglow_kitten_icat`](#kitten-icat), `afterglow_renderpng_images` and `aglow_icat_render` to CTest. |
+| `AFTERGLOW_BUILD_TOOLS` | `OFF` | Builds the benchmarks, `afterglow_renderpng`, the headless conformance host and the [TUI fuzzer](#tui-fuzzing). Adds the regression tests of the host and the fuzzer, [`afterglow_kitten_icat`](#kitten-icat), `afterglow_renderpng_images`, `afterglow_renderpng_event_packs` and `aglow_icat_render` to CTest. |
 | `AFTERGLOW_NATIVE_TESTS` | `OFF` | Adds the native window suite to CTest with the label `native`, and with `AFTERGLOW_BUILD_AGLOW` also `afterglow_transfer_kitty`. Requires Python 3 and the native test dependencies. |
 | `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core, the protocol library, the image decoders that `aglow` and `aglow-mux` share, and the attach stream of `aglow-mux`. Requires clang for C and C++. Turns off `AFTERGLOW_BUILD_AGLOW`. |
 | `AFTERGLOW_BUILD_AGLOW` | `ON` | Builds `aglow`. Requires the static C and C++ runtime libraries (see [BUILD.md](BUILD.md#required-software)). Adds the [aglow tests](#aglow-tests) to CTest. When it is `OFF`, the `aglow dnd` tests, the `RunBinaryTest.*` tests and the `sshd` test of `RemoteCommandsTest.*` report Skipped. So do the native tests `AglowRunInASessionPaneRunsTheCommandsOfItsWindow`, `AglowRunInASessionOfAnotherHostGetsOnlyRemoteCommands` and `AnSshSessionInASessionPaneRunsRemoteCommandsThroughTheDaemon`. |
@@ -208,6 +208,15 @@ To run it alone:
 
 ```sh
 python3 tools/render/tests/renderpng_images.py build/tools/render/afterglow_renderpng
+```
+
+`afterglow_renderpng_event_packs` draws the bundled Phosphor and plain packs of the overview, the tab switch and the pane effects.
+At the start and the end of each event, the picture must be the window with no pack, pixel for pixel.
+In the middle of each event, the picture must differ.
+It has the same requirements. To run it alone:
+
+```sh
+python3 tools/render/tests/renderpng_event_packs.py build/tools/render/afterglow_renderpng
 ```
 
 ### kitten icat
@@ -532,7 +541,7 @@ These tests need the [native test dependencies](#native-test-dependencies).
 They also need the `aglow` of the build next to `afterglow`, because they read the state of a pane with `aglow run`.
 Without it, they stop with an error.
 The combined scene test also requires CAVA, pactl and paplay.
-Each test runs again on a private session bus and copies the bundled shader packs into its temporary configuration.
+Each test runs again on a private session bus. It copies the bundled shader packs, and the example packs that it uses, into its temporary configuration.
 It prints the directory for its log, screenshots and results.
 
 | Option | Default | Function |
@@ -540,7 +549,7 @@ It prints the directory for its log, screenshots and results.
 | `--artifacts DIR` | A new temporary directory | The directory for the log, the screenshots and the results |
 | `--timeout` | 300 seconds, and 600 seconds for `scene_acceptance.py` | The time for the whole run. At the limit, the runner stops the test and exits with status 124. |
 
-See [Phosphor performance](../data/examples/phosphor/PERFORMANCE.md) for benchmark commands and measurement limits.
+See [Phosphor performance](../examples/phosphor/PERFORMANCE.md) for benchmark commands and measurement limits.
 
 ## Projects and the project navigator
 
@@ -564,7 +573,7 @@ Without it, the test stops with an error.
 It keeps its screenshots and log in a new temporary directory, or in the directory that `--artifacts` gives.
 `project_smoke.py`, `navigator_smoke.py` and `navigator_ui_smoke.py` take `--timeout`, the time for the whole run in seconds. The default is 300.
 At the limit, the runner stops the test and exits with status 124.
-See [projects](PROJECTS.md) and the [project navigator](../data/examples/packages/project-navigator/README.md) for what the tests cover.
+See [projects](PROJECTS.md) and the [project navigator](../examples/packages/project-navigator/README.md) for what the tests cover.
 
 ## Native performance measurements
 

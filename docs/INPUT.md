@@ -543,9 +543,9 @@ Add the line for your shell to its startup file:
 
 | Shell | Startup file | Line |
 | --- | --- | --- |
-| Bash | `~/.bashrc` | `source /usr/share/afterglow/shell-integration/bash` |
-| Zsh | `~/.zshrc` | `source /usr/share/afterglow/shell-integration/zsh/.zshenv` |
-| Fish | `~/.config/fish/config.fish` | `source /usr/share/afterglow/shell-integration/fish` |
+| Bash | `~/.bashrc` | `source /usr/share/phosphor-works/afterglow/shell-integration/bash` |
+| Zsh | `~/.zshrc` | `source /usr/share/phosphor-works/afterglow/shell-integration/zsh/.zshenv` |
+| Fish | `~/.config/fish/config.fish` | `source /usr/share/phosphor-works/afterglow/shell-integration/fish` |
 
 `/usr/share` is the data directory of the install (`CMAKE_INSTALL_FULL_DATADIR`).
 An install with another prefix has the scripts in its own data directory, such as `/usr/local/share`.

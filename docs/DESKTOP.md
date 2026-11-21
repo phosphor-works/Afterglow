@@ -187,7 +187,7 @@ The interface supports SSH transports that pass OSC sequences through.
 From a source checkout, run the example client:
 
 ```sh
-python3 data/examples/compatibility/download.py /path/to/report.txt
+python3 examples/compatibility/download.py /path/to/report.txt
 ```
 
 A download has no size limit: its data goes to the file as it comes, not into memory.

@@ -30,7 +30,8 @@
 #include <QKeySequence>
 #include <QLoggingCategory>
 #include <QRegularExpression>
-#include <QStandardPaths>
+
+#include <PhosphorPaths/SuiteDirectories.h>
 #include <QStyleHints>
 
 #include <algorithm>
@@ -513,8 +514,9 @@ PhosphorConfig::Schema buildSchema()
             QStringLiteral("theme"), {},
             QStringLiteral(
                 "Theme name or file path. An empty value uses no theme. Afterglow searches the themes "
-                "directory beside the config file (~/.config/afterglow/themes), then afterglow/themes in "
-                "each XDG data directory. Then it searches the bundled themes, such as nord and afterglow-light, "
+                "directory beside the config file (~/.config/phosphor-works/afterglow/themes), then "
+                "phosphor-works/afterglow/themes in each XDG data directory. Then it searches the bundled "
+                "themes, such as nord and afterglow-light, "
                 "and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use "
                 "plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme "
                 "over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, "
@@ -1033,10 +1035,10 @@ PhosphorConfig::Schema buildSchema()
              "read pane text. In a script command that runs for a client, such as aglow run or afterglow run, "
              "read_text, read_region and semantic_regions also need Control.allowReadText.")},
         {QStringLiteral("enabled"), d.scripts, QMetaType::Bool,
-         QStringLiteral(
-             "Run Luau scripts from the scripts directory beside the config file and from afterglow/scripts in "
-             "each XDG data directory. The aglow run command also needs Control.enabled. A value other than true, "
-             "false, yes, no, on, off, 1 or 0 turns it off.")},
+         QStringLiteral("Run Luau scripts from the scripts directory beside the config file and from "
+                        "phosphor-works/afterglow/scripts in each XDG data directory. The aglow run command "
+                        "also needs Control.enabled. A value other than true, false, yes, no, on, off, 1 or 0 "
+                        "turns it off.")},
         intKey(
             QStringLiteral("commandTimeout"), d.scriptCommandTimeout, 1000, 3600000,
             QStringLiteral("Longest time in milliseconds that one run of a script command can take. This includes runs "
@@ -1101,8 +1103,8 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("scroll"), anim.scroll, QMetaType::Bool, QStringLiteral("Animate scrolling between rows.")},
         {QStringLiteral("splits"), anim.splits, QMetaType::Bool,
          QStringLiteral(
-             "Animate split opening, closing and resizing. It also controls the open and close animations, the "
-             "portal and the away frame of Shaders.paneEffects.")},
+             "Animate split opening, closing and resizing. It also controls the open and close animations and the "
+             "mark of a pane that is away from here in Shaders.paneEffects.")},
         curveKey(QStringLiteral("splitCurve"), anim.splitCurve,
                  QStringLiteral(
                      "Curve of split animations, as a Phosphor curve spec. Use a spring such as spring:22,1 (angular "
@@ -1126,8 +1128,8 @@ PhosphorConfig::Schema buildSchema()
                QStringLiteral("Milliseconds that a pane takes to open or close in Shaders.paneEffects.")),
         intKey(QStringLiteral("contextDuration"), anim.contextDuration, 16, 5000,
                QStringLiteral(
-                   "Milliseconds that the portal of Shaders.paneEffects takes when the shell of a pane moves to "
-                   "another host, user or container.")),
+                   "Milliseconds that Shaders.paneEffects takes to show that the shell of a pane moved to another "
+                   "host, user or container.")),
         curveKey(
             QStringLiteral("overlayCurve"), anim.overlayCurve,
             QStringLiteral("Curve of the fade of an overlay over its pane (Shaders.overlayTransition), in the "
@@ -1217,10 +1219,9 @@ PhosphorConfig::Schema buildSchema()
                   QStringLiteral("Shader that animates switching tabs. An empty value switches at once.")),
         stringKey(
             QStringLiteral("paneEffects"), d.shaders.paneEffects,
-            QStringLiteral("Shader that animates panes as they split open and close. It draws a portal when the shell "
-                           "of a pane moves to another host, user or container. While the shell stays there, it draws "
-                           "the away frame around the pane. Animation.splits off turns these off too. An empty value "
-                           "turns it off.")),
+            QStringLiteral("Shader that animates panes as they split open and close. It also marks a pane when its "
+                           "shell moves to another host, user or container, and while the shell stays there. "
+                           "Animation.splits off turns these off too. An empty value turns it off.")),
         stringKey(QStringLiteral("overlayTransition"), d.shaders.overlayTransition,
                   QStringLiteral(
                       "Shader that blends a pane and the overlay that runs over it, as the overlay opens and closes. "
@@ -1492,8 +1493,7 @@ QVariantList defaultHintPatterns()
 
 QString SettingsStore::defaultPath()
 {
-    return QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
-        + QStringLiteral("/afterglow/config.json");
+    return PhosphorPaths::appConfigDir() + QStringLiteral("/config.json");
 }
 
 PhosphorConfig::Schema SettingsStore::schema()

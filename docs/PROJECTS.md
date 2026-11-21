@@ -22,18 +22,22 @@ The pane overview shows the panes of every tab in the window as live cards, up t
 Panes after the 32nd, in tab order, do not appear in the overview.
 The overview does not open when the focused pane is one of them.
 Each tab's cards form a group, in tab order. The focused pane starts highlighted.
+The default overview shows each tab as a small picture of its panes, each pane in its place. The tabs are in a grid.
 
 | Key | Function |
 | --- | --- |
-| Right, Tab or `l` | Highlights the next pane |
-| Left, Shift+Tab or `h` | Highlights the previous pane |
-| Down or `j`, Up or `k` | Highlights the first pane of the next or previous tab |
+| Left, Right, Up, Down, or `h`, `l`, `k`, `j` | Highlights the pane in that direction. At the edge of a tab, the highlight goes on to the tab in that direction. With no pane there, it stays. |
+| Tab, Shift+Tab | Highlights the next or previous pane in order, and wraps round |
 | Home, End | Highlights the first or last pane |
 | Enter, Space or a left click | Focuses the highlighted pane and closes the overview |
 | 1 to 9 | Focuses that numbered card and closes the overview |
 | Escape, the `pane_overview` key, or a right or middle click | Closes the overview and keeps the focus |
 
-The mouse wheel also moves the highlight.
+The mouse wheel also moves the highlight, in order.
+An overview pack that shows the cards in a row or round a ring has other arrow keys. [Pane Deck](../examples/shaders/README.md) is one example.
+With such a pack, Right or `l` and Left or `h` highlight the next and the previous pane.
+Down or `j` and Up or `k` highlight the first pane of the next and the previous tab.
+A pack chooses the arrow keys with [`overviewNavigation`](SHADER-API.md#metadata) in its metadata.
 A pane in another tab switches to that tab as the overview closes.
 Keys do not reach the panes while the overview is open. Programs in the panes keep running.
 A zoomed tab shows all of its panes in the overview, and returns zoomed on the chosen pane.
@@ -100,7 +104,7 @@ The keybinding action names are `save_project` and `switch_project`.
 ## Project files
 
 Layouts are in `projects/` beside the active configuration file.
-The usual path is `~/.config/afterglow/projects/`.
+The usual path is `~/.config/phosphor-works/afterglow/projects/`.
 Names contain 1–64 letters, digits, underscores or hyphens.
 Saves replace files atomically. Symlink files are not permitted.
 
@@ -120,7 +124,7 @@ Afterglow validates the layout before it creates windows or runs commands.
 A save or an open that a limit stops names that limit and the count of the layout.
 A save keeps a pane command that is over the command limits as an empty command, and gives a warning.
 
-1. Copy [development.json](../data/examples/projects/development.json) into the project directory.
+1. Copy [development.json](../examples/projects/development.json) into the project directory.
 2. Set the directories and commands for your system.
 3. Open the `development` project.
 
@@ -203,7 +207,7 @@ Project creation uses the structural action budget.
 Window snapshots contain `project`. An unnamed window has an empty project name.
 
 The `open_project` and `save_project` tools of the [MCP server](MCP.md#open_project) open a project in the agent's own mux session, and save that session as a project, also with no window.
-The [project script](../data/examples/scripts/projects.luau) shows a native selector.
+The [project script](../examples/scripts/projects.luau) shows a native selector.
 The [control socket](CONTROL.md#control-calls) supplies `projects`, `saveProject` and `openProject`.
 The CLI prints save and open results as JSON.
 

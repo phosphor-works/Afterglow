@@ -37,6 +37,17 @@ if(NOT IS_DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs")
         "Set -DAFTERGLOW_PHOSPHOR_LIBS_DIR=/path/to/phosphor-libs, or leave it empty for the pinned commit.${AFTERGLOW_PHOSPHOR_WITHOUT}")
 endif()
 
+# The suite folder's name (PHOSPHOR_SUITE_DIRECTORY_NAME), which the install
+# layout and the paths of the application are built from. A module with no
+# dependency, so the aglow-only build reads it too.
+if(NOT EXISTS "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/cmake/PhosphorSuite.cmake")
+    message(FATAL_ERROR
+        "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/cmake/PhosphorSuite.cmake not found. "
+        "This phosphor-libs tree is older than the commit that cmake/AfterglowDependencies.cmake pins.")
+endif()
+include("${AFTERGLOW_PHOSPHOR_LIBS_DIR}/cmake/PhosphorSuite.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/AfterglowInstallDirs.cmake")
+
 # The phosphor libraries' install rules are for a system install of phosphor
 # (headers, CMake packages, the plugin in Qt's directory). Afterglow installs
 # the parts it uses privately instead, so they are skipped here.
@@ -91,6 +102,7 @@ endif()
 include("${AFTERGLOW_PHOSPHOR_LIBS_DIR}/cmake/PhosphorDependencies.cmake")
 
 afterglow_add_phosphor_libs(
+    phosphor-paths
     phosphor-audio
     phosphor-channel
     phosphor-dbus

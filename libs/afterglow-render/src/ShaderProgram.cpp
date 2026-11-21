@@ -449,6 +449,7 @@ std::shared_ptr<ShaderProgram> ShaderProgram::compileStage(const ShaderProgramSo
     program->m_requiresAudio = includesModule(expanded, QLatin1String("AFTERGLOW_TERMINAL_AUDIO_GLSL"));
     program->m_requiresHdr = source.highDynamicRange;
     program->m_windowBackground = source.windowBackground;
+    program->m_overviewByDirection = source.overviewByDirection;
     program->m_readsScrollback = author.contains(usesScrollback);
     program->m_readsMouse = author.contains(usesMouse);
     program->m_animated = author.contains(usesTime) || program->m_readsPreviousText;
