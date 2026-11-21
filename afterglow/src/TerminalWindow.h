@@ -381,6 +381,8 @@ public:
     }
     /// The name of the session that the window shows, empty for none.
     QString sessionName() const;
+    /// The window shows an agent session (MuxClient::agent).
+    bool showsAgentSession() const;
     /// The ssh destination of the daemon of that session, empty for this
     /// computer.
     QString sessionHost() const;
@@ -1187,6 +1189,10 @@ private:
     };
     std::optional<PendingClipboardRead> m_pendingClipboardRead;
     void updateTitle();
+    /// The badge of an agent session on each tab, and the prefix of the
+    /// title (ChromeController::agentMarker), from Mux.agentLabel and
+    /// Mux.agentColor: none for a window that shows no agent session.
+    void updateAgentMarker();
     void restartBlink();
     enum class ProblemSource {
         Config,

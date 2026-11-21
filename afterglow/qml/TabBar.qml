@@ -19,6 +19,10 @@ QQC.ToolBar {
     }
 
     readonly property color ink: systemPalette.windowText
+    // The badge of an agent session's window (ChromeController::agentMarker).
+    readonly property var agent: controller.agentMarker || ({})
+    readonly property string agentLabel: agent.label || ""
+    readonly property color agentColor: agent.color || systemPalette.highlight
     readonly property int count: controller.tabTitles.length
     readonly property real minTab: 110
     readonly property real maxTab: 220
@@ -234,12 +238,36 @@ QQC.ToolBar {
                     }
                 }
 
-                QQC.Label {
+                // An agent session's tab: a badge.
+                Rectangle {
+                    id: agentChip
+                    visible: bar.agentLabel.length > 0
                     anchors.left: contextChip.right
+                    anchors.leftMargin: visible ? (contextChip.visible || status.visible ? 6 : 10) : 0
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.verticalCenterOffset: 1
+                    width: visible ? agentText.implicitWidth + 10 : 0
+                    height: 16
+                    radius: 4
+                    color: Qt.rgba(bar.agentColor.r, bar.agentColor.g, bar.agentColor.b, 0.18)
+                    border.color: Qt.rgba(bar.agentColor.r, bar.agentColor.g, bar.agentColor.b, 0.6)
+                    Text {
+                        id: agentText
+                        anchors.centerIn: parent
+                        text: bar.agentLabel
+                        textFormat: Text.PlainText
+                        color: bar.agentColor
+                        font.pixelSize: 10
+                        font.bold: true
+                    }
+                }
+
+                QQC.Label {
+                    anchors.left: agentChip.right
                     anchors.right: closeButton.left
                     anchors.verticalCenter: parent.verticalCenter
                     anchors.verticalCenterOffset: 1
-                    anchors.leftMargin: contextChip.visible || status.visible ? 6 : 14
+                    anchors.leftMargin: agentChip.visible || contextChip.visible || status.visible ? 6 : 14
                     anchors.rightMargin: 4
                     text: tab.shownTitle
                     textFormat: Text.PlainText

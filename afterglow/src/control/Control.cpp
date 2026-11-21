@@ -14,6 +14,7 @@
 #include "../mux/MuxClient.h"
 
 #include <AfterglowPty/Pty.h>
+#include <AfterglowVt/Input.h>
 #include <AfterglowVt/KeyNames.h>
 
 #include <algorithm>
@@ -216,6 +217,9 @@ void Control::attachPane(Pane* pane)
             });
     connect(pane, &Pane::shellStateChanged, this, [this, id](AfterglowVt::ShellState state) {
         Q_EMIT shellChanged(id, QString::fromLatin1(AfterglowVt::shellStateName(state)));
+    });
+    connect(pane, &Pane::textChanged, this, [this, id] {
+        Q_EMIT textChanged(id);
     });
     connect(pane, &Pane::statusChanged, this, [this, id, guard = QPointer<Pane>(pane)] {
         if (!guard) {
@@ -531,6 +535,27 @@ QString Control::sendText(quint32 id, const QString& text)
     }
     // The caller hears of a refusal; the user gets no notice as well.
     return p->sendInput(text.toStdString(), false) ? QString() : QStringLiteral("program closed or input queue full");
+}
+
+QString Control::paste(quint32 id, const QString& text)
+{
+    Pane* p = find(id);
+    if (!p) {
+        return noPane(id);
+    }
+    // As a paste in the window (TerminalWindow::pasteText): bracketed when
+    // the program asked for it, with the line ends as Enter and no other
+    // control. No question for an unsafe paste: the client chose the text,
+    // as with sendText. Encoded outside the terminal's lock.
+    const AfterglowVt::Modes modes = p->readTerminal([](const AfterglowVt::Terminal& t) {
+        return t.modes();
+    });
+    const QByteArray utf8 = text.toUtf8();
+    const std::string bytes =
+        AfterglowVt::encodePaste(std::string_view(utf8.constData(), std::size_t(utf8.size())), modes);
+    if (bytes.empty())
+        return {};
+    return p->sendInput(bytes, false) ? QString() : QStringLiteral("program closed or input queue full");
 }
 
 QString Control::focus(quint32 id)

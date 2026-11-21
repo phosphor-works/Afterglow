@@ -244,8 +244,10 @@ private:
     // The command clients of session panes (`aglow run`), which the window
     // of the session serves, in DaemonCommands.cpp.
     /// Passes @p connection, whose first request is @p request, read from
-    /// @p line, to the window that shows the session of the caller's pane.
-    /// Empty: the window answers. Else the error.
+    /// @p line, to the window that shows the session of the caller's pane,
+    /// or of the agent session that the connection selected (`afterglow
+    /// mcp`, whose process runs in no pane of the session). Empty: the
+    /// window answers. Else the error.
     std::string startRelay(const AfterglowProto::IpcRequest& request, std::string line, pid_t caller,
                            AfterglowProto::IpcServerConnection& connection);
     /// Passes the lines of a relayed @p connection to its window, while the
@@ -273,6 +275,10 @@ private:
     std::string callerEnvironment(const AfterglowProto::IpcRequest& request,
                                   const AfterglowProto::IpcServerConnection& connection);
     std::string killSession(const AfterglowProto::IpcRequest& request);
+    std::string adoptSession(const AfterglowProto::IpcRequest& request);
+    /// bindSession (@p bind) and unbindSession.
+    std::string bindSession(const AfterglowProto::IpcRequest& request,
+                            const AfterglowProto::IpcServerConnection& connection, bool bind);
     /// The connection of the call becomes the window's stream once the
     /// answer went (m_attaching).
     std::string attach(const AfterglowProto::IpcRequest& request);
@@ -459,6 +465,12 @@ private:
         std::string name;
     };
     std::map<const AfterglowProto::IpcServerConnection*, Selected> m_selected;
+    /// The connections that each agent session, by serial, ends with
+    /// (Fn::BindSession): the session ends when the last one closes.
+    std::map<std::uint64_t, std::set<const AfterglowProto::IpcServerConnection*>> m_bound;
+    /// The sessions whose last bound connection closed: forget() runs
+    /// within the loop over the connections, and run() ends them after it.
+    std::vector<std::uint64_t> m_unbound;
     /// The environment that each connection's caller sent (callerEnvironment()).
     std::map<const AfterglowProto::IpcServerConnection*, std::vector<std::pair<std::string, std::string>>>
         m_callerEnvironments;

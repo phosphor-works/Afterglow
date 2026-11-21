@@ -74,6 +74,7 @@ function __afterglow_window
     end
     if test $n -eq 0; and not string match -q -- '-*' "$cur"
         __afterglow_print ctl\t'Drive a running Afterglow' mux\t'Keep terminal sessions running, and show them in windows' \
+            mcp\t'Give an agent a terminal session of its own (MCP server)' \
             run\t'Run a command of a script' \
             ssh\t'ssh with the remote side prepared' \
             transfer\t'Copy files to and from the computer of the terminal' \
@@ -135,7 +136,7 @@ function __afterglow_ctl
         if string match -q -- '-*' "$cur"
             __afterglow_print $options
         else
-            __afterglow_print ls\t'List panes' send-text\t'Type text into the pane' get-text\t'Print pane text' \
+            __afterglow_print ls\t'List panes' send-text\t'Type text into the pane' paste\t'Paste text into the pane' get-text\t'Print pane text' \
                 split\t'Split the pane' move-pane\t'Move the pane beside another' \
                 detach-tab\t"Move the pane's tab to a new window" new-tab\t'Open a tab' new-window\t'Open a window' \
                 focus\t'Focus the pane' close\t'Close the pane' set-title\t"Set the pane's title" \
@@ -249,7 +250,7 @@ function __afterglow_ctl
     switch $command
         case ls
             contains -- --json $argv; or set -a offer --json\t'Print JSON'
-        case send-text
+        case send-text paste
             # --stdin takes no text, and the text takes no --stdin.
             if not contains -- --stdin $argv
                 contains -- --raw $argv; or set -a offer --raw\t'Send the text as it is'
@@ -384,6 +385,7 @@ function __afterglow_mux
             contains -- --name $argv; or set -a offer --name\t'The session name'
             contains -- --cwd $argv; or set -a offer --cwd\t'Start in the directory'
             contains -- --detach $argv; or set -a offer --detach\t'Create the session without a window'
+            contains -- --agent $argv; or set -a offer --agent\t'Create an agent session'
         case attach
             string match -q -- '-*' "$cur"
             and not contains -- --no-takeover $argv
@@ -404,6 +406,31 @@ function __afterglow_mux
     __afterglow_print $offer
 end
 
+# afterglow mcp [--session NAME] [--adopt] [--cwd DIR]. No session name is
+# offered for --session: a completion runs no program but aglow run --complete.
+function __afterglow_mcp
+    set -l cur (commandline -ct)
+    set -l n (count $argv)
+    if test $n -ge 1
+        switch $argv[$n]
+            case --cwd
+                __fish_complete_directories "$cur"
+                return
+            case --session
+                return
+        end
+    end
+    # The usage is the whole command line.
+    contains -- -h $argv; or contains -- --help $argv; and return
+    set -l offer
+    test $n -eq 0; and string match -q -- '-*' "$cur"
+    and set -a offer -h\t'Show the usage' --help\t'Show the usage'
+    contains -- --session $argv; or set -a offer --session\t'Use or create the session'
+    contains -- --adopt $argv; or set -a offer --adopt\t'Make a session that is not an agent session one'
+    contains -- --cwd $argv; or set -a offer --cwd\t'Start the first pane in the directory'
+    __afterglow_print $offer
+end
+
 function __afterglow_complete
     set -l words (commandline -xpc)[2..]
     switch "$words[1]"
@@ -414,6 +441,8 @@ function __afterglow_complete
             __afterglow_ctl $words[2..]
         case mux
             __afterglow_mux $words[2..]
+        case mcp
+            __afterglow_mcp $words[2..]
         case run transfer dnd icat clipboard
             # These run aglow, which completes the same arguments. Fish loads
             # the completion of aglow only when aglow is on PATH, and afterglow

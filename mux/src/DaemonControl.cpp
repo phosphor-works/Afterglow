@@ -20,6 +20,7 @@
 
 #include <AfterglowProto/Color.h>
 #include <AfterglowPty/Pty.h>
+#include <AfterglowVt/Input.h>
 #include <AfterglowVt/KeyNames.h>
 #include <AfterglowVt/Terminal.h>
 
@@ -92,11 +93,11 @@ bool among(std::string_view fn, std::initializer_list<std::string_view> names)
 /// The calls whose first argument is a pane.
 bool takesPane(std::string_view fn)
 {
-    return among(fn, {"sendText",    "getText",       "split",          "newTab",        "focus",       "close",
-                      "setTitle",    "signal",        "notify",         "runAction",     "movePane",    "detachTab",
-                      "saveProject", "overlay",       "screenshot",     "focusNeighbor", "resizePane",  "sendKeys",
-                      "scroll",      "setTabTitle",   "getColors",      "setColors",     "setFontSize", "setOpacity",
-                      "setUserVar",  "signalProgram", "setWindowState", "mark",          "shellRegions"});
+    return among(fn, {"sendText",    "getText",       "split",          "newTab",        "focus",        "close",
+                      "setTitle",    "signal",        "notify",         "runAction",     "movePane",     "detachTab",
+                      "saveProject", "overlay",       "screenshot",     "focusNeighbor", "resizePane",   "sendKeys",
+                      "scroll",      "setTabTitle",   "getColors",      "setColors",     "setFontSize",  "setOpacity",
+                      "setUserVar",  "signalProgram", "setWindowState", "mark",          "shellRegions", "paste"});
 }
 
 /// The calls that only a window answers.
@@ -125,7 +126,7 @@ std::optional<AfterglowVt::Rgb> colorNamed(std::string_view name)
 /// window's control target takes it, whose router refuses another count.
 std::optional<std::size_t> arity(std::string_view fn)
 {
-    if (fn == "listPanes" || fn == "focusedPane")
+    if (fn == "listPanes" || fn == "focusedPane" || fn == "layout")
         return 0;
     if (fn == "focus" || fn == "close" || fn == "detachTab")
         return 1;
@@ -405,6 +406,23 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
     }
     if (fn == "focusedPane")
         return ipcReply(request.id.value_or(0), std::int64_t(session.focusedPane()));
+    if (fn == "layout") {
+        // The tabs and splits that the daemon keeps, which the window that
+        // shows the session sends after each change: an agent saves a
+        // project of a session that no window shows from them.
+        Layout layout = session.layout();
+        layout.moved.clear();
+        // Commands can carry secrets: they leave only with read access.
+        if (!readText) {
+            for (auto& [id, values] : layout.values)
+                values.command.clear();
+        }
+        std::string reply = ipcReply(request.id.value_or(0), toJson(layout));
+        if (reply.size() > IpcServerConnection::MaxWaitingBytes - connection.waitingBytes()) {
+            return failed(request, "the layout of session '" + session.name() + "' is larger than one answer can hold");
+        }
+        return reply;
+    }
     if (fn == "sendText") {
         if (args.size() != 2 || !args[1].isString())
             return ipcError(request.id, IpcErrorCode::InvalidArg, "sendText takes (pane, text)");
@@ -440,6 +458,22 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         std::string bytes;
         for (const AfterglowVt::NamedKey& key : keys)
             bytes += AfterglowVt::encodeNamedKey(key, *modes);
+        // As sendText: after the window's input that waits.
+        if (shownWindow && shownWindow->holdsInput(pane->id()))
+            return failed(request, "program closed or input queue full");
+        if (bytes.empty() || pane->input(bytes) == MuxPane::Input::Written)
+            return ipcReply(request.id.value_or(0), nullptr);
+        return failed(request, "program closed or input queue full");
+    }
+    if (fn == "paste") {
+        if (args.size() != 2 || !args[1].isString())
+            return ipcError(request.id, IpcErrorCode::InvalidArg, "paste takes (pane, text)");
+        // As a paste in a window: bracketed when the program asked for it
+        // (mode 2004), with the line ends as Enter and no other control.
+        const auto modes = pane->modes();
+        if (!modes)
+            return decoding(request, pane->id());
+        const std::string bytes = AfterglowVt::encodePaste(args[1].toString(), *modes);
         // As sendText: after the window's input that waits.
         if (shownWindow && shownWindow->holdsInput(pane->id()))
             return failed(request, "program closed or input queue full");
@@ -1057,6 +1091,14 @@ void Daemon::holdForAnswers(IpcServerConnection& connection)
 
 void Daemon::forget(const IpcServerConnection* connection)
 {
+    for (auto bound = m_bound.begin(); bound != m_bound.end();) {
+        if (bound->second.erase(connection) && bound->second.empty()) {
+            m_unbound.push_back(bound->first);
+            bound = m_bound.erase(bound);
+        } else {
+            ++bound;
+        }
+    }
     // First what names the connection, which needs no allocation: a failure
     // below (out of memory) leaves no pointer to it behind.
     m_selected.erase(connection);

@@ -210,6 +210,9 @@ void Daemon::watchEvent(std::uint64_t serial, SessionWatch& watch, std::uint32_t
     case Kind::Bell:
         watchMerged(serial, watch, pane, {}, "bell", Json::Array{std::int64_t(pane)});
         break;
+    case Kind::Text:
+        watchMerged(serial, watch, pane, {}, "textChanged", Json::Array{std::int64_t(pane)});
+        break;
     case Kind::UserVar:
         watchMerged(serial, watch, pane, event.name, "userVarChanged",
                     Json::Array{std::int64_t(pane), event.name, std::move(event.text)});

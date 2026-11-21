@@ -2172,6 +2172,35 @@ std::optional<bool> waitsInPoll(qint64 pid)
 
 // The options go in an object after the call's arguments, and only when one
 // is given: (pane, scope) stays the call of plain text.
+// paste reads its text as send-text does and sends it in one call: a paste
+// in parts would get the paste marks for each part. A text whose request
+// does not fit in a request line is refused before ctl connects.
+TEST(CtlBinaryTest, PasteSendsItsTextInOneCall)
+{
+    const QJsonObject done{{QStringLiteral("type"), QStringLiteral("reply")}, {QStringLiteral("result"), QJsonValue()}};
+    const QStringList three{QStringLiteral("--pane"), QStringLiteral("3")};
+    AgainstTarget r =
+        ctlAgainst(done, three + QStringList{QStringLiteral("a\\nb")}, {}, -1, {}, QStringLiteral("paste"));
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(lastArgs(r), (QJsonArray{3, QStringLiteral("a\nb")}));
+    r = ctlAgainst(done, three + QStringList{QStringLiteral("--raw"), QStringLiteral("a\\nb")}, {}, -1, {},
+                   QStringLiteral("paste"));
+    EXPECT_EQ(lastArgs(r), (QJsonArray{3, QStringLiteral("a\\nb")}));
+    // Standard input over the limit of a send-text part, in one call.
+    const QByteArray long_(300 * 1024, 'x');
+    r = ctlAgainst(done, three + QStringList{QStringLiteral("--stdin")}, long_, -1, {}, QStringLiteral("paste"));
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    ASSERT_EQ(r.calls.size(), 1) << r.calls.size();
+    EXPECT_EQ(lastArgs(r), (QJsonArray{3, QString::fromLatin1(long_)}));
+    // Each control character takes six bytes in JSON (\u001f): the request
+    // would not fit, and nothing goes.
+    const Isolated big = isolate(QStringLiteral(AFTERGLOW_BINARY),
+                                 {QStringLiteral("ctl"), QStringLiteral("paste"), QStringLiteral("--stdin")},
+                                 QByteArray(200 * 1024, '\x1f'));
+    EXPECT_EQ(big.status, 2) << qPrintable(big.err);
+    EXPECT_TRUE(big.err.contains(QStringLiteral("a paste goes in one request of 1 MiB"))) << qPrintable(big.err);
+}
+
 TEST(CtlBinaryTest, TextAndLaunchOptionsGoInTheirCalls)
 {
     const auto answer = [](bool truncated) {

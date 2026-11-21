@@ -43,6 +43,8 @@ public:
     // A pane argument is a double, the type of a JSON number: paneId() checks
     // that it is a whole number in the range of a pane ID.
     Q_INVOKABLE void sendText(double pane, const QString& text);
+    /// @p text as a paste: bracketed when the program asked for it.
+    Q_INVOKABLE void paste(double pane, const QString& text);
     /// @p scope: screen, scrollback, selection, last-output,
     /// first-output-on-screen, last-visited-output or since. Answers
     /// {text, truncated}, and for since also trimmed.
@@ -215,6 +217,8 @@ Q_SIGNALS:
     void contextChanged(uint pane, const QString& context);
     /// What the pane's shell does: none, prompt, continuation or running.
     void shellChanged(uint pane, const QString& state);
+    /// The pane's text, or how it shows, changed: merged, and with no text.
+    void textChanged(uint pane);
 
 private:
     /// Sends @p error as the call's error reply. True when there is one.

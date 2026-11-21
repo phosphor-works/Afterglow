@@ -149,6 +149,7 @@ _afterglow_ctl() {
     commands=(
         'ls:list panes'
         'send-text:type text into the pane'
+        'paste:paste text into the pane'
         'get-text:print pane text'
         'split:split the pane'
         'move-pane:move the pane beside another'
@@ -235,7 +236,7 @@ _afterglow_ctl() {
     esac
     case $words[1] in
     ls) _arguments '--json[print JSON]' ;;
-    send-text)
+    send-text | paste)
         _arguments -S $pane '(--stdin)--raw[send the text as it is]' '(--raw *)--stdin[send standard input]' \
             '(--stdin)*:text:' ;;
     get-text)
@@ -332,6 +333,7 @@ _afterglow_mux() {
             '--name[the session name]:name:' \
             "$cwd" \
             '--detach[create the session without a window]' \
+            '--agent[create an agent session]' \
             "$ssh"
         ;;
     kill)
@@ -353,6 +355,17 @@ _afterglow_mux() {
     esac
 }
 
+# afterglow mcp [--session NAME] [--adopt] [--cwd DIR]: $words[1] is mcp.
+# No session name is offered: a completion runs no program but aglow run
+# --complete.
+_afterglow_mcp() {
+    _arguments \
+        '(- *)'{-h,--help}'[show the usage]' \
+        '--session[use or create the session]:session:' \
+        '--adopt[make a session that is not an agent session one]' \
+        '--cwd[start the first pane in the directory]:directory:_directories'
+}
+
 _afterglow() {
     local curcontext=$curcontext state state_descr line
     typeset -A opt_args
@@ -364,6 +377,7 @@ _afterglow() {
     subcommands=(
         'ctl:drive a running Afterglow'
         'mux:keep terminal sessions running, and show them in windows'
+        'mcp:give an agent a terminal session of its own (MCP server)'
         'run:run a command of a script'
         'ssh:ssh with the remote side prepared'
         'transfer:copy files to and from the computer of the terminal'
@@ -382,6 +396,11 @@ _afterglow() {
         mux)
             shift words; (( CURRENT-- ))
             _afterglow_mux
+            return
+            ;;
+        mcp)
+            shift words; (( CURRENT-- ))
+            _afterglow_mcp
             return
             ;;
         ssh)

@@ -7,6 +7,7 @@ Other programs can control Afterglow with the command line or the control socket
 They can list panes, send text, create panes, set titles, show notifications and run actions.
 They can also run a program over a pane (an [overlay](#overlays)), save a [screenshot](#screenshots) and run the commands of scripts.
 The `watch` command writes each event as a JSON line, such as `{"args":[3,"vim"],"event":"titleChanged"}`.
+For an agent such as Claude Code, [`afterglow mcp`](MCP.md) gives these calls as MCP tools, on a mux session of its own.
 
 ```sh
 afterglow ctl --help
@@ -276,6 +277,7 @@ Another number fails with `CALL_FAILED`.
 | `listPanes` | None | A [pane object](#pane-object) for each pane |
 | `focusedPane` | None | The pane that step 3 or 4 of the target order selects |
 | `sendText` | pane, text | None |
+| `paste` | pane, text | None. Sends the text as a paste in the window does. With bracketed paste on (mode 2004), the program gets it between the paste marks. Each line end goes as a carriage return, the Enter key. Every other control character is left out, also an escape, so the text cannot end the paste early. Unlike a paste in the window, there is no question for text with a line end, and no [paste event](INPUT.md#paste) to a program that asked for them. While the daemon's pane decodes an image, it fails with `TRY_AGAIN`. |
 | `getText` | pane, scope, options (optional) | An object: `text`, and `truncated`, which is true when the limit of 1 MiB cut the text. Scopes are `screen`, `scrollback`, `selection`, `last-output`, `first-output-on-screen`, `last-visited-output` and `since`. `first-output-on-screen` and `last-visited-output` are the outputs of the [command output actions](INPUT.md#command-output), and empty when there is none. `since` is the text from a mark of the `mark` call to the cursor, and its answer also has `trimmed` (see [text since a mark](#text-since-a-mark)). A cut text of `last-output` and `since` keeps its end, where the result of a command is. A cut text of the other scopes keeps its start. For a pane of a mux session whose rows still come from its daemon, `scrollback`, `last-output` and `since` fail with `TRY_AGAIN`. See [text options](#text-options). |
 | `mark` | pane | An object: `row` and `col`, the cursor's place. Give it to `getText` with the scope `since`. |
 | `shellRegions` | pane, after (optional) | A list of the shell's regions (shell integration) whose ID is larger than `after`, oldest first. See [shell regions](#shell-regions). |
@@ -397,8 +399,8 @@ Afterglow keeps the newest 1024 of these regions for each pane.
 | `start_trimmed` | True when the start of the region left the scrollback |
 | `available` | False when all of the region left the scrollback |
 
-A shell runs each line of a paste of many lines as a command of its own (bash, fish), or the whole paste as one command (zsh).
-So a paste gives one output region for each line, or one for all.
+Bash runs each line of a paste of many lines as a command of its own, and gives an output region for each line.
+Zsh and Fish run the whole paste as one command, with one output region.
 
 ## Launch options
 
@@ -603,6 +605,7 @@ Fish edits an incomplete command in place, and has no secondary prompt.
 | `userVarChanged` | pane, name, value |
 | `contextChanged` | pane, context, such as `root` or `deploy@prod-1`. Sent when the context changes. |
 | `shellChanged` | pane, state (see [shell states](#shell-states)). Sent when the state changes, and when the shell shows a new prompt. A short command can start and end between two reads of the pane's output: then the state is `prompt` before and after, and the new prompt is the only event. |
+| `textChanged` | pane. Sent when the text of the pane, or how it shows, changes: output, a reflow, the cursor. It carries no text, and needs no read access. A client that waits for text reads it with `getText` when the event comes. |
 
 The states of `statusChanged` are `idle`, `working`, `done`, `blocked` and `error`.
 When a program clears its last status, or the terminal resets, the state is `idle` and the text is empty.
@@ -610,7 +613,7 @@ An empty context means that Afterglow knows of no remote, elevated or container 
 
 `Control.eventInterval` sets the shortest time in milliseconds between two events of one kind for one pane.
 The default is 100, and the range is 0 to 10000.
-These events are merged: `titleChanged`, `statusChanged`, `contextChanged`, `userVarChanged` (for each name) and `bell`.
+These events are merged: `titleChanged`, `statusChanged`, `contextChanged`, `userVarChanged` (for each name), `textChanged` and `bell`.
 An event that comes before the interval ends waits, and a newer event of the same kind replaces it.
 Bells that wait become one `bell` event.
 The client gets the event that waits when the interval ends.
@@ -970,6 +973,7 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | `getText` text | 1 MiB of UTF-8 | The text is cut, and `truncated` is true. `last-output` and `since` keep the end of the text, from the start of a row. The other scopes keep its start. `afterglow ctl get-text` writes the text, and a note on stderr. |
 | Shell regions | 1024 for each pane | The oldest region goes when a new one begins. |
 | `afterglow ctl send-text` text | 32 MiB of UTF-8 | `afterglow ctl` exits with status 2 and sends nothing. It checks the text before it connects. |
+| `paste` text | The request line of 1 MiB, with the JSON escaping of the text | A paste is one request: a paste in parts would get the paste marks for each part. `afterglow ctl paste` exits with status 2 and sends nothing. It checks the text before it connects. |
 | Text that a program has not read | 32 MiB for each pane | `sendText` fails. Parts that `afterglow ctl send-text` sent before stay typed. |
 | Lines that do not parse, one after the other | 16 | The socket closes the connection at the next one. |
 | Waiting output to one client | 16 MiB | The socket closes the connection to a client that does not read its events. |
@@ -1021,6 +1025,9 @@ Keys and other clients can type between two parts.
 `afterglow ctl send-text --stdin` types standard input as it is.
 It refuses standard input that is not UTF-8 text. It then exits with status 2 and sends nothing.
 
+`afterglow ctl paste` takes its text as `send-text` does, with the same escapes, `--raw` and `--stdin`.
+It sends the text in one `paste` call.
+
 ## Text escapes
 
 `afterglow ctl send-text` changes these escapes, unless you give `--raw` or `--stdin`:
@@ -1042,7 +1049,7 @@ To send text that starts with `--`, put it after `--`: `afterglow ctl send-text 
 
 ## Words after `--`
 
-Only `send-text`, `set-title`, `set-tab-title`, `notify`, `split`, `new-tab`, `new-window` and `overlay` read words after `--`.
+Only `send-text`, `paste`, `set-title`, `set-tab-title`, `notify`, `split`, `new-tab`, `new-window` and `overlay` read words after `--`.
 The other commands stop with a usage error when you give such words.
 
 The word after an option that takes a value, such as `--pane`, `--cwd` or `--title`, is that value.

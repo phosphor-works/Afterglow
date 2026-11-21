@@ -44,6 +44,9 @@ Session::Session(std::string name, SessionOptions options, long fileLimit, Image
     , m_fileLimit(fileLimit)
     , m_images(images)
 {
+    // An agent session reads its text from the start (applySettings).
+    if (m_options.agent)
+        m_options.control.allowReadText = true;
 }
 
 bool Session::addPane(std::uint32_t id, const Launch& launch, const PaneSize& size, const std::string& daemonSocket,
@@ -215,6 +218,10 @@ void Session::kill()
 void Session::applySettings(const SessionSettings& settings)
 {
     m_options.control = settings.control;
+    // An agent reads its session's text whatever a window says: the window
+    // marks the session, and Control.enabled still stops the agent.
+    if (m_options.agent)
+        m_options.control.allowReadText = true;
     if (m_options.notificationCapabilities != settings.notificationCapabilities) {
         m_options.notificationCapabilities = settings.notificationCapabilities;
         for (const auto& pane : m_panes)
@@ -297,6 +304,7 @@ SessionInfo Session::info(pid_t caller) const
     SessionInfo info;
     info.name = m_name;
     info.panes = int(m_panes.size());
+    info.agent = m_options.agent;
     for (const auto& pane : m_panes) {
         if (std::string job = pane->foregroundJob(caller);
             !job.empty() && std::find(info.jobs.begin(), info.jobs.end(), job) == info.jobs.end()) {

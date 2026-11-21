@@ -59,10 +59,10 @@ void Control::encodePng(QImage image, std::function<void(const QString& base64)>
     });
 }
 
-QString Control::screenshot(quint32 id, CaptureScope scope, ScreenshotReply reply, QString& code)
+QString Control::screenshot(quint32 id, CaptureScope scope, ScreenshotReply reply, QString& code, bool agentSession)
 {
     // The permission goes first: it holds for every pane.
-    if (QString refused = captureRefusal(code); !refused.isEmpty())
+    if (QString refused = agentSession ? QString() : captureRefusal(code); !refused.isEmpty())
         return refused;
     if (m_screenshots >= MaxScreenshots) {
         code = QStringLiteral("busy");
@@ -72,7 +72,7 @@ QString Control::screenshot(quint32 id, CaptureScope scope, ScreenshotReply repl
     const QPointer<Control> self(this);
     const QString error = capture(
         id, scope,
-        [self, reply](const QString& error, const QString& code, const QImage& image) {
+        [self, reply, agentSession](const QString& error, const QString& code, const QImage& image) {
             if (!self)
                 return reply(QStringLiteral("Afterglow quits"), QStringLiteral("failed"), {});
             if (!error.isEmpty()) {
@@ -82,13 +82,14 @@ QString Control::screenshot(quint32 id, CaptureScope scope, ScreenshotReply repl
             // A 4K PNG takes a moment to encode: not on the thread that draws
             // the windows. encodePng answers only while this object lives.
             Control* control = self.data();
-            control->encodePng(image, [control, reply, size = image.size()](const QString& base64) {
+            control->encodePng(image, [control, reply, agentSession, size = image.size()](const QString& base64) {
                 --control->m_screenshots;
                 // Checked again as the picture goes out: read access, or
                 // control itself, can go off while the frame is drawn and
                 // encoded.
                 QString code;
-                if (const QString refused = control->captureRefusal(code); !refused.isEmpty())
+                if (const QString refused = agentSession ? QString() : control->captureRefusal(code);
+                    !refused.isEmpty())
                     return reply(refused, code, {});
                 if (!control->m_settings.settings().control.enabled) {
                     return reply(QStringLiteral("Control.enabled is off"), QStringLiteral("cancelled"), {});
@@ -101,7 +102,7 @@ QString Control::screenshot(quint32 id, CaptureScope scope, ScreenshotReply repl
                                   {QStringLiteral("height"), size.height()}});
             });
         },
-        code);
+        code, agentSession);
     if (!error.isEmpty())
         --m_screenshots;
     return error;
@@ -357,9 +358,9 @@ QString Control::captureRefusal(QString& code) const
     return {};
 }
 
-QString Control::capture(quint32 id, CaptureScope scope, CaptureReply reply, QString& code)
+QString Control::capture(quint32 id, CaptureScope scope, CaptureReply reply, QString& code, bool agentSession)
 {
-    if (QString refused = captureRefusal(code); !refused.isEmpty()) {
+    if (QString refused = agentSession ? QString() : captureRefusal(code); !refused.isEmpty()) {
         return refused;
     }
     TerminalWindow* window = nullptr;

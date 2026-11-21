@@ -52,6 +52,7 @@ struct SessionLink
     /// and the window's own calls.
     std::vector<std::pair<std::string, std::string>> environment;
     std::uint64_t window = 0;
+    bool agent = false; ///< an agent drives the session (SessionOptions::agent)
     /// The way that reached the daemon, which the window's calls take too.
     AfterglowMux::Route route;
 
@@ -61,6 +62,7 @@ struct SessionLink
         , fd(std::exchange(other.fd, -1))
         , environment(std::move(other.environment))
         , window(other.window)
+        , agent(other.agent)
         , route(std::move(other.route))
     {
     }
@@ -118,6 +120,11 @@ enum class MuxRelease : std::uint8_t {
 class MuxClient : public QObject
 {
     Q_OBJECT
+
+Q_SIGNALS:
+    /// The session became an agent session (agent()).
+    void agentChanged();
+
 public:
     /// The most input of one pane that waits while the channel is full, in
     /// bytes: as much as a pane's own PTY queues. Input past it is refused,
@@ -175,6 +182,12 @@ public:
     const std::vector<std::pair<std::string, std::string>>& environment() const
     {
         return m_environment;
+    }
+    /// An agent drives the session (`afterglow mcp`): the attach said so, or
+    /// the daemon's call "agent" when an agent adopted it later.
+    bool agent() const
+    {
+        return m_agent;
     }
     /// The session's tabs and splits when the window attached: the daemon
     /// sends them first.
@@ -564,6 +577,7 @@ private:
     void lost();
 
     QString m_session;
+    bool m_agent = false;
     std::size_t m_eventQueue = 0;
     /// To the daemon, and which host the session runs on: for the window's
     /// calls (callDaemon, paneJobs), host(), remote() and the commands host.

@@ -88,6 +88,12 @@ void ControlApi::sendText(double pane, const QString& text)
         failed(m_control.sendText(*id, text));
 }
 
+void ControlApi::paste(double pane, const QString& text)
+{
+    if (const auto id = paneId(pane))
+        failed(m_control.paste(*id, text));
+}
+
 ControlApi::PendingReply ControlApi::deferCall(const QString& noClient)
 {
     auto reply = std::make_shared<PhosphorIpc::IpcPendingReply>(deferReply());
@@ -660,6 +666,11 @@ ControlSocket::ControlSocket(Control& control, SettingsStore& settings, Phosphor
     // At once, as the end of a command: a client waits for the prompt.
     connect(&control, &Control::shellChanged, this, [this](quint32 p, const QString& state) {
         sendNow("shellChanged", p, {paneValue(p), state});
+    });
+    // Merged as a title: it comes with each burst of output. It carries no
+    // text, so it needs no read access.
+    connect(&control, &Control::textChanged, this, [this](quint32 p) {
+        sendMerged("textChanged", p, {}, {paneValue(p)});
     });
     // The value is gated when it goes out: a value that waits must not
     // leave after read access was taken away.

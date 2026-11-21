@@ -5,6 +5,7 @@
 
 #include "ControlSocket.h"
 #include "IpcClient.h"
+#include "SessionLaunch.h"
 #include "../Pane.h"
 #include "../PaneLaunch.h"
 #include "../config/Keybinds.h"
@@ -63,7 +64,7 @@ of the active window or of the window that was active last.
 With --session NAME, the commands act on mux session NAME (afterglow mux),
 and pane IDs are those of the mux daemon. In a pane of a session, they act
 on that session. While no window shows the session, only ls, send-text,
-get-text, send-key, colors, set-colors, set-user-var, signal-program, split,
+paste, get-text, send-key, colors, set-colors, set-user-var, signal-program, split,
 new-tab, move-pane, detach-tab, close, watch and focus without --direction
 work. get-text then reads no --selection or --last-visited-output: the
 window has them.
@@ -73,6 +74,9 @@ the default config file, not the --config or -o of a running Afterglow.
   ls [--json]                           list panes
   send-text [--raw] TEXT...             type TEXT (\n, \r, \t, \e, \\ and \xHH for U+00HH unless --raw)
   send-text --stdin                     type standard input (UTF-8 text)
+  paste [--raw] TEXT...                 paste TEXT, as a paste in the window: bracketed when the
+                                        program asks, the line ends as Enter, no other controls
+  paste --stdin                         paste standard input (UTF-8 text, in one request of 1 MiB)
   get-text [--screen|--scrollback|--selection|--last-output|--first-output-on-screen|
             --last-visited-output] [--ansi] [--cursor] [--wrap-markers]
                                         print pane text (needs Control.allowReadText), with
@@ -460,42 +464,6 @@ private:
     std::optional<InheritedEnvironment> m_environment; ///< sessionEnvironment()
 };
 
-/// @p path with a leading ~ as the home directory.
-QString expandHome(const QString& path)
-{
-    return path == QLatin1String("~") || path.startsWith(QLatin1String("~/")) ? QDir::homePath() + path.mid(1) : path;
-}
-
-/// The program of a new tab or split of a session, prepared as a window
-/// that shows the session prepares one, with the settings of the default
-/// config file and over @p inherited, the session's environment: the
-/// daemon runs it there. Shell integration reads the shell and the saved
-/// variables from it, not from this command's environment (ctl can run from
-/// an ssh login or cron). Without @p inherited, the daemon gave none: this
-/// process's. Without @p directory, it starts where the pane is
-/// (Window.workingDirectory inherit), which the daemon knows.
-QJsonValue sessionLaunch(QString directory, const QStringList& command, const InheritedEnvironment* inherited,
-                         const QVariantMap& environment = {})
-{
-    SettingsStore store;
-    const Settings& settings = store.settings();
-    directory = expandHome(directory);
-    if (directory.isEmpty()) {
-        const QString setting = settings.window.workingDirectory;
-        if (setting == QLatin1String("home"))
-            directory = QDir::homePath();
-        else if (!setting.isEmpty() && setting != QLatin1String("inherit") && QFileInfo(expandHome(setting)).isDir())
-            directory = expandHome(setting);
-    }
-    // As TerminalWindow prepares a pane of its session.
-    AfterglowMux::Launch launch =
-        localLaunch(settings, directory.isEmpty() ? QDir::homePath() : directory, command, inherited, environment);
-    if (directory.isEmpty())
-        launch.workingDirectory.clear();
-    return QJsonDocument::fromJson(QByteArray::fromStdString(AfterglowProto::Json::write(AfterglowMux::toJson(launch))))
-        .object();
-}
-
 QString unescape(const QString& s)
 {
     QString out;
@@ -709,17 +677,40 @@ std::optional<QString> stdinScopeError(const QString& scope)
 const QString NoCurrentDirectory = QStringLiteral("the current directory was removed, so give an absolute directory");
 
 const QStringList Commands = {
-    QStringLiteral("ls"),           QStringLiteral("send-text"),      QStringLiteral("get-text"),
-    QStringLiteral("split"),        QStringLiteral("move-pane"),      QStringLiteral("detach-tab"),
-    QStringLiteral("new-tab"),      QStringLiteral("new-window"),     QStringLiteral("focus"),
-    QStringLiteral("close"),        QStringLiteral("set-title"),      QStringLiteral("signal"),
-    QStringLiteral("notify"),       QStringLiteral("scripts"),        QStringLiteral("open-directory"),
-    QStringLiteral("projects"),     QStringLiteral("save-project"),   QStringLiteral("open-project"),
-    QStringLiteral("action"),       QStringLiteral("watch"),          QStringLiteral("overlay"),
-    QStringLiteral("screenshot"),   QStringLiteral("resize"),         QStringLiteral("send-key"),
-    QStringLiteral("scroll"),       QStringLiteral("set-tab-title"),  QStringLiteral("colors"),
-    QStringLiteral("set-colors"),   QStringLiteral("set-font-size"),  QStringLiteral("set-opacity"),
-    QStringLiteral("set-user-var"), QStringLiteral("signal-program"), QStringLiteral("window"),
+    QStringLiteral("ls"),
+    QStringLiteral("send-text"),
+    QStringLiteral("paste"),
+    QStringLiteral("get-text"),
+    QStringLiteral("split"),
+    QStringLiteral("move-pane"),
+    QStringLiteral("detach-tab"),
+    QStringLiteral("new-tab"),
+    QStringLiteral("new-window"),
+    QStringLiteral("focus"),
+    QStringLiteral("close"),
+    QStringLiteral("set-title"),
+    QStringLiteral("signal"),
+    QStringLiteral("notify"),
+    QStringLiteral("scripts"),
+    QStringLiteral("open-directory"),
+    QStringLiteral("projects"),
+    QStringLiteral("save-project"),
+    QStringLiteral("open-project"),
+    QStringLiteral("action"),
+    QStringLiteral("watch"),
+    QStringLiteral("overlay"),
+    QStringLiteral("screenshot"),
+    QStringLiteral("resize"),
+    QStringLiteral("send-key"),
+    QStringLiteral("scroll"),
+    QStringLiteral("set-tab-title"),
+    QStringLiteral("colors"),
+    QStringLiteral("set-colors"),
+    QStringLiteral("set-font-size"),
+    QStringLiteral("set-opacity"),
+    QStringLiteral("set-user-var"),
+    QStringLiteral("signal-program"),
+    QStringLiteral("window"),
 };
 
 // The standard input of `overlay`, as much as an overlay takes. It goes in
@@ -785,10 +776,10 @@ int runCtl(int argc, char** argv)
         args = args.mid(0, dash);
     }
     // Only these read words after "--": elsewhere they would be dropped unseen.
-    static const QStringList TakesTrailing = {QStringLiteral("new-window"), QStringLiteral("split"),
-                                              QStringLiteral("new-tab"),    QStringLiteral("send-text"),
-                                              QStringLiteral("set-title"),  QStringLiteral("notify"),
-                                              QStringLiteral("overlay"),    QStringLiteral("set-tab-title")};
+    static const QStringList TakesTrailing = {
+        QStringLiteral("new-window"), QStringLiteral("split"),   QStringLiteral("new-tab"),
+        QStringLiteral("send-text"),  QStringLiteral("paste"),   QStringLiteral("set-title"),
+        QStringLiteral("notify"),     QStringLiteral("overlay"), QStringLiteral("set-tab-title")};
     if (!trailing.isEmpty() && !TakesTrailing.contains(command)) {
         return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
     }
@@ -1018,7 +1009,9 @@ int runCtl(int argc, char** argv)
         if (client.toDaemon()) {
             if (!launch.windowOnly.isEmpty())
                 return QStringLiteral("%1 is not for a pane of a mux session").arg(launch.windowOnly);
-            callArgs.append(sessionLaunch(directory, trailing, client.sessionEnvironment(), launch.environment));
+            const SettingsStore store;
+            callArgs.append(
+                sessionLaunch(store.settings(), directory, trailing, client.sessionEnvironment(), launch.environment));
         } else if (!launch.options.isEmpty()) {
             callArgs.append(launch.options);
         }
@@ -1180,7 +1173,8 @@ int runCtl(int argc, char** argv)
         act = [&, name = args.first(), overwrite](qint64 pane) {
             return printObject(QStringLiteral("saveProject"), {pane, name, overwrite});
         };
-    } else if (command == QLatin1String("send-text")) {
+    } else if (command == QLatin1String("send-text") || command == QLatin1String("paste")) {
+        const bool paste = command == QLatin1String("paste");
         QString text;
         // Refused as aglow run refuses its input, with the status of a
         // usage error.
@@ -1206,9 +1200,24 @@ int runCtl(int argc, char** argv)
             if (text.toUtf8().size() > CtlMaxText)
                 return fail(tooLong, AfterglowProto::Run::UsageError);
         }
-        act = [&sendText, text](qint64 pane) {
-            return sendText(pane, text);
-        };
+        if (paste) {
+            // One request: a paste in parts would bracket each part as a
+            // paste of its own. The text with its JSON escaping fits in the
+            // request line, with room for the rest of the request.
+            const qsizetype escaped = QJsonDocument(QJsonArray{text}).toJson(QJsonDocument::Compact).size();
+            if (escaped > IpcClient::MaxLineBytes - CtlRequestRoom) {
+                return fail(QStringLiteral("a paste goes in one request of 1 MiB, and this text needs %1 bytes there")
+                                .arg(escaped),
+                            AfterglowProto::Run::UsageError);
+            }
+            act = [&run, text](qint64 pane) {
+                return run(QStringLiteral("paste"), {pane, text});
+            };
+        } else {
+            act = [&sendText, text](qint64 pane) {
+                return sendText(pane, text);
+            };
+        }
     } else if (command == QLatin1String("screenshot")) {
         const bool tab = takeFlag(QStringLiteral("--tab"));
         const bool window = takeFlag(QStringLiteral("--window"));
