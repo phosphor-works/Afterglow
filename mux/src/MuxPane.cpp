@@ -1443,6 +1443,15 @@ void MuxPane::change(std::function<void()> change)
 
 bool MuxPane::updateShellLocked()
 {
+    // A change of the text, which carries no text: the watchers read it if
+    // they want it. One waits for many (watchLocked).
+    bool watched = false;
+    if (const std::uint64_t generation = m_terminal.textGeneration();
+        generation != m_textGeneration && m_watched.load()) {
+        m_textGeneration = generation;
+        std::lock_guard lock(m_hostMutex);
+        watched = watchLocked({WatchEvent::Kind::Text});
+    }
     m_shellInput.store(m_terminal.shellInput());
     const std::optional<int> exit = m_terminal.lastExitCode();
     m_lastExit.store(exit ? *exit : NoExitCode);
@@ -1453,18 +1462,19 @@ bool MuxPane::updateShellLocked()
     const bool newPrompt = prompt != m_promptId;
     m_promptId = prompt;
     if (m_shellState.exchange(state) == state && !newPrompt)
-        return false;
+        return watched;
     std::lock_guard lock(m_hostMutex);
-    return watchLocked({WatchEvent::Kind::Shell, std::string(AfterglowVt::shellStateName(state))});
+    return watchLocked({WatchEvent::Kind::Shell, std::string(AfterglowVt::shellStateName(state))}) || watched;
 }
 
 bool MuxPane::watchLocked(WatchEvent event)
 {
     if (!m_watched)
         return false;
-    // The daemon merges the bells of a pane: one that waits stands for more.
-    if (event.kind == WatchEvent::Kind::Bell && !m_watchEvents.empty()
-        && m_watchEvents.back().kind == WatchEvent::Kind::Bell)
+    // The daemon merges the bells of a pane, and the changes of its text:
+    // one that waits stands for more.
+    if ((event.kind == WatchEvent::Kind::Bell || event.kind == WatchEvent::Kind::Text) && !m_watchEvents.empty()
+        && m_watchEvents.back().kind == event.kind)
         return false;
     const std::size_t bytes = event.name.size() + event.text.size();
     if (m_watchEvents.size() >= MaxWatchEvents || m_watchBytes + bytes > MaxWatchBytes) {

@@ -237,7 +237,37 @@ struct MuxSettings
     /// window shows the session, for the next window. The default equals
     /// AfterglowMux::DefaultKeptNotifications, which ConfigTest checks.
     int keptNotifications = 8;
+    /// The text of the badge on each tab of a window that shows an agent
+    /// session, and of the title's prefix. Empty: no marker.
+    QString agentLabel = QStringLiteral("agent");
+    /// The badge's color; none: the palette's bright magenta (color13).
+    std::optional<AfterglowVt::Rgb> agentColor;
     bool operator==(const MuxSettings&) const = default;
+};
+
+/// What `afterglow mcp` reads once at its start: a change applies to the
+/// next server.
+struct McpSettings
+{
+    /// The bounds of the times in ms: a day at most.
+    static constexpr int MinTimeout = 1000;
+    static constexpr int MaxTimeout = 86400000;
+    /// getText of the daemon cuts a text at 1 MiB: a result never holds more.
+    static constexpr int MaxOutputLimit = 1 << 20;
+    /// The time in ms that run and wait wait when the call gives none.
+    int waitTimeout = 120000;
+    /// The longest time in ms that a call of run or wait can ask for.
+    int maxWaitTimeout = 3600000;
+    /// The most bytes of UTF-8 text that one result of run, wait or read carries.
+    int outputLimit = 65536;
+    /// The lines of output of run and wait when the call gives no tail_lines.
+    int tailLines = 200;
+    /// The longest side of a screenshot in pixels: a larger one is scaled down.
+    int screenshotMaxSize = 2048;
+    /// Bind the session to the server, so that the daemon ends it when the
+    /// last bound server exits. Never an adopted session.
+    bool endSessionOnExit = true;
+    bool operator==(const McpSettings&) const = default;
 };
 
 struct ControlSettings
@@ -324,6 +354,7 @@ struct Settings
     QuickTerminalSettings quickTerminal;
     ControlSettings control;
     MuxSettings mux;
+    McpSettings mcp;
     MouseSettings mouse;
     LinkSettings links;
     HighlightColors colors;

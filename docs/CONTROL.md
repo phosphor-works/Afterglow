@@ -7,6 +7,7 @@ Other programs can control Afterglow with the command line or the control socket
 They can list panes, send text, create panes, set titles, show notifications and run actions.
 They can also run a program over a pane (an [overlay](#overlays)), save a [screenshot](#screenshots) and run the commands of scripts.
 The `watch` command writes each event as a JSON line, such as `{"args":[3,"vim"],"event":"titleChanged"}`.
+For an agent such as Claude Code, [`afterglow mcp`](MCP.md) gives these calls as MCP tools, on a mux session of its own.
 
 ```sh
 afterglow ctl --help
@@ -604,6 +605,7 @@ Fish edits an incomplete command in place, and has no secondary prompt.
 | `userVarChanged` | pane, name, value |
 | `contextChanged` | pane, context, such as `root` or `deploy@prod-1`. Sent when the context changes. |
 | `shellChanged` | pane, state (see [shell states](#shell-states)). Sent when the state changes, and when the shell shows a new prompt. A short command can start and end between two reads of the pane's output: then the state is `prompt` before and after, and the new prompt is the only event. |
+| `textChanged` | pane. Sent when the text of the pane, or how it shows, changes: output, a reflow, the cursor. It carries no text, and needs no read access. A client that waits for text reads it with `getText` when the event comes. |
 
 The states of `statusChanged` are `idle`, `working`, `done`, `blocked` and `error`.
 When a program clears its last status, or the terminal resets, the state is `idle` and the text is empty.
@@ -611,7 +613,7 @@ An empty context means that Afterglow knows of no remote, elevated or container 
 
 `Control.eventInterval` sets the shortest time in milliseconds between two events of one kind for one pane.
 The default is 100, and the range is 0 to 10000.
-These events are merged: `titleChanged`, `statusChanged`, `contextChanged`, `userVarChanged` (for each name) and `bell`.
+These events are merged: `titleChanged`, `statusChanged`, `contextChanged`, `userVarChanged` (for each name), `textChanged` and `bell`.
 An event that comes before the interval ends waits, and a newer event of the same kind replaces it.
 Bells that wait become one `bell` event.
 The client gets the event that waits when the interval ends.

@@ -25,6 +25,7 @@ class ChromeController : public QObject
     Q_PROPERTY(QStringList tabTitles READ tabTitles NOTIFY tabsChanged)
     Q_PROPERTY(QVariantList tabStatus READ tabStatus NOTIFY tabStatusChanged)
     Q_PROPERTY(QVariantList tabContexts READ tabContexts NOTIFY tabContextsChanged)
+    Q_PROPERTY(QVariantMap agentMarker READ agentMarker NOTIFY agentMarkerChanged)
     Q_PROPERTY(QVariantList urlHints READ urlHints NOTIFY urlHintsChanged)
     Q_PROPERTY(QVariantMap unicodeInput READ unicodeInput NOTIFY unicodeInputChanged)
     Q_PROPERTY(QColor goodColor READ goodColor NOTIFY themeChanged)
@@ -178,6 +179,19 @@ public:
         if (contexts != m_tabContexts) {
             m_tabContexts = contexts;
             Q_EMIT tabContextsChanged();
+        }
+    }
+    /// The badge of a window that shows an agent session: { label, color },
+    /// empty for any other window.
+    QVariantMap agentMarker() const
+    {
+        return m_agentMarker;
+    }
+    void setAgentMarker(const QVariantMap& marker)
+    {
+        if (marker != m_agentMarker) {
+            m_agentMarker = marker;
+            Q_EMIT agentMarkerChanged();
         }
     }
 
@@ -362,6 +376,7 @@ Q_SIGNALS:
     void paneAreaChanged();
     void tabStatusChanged();
     void tabContextsChanged();
+    void agentMarkerChanged();
     void urlHintsChanged();
     void scriptDialogChanged();
     void scriptDialogAnswered(bool accepted, const QString& value);
@@ -407,6 +422,7 @@ private:
     QStringList m_tabTitles;
     QVariantList m_tabStatus;
     QVariantList m_tabContexts;
+    QVariantMap m_agentMarker;
     QVariantList m_urlHints;
     QVariantMap m_unicodeInput;
     bool m_clipboardPromptOpen = false;

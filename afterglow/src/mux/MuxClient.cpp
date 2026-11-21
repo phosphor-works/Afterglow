@@ -112,6 +112,7 @@ SessionLink& SessionLink::operator=(SessionLink&& other) noexcept
     reapLater(std::exchange(proxy, std::move(other.proxy)));
     environment = std::move(other.environment);
     window = other.window;
+    agent = other.agent;
     route = std::move(other.route);
     return *this;
 }
@@ -174,6 +175,7 @@ std::optional<SessionLink> attachSession(const QString& name, bool takeover, QSt
     link.proxy = reached.proxy;
     link.environment = std::move(*sessionEnvironment);
     link.window = std::uint64_t(*window);
+    link.agent = (*result)["agent"].toBool();
     link.route = route;
     link.fd = reached.connection->release(&releaseError);
     if (link.fd < 0)
@@ -205,6 +207,7 @@ std::shared_ptr<MuxClient> MuxClient::adopt(const QString& name, SessionLink lin
     client->m_proxy = link.proxy;
     client->m_environment = std::move(link.environment);
     client->m_window = link.window;
+    client->m_agent = link.agent;
     const int fd = std::exchange(link.fd, -1);
     PhosphorChannel::Stream::Options options;
     options.maxChannelId = Attach::MaxChannelId;
@@ -1643,7 +1646,12 @@ void MuxClient::handleFrames()
                         if (!m_panes.contains(pane) && !m_released.contains(pane) && !m_closedChannels.contains(pane))
                             m_unbound.insert(pane);
                     }
-                    if (call.value(QLatin1String("fn")).toString() == QLatin1String("paneLeft")) {
+                    if (call.value(QLatin1String("fn")).toString() == QLatin1String("agent")) {
+                        // An agent adopted the session: the window marks it.
+                        // Only the daemon's own call (ID 0) says so.
+                        if (id.toInteger() == 0 && !std::exchange(m_agent, true))
+                            Q_EMIT agentChanged();
+                    } else if (call.value(QLatin1String("fn")).toString() == QLatin1String("paneLeft")) {
                         // `afterglow ctl --session` moved the pane to another
                         // session: its PaneClosed comes behind this event.
                         // Also while a move of this window's own waits: that

@@ -379,6 +379,15 @@ Daemon::Exit Daemon::run()
         std::erase_if(m_connections, [](const auto& c) {
             return !c->open();
         });
+        // The agent sessions whose last bound connection went: a client that
+        // crashed or was killed ends its session too.
+        for (const std::uint64_t serial : std::exchange(m_unbound, {})) {
+            const auto it = std::find_if(m_sessions.begin(), m_sessions.end(), [serial](const auto& s) {
+                return s->serial() == serial;
+            });
+            if (it != m_sessions.end())
+                endSession(it);
+        }
         // Whether the poll saw it or not: a client that connected since the
         // poll waits in a backlog, and an idle daemon would close its
         // connection with the listener.
@@ -516,6 +525,10 @@ std::string Daemon::answer(const IpcRequest& request, pid_t caller, IpcServerCon
         return listSessions(request, caller);
     if (request.fn == Fn::KillSession)
         return killSession(request);
+    if (request.fn == Fn::AdoptSession)
+        return adoptSession(request);
+    if (request.fn == Fn::BindSession || request.fn == Fn::UnbindSession)
+        return bindSession(request, connection, request.fn == Fn::BindSession);
     if (request.fn == Fn::Attach)
         return attach(request);
     if (request.fn == Fn::Detach)
@@ -624,6 +637,8 @@ std::string Daemon::listSessions(const IpcRequest& request, pid_t caller)
         // come: until its connect wait ends, an attach without a takeover is
         // refused (attach()).
         info.attached = shown(session->name()) != nullptr;
+        if (const auto bound = m_bound.find(session->serial()); bound != m_bound.end())
+            info.bound = int(bound->second.size());
         sessions.push_back(toJson(info));
     }
     return ipcReply(request.id.value_or(0), std::move(sessions));
@@ -642,6 +657,48 @@ std::string Daemon::killSession(const IpcRequest& request)
     return ipcReply(request.id.value_or(0), nullptr);
 }
 
+std::string Daemon::adoptSession(const IpcRequest& request)
+{
+    if (request.args.size() != 1 || !request.args[0].isString())
+        return ipcError(request.id, IpcErrorCode::InvalidArg, "adoptSession takes (name)");
+    const std::string& name = request.args[0].toString();
+    const auto it = find(name);
+    if (it == m_sessions.end())
+        return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
+    if (!(*it)->options().agent) {
+        (*it)->adopt();
+        // A window that shows it marks it from now.
+        tellWindow(**it, "agent", {});
+    }
+    return ipcReply(request.id.value_or(0), nullptr);
+}
+
+std::string Daemon::bindSession(const IpcRequest& request, const IpcServerConnection& connection, bool bind)
+{
+    const char* fn = bind ? Fn::BindSession : Fn::UnbindSession;
+    if (request.args.size() != 1 || !request.args[0].isString())
+        return ipcError(request.id, IpcErrorCode::InvalidArg, std::string(fn) + " takes (name)");
+    const std::string& name = request.args[0].toString();
+    const auto it = find(name);
+    if (it == m_sessions.end())
+        return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
+    const Session& session = **it;
+    if (!bind) {
+        if (const auto bound = m_bound.find(session.serial()); bound != m_bound.end()) {
+            bound->second.erase(&connection);
+            if (bound->second.empty())
+                m_bound.erase(bound);
+        }
+        return ipcReply(request.id.value_or(0), nullptr);
+    }
+    // A session that an agent did not start is the user's: its end is
+    // theirs, also when an agent adopted it.
+    if (!session.options().agent || session.adopted())
+        return failed(request, "session '" + name + "' is not an agent session that an agent started: it is not bound");
+    m_bound[session.serial()].insert(&connection);
+    return ipcReply(request.id.value_or(0), nullptr);
+}
+
 void Daemon::endSession(std::vector<std::unique_ptr<Session>>::iterator session)
 {
     flushWatch(**session);
@@ -651,6 +708,7 @@ void Daemon::endSession(std::vector<std::unique_ptr<Session>>::iterator session)
             return true;
         });
     }
+    m_bound.erase((*session)->serial());
     (*session)->kill();
     m_sessions.erase(session);
 }
@@ -706,7 +764,8 @@ std::string Daemon::attach(const IpcRequest& request)
     std::string reply = ipcReply(request.id.value_or(0),
                                  Json::Object{{"name", name},
                                               {"window", std::int64_t(attachment->serial())},
-                                              {"environment", environmentJson((*session)->options().environment)}});
+                                              {"environment", environmentJson((*session)->options().environment)},
+                                              {"agent", (*session)->options().agent}});
     // read() moves it to the attachments once the answer went, and only then
     // takes the session from the window that shows it (takeOver()): a
     // connection that cannot be the stream leaves the session where it is.

@@ -188,6 +188,18 @@ public:
     /// `afterglow ctl` and `afterglow ssh` follow the control values, and
     /// the panes that start later get the variables.
     void applySettings(const SessionSettings& settings);
+    /// Makes the session an agent session for the rest of its life
+    /// (Fn::AdoptSession): it keeps read access, and is never bound.
+    void adopt()
+    {
+        m_options.agent = true;
+        m_options.control.allowReadText = true;
+        m_adopted = true;
+    }
+    bool adopted() const
+    {
+        return m_adopted;
+    }
 
     /// What listSessions says of the session to @p caller, the process of
     /// the client that asks (0 when unknown): see MuxPane::foregroundJob.
@@ -201,6 +213,7 @@ private:
 
     std::string m_name;
     SessionOptions m_options;
+    bool m_adopted = false;
     std::uint64_t m_serial = 0;
     bool m_watched = false;
     std::vector<std::uint32_t> m_moved;

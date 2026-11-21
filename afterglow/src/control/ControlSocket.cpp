@@ -667,6 +667,11 @@ ControlSocket::ControlSocket(Control& control, SettingsStore& settings, Phosphor
     connect(&control, &Control::shellChanged, this, [this](quint32 p, const QString& state) {
         sendNow("shellChanged", p, {paneValue(p), state});
     });
+    // Merged as a title: it comes with each burst of output. It carries no
+    // text, so it needs no read access.
+    connect(&control, &Control::textChanged, this, [this](quint32 p) {
+        sendMerged("textChanged", p, {}, {paneValue(p)});
+    });
     // The value is gated when it goes out: a value that waits must not
     // leave after read access was taken away.
     connect(&control, &Control::userVarChanged, this, [this](quint32 p, const QString& name, const QString& value) {

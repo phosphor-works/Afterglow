@@ -217,6 +217,8 @@ Q_SIGNALS:
     void contextChanged(uint pane, const QString& context);
     /// What the pane's shell does: none, prompt, continuation or running.
     void shellChanged(uint pane, const QString& state);
+    /// The pane's text, or how it shows, changed: merged, and with no text.
+    void textChanged(uint pane);
 
 private:
     /// Sends @p error as the call's error reply. True when there is one.

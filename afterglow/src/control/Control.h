@@ -231,7 +231,11 @@ public:
     /// goes out. A refusal returns its error at once with @p code: denied,
     /// busy past MaxScreenshots, or no_pane. Else @p reply gets the answer
     /// once, also with the code not_shown, failed or cancelled.
-    QString screenshot(quint32 pane, CaptureScope scope, ScreenshotReply reply, QString& code);
+    /// With @p agentSession, for a pane of an agent session that the
+    /// daemon passed on: the session's read access holds, which the daemon
+    /// checked, and the window's Control.allowReadText is not asked.
+    QString screenshot(quint32 pane, CaptureScope scope, ScreenshotReply reply, QString& code,
+                       bool agentSession = false);
     /// Screenshots from the call to the answer, of every client: each holds
     /// a frame and its PNG. A client that goes does not stop its frame or
     /// encode, so the count drops only as they end.
@@ -468,7 +472,7 @@ public:
     /// cut to @p scope. It needs Control.allowReadText (see captureRefusal()).
     /// A refusal returns its error at once, with @p code denied or no_pane.
     /// Else @p reply gets the image, or not_shown or failed.
-    QString capture(quint32 pane, CaptureScope scope, CaptureReply reply, QString& code);
+    QString capture(quint32 pane, CaptureScope scope, CaptureReply reply, QString& code, bool agentSession = false);
     /// Why a screenshot is refused now, with @p code denied, or empty. A
     /// picture shows more than getText reads (an overlay over the pane, the
     /// chrome, a paste preview), and it takes the same permission.
@@ -524,6 +528,8 @@ Q_SIGNALS:
     void contextChanged(quint32 pane, const QString& context);
     /// What the pane's shell does changed (OSC 133): shellStateName().
     void shellChanged(quint32 pane, const QString& state);
+    /// The pane's text, or how it shows, changed. No text goes with it.
+    void textChanged(quint32 pane);
     /// A key for the script holding a window's key mode.
     void scriptKey(const QString& owner, quint32 pane, const QVariantMap& key);
     /// An event of a script's dock for the owner's @p handler; @p pane is a
