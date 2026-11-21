@@ -281,7 +281,7 @@ TEST(ScriptPackage, ShaderPacksCarryThePackageNameAndSuggestionsNameThem)
     }
     // A pack must declare "<package>.<pack>", so it cannot replace a bundled one.
     PUT(dir.filePath("shaders/wall/metadata.json"),
-        R"({"id":"pane-deck","name":"Wall","fragmentShader":"effect.frag"})");
+        R"({"id":"phosphor-overview","name":"Wall","fragmentShader":"effect.frag"})");
     PUT(file, manifest({{"shaders", shaders}}));
     EXPECT_TRUE(ScriptPackage::read(file, p).contains("test.wall"));
     PUT(dir.filePath("shaders/wall/metadata.json"),

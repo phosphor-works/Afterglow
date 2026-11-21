@@ -281,42 +281,45 @@ int main(int argc, char** argv)
     QCoreApplication app(argc, argv);
     QTemporaryDir config;
     qputenv("XDG_CONFIG_HOME", config.path().toUtf8());
-    // The developer's ~/.local/share/afterglow/shaders and the system's stay out.
+    // The developer's ~/.local/share/phosphor-works/shaders/terminal and the system's stay out.
     qputenv("XDG_DATA_HOME", config.filePath(QStringLiteral("data-home")).toUtf8());
     qputenv("XDG_DATA_DIRS", config.filePath(QStringLiteral("data-dirs")).toUtf8());
-    const QString packages = QStringLiteral(AFTERGLOW_SHADER_DATA_DIR "/examples/packages/");
-    QDirIterator packs(QStringLiteral(AFTERGLOW_SHADER_DATA_DIR), {QStringLiteral("metadata.json")}, QDir::Files,
-                       QDirIterator::Subdirectories);
-    while (packs.hasNext()) {
-        const QFileInfo metadata(packs.next());
-        // Package packs load only through their package, as "<package>.<pack>".
-        if (metadata.absoluteFilePath().startsWith(packages))
-            continue;
-        const QDir source = metadata.dir();
-        copiedPacks.insert(source.dirName());
-        const QString target = config.filePath(QStringLiteral("afterglow/shaders/") + source.dirName());
-        if (!QDir().mkpath(target))
-            return 1;
-        QDirIterator files(source.absolutePath(), QDir::Files, QDirIterator::Subdirectories);
-        while (files.hasNext()) {
-            const QString from = files.next();
-            const QString to = target + QLatin1Char('/') + source.relativeFilePath(from);
-            if (!QDir().mkpath(QFileInfo(to).absolutePath()) || !QFile::copy(from, to))
+    // The bundled packs, and the packs of the example scenes.
+    const QStringList roots{QStringLiteral(AFTERGLOW_SHADER_DATA_DIR), QStringLiteral(AFTERGLOW_EXAMPLES_DIR)};
+    const QString packages = QStringLiteral(AFTERGLOW_EXAMPLES_DIR "/packages/");
+    const QString shared = config.filePath(QStringLiteral("phosphor-works/afterglow/shaders/shared"));
+    if (!QDir().mkpath(shared))
+        return 1;
+    for (const QString& root : roots) {
+        QDirIterator packs(root, {QStringLiteral("metadata.json")}, QDir::Files, QDirIterator::Subdirectories);
+        while (packs.hasNext()) {
+            const QFileInfo metadata(packs.next());
+            // Package packs load only through their package, as "<package>.<pack>".
+            if (metadata.absoluteFilePath().startsWith(packages))
+                continue;
+            const QDir source = metadata.dir();
+            copiedPacks.insert(source.dirName());
+            const QString target =
+                config.filePath(QStringLiteral("phosphor-works/afterglow/shaders/") + source.dirName());
+            if (!QDir().mkpath(target))
+                return 1;
+            QDirIterator files(source.absolutePath(), QDir::Files, QDirIterator::Subdirectories);
+            while (files.hasNext()) {
+                const QString from = files.next();
+                const QString to = target + QLatin1Char('/') + source.relativeFilePath(from);
+                if (!QDir().mkpath(QFileInfo(to).absolutePath()) || !QFile::copy(from, to))
+                    return 1;
+            }
+        }
+        QDirIterator includes(root, {QStringLiteral("*.glsl")}, QDir::Files, QDirIterator::Subdirectories);
+        while (includes.hasNext()) {
+            const QString from = includes.next();
+            if (QFileInfo(from).dir().dirName() == QLatin1String("shared")
+                && !QFile::copy(from, shared + QLatin1Char('/') + QFileInfo(from).fileName()))
                 return 1;
         }
     }
-    const QString shared = config.filePath(QStringLiteral("afterglow/shaders/shared"));
-    if (!QDir().mkpath(shared))
-        return 1;
-    QDirIterator includes(QStringLiteral(AFTERGLOW_SHADER_DATA_DIR), {QStringLiteral("*.glsl")}, QDir::Files,
-                          QDirIterator::Subdirectories);
-    while (includes.hasNext()) {
-        const QString from = includes.next();
-        if (QFileInfo(from).dir().dirName() == QLatin1String("shared")
-            && !QFile::copy(from, shared + QLatin1Char('/') + QFileInfo(from).fileName()))
-            return 1;
-    }
-    const auto path = config.filePath(QStringLiteral("afterglow/shaders/types"));
+    const auto path = config.filePath(QStringLiteral("phosphor-works/afterglow/shaders/types"));
     QDir().mkpath(path);
     QFile metadata(path + QStringLiteral("/metadata.json"));
     if (!metadata.open(QIODevice::WriteOnly))
@@ -339,7 +342,7 @@ int main(int argc, char** argv)
     blue.fill(Qt::blue);
     if (!red.save(path + QStringLiteral("/red.png")) || !blue.save(path + QStringLiteral("/blue.png")))
         return 1;
-    const auto passes = config.filePath(QStringLiteral("afterglow/shaders/passes"));
+    const auto passes = config.filePath(QStringLiteral("phosphor-works/afterglow/shaders/passes"));
     QDir().mkpath(passes);
     QFile multi(passes + QStringLiteral("/metadata.json"));
     if (!multi.open(QIODevice::WriteOnly))
@@ -405,7 +408,8 @@ TEST_F(ShaderControlsTest, DecodedImageBudgetRejectsWholeUpdate)
     // Inside the pack: scripts reach only the pack's own files.
     QImage image(4096, 1024, QImage::Format_RGBA8888);
     image.fill(Qt::green);
-    const QString path = qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders/types/large.png");
+    const QString path =
+        qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/phosphor-works/afterglow/shaders/types/large.png");
     ASSERT_TRUE(image.save(path));
     ShaderLibrary::Refs refs;
     refs.background = {QStringLiteral("types")};
@@ -441,7 +445,7 @@ TEST_F(ShaderControlsTest, ScriptImagesStayInsideThePack)
     EXPECT_FALSE(library.validateParameters("types", {{"photo", "~/private.png"}}, packed).isEmpty());
     // An absolute path inside the pack is still the pack's file.
     const QString inside =
-        qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders/types/blue.png");
+        qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/phosphor-works/afterglow/shaders/types/blue.png");
     EXPECT_TRUE(library.validateParameters("types", {{"photo", inside}}, packed).isEmpty());
     // The user's own config may still name any image.
     ShaderLibrary::Refs refs;
@@ -454,7 +458,8 @@ TEST_F(ShaderControlsTest, ScriptImagesStayInsideThePack)
 
 TEST_F(ShaderControlsTest, ConfiguredImageRescuesAPackWhoseDefaultImageFails)
 {
-    const auto dir = qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders/missing-default");
+    const auto dir =
+        qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/phosphor-works/afterglow/shaders/missing-default");
     ASSERT_TRUE(QDir().mkpath(dir));
     QFile metadata(dir + QStringLiteral("/metadata.json"));
     ASSERT_TRUE(metadata.open(QIODevice::WriteOnly));
@@ -468,7 +473,8 @@ TEST_F(ShaderControlsTest, ConfiguredImageRescuesAPackWhoseDefaultImageFails)
     ASSERT_TRUE(shader.open(QIODevice::WriteOnly));
     shader.write("vec4 pTerminal(vec2 uv) { return vec4(1.0); }");
     shader.close();
-    const QString blue = qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders/types/blue.png");
+    const QString blue =
+        qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/phosphor-works/afterglow/shaders/types/blue.png");
     // A library made after the pack exists, so its index holds the pack.
     ShaderLibrary fresh;
     ShaderLibrary::Refs refs;
@@ -553,7 +559,7 @@ TEST_F(ShaderControlsTest, AMissingPackIsOneShortProblem)
 TEST_F(ShaderControlsTest, PresetsStoreImagesRelativeToThePack)
 {
     const QString inside =
-        qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders/types/blue.png");
+        qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/phosphor-works/afterglow/shaders/types/blue.png");
     QVariantMap saved, values;
     ASSERT_TRUE(library.savePreset("types", "Absolute image", {{"photo", inside}}, saved).isEmpty());
     ASSERT_TRUE(library.presetParameters("types", saved["id"].toString(), values).isEmpty());
@@ -562,7 +568,7 @@ TEST_F(ShaderControlsTest, PresetsStoreImagesRelativeToThePack)
 
 TEST_F(ShaderControlsTest, ConfiguredImageBudgetRecoversAfterRemovingOtherPacks)
 {
-    const auto base = qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders/");
+    const auto base = qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/phosphor-works/afterglow/shaders/");
     QImage image(4096, 1024, QImage::Format_RGBA8888);
     image.fill(Qt::green);
     ShaderLibrary::Refs refs;
@@ -612,7 +618,7 @@ TEST_F(ShaderControlsTest, ConfiguredImageBudgetRecoversAfterRemovingOtherPacks)
 
 TEST(ShaderGeometryPacks, LoadsImportedMeshesAndRejectsInvalidMetadata)
 {
-    const auto base = qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders/");
+    const auto base = qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/phosphor-works/afterglow/shaders/");
     const auto write = [](const QString& path, const QByteArray& bytes) {
         QFile file(path);
         return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
@@ -709,7 +715,8 @@ const QByteArray ShaderBody = "vec4 pTerminal(vec2 uv){return vec4(shade());}\n"
 /// Returns the pack directory.
 QString writePack(const QString& name, const QByteArray& fragment)
 {
-    const auto dir = qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders/") + name;
+    const auto dir =
+        qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/phosphor-works/afterglow/shaders/") + name;
     if (!QDir().mkpath(dir)
         || !writeShaderFixture(dir + QStringLiteral("/metadata.json"),
                                "{\"id\":\"" + name.toUtf8() + "\",\"name\":\"" + name.toUtf8()
@@ -960,8 +967,8 @@ TEST(ShaderReload, OversizedStagesAreRefused)
 TEST(ShaderLibraryPriority, UserPacksAndIncludesWinOverSystemOnes)
 {
     // The system data directory exists only for this library.
-    const QString system = qEnvironmentVariable("XDG_DATA_HOME") + QStringLiteral("/afterglow/shaders");
-    const QString user = qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders");
+    const QString system = qEnvironmentVariable("XDG_DATA_HOME") + QStringLiteral("/phosphor-works/shaders/terminal");
+    const QString user = qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/phosphor-works/afterglow/shaders");
     auto pack = [](const QString& dir, const QByteArray& id, const QByteArray& parameter, const QByteArray& body) {
         return QDir().mkpath(dir)
             && writeShaderFixture(dir + QStringLiteral("/metadata.json"),
@@ -997,8 +1004,7 @@ TEST(ShaderLibraryPriority, UserPacksAndIncludesWinOverSystemOnes)
 TEST(ShaderLibraryPackages, PackagePacksAnswerOnlyToTheirNamespacedId)
 {
     ShaderLibrary library;
-    const QString package =
-        QStringLiteral(AFTERGLOW_SHADER_DATA_DIR) + QStringLiteral("/examples/packages/scripted-overview");
+    const QString package = QStringLiteral(AFTERGLOW_EXAMPLES_DIR) + QStringLiteral("/packages/scripted-overview");
     auto build = [&](const QString& ref) {
         ShaderLibrary::Refs refs;
         refs.overview = ref;
@@ -1022,7 +1028,7 @@ TEST(ShaderLibraryPackages, PackagePacksAnswerOnlyToTheirNamespacedId)
     ShaderParameterValues packed;
     EXPECT_TRUE(library.validateParameters(ref, {}, packed).isEmpty());
     EXPECT_FALSE(library.validateParameters(QStringLiteral("wall"), {}, packed).isEmpty());
-    EXPECT_EQ(build(QStringLiteral("pane-deck")), 1u);
+    EXPECT_EQ(build(QStringLiteral("phosphor-overview")), 1u);
     library.setPackageShaders({});
     EXPECT_EQ(build(QStringLiteral("scripted-overview.wall")), 0u);
 }
@@ -1032,8 +1038,7 @@ TEST(ShaderLibraryPackages, PackagePacksAnswerOnlyToTheirNamespacedId)
 TEST(ShaderLibraryPackages, OverlayTransitionBuildsItsChainFromABundledOrPackagePack)
 {
     ShaderLibrary library;
-    const QString package =
-        QStringLiteral(AFTERGLOW_SHADER_DATA_DIR) + QStringLiteral("/examples/packages/scripted-overview");
+    const QString package = QStringLiteral(AFTERGLOW_EXAMPLES_DIR) + QStringLiteral("/packages/scripted-overview");
     auto build = [&](const QString& ref) {
         ShaderLibrary::Refs refs;
         refs.overlayTransition = ref;
@@ -1061,7 +1066,7 @@ TEST(ShaderLibraryPackages, OverlayTransitionBuildsItsChainFromABundledOrPackage
 TEST(ShaderLibraryPackages, APackagePackWithAnotherIdIsLeftOut)
 {
     const QString source =
-        QStringLiteral(AFTERGLOW_SHADER_DATA_DIR) + QStringLiteral("/examples/packages/scripted-overview/shaders/wall");
+        QStringLiteral(AFTERGLOW_EXAMPLES_DIR) + QStringLiteral("/packages/scripted-overview/shaders/wall");
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const QString wall = tmp.filePath(QStringLiteral("shaders/wall"));
@@ -1084,14 +1089,14 @@ TEST(ShaderLibraryPackages, APackagePackWithAnotherIdIsLeftOut)
     const QMap<QString, QString> packages{
         {QStringLiteral("scripted-overview"), tmp.filePath(QStringLiteral("shaders"))}};
 
-    // It claims the id of the bundled pane-deck pack.
+    // It claims the id of the bundled Phosphor Overview pack.
     QByteArray claimed = original;
-    claimed.replace("\"scripted-overview.wall\"", "\"pane-deck\"");
+    claimed.replace("\"scripted-overview.wall\"", "\"phosphor-overview\"");
     ASSERT_TRUE(writeMetadata(claimed));
     library.setPackageShaders(packages);
     EXPECT_FALSE(library.packIds().contains(QStringLiteral("scripted-overview.wall")));
     EXPECT_EQ(build(QStringLiteral("scripted-overview.wall")), 0u);
-    EXPECT_EQ(build(QStringLiteral("pane-deck")), 1u);
+    EXPECT_EQ(build(QStringLiteral("phosphor-overview")), 1u);
 
     // An id that no other pack declares: the registry keeps the pack, so only
     // the check of the id that it declares can leave it out.
@@ -1150,7 +1155,7 @@ TEST(ShaderLibraryDirectories, PacksAndPresetsComeFromTheGivenDirectory)
     ShaderLibrary::Refs refs;
     refs.background = {QStringLiteral("elsewhere-only")};
     EXPECT_EQ(beside.build(refs, {}).background.size(), 1u) << beside.problems().join(QLatin1Char('\n')).toStdString();
-    // A saved preset goes beside the packs, not into ~/.config/afterglow.
+    // A saved preset goes beside the packs, not into ~/.config/phosphor-works/afterglow.
     QVariantMap saved;
     ASSERT_TRUE(beside.savePreset(QStringLiteral("elsewhere-only"), QStringLiteral("Mine"), {}, saved).isEmpty());
     const QDir presets(elsewhere.filePath(QStringLiteral("shader-presets/surface")));

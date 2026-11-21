@@ -15,7 +15,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | --- | --- | --- | --- |
 | `bellCurve` | `"spring:14,1"` |  | Curve of the visual bell fade, in the splitCurve format. |
 | `bellDuration` | `150` | 16–5000 | Duration of the visual bell fade in milliseconds for curves other than springs. |
-| `contextDuration` | `1000` | 16–5000 | Milliseconds that the portal of Shaders.paneEffects takes when the shell of a pane moves to another host, user or container. |
+| `contextDuration` | `1000` | 16–5000 | Milliseconds that Shaders.paneEffects takes to show that the shell of a pane moved to another host, user or container. |
 | `cursor` | `true` |  | Animate cursor movement between cells. |
 | `cursorCurve` | `"spring:48,1"` |  | Curve of cursor motion between cells, in the splitCurve format. |
 | `cursorDuration` | `150` | 16–5000 | Duration of cursor motion in milliseconds for curves other than springs. |
@@ -29,7 +29,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | `scrollDuration` | `150` | 16–5000 | Duration of scroll motion in milliseconds for curves other than springs. |
 | `splitCurve` | `"spring:22,1"` |  | Curve of split animations, as a Phosphor curve spec. Use a spring such as spring:22,1 (angular frequency, damping ratio), a cubic Bezier such as 0.2,0,0,1, or a named easing such as elastic-out. An invalid spec uses the default. |
 | `splitDuration` | `250` | 16–5000 | Duration of split animations in milliseconds for curves other than springs, which settle by themselves. |
-| `splits` | `true` |  | Animate split opening, closing and resizing. It also controls the open and close animations, the portal and the away frame of Shaders.paneEffects. |
+| `splits` | `true` |  | Animate split opening, closing and resizing. It also controls the open and close animations and the mark of a pane that is away from here in Shaders.paneEffects. |
 | `tabCurve` | `"spring:13,0.9"` |  | Curve of tab switches (Shaders.tabTransition), in the splitCurve format. |
 | `tabDuration` | `400` | 16–5000 | Duration of tab switches in milliseconds for curves other than springs. |
 
@@ -65,7 +65,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | `searchMatchText` | `"#101010"` |  | Text color of search matches. An empty value uses the default. |
 | `selectionBackground` | `""` |  | Selection background color. An empty value reverses the cell colors. |
 | `selectionForeground` | `""` |  | Selected text color. An empty value reverses the cell colors. |
-| `theme` | `""` |  | Theme name or file path. An empty value uses no theme. Afterglow searches the themes directory beside the config file (~/.config/afterglow/themes), then afterglow/themes in each XDG data directory. Then it searches the bundled themes, such as nord and afterglow-light, and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, after the brightness of the color scheme. A session that afterglow mux new starts has no desktop. It takes the dark NAME, and plasma takes only the colors that the color scheme file sets. A window that shows the session gives it the colors of the window. A theme replaces each color and the visual bell intensity that it sets. It also replaces the divider and popup border colors. Afterglow reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A value with a slash is a file path. A path can start with ~/ for the home directory. A relative path starts at the directory of the config file. |
+| `theme` | `""` |  | Theme name or file path. An empty value uses no theme. Afterglow searches the themes directory beside the config file (~/.config/phosphor-works/afterglow/themes), then phosphor-works/afterglow/themes in each XDG data directory. Then it searches the bundled themes, such as nord and afterglow-light, and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, after the brightness of the color scheme. A session that afterglow mux new starts has no desktop. It takes the dark NAME, and plasma takes only the colors that the color scheme file sets. A window that shows the session gives it the colors of the window. A theme replaces each color and the visual bell intensity that it sets. It also replaces the divider and popup border colors. Afterglow reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A value with a slash is a file path. A path can start with ~/ for the home directory. A relative path starts at the directory of the config file. |
 | `unfocusedDim` | `0.19` | 0–1 | Opacity of a black layer over unfocused panes. A value of 0 turns the darkening off. |
 | `visualBell` | `"#ffffff"` |  | Color of the visual bell flash. An empty value uses the default. A color that a program sets with OSC 21 replaces it. |
 | `visualBellIntensity` | `0.18` | 0–1 | Opacity of the visual bell flash when it starts. A value of 0 hides the flash. A theme that sets it replaces it. |
@@ -195,7 +195,7 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | `commandStdinLimit` | `1024` | 0–4096 | Kibibytes of standard input that a script command can get from aglow run. A run with more input fails, and aglow run exits with status 2. A value of 0 refuses any input that is not empty. |
 | `commandTimeout` | `600000` | 1000–3600000 | Longest time in milliseconds that one run of a script command can take. This includes runs from a key, a menu or the palette. The time that the run waits for a task, a dialog, an overlay or a slow reader of its output counts. The wait for standard input before the run starts does not count. At the limit the run ends, and aglow run exits with status 124. A change applies to the runs that start after it. |
 | `cpuBudget` | `250` | 10–1000 | Milliseconds of handler time that one script can use in each second. Past it, Afterglow drops the script's events, and delays its results, timers, keys and command runs. Each second in which a call of the script waits counts. After 5 such seconds, each less than 3 seconds after the one before, Afterglow disables the script. Dropped events do not count. |
-| `enabled` | `true` |  | Run Luau scripts from the scripts directory beside the config file and from afterglow/scripts in each XDG data directory. The aglow run command also needs Control.enabled. A value other than true, false, yes, no, on, off, 1 or 0 turns it off. |
+| `enabled` | `true` |  | Run Luau scripts from the scripts directory beside the config file and from phosphor-works/afterglow/scripts in each XDG data directory. The aglow run command also needs Control.enabled. A value other than true, false, yes, no, on, off, 1 or 0 turns it off. |
 
 ## Shaders
 
@@ -204,11 +204,11 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | `background` | `[]` |  | Shaders run over each pane's background layer alone: cell backgrounds and images under the text. |
 | `cursor` | `[]` |  | Shaders run over each pane's cursor layer alone. |
 | `overlayTransition` | `"overlay-fade"` |  | Shader that blends a pane and the overlay that runs over it, as the overlay opens and closes. An empty value, or a pack that does not load, switches at once. |
-| `overview` | `"pane-deck"` |  | Shader that draws the pane overview (pane_overview). An empty value turns the overview off. |
+| `overview` | `"phosphor-overview"` |  | Shader that draws the pane overview (pane_overview). An empty value turns the overview off. |
 | `pane` | `[]` |  | Shaders run over each pane. Name a pack by its directory name, which is normally its id, such as cursor-trail or bloom. Name a pack of a package as <package>.<pack>, such as my-extension.wall. |
-| `paneEffects` | `"pane-effects"` |  | Shader that animates panes as they split open and close. It draws a portal when the shell of a pane moves to another host, user or container. While the shell stays there, it draws the away frame around the pane. Animation.splits off turns these off too. An empty value turns it off. |
+| `paneEffects` | `"phosphor-panes"` |  | Shader that animates panes as they split open and close. It also marks a pane when its shell moves to another host, user or container, and while the shell stays there. Animation.splits off turns these off too. An empty value turns it off. |
 | `params` | `{}` |  | Parameter values for each shader reference, such as { "bloom": { "strength": 0.5 } }. The value of each reference must be an object. |
-| `tabTransition` | `"tab-switch"` |  | Shader that animates switching tabs. An empty value switches at once. |
+| `tabTransition` | `"phosphor-tabs"` |  | Shader that animates switching tabs. An empty value switches at once. |
 | `text` | `[]` |  | Shaders run over each pane's text layer alone: glyphs, decorations and images over the text. |
 | `window` | `[]` |  | Shaders run over the whole window, across panes, after the pane shaders. |
 

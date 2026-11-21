@@ -36,7 +36,7 @@ Start with the [documentation index](docs/README.md).
 - [Mux sessions](docs/MUX.md)
 - [Supported protocols and limits](docs/COMPATIBILITY.md)
 
-See the [Phosphor scene](data/examples/phosphor/README.md) for an audio-responsive example.
+See the [Phosphor scene](examples/phosphor/README.md) for an audio-responsive example.
 See the [release notes](CHANGELOG.md) for supported features.
 
 ## License

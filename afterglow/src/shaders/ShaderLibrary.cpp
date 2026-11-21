@@ -4,10 +4,12 @@
 #include "ShaderLibrary.h"
 
 #include "app/BuildTree.h"
+#include "config/AppPaths.h"
 #include "scripting/ScriptNames.h"
 
 #include <PhosphorAnimation/CurveRegistry.h>
 #include <PhosphorFsLoader/ContainedFileReader.h>
+#include <PhosphorPaths/SuiteDirectories.h>
 #include <PhosphorShaders/ShaderIncludeResolver.h>
 #include <PhosphorShaders/ShaderRegistry.h>
 #include <PhosphorShaders/ShaderPresetStore.h>
@@ -288,6 +290,13 @@ QString loadPackMetadata(const QString& pack, AfterglowRender::ShaderProgramSour
             return QStringLiteral("settleSeconds must be a number above 0, at most 600");
         source.settleSeconds = float(seconds);
     }
+    if (const auto navigation = document.object().value(QStringLiteral("overviewNavigation"));
+        !navigation.isUndefined()) {
+        const QString how = navigation.toString();
+        if (how != QLatin1String("order") && how != QLatin1String("direction"))
+            return QStringLiteral("overviewNavigation must be \"order\" or \"direction\"");
+        source.overviewByDirection = how == QLatin1String("direction");
+    }
     const auto value = document.object().value(QStringLiteral("geometryPasses"));
     if (value.isUndefined())
         return {};
@@ -484,9 +493,7 @@ struct ShaderLibrary::PackIndex
 };
 
 ShaderLibrary::ShaderLibrary(QObject* parent)
-    : ShaderLibrary(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
-                        + QStringLiteral("/afterglow"),
-                    parent)
+    : ShaderLibrary(PhosphorPaths::appConfigDir(), parent)
 {
 }
 
@@ -506,8 +513,8 @@ ShaderLibrary::ShaderLibrary(const QString& configDirectory, QObject* parent)
     if (!checkout && !bundled.isEmpty()) {
         dirs << bundled;
     }
-    const QStringList system = QStandardPaths::locateAll(
-        QStandardPaths::GenericDataLocation, QStringLiteral("afterglow/shaders"), QStandardPaths::LocateDirectory);
+    const QStringList system = QStandardPaths::locateAll(QStandardPaths::GenericDataLocation, shaderDataSubdir(),
+                                                         QStandardPaths::LocateDirectory);
     for (auto it = system.crbegin(); it != system.crend(); ++it) {
         dirs << *it;
     }
