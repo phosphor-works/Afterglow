@@ -258,7 +258,8 @@ Use the prefix of the configuration step. Do not give a different `--prefix` her
 If you do, shell integration is off, and the executable can miss its plugin, shader packs and themes.
 
 The installation includes the executable, desktop entry, AppStream metadata, icons, shader packs, themes and terminfo entry.
-It also includes the shell integration scripts, the API declarations, the examples and the license texts.
+It also includes the shell integration scripts, the API declarations and the license texts.
+The [examples](../examples/README.md) stay in the source repository.
 It also includes the shell completions for Bash, Zsh and Fish.
 It installs `aglow` in the same directory as `afterglow`, with its Bash, Zsh and Fish completions.
 It installs the [mux daemon](MUX.md) `aglow-mux` in the same directory as `afterglow`, because `afterglow mux` runs it from there.
@@ -292,7 +293,7 @@ A [build of aglow and aglow-mux alone](#build-aglow-and-aglow-mux-alone) also do
 When `readelf` is installed, the build of a static `aglow` prints the oldest Linux kernel that it needs, and on x86-64 the processor level.
 When the compiler or linker flags contain `-fsanitize`, such as in the `debug` preset, `aglow` links dynamically.
 A static program cannot use the sanitizer runtimes.
-Private libraries go in an `afterglow` directory in the library directory, for example `lib/afterglow/` or `lib64/afterglow/`.
+Private libraries go in a `phosphor-works/afterglow` directory in the library directory, for example `lib/phosphor-works/afterglow/` or `lib64/phosphor-works/afterglow/`.
 This location does not replace libraries from a system Phosphor installation.
 
 | Shell | Completion file of `afterglow` | Completion file of `aglow` |

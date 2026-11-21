@@ -206,7 +206,7 @@ public:
     ~ScriptHost() override;
 
     /// afterglow/scripts in the system data directories, then
-    /// ~/.local/share/afterglow/scripts, then ~/.config/afterglow/scripts.
+    /// ~/.local/share/phosphor-works/afterglow/scripts, then ~/.config/phosphor-works/afterglow/scripts.
     static QStringList defaultSearchPaths();
     void setStateDirectory(const QString& directory);
     void setSearchPaths(const QStringList& dirs);

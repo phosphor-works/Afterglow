@@ -41,8 +41,8 @@ exit_on_sigterm()
 args.artifacts.mkdir(parents=True, exist_ok=True)
 with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
     root = Path(temp)
-    config = root / "afterglow"
-    config.mkdir()
+    config = root / "phosphor-works/afterglow"
+    config.mkdir(parents=True)
     (root / ".bashrc").write_text("PS1='L3> '\n")
     (config / "config.json").write_text(json.dumps({
         "Terminal": {"shell": "/bin/bash", "env": {"HOME": temp}, "confirmClose": False},
@@ -54,7 +54,7 @@ with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
         repo.mkdir(parents=True)
         subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=30, env=GIT_ENV)
     package = config / "scripts/project-navigator"
-    source = Path(__file__).resolve().parents[2] / "data/examples/packages/project-navigator"
+    source = Path(__file__).resolve().parents[2] / "examples/packages/project-navigator"
     with NestedDesktop(root) as desktop, (args.artifacts / "application.log").open("w") as log:
         env = dict(desktop.env, QT_FORCE_STDERR_LOGGING="1", QT_LOGGING_TO_CONSOLE="1",
                    QT_LOGGING_RULES="afterglow.scripts.info=true")

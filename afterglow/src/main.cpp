@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "XkbKeyboard.h"
+#include "config/AppPaths.h"
 #include "config/Settings.h"
 #include <QJsonDocument>
 #include <cstdio>
@@ -153,6 +154,8 @@ int main(int argc, char** argv)
     // for theirs (ssh in afterglow ssh), the start of the mux daemon waits
     // for its starter (MuxStart.h), and the PTYs wait for their programs.
     std::signal(SIGCHLD, SIG_DFL);
+    // Before the commands below, which read the config and state too.
+    Afterglow::setAppDirectory();
     if (argc == 2 && std::strcmp(argv[1], "--config-reference") == 0) {
         QCoreApplication app(argc, argv);
         const QByteArray json = QJsonDocument(Afterglow::SettingsStore::reference()).toJson();

@@ -3442,6 +3442,49 @@ vec4 pTerminal(vec2 uv) {
     EXPECT_PIXEL(image, rightCenter, rgb(other.defaultBg));
 }
 
+TEST_F(Render, ThePaneBlockNamesTheCardThatTheHighlightLeft)
+{
+    // Red: the card that the highlight left, counted from 1, in quarters.
+    // Green: the highlighted card, the same way.
+    ShaderProgramSource source;
+    source.id = QStringLiteral("origin");
+    source.code = R"(#include <terminal_panes.glsl>
+vec4 pTerminal(vec2 uv) {
+    return vec4(float(highlightOrigin() + 1) / 4.0, float(highlightedPane() + 1) / 4.0, 0.0, 1.0);
+})";
+    QString error;
+    auto program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    ShaderChains chains;
+    chains.overview = {program};
+    renderer->setShaderChains(chains);
+    terminal->feed("\x1b[?25l");
+    snapshot.capture(*terminal);
+    PaneSnapshot other = snapshot;
+    const QSize size(Cols * cw, Rows * ch), frame(size.width() * 2, size.height());
+    WindowRenderer::Pane left{&snapshot, {}}, right{&other, {}};
+    left.params.rect = QRect(QPoint(), size);
+    right.params.rect = QRect(QPoint(size.width(), 0), size);
+    right.params.contentOrigin = right.params.rect.topLeft();
+    right.params.highlighted = true;
+    const QPoint center(size.width(), size.height() / 2);
+    renderer->setOverview(overviewAt(true, 1.0f, 1.0f, Clock::now()));
+    // The highlight has not moved since the overview opened: no card.
+    auto image = renderer->renderToImage(frame, {left, right}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, center, qRgb(0, 128, 0));
+    // It came from the left pane, card 0.
+    left.params.highlightOrigin = true;
+    image = renderer->renderToImage(frame, {left, right}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, center, qRgb(64, 128, 0));
+    // And back: the right pane, card 1, is where it came from.
+    left.params.highlightOrigin = false;
+    left.params.highlighted = true;
+    right.params.highlighted = false;
+    right.params.highlightOrigin = true;
+    image = renderer->renderToImage(frame, {left, right}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, center, qRgb(128, 64, 0));
+}
+
 TEST_F(Render, OverviewCardsSampleEveryTabInTabOrder)
 {
     // One vertical stripe per card, filled with the middle of that card's pane.

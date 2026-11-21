@@ -56,7 +56,8 @@ layout(std140, binding = 19) uniform TerminalPanes {
                            //                 when it wraps around (take it modulo paneCount()), .z seconds since the overview
                            //                 opened or closed, .w seconds since the highlight moved
                            //                 (both 1e6 if never)
-    ivec4 uTabState;       // offset 32    .x tabs with cards, .y the current tab's index
+    ivec4 uTabState;       // offset 32    .x tabs with cards, .y the current tab's index, .z the card
+                           //              that the overview's highlight last left (-1 for none)
     vec4 uTabTransition;   // offset 48    .x progress: 0 the tab being left, 1 the new tab (a spring
                            //                 can overshoot), .y direction: 1 toward a tab on the
                            //                 right, -1 toward one on the left, .z seconds since it
@@ -143,6 +144,13 @@ float overviewAmount() {
 
 float highlightPosition() {
     return uOverview.y;
+}
+
+// The card that the highlight last left, or -1 when it has not moved since
+// the overview opened. A pack whose highlight does not pass over the cards
+// between two panes fades from this card to highlightedPane().
+int highlightOrigin() {
+    return uTabState.z;
 }
 
 bool tabTransitionActive() {

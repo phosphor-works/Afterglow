@@ -311,7 +311,7 @@ if(BUILD_TESTING AND TARGET afterglow)
                      "-DSTATIC_RUNTIME_DIRS=${AGLOW_ONLY_STATIC_RUNTIME_DIRS}"
                      "-DPREFIX_PATH=${AGLOW_ONLY_PREFIX_PATH}" "-DPKG_CONFIG=${PKG_CONFIG_EXECUTABLE}"
                      "-DTOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}" "-DSYSROOT=${CMAKE_SYSROOT}"
-                     "-DMUX_LIBS=${AGLOW_ONLY_MUX_LIBS}"
+                     "-DMUX_LIBS=${AGLOW_ONLY_MUX_LIBS}" "-DPRIVATE_SUBDIR=${AFTERGLOW_DATA_SUBDIR}"
                      "-DCONFIG=$<CONFIG>" "-DJOBS=${AGLOW_ONLY_JOBS}" -P "${CMAKE_CURRENT_SOURCE_DIR}/AglowOnlyCheck.cmake")
     set_tests_properties(aglow_only_build PROPERTIES LABELS slow TIMEOUT 1800 PROCESSORS ${AGLOW_ONLY_JOBS})
 endif()

@@ -5,7 +5,7 @@
 
 The native benchmark measures the application in an isolated KWin desktop.
 See [testing](TESTING.md#native-performance-measurements) for commands.
-See [Phosphor scene performance](../data/examples/phosphor/PERFORMANCE.md) for separate shader measurements.
+See [Phosphor scene performance](../examples/phosphor/PERFORMANCE.md) for separate shader measurements.
 
 ## Original baseline
 

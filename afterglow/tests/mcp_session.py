@@ -68,7 +68,9 @@ class Home:
         self.runtime = self.root / 'run'
         self.home = self.root / 'home'
         self.config = self.root / 'config'
-        for directory in (self.runtime, self.home, self.config / 'afterglow', self.root / 'state'):
+        # Afterglow's folder in XDG_CONFIG_HOME: the suite's folder holds it.
+        self.app = self.config / 'phosphor-works' / 'afterglow'
+        for directory in (self.runtime, self.home, self.app, self.root / 'state'):
             directory.mkdir(parents=True, mode=0o700)
         (self.home / '.bashrc').write_text(f"PS1='{PROMPT}'\nHISTFILE=/dev/null\n")
         (self.home / '.zshrc').write_text("PS1='mcp%# '\nHISTFILE=/dev/null\n")
@@ -89,7 +91,7 @@ class Home:
         """The config file that the next server reads, once, when it starts."""
         config = {'Terminal': {'shell': shell or self.bash, 'confirmClose': False},
                   'Control': {'eventInterval': 100}, 'Mcp': mcp}
-        (self.config / 'afterglow' / 'config.json').write_text(json.dumps(config))
+        (self.app / 'config.json').write_text(json.dumps(config))
 
     def server(self, *args, check_start=True):
         server = Server(self, list(args))

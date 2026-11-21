@@ -144,7 +144,9 @@ struct alignas(16) TerminalPaneUniforms
     std::int32_t uPaneState[4]{0, -1, -1, 0};
     float uOverview[4]{0.0f, 0.0f, 1e6f,
                        1e6f}; ///< open amount, highlight position, ages since open/close and highlight move
-    std::int32_t uTabState[4]{0, 0, 0, 0}; ///< tabs with cards, the current tab
+    /// Tabs with cards, the current tab, the card that the highlight last
+    /// left (-1 for none).
+    std::int32_t uTabState[4]{0, 0, -1, 0};
     float uTabTransition[4]{1.0f, 1.0f, 1e6f, 0.0f}; ///< progress, direction, age, running
     float uPaneRect[MaxShaderPanes][4]{};
     float uPaneSource[MaxShaderPanes][4]{}; ///< uv rectangle in the card's source
@@ -209,6 +211,8 @@ struct ShaderProgramSource
     bool highDynamicRange = false; ///< metadata `highDynamicRange`: keep values above 1 between passes
     bool windowBackground = false; ///< metadata `windowBackground`: one background for the whole window
     float settleSeconds = 2.0f; ///< metadata `settleSeconds`: see ShaderProgram::settleSeconds()
+    /// Metadata `overviewNavigation` "direction": see ShaderProgram::overviewByDirection().
+    bool overviewByDirection = false;
     QByteArray parameterPreamble; ///< `#define p_<id> customParams[...]` lines
     std::array<float, 32> params{};
     std::array<float, 64> colors{};
@@ -419,6 +423,14 @@ public:
     {
         return m_windowBackground;
     }
+    /// An overview pack that draws each tab as a picture of its layout, the
+    /// tabs in a grid (flat_overview.glsl): the arrow keys of the overview
+    /// then go to the pane in their direction. Without it they step through
+    /// the cards in order, as round a ring.
+    bool overviewByDirection() const noexcept
+    {
+        return m_overviewByDirection;
+    }
     const std::array<float, 32>& params() const noexcept
     {
         return m_params;
@@ -452,6 +464,7 @@ private:
     bool m_requiresHdr = false;
     bool m_requiresAudio = false;
     bool m_windowBackground = false;
+    bool m_overviewByDirection = false;
     std::array<float, 32> m_params{};
     std::array<float, 64> m_colors{};
 };
