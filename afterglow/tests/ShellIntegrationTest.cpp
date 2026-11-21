@@ -1372,7 +1372,7 @@ TEST(Ssh, InstallsTheTerminfoEntryOnceOrFallsBack)
     EXPECT_EQ(Afterglow::Ssh::run({"-p", "2222", "prod"}), 7);
     EXPECT_EQ(ssh.take(), QStringList({"ARGS [-p] [2222] [prod]", "TERM=afterglow"}));
     // The cache names no host, and only its owner can read it.
-    QFile cache(ssh.dir.filePath("state/afterglow/ssh-terminfo"));
+    QFile cache(ssh.dir.filePath("state/phosphor-works/afterglow/ssh-terminfo"));
     ASSERT_TRUE(cache.open(QIODevice::ReadOnly));
     const QByteArray cached = cache.readAll();
     EXPECT_FALSE(cached.contains("10.0.0.5") || cached.contains("alice")) << cached.toStdString();

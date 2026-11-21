@@ -31,6 +31,7 @@
 #include <AfterglowVt/Search.h>
 #include <AfterglowVt/Selection.h>
 #include <AfterglowVt/Terminal.h>
+#include <config/AppPaths.h>
 #include <config/Settings.h>
 #include <config/Theme.h>
 #include <scripting/OverlaySpec.h>
@@ -46,6 +47,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMargins>
+#include <QTemporaryDir>
 
 #include <algorithm>
 #include <array>
@@ -299,6 +301,10 @@ int run(QGuiApplication& app)
     parser.addOption({QStringLiteral("package"),
                       QStringLiteral("A script package folder whose shaders load as <package>.<pack> (repeatable)."),
                       QStringLiteral("dir")});
+    parser.addOption({QStringLiteral("shader-dir"),
+                      QStringLiteral("Take the user's packs from this directory, such as examples/shaders, and not "
+                                     "from ~/.config/phosphor-works/afterglow/shaders."),
+                      QStringLiteral("dir")});
     parser.addOption({QStringLiteral("overview"),
                       QStringLiteral("Pane overview shader, shown open (or closing, with --overview-closing)."),
                       QStringLiteral("ref")});
@@ -309,6 +315,10 @@ int run(QGuiApplication& app)
                       QStringLiteral("n")});
     parser.addOption({QStringLiteral("overview-closing"),
                       QStringLiteral("The overview is closing onto the --highlight card, at --overview-amount.")});
+    parser.addOption({QStringLiteral("highlight-from"),
+                      QStringLiteral("The pane that the overview's highlight left, counting every tab (default none): "
+                                     "with --overview-position, how far the highlight has gone from it."),
+                      QStringLiteral("n")});
     parser.addOption({QStringLiteral("tab-transition"),
                       QStringLiteral("Tab transition shader, from a copy of the panes on a blue background."),
                       QStringLiteral("ref")});
@@ -534,6 +544,7 @@ int run(QGuiApplication& app)
                           {"overview-amount", 0, 1, false},
                           {"overview-position", -1000, 1000, false},
                           {"highlight", 0, AfterglowRender::MaxShaderPanes - 1, true},
+                          {"highlight-from", 0, AfterglowRender::MaxShaderPanes - 1, true},
                           {"tabs", 1, AfterglowRender::MaxShaderPanes, true},
                           {"current-tab", 0, AfterglowRender::MaxShaderPanes - 1, true},
                           {"transition-progress", 0, 1, false},
@@ -573,12 +584,13 @@ int run(QGuiApplication& app)
     for (const Needs& rule :
          {Needs{"open-edge", {"open-progress"}}, Needs{"context-progress", {"context"}},
           Needs{"previous-context", {"context"}}, Needs{"overview-amount", {"overview"}},
-          Needs{"highlight", {"overview"}}, Needs{"overview-closing", {"overview"}},
-          Needs{"overview-position", {"overview"}}, Needs{"tabs", {"overview"}}, Needs{"current-tab", {"overview"}},
-          Needs{"overview-age", {"overview"}}, Needs{"highlight-age", {"overview"}},
-          Needs{"transition-progress", {"tab-transition"}}, Needs{"transition-direction", {"tab-transition"}},
-          Needs{"transition-age", {"tab-transition"}}, Needs{"search-current", {"search"}},
-          Needs{"wake-age", {"wake-from"}}, Needs{"unfocused-dim", {"split", "grid"}},
+          Needs{"highlight", {"overview"}}, Needs{"highlight-from", {"overview"}},
+          Needs{"overview-closing", {"overview"}}, Needs{"overview-position", {"overview"}},
+          Needs{"tabs", {"overview"}}, Needs{"current-tab", {"overview"}}, Needs{"overview-age", {"overview"}},
+          Needs{"highlight-age", {"overview"}}, Needs{"transition-progress", {"tab-transition"}},
+          Needs{"transition-direction", {"tab-transition"}}, Needs{"transition-age", {"tab-transition"}},
+          Needs{"search-current", {"search"}}, Needs{"wake-age", {"wake-from"}},
+          Needs{"unfocused-dim", {"split", "grid"}},
           Needs{"pane-effects", {"open-progress", "context", "pulse", "close-progress"}}}) {
         if (!parser.isSet(QLatin1String(rule.option)))
             continue;
@@ -782,7 +794,24 @@ int run(QGuiApplication& app)
                                                   : QString()};
     const qsizetype wanted = refs.size();
     if (wanted > 0) {
-        Afterglow::ShaderLibrary library;
+        // The library reads the user's packs from shaders/ in a configuration
+        // directory, and makes its preset directory there: --shader-dir gets a
+        // configuration directory of its own, whose shaders/ is a link.
+        std::unique_ptr<QTemporaryDir> packConfig;
+        if (parser.isSet(QStringLiteral("shader-dir"))) {
+            const QFileInfo packs(parser.value(QStringLiteral("shader-dir")));
+            packConfig = std::make_unique<QTemporaryDir>();
+            if (!packs.isDir() || !packConfig->isValid()
+                || !QFile::link(packs.absoluteFilePath(), packConfig->filePath(QStringLiteral("shaders")))) {
+                std::fprintf(stderr, "--shader-dir %s: not a directory that can be read\n",
+                             qPrintable(packs.filePath()));
+                return 1;
+            }
+        }
+        const std::unique_ptr<Afterglow::ShaderLibrary> owned = packConfig
+            ? std::make_unique<Afterglow::ShaderLibrary>(packConfig->path())
+            : std::make_unique<Afterglow::ShaderLibrary>();
+        Afterglow::ShaderLibrary& library = *owned;
         QMap<QString, QString> packages;
         for (const QString& dir : parser.values(QStringLiteral("package"))) {
             // The application loads a package only when its id names its
@@ -1320,6 +1349,13 @@ int run(QGuiApplication& app)
             std::fprintf(stderr, "--highlight must be below the number of cards (%d)\n", perTab * tabCount);
             return 1;
         }
+        const int highlightFrom = parser.isSet(QStringLiteral("highlight-from"))
+            ? parser.value(QStringLiteral("highlight-from")).toInt()
+            : -1;
+        if (highlightFrom >= perTab * tabCount) {
+            std::fprintf(stderr, "--highlight-from must be below the number of cards (%d)\n", perTab * tabCount);
+            return 1;
+        }
         overview.emplace();
         // Closing: open is 0, and the highlight stays on the card it closes onto.
         overview->open = !parser.isSet(QStringLiteral("overview-closing"));
@@ -1341,6 +1377,7 @@ int run(QGuiApplication& app)
                 copy.overlay.reset(); // the overlay is the current tab's
                 copy.params.focused = false;
                 copy.params.highlighted = tab * perTab + i == highlight;
+                copy.params.highlightOrigin = tab * perTab + i == highlightFrom;
                 addPaneDocks(copy);
                 other.panes.push_back(copy);
             }
@@ -1349,6 +1386,8 @@ int run(QGuiApplication& app)
         }
         if (highlight / perTab == currentTab)
             panes[std::size_t(highlight % perTab)].params.highlighted = true;
+        if (highlightFrom >= 0 && highlightFrom / perTab == currentTab)
+            panes[std::size_t(highlightFrom % perTab)].params.highlightOrigin = true;
     }
     // The tab being left: its own blue copies, apart from the overview's.
     // Copied before the pane effects below set the last pane's opening,
@@ -1565,6 +1604,7 @@ int run(QGuiApplication& app)
 
 int main(int argc, char** argv)
 {
+    Afterglow::setAppDirectory();
     QGuiApplication app(argc, argv);
     // No Vulkan device, or an allocation that fails: a message, not an abort.
     // On a machine without Vulkan as the device asks for it, every error is

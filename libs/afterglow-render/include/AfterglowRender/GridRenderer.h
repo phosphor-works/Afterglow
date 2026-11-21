@@ -126,6 +126,9 @@ public:
         /// Highlighted in the pane overview, or the card it closes onto
         /// while it closes.
         bool highlighted = false;
+        /// The pane that the overview's highlight last left, for a pack
+        /// that fades the highlight from one pane to the next.
+        bool highlightOrigin = false;
         /// How far a new split has opened (1 when open), and the edge it
         /// opened from: 0 none, 1 left, 2 top, 3 right, 4 bottom.
         float openProgress = 1.0f;

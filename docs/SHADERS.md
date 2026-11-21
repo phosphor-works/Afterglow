@@ -18,14 +18,14 @@ A pack in a later row replaces a pack with the same ID in an earlier row.
 | Directory | Contents |
 | --- | --- |
 | `data/shaders/` in the source tree | Bundled packs, in a development build only. |
-| `afterglow/shaders/` in each XDG data directory, such as `/usr/share/afterglow/shaders/` | Installed packs. |
-| `~/.config/afterglow/shaders/` | Your own packs. Afterglow creates this directory. With `afterglow --config DIR/config.json`, this is `DIR/shaders/`. |
+| `phosphor-works/shaders/terminal/` in each XDG data directory, such as `/usr/share/phosphor-works/shaders/terminal/` | Installed packs. |
+| `~/.config/phosphor-works/afterglow/shaders/` | Your own packs. Afterglow creates this directory. With `afterglow --config DIR/config.json`, this is `DIR/shaders/`. |
 
 A binary that runs from the build tree puts the checkout's `data/shaders/` after the XDG data directories in this table.
 Thus a pack in the checkout replaces an installed pack with the same ID, and you test the pack that you edit.
-Your own packs in `~/.config/afterglow/shaders/` still replace the packs of the checkout.
+Your own packs in `~/.config/phosphor-works/afterglow/shaders/` still replace the packs of the checkout.
 
-Put each pack in its own subdirectory, such as `~/.config/afterglow/shaders/my-pack/metadata.json`.
+Put each pack in its own subdirectory, such as `~/.config/phosphor-works/afterglow/shaders/my-pack/metadata.json`.
 Put include files that several packs share in a `shared/` subdirectory of the same directory.
 Afterglow looks for an include file in this order:
 
@@ -69,38 +69,35 @@ Without layer shaders, Afterglow does not allocate separate layers.
 Afterglow compiles a pack one time. A change of `Shaders.params` does not compile it again.
 The change rebuilds the chains, so it resets buffer history and expires instance IDs.
 
-The pane overview (`pane_overview`, Ctrl+Shift+D) shows the panes of every tab in 3D.
-The default overview pack is Pane Deck: live cards on a carousel, reflected in a floor.
+The pane overview (`pane_overview`, Ctrl+Shift+D) shows the panes of every tab.
+The default overview pack is Phosphor Overview. Each tab becomes a small picture of its panes, each pane in its real place.
+The highlighted pane lifts a little, and its rim carries the Phosphor spectrum.
 Set `Shaders.overview` to another pack ID, or to an empty string to turn the overview off.
-When the overview closes, the chosen card stays highlighted until the close ends. A card in another tab shows its tab as the overview closes.
+When the overview closes, the chosen pane stays highlighted until the close ends. A pane in another tab shows its tab as the overview closes.
 Script packages can ship packs of their own, such as an overview with the script that drives it. See [packages](PACKAGES.md#shaders).
 The [shader API](SHADER-API.md#panes-and-the-overview) describes how to write an overview pack.
 
-Switching tabs runs `Shaders.tabTransition`. The default pack is Tab Switch.
-Its `style` parameter chooses a turning cube (0), a page flip (1), a shatter (2) or a slide (3).
+Switching tabs runs `Shaders.tabTransition`. The default pack is Phosphor Tabs.
+The new tab slides in over the tab being left, and a line of the spectrum runs down the edge between them.
+Its `style` parameter chooses the slide (0) or a fade with no motion (1).
 The tab being left keeps running until the new tab arrives.
 It shows without its layer, pane and window shaders. With window shaders, the first frame of a switch can differ from the frame before it.
 `Animation.tabCurve` and `Animation.tabDuration` set the motion.
 Set `Shaders.tabTransition` to an empty string to switch tabs at once.
 
-Splitting and closing panes run `Shaders.paneEffects`. The default pack is Pane Effects.
-Its `style` parameter chooses a hinge (0) or a picture tube (1).
-A new pane swings in from the edge it split from, or switches on like a tube.
-A closed pane falls back off its bottom edge, or switches off to a dot.
+Splitting and closing panes run `Shaders.paneEffects`. The default pack is Phosphor Panes.
+A new pane fades in where it opens. A closed pane fades out.
+The rim of the pane is bright at once, in the spectrum, and then fades.
 `Animation.paneEffectDuration` sets the time.
-`Animation.splits=false` turns off the open and close animations, the portal and the away frame. Script pulses still show.
+`Animation.splits=false` turns off the open and close animations and the line of a pane that is away. Script pulses still show.
 Set `Shaders.paneEffects` to an empty string to turn off all pane effects.
-A pane whose shell moves to another host, user or container passes through a portal, such as after `afterglow ssh`.
-The `portalStyle` parameter chooses a vortex (1, the default) or a ring (0).
-The vortex opens a black hole at the center of the pane. The text spirals into the hole and then comes back out of it.
-The text is not readable while it is in the hole. The ring sweeps across the pane and keeps the text in its place.
-When the pane returns, the vortex turns the other way, and the ring closes back to the center.
-The `swirl` parameter sets how far the vortex turns the text.
-`Animation.contextDuration` sets the time of the portal.
-While the pane is away, a soft frame marks it in a palette color of the theme.
-The frame is bright cyan for a remote host, bright red for an elevated user and bright magenta for a container.
-When the pane returns, the frame fades out in its color. Between two contexts, the frame changes color.
-The `portal` and `frame` parameters set their strength.
+A pane whose shell moves to another host, user or container gets a thin line at its edge, such as after `afterglow ssh`.
+The line is bright at the change and then settles. It stays while the pane is away.
+The line is cyan for a remote host, rose for an elevated user and purple for a container.
+With the `followTheme` parameter, these are the bright cyan, bright red and bright magenta of the theme.
+When the pane returns, the line fades out in its color. Between two contexts, the line changes color.
+`Animation.contextDuration` sets the time of the change.
+The `mark` parameter sets the strength of the line. A value of 0 removes it.
 
 An [overlay](SCRIPTING.md#overlays) is a program that a script or [`afterglow ctl overlay`](CONTROL.md#overlays) runs over a pane.
 It runs `Shaders.overlayTransition` when it opens and closes.
@@ -109,8 +106,47 @@ Both have the pane's layer and pane shaders while they blend, and the window sha
 `Animation.overlayCurve` and `Animation.overlayDuration` set the time.
 Set `Shaders.overlayTransition` to an empty string to switch at once.
 
-[The Phosphor scene](../data/examples/phosphor/README.md) combines a 3D core, text afterimages and command reactions.
-[Glasshouse](../data/examples/glasshouse/README.md) provides another complete desktop scene.
+## Bundled packs
+
+Afterglow installs two groups of packs.
+The Phosphor packs use the colors and the motion of the Phosphor design language. They are the defaults.
+A position moves on a spring, a color changes with a fade, and an edge that changes is bright at once and then fades.
+
+| Pack | Chain | Default | Look |
+| --- | --- | --- | --- |
+| `phosphor-overview` | `overview` | Yes | Each tab as a small picture of its panes, with the spectrum on the rim of the highlighted pane. |
+| `phosphor-tabs` | `tabTransition` | Yes | The new tab slides in over the tab being left. The spectrum runs down the edge between them. |
+| `phosphor-panes` | `paneEffects` | Yes | Panes fade in and out with a rim in the spectrum. A pane that is away keeps a line in the color of its context. |
+| `phosphor-depths` | `window` | No | Slow clouds of the spectrum below the text, dust, and an ember at the cursor. |
+
+The packs with the spectrum have the parameters `stop0` to `stop3` for its four colors.
+Set their `followTheme` parameter to `true` to take the colors from the terminal palette.
+
+The neutral packs have no color of their own. They take their colors from the theme.
+The three plain packs have the motion of the Phosphor packs with no gradient and no glow.
+
+| Pack | Chain | Default | Look |
+| --- | --- | --- | --- |
+| `plain-overview` | `overview` | No | Each tab as a small picture of its panes. The rim of the highlighted pane has the cursor color of the theme. |
+| `plain-tabs` | `tabTransition` | No | The new tab slides in over the tab being left, or the two fade. |
+| `plain-panes` | `paneEffects` | No | Panes fade in and out. A pane that is away keeps a line in a palette color of the theme. |
+| `overlay-fade` | `overlayTransition` | Yes | An overlay and its pane blend. |
+| `bloom` | `pane` or `window` | No | Bright text and colors glow into the space round them. |
+| `cursor-trail` | `pane` | No | A streak that fades follows the cursor when it jumps. |
+
+To use the neutral group in place of the Phosphor packs:
+
+```json
+{"Shaders": {"overview": "plain-overview", "tabTransition": "plain-tabs", "paneEffects": "plain-panes"}}
+```
+
+The five layer chains are empty by default, so Afterglow draws the terminal with no shader until you name a pack.
+
+The [example packs](../examples/shaders/README.md) in the source repository show other looks and the rest of the shader API.
+These include a CRT screen, a tilted screen, a carousel overview and a cube tab switch.
+Copy one into `~/.config/phosphor-works/afterglow/shaders/` to use it.
+[The Phosphor scene](../examples/phosphor/README.md) combines a 3D core, text afterimages and command reactions.
+[Glasshouse](../examples/glasshouse/README.md) provides another complete desktop scene.
 
 ## Previous text and color
 
@@ -129,9 +165,9 @@ The Phosphor scene does this in its `phosphor-lens` pass, before text compositio
 
 Packs support eight buffers, four image parameters, auxiliary depth output and a vertex stage.
 Mesh passes add imported or shader-generated triangles, instancing and hardware depth testing.
-[Mesh Reactor](../data/shaders/mesh-reactor/README.md) demonstrates this path.
+[Mesh Reactor](../examples/shaders/mesh-reactor/README.md) demonstrates this path.
 See the [shader API](SHADER-API.md) for pass order, coordinates, reset conditions and memory limits.
-[Depth Trails](../data/shaders/depth-trails/README.md) demonstrates these interfaces.
+[Depth Trails](../examples/shaders/depth-trails/README.md) demonstrates these interfaces.
 
 ## System audio
 
@@ -290,14 +326,14 @@ Afterglow keeps at most 4,096 overrides, one for each script, instance and pane.
 An update past this limit fails with an error.
 Hidden windows catch up when they render again.
 
-[shader-parameters.luau](../data/examples/scripts/shader-parameters.luau) adds Bloom boost and reset commands.
-Install it in `~/.config/afterglow/scripts/` and enable Bloom in a shader chain.
+[shader-parameters.luau](../examples/scripts/shader-parameters.luau) adds Bloom boost and reset commands.
+Install it in `~/.config/phosphor-works/afterglow/scripts/` and enable Bloom in a shader chain.
 It targets the current tab, or the window for a window effect.
 It reports when Bloom is absent.
 
 ### Presets
 
-[scene-controls](../data/examples/packages/scene-controls/README.md) provides effect selection, presets, quality, intensity, save and reset controls.
+[scene-controls](../examples/packages/scene-controls/README.md) provides effect selection, presets, quality, intensity, save and reset controls.
 
 | Helper | Result |
 | --- | --- |
@@ -306,7 +342,7 @@ It reports when Bloom is absent.
 | `save_shader_preset(pane, instance, name)` | Save a preset. Return `data.id` and `data.name`. |
 
 `@defaults` applies pack defaults. An empty `shader_parameters` table releases only the calling script's changes.
-Saved presets use Phosphor's schema and registry in `~/.config/afterglow/shader-presets/surface/`.
+Saved presets use Phosphor's schema and registry in `~/.config/phosphor-works/afterglow/shader-presets/surface/`.
 With `afterglow --config DIR/config.json`, they are in `DIR/shader-presets/surface/`.
 This directory is separate from PlasmaZones.
 Pack presets are read-only. Saves create new named entries that survive restarts.
@@ -330,4 +366,4 @@ History uses the current tab even when the anchor pane is in a background tab.
 Queries observe the shared analyzer without starting capture.
 Unavailable or stale capture returns false availability and zero levels.
 Scripts can sample with bounded timers. The host handles continuous FFT input and interpolation.
-[contextual-scene](../data/examples/packages/contextual-scene/README.md) makes one decision each second and changes exposure with a smooth transition.
+[contextual-scene](../examples/packages/contextual-scene/README.md) makes one decision each second and changes exposure with a smooth transition.

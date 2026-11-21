@@ -10,6 +10,7 @@
 #include <QLoggingCategory>
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <utility>
 
 Q_DECLARE_LOGGING_CATEGORY(lcWindow)
@@ -17,6 +18,27 @@ Q_DECLARE_LOGGING_CATEGORY(lcWindow)
 namespace Afterglow {
 
 namespace {
+
+/// The direction of an arrow key of the overview, or of h, j, k and l.
+std::optional<SplitTree::Neighbor> overviewDirection(int key)
+{
+    switch (key) {
+    case Qt::Key_Left:
+    case Qt::Key_H:
+        return SplitTree::Neighbor::Left;
+    case Qt::Key_Right:
+    case Qt::Key_L:
+        return SplitTree::Neighbor::Right;
+    case Qt::Key_Up:
+    case Qt::Key_K:
+        return SplitTree::Neighbor::Up;
+    case Qt::Key_Down:
+    case Qt::Key_J:
+        return SplitTree::Neighbor::Down;
+    default:
+        return std::nullopt;
+    }
+}
 
 /// How far an effect of @p durationMs that started at @p at has run, 0 to 1.
 float progressSince(std::chrono::steady_clock::time_point at, int durationMs)
@@ -60,6 +82,23 @@ qreal rebased(qreal now, const std::vector<Pane*>& before, const std::vector<Pan
 bool TerminalWindow::overviewShowing() const
 {
     return m_overview.open || m_overview.amount.isAnimating() || std::abs(m_overview.amount.value()) > 1e-3;
+}
+
+std::vector<OverviewCard> TerminalWindow::overviewLayout() const
+{
+    // The panes of overviewPanes(), in its order.
+    std::vector<OverviewCard> cards;
+    const bool allTabs = overviewShowing();
+    for (std::size_t tab = 0; tab < m_tabs.size(); ++tab) {
+        const SplitTree* tree = m_tabs[tab]->splits.get();
+        if (!tree || (!allTabs && int(tab) != m_currentTab))
+            continue;
+        tree->forEachPane([&](Pane*, const QRect& rect) {
+            if (!rect.isEmpty() && cards.size() < std::size_t(AfterglowRender::MaxShaderPanes))
+                cards.push_back({rect, int(tab)});
+        });
+    }
+    return cards;
 }
 
 std::vector<Pane*> TerminalWindow::overviewPanes() const
@@ -142,6 +181,7 @@ AfterglowRender::WindowRenderer::OverviewTab TerminalWindow::prepareOtherTab(int
         addPaneDocks(p, wp.params.rect, wp.docks);
         wp.params.focused = false;
         wp.params.highlighted = overviewShowing() && p == m_overview.highlighted;
+        wp.params.highlightOrigin = overviewShowing() && p == m_overview.movedFrom;
         applyPaneEffectState(p, wp.params, animating);
         wp.params.cursorBlinkOn = m_blinkOn;
         wp.params.textBlinkOn = m_textBlinkOn;
@@ -451,6 +491,8 @@ bool TerminalWindow::openOverview()
     }
     m_overview.original = m_focused;
     m_overview.highlighted = m_focused;
+    // The highlight has not moved yet: it fades from no pane.
+    m_overview.movedFrom = nullptr;
     const auto spec = overviewSpec();
     // Reopening while it closes continues from where it is.
     m_overview.amount.start(m_overview.amount.value(), 1.0, spec);
@@ -567,6 +609,7 @@ void TerminalWindow::moveOverview(int index, int direction)
     if (direction < 0 || (direction == 0 && delta * 2 > count))
         delta -= count;
     m_overview.positionTarget += delta;
+    m_overview.movedFrom = m_overview.highlighted;
     m_overview.highlighted = panes[std::size_t(index)];
     m_overview.movedAt = std::chrono::steady_clock::now();
     scheduleRender();
@@ -602,9 +645,19 @@ void TerminalWindow::overviewKey(QKeyEvent* e)
         closeOverview(nullptr);
     } else if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter || e->key() == Qt::Key_Space) {
         closeOverview(m_overview.highlighted);
-    } else if (e->key() == Qt::Key_Left || e->key() == Qt::Key_Backtab || e->key() == Qt::Key_H) {
+    } else if (e->key() == Qt::Key_Backtab) {
         moveOverview(current - 1, -1);
-    } else if (e->key() == Qt::Key_Right || e->key() == Qt::Key_Tab || e->key() == Qt::Key_L) {
+    } else if (e->key() == Qt::Key_Tab) {
+        moveOverview(current + 1, 1);
+    } else if (const auto direction = overviewDirection(e->key()); direction && m_overviewByDirection) {
+        // The pack draws the panes where they are in their tabs: an arrow
+        // goes to the pane that shows in its direction, and stays when there
+        // is none. The highlight takes the short way there in the count.
+        if (const int index = overviewNeighbor(overviewLayout(), current, *direction, paneArea().size()); index >= 0)
+            moveOverview(index);
+    } else if (e->key() == Qt::Key_Left || e->key() == Qt::Key_H) {
+        moveOverview(current - 1, -1);
+    } else if (e->key() == Qt::Key_Right || e->key() == Qt::Key_L) {
         moveOverview(current + 1, 1);
     } else if ((e->key() == Qt::Key_Up || e->key() == Qt::Key_K || e->key() == Qt::Key_Down || e->key() == Qt::Key_J)
                && !panes.empty()) {
