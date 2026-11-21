@@ -37,6 +37,8 @@ qt_add_library(afterglow_app STATIC
     src/ProjectStore.cpp
     src/ProjectStore.h
     src/ShownText.h
+    src/OverviewNavigation.cpp
+    src/OverviewNavigation.h
     src/SplitTree.cpp
     src/SplitTree.h
     src/TerminalWindowProject.cpp
@@ -114,6 +116,16 @@ if(AFTERGLOW_BUILD_AGLOW)
     target_compile_definitions(afterglow PRIVATE AFTERGLOW_HAS_AGLOW)
 endif()
 
+# Where Afterglow's files are: its folder in the suite folder and the tree of
+# the terminal shader packs (cmake/AfterglowInstallDirs.cmake), through
+# PhosphorPaths. Every part of the application that reads a path links it.
+qt_add_library(afterglow_paths STATIC src/config/AppPaths.cpp src/config/AppPaths.h)
+target_include_directories(afterglow_paths PUBLIC src)
+target_compile_definitions(afterglow_paths PRIVATE QT_NO_CAST_FROM_ASCII
+    AFTERGLOW_APP_DIRECTORY_NAME="${AFTERGLOW_APP_DIRECTORY_NAME}"
+    AFTERGLOW_SHADER_TREE="${AFTERGLOW_SHADER_TREE}")
+target_link_libraries(afterglow_paths PUBLIC PhosphorPaths::PhosphorPaths Qt6::Core)
+
 # Shader pack loading, shared with the developer render tool.
 # A binary under the build directory reads the packs and themes of the source
 # tree; an installed one reads those of its own prefix.
@@ -123,8 +135,8 @@ target_include_directories(afterglow_shaders PUBLIC src)
 target_compile_definitions(afterglow_shaders PRIVATE QT_NO_CAST_FROM_ASCII
     AFTERGLOW_BUILD_DIR="${CMAKE_BINARY_DIR}"
     AFTERGLOW_SOURCE_SHADER_DIR="${PROJECT_SOURCE_DIR}/data/shaders"
-    AFTERGLOW_INSTALLED_SHADER_DIR="${CMAKE_INSTALL_FULL_DATADIR}/afterglow/shaders")
-target_link_libraries(afterglow_shaders PUBLIC Afterglow::Render PhosphorShaders::PhosphorShaders PhosphorAnimation::PhosphorAnimation
+    AFTERGLOW_INSTALLED_SHADER_DIR="${CMAKE_INSTALL_FULL_DATADIR}/${AFTERGLOW_SHADER_SUBDIR}")
+target_link_libraries(afterglow_shaders PUBLIC afterglow_paths Afterglow::Render PhosphorShaders::PhosphorShaders PhosphorAnimation::PhosphorAnimation
     PhosphorFsLoader::PhosphorFsLoader Qt6::Core)
 
 find_package(PkgConfig REQUIRED)
@@ -155,8 +167,8 @@ target_include_directories(afterglow_config PUBLIC src $<TARGET_PROPERTY:Aftergl
 target_compile_definitions(afterglow_config PRIVATE QT_NO_CAST_FROM_ASCII
     AFTERGLOW_BUILD_DIR="${CMAKE_BINARY_DIR}"
     AFTERGLOW_SOURCE_THEME_DIR="${PROJECT_SOURCE_DIR}/data/themes"
-    AFTERGLOW_INSTALLED_THEME_DIR="${CMAKE_INSTALL_FULL_DATADIR}/afterglow/themes")
-target_link_libraries(afterglow_config PUBLIC afterglow_shaders Afterglow::Render Afterglow::Vt
+    AFTERGLOW_INSTALLED_THEME_DIR="${CMAKE_INSTALL_FULL_DATADIR}/${AFTERGLOW_DATA_SUBDIR}/themes")
+target_link_libraries(afterglow_config PUBLIC afterglow_paths afterglow_shaders Afterglow::Render Afterglow::Vt
     PhosphorConfig::PhosphorConfig PhosphorFsLoader::PhosphorFsLoader Qt6::Core Qt6::Gui PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON)
 # The bounds of the Mux settings are the daemon's (MuxProtocol.h). Colour
 # names are read as the escape codes read them (AfterglowProto/Color.h).
@@ -169,12 +181,13 @@ qt_add_library(afterglow_shell STATIC src/shell/Sibling.cpp src/shell/Sibling.h 
 target_include_directories(afterglow_shell PUBLIC src)
 # The environment of a spawn off the GUI thread, and the PATH search in it,
 # are the mux client's (MuxConnect.h).
-target_link_libraries(afterglow_shell PUBLIC Afterglow::Pty Qt6::Core PRIVATE Afterglow::Proto afterglow_mux_protocol)
+target_link_libraries(afterglow_shell PUBLIC afterglow_paths Afterglow::Pty Qt6::Core PRIVATE Afterglow::Proto afterglow_mux_protocol)
 target_compile_definitions(afterglow_shell PRIVATE QT_NO_CAST_FROM_ASCII
     AFTERGLOW_BUILD_DIR="${CMAKE_BINARY_DIR}"
     AFTERGLOW_SOURCE_SHELL_DIR="${PROJECT_SOURCE_DIR}/data/shell-integration"
-    AFTERGLOW_INSTALLED_SHELL_DIR="${CMAKE_INSTALL_FULL_DATADIR}/afterglow/shell-integration")
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shell-integration/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/shell-integration)
+    AFTERGLOW_INSTALLED_SHELL_DIR="${CMAKE_INSTALL_FULL_DATADIR}/${AFTERGLOW_DATA_SUBDIR}/shell-integration")
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shell-integration/
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/${AFTERGLOW_DATA_SUBDIR}/shell-integration)
 
 # A single lazy system-playback analyzer, shared with its lifecycle tests.
 qt_add_library(afterglow_audio STATIC
@@ -197,7 +210,7 @@ qt_add_library(afterglow_scripting STATIC src/scripting/ScriptHost.cpp src/scrip
     src/scripting/ScriptState.cpp src/scripting/ScriptState.h)
 target_include_directories(afterglow_scripting PUBLIC src)
 target_compile_definitions(afterglow_scripting PRIVATE QT_NO_CAST_FROM_ASCII)
-target_link_libraries(afterglow_scripting PUBLIC afterglow_overlayspec PhosphorScripting::PhosphorScripting PhosphorFsLoader::PhosphorFsLoader
+target_link_libraries(afterglow_scripting PUBLIC afterglow_paths afterglow_overlayspec PhosphorScripting::PhosphorScripting PhosphorFsLoader::PhosphorFsLoader
     Qt6::Core Qt6::Concurrent)
 qt_add_resources(afterglow_scripting afterglow_scripting_prelude
     PREFIX /afterglow/scripting
@@ -240,7 +253,8 @@ if(BUILD_TESTING)
     target_include_directories(afterglow_native_tests PRIVATE ${PROJECT_SOURCE_DIR}/mux/tests)
     afterglow_test_runs(afterglow_native_tests AFTERGLOW_MUX aglow-mux)
     afterglow_test_runs(afterglow_native_tests AFTERGLOW_BINARY afterglow)
-    target_compile_definitions(afterglow_native_tests PRIVATE AFTERGLOW_FAKE_SSH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fake-ssh.sh")
+    target_compile_definitions(afterglow_native_tests PRIVATE AFTERGLOW_FAKE_SSH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fake-ssh.sh"
+        AFTERGLOW_EXAMPLE_SHADERS="${PROJECT_SOURCE_DIR}/examples/shaders")
     # The aglow dnd twins of the kitten dnd tests and the aglow run tests of
     # session panes run the aglow of this build.
     if(AFTERGLOW_BUILD_AGLOW)
@@ -256,7 +270,7 @@ target_compile_definitions(afterglow_app PUBLIC QT_NO_CAST_FROM_ASCII AFTERGLOW_
     AFTERGLOW_APP_ID="${AFTERGLOW_APP_ID}"
     AFTERGLOW_BUILD_DIR="${CMAKE_BINARY_DIR}"
     AFTERGLOW_BUILD_PLUGIN_DIR="${CMAKE_BINARY_DIR}/plugins"
-    AFTERGLOW_INSTALLED_PLUGIN_DIR="${CMAKE_INSTALL_FULL_LIBDIR}/afterglow/plugins"
+    AFTERGLOW_INSTALLED_PLUGIN_DIR="${CMAKE_INSTALL_FULL_LIBDIR}/${AFTERGLOW_DATA_SUBDIR}/plugins"
     AFTERGLOW_BUILD_TERMINFO_DIR="${CMAKE_BINARY_DIR}/share/terminfo"
     AFTERGLOW_INSTALLED_TERMINFO_DIR="${CMAKE_INSTALL_FULL_DATADIR}/terminfo")
 # The layer-shell QPA plugin is part of the phosphor build; make sure it
@@ -291,7 +305,7 @@ install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 # They find each other in their own directory, and the plugin finds them two
 # levels up.
 set(AFTERGLOW_PRIVATE_LIBS ${AFTERGLOW_MUX_PRIVATE_LIBS} AfterglowRender
-    PhosphorConfig PhosphorFsLoader PhosphorRegistry PhosphorShaders PhosphorRendering
+    PhosphorPaths PhosphorConfig PhosphorFsLoader PhosphorRegistry PhosphorShaders PhosphorRendering
     PhosphorWayland PhosphorLayer PhosphorAnimation PhosphorShortcuts
     PhosphorDBus PhosphorIpc PhosphorScripting PhosphorAudio)
 set_target_properties(${AFTERGLOW_PRIVATE_LIBS} PROPERTIES INSTALL_RPATH "$ORIGIN")
@@ -342,26 +356,16 @@ if(NOT PHOSPHORFSLOADER_USE_SYSTEM_VALIJSON)
     install(FILES "${AFTERGLOW_VALIJSON_SOURCE_DIR}/LICENSE" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
             RENAME LICENSE.valijson)
 endif()
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shaders/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/shaders)
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/themes/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/themes)
-# Scripting: types for editors and examples to copy; neither loads on its own.
-install(FILES src/scripting/afterglow.d.luau DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/api)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shaders/ DESTINATION ${CMAKE_INSTALL_DATADIR}/${AFTERGLOW_SHADER_SUBDIR})
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/themes/ DESTINATION ${CMAKE_INSTALL_DATADIR}/${AFTERGLOW_DATA_SUBDIR}/themes)
+# Scripting: the types for editors. They do not load on their own.
+install(FILES src/scripting/afterglow.d.luau DESTINATION ${CMAKE_INSTALL_DATADIR}/${AFTERGLOW_DATA_SUBDIR}/api)
 # Shell completion, where each shell looks for the completions of packages.
 install(FILES ${PROJECT_SOURCE_DIR}/data/completions/afterglow.bash
         DESTINATION ${CMAKE_INSTALL_DATADIR}/bash-completion/completions RENAME afterglow)
 # Zsh: the directory comes from AFTERGLOW_ZSH_COMPLETION_DIR (CMakeLists.txt).
 install(FILES ${PROJECT_SOURCE_DIR}/data/completions/_afterglow DESTINATION ${AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR})
 install(FILES ${PROJECT_SOURCE_DIR}/data/completions/afterglow.fish DESTINATION ${CMAKE_INSTALL_DATADIR}/fish/vendor_completions.d)
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/packages/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/packages)
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/projects/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/projects)
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/scripts/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/scripts)
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/glasshouse/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/glasshouse
-        USE_SOURCE_PERMISSIONS)
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/phosphor/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/phosphor
-        USE_SOURCE_PERMISSIONS)
-# The demo clients of the protocols that docs/COMPATIBILITY.md and
-# docs/DESKTOP.md name: python3 runs them.
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/compatibility/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/compatibility)
 
 # Desktop integration.
 install(FILES ${PROJECT_SOURCE_DIR}/data/${AFTERGLOW_APP_ID}.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)

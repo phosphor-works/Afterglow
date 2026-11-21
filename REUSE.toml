@@ -8,7 +8,11 @@
 version = 1
 
 [[annotations]]
-path = ["data/shaders/**/metadata.json", "data/examples/packages/*/shaders/**/metadata.json"]
+path = [
+    "data/shaders/**/metadata.json",
+    "examples/shaders/**/metadata.json",
+    "examples/packages/*/shaders/**/metadata.json",
+]
 SPDX-FileCopyrightText = "2026 fuddlesworth"
 SPDX-License-Identifier = "LGPL-2.1-or-later"
 
@@ -16,9 +20,9 @@ SPDX-License-Identifier = "LGPL-2.1-or-later"
 # annotation wins.
 [[annotations]]
 path = [
-    "data/shaders/depth-trails/metadata.json",
-    "data/shaders/feedback-glow/metadata.json",
-    "data/shaders/mesh-reactor/metadata.json",
+    "examples/shaders/depth-trails/metadata.json",
+    "examples/shaders/feedback-glow/metadata.json",
+    "examples/shaders/mesh-reactor/metadata.json",
 ]
 SPDX-FileCopyrightText = "2026 fuddlesworth"
 SPDX-License-Identifier = "GPL-3.0-or-later"
@@ -35,18 +39,18 @@ SPDX-FileCopyrightText = "2026 fuddlesworth"
 SPDX-License-Identifier = "CC0-1.0"
 
 [[annotations]]
-path = ["data/examples/glasshouse/**/*.json", "data/examples/glasshouse/preview.webp"]
+path = ["examples/glasshouse/**/*.json", "examples/glasshouse/preview.webp"]
 SPDX-FileCopyrightText = "2026 fuddlesworth"
 SPDX-License-Identifier = "GPL-3.0-or-later"
 # Glasshouse palettes after Dsaquel/dots.
 
 [[annotations]]
 path = [
-    "data/examples/phosphor/*.json",
-    "data/examples/phosphor/**/*.json",
-    "data/examples/phosphor/preview.webp",
-    "data/examples/packages/*/package.json",
-    "data/examples/projects/*.json",
+    "examples/phosphor/*.json",
+    "examples/phosphor/**/*.json",
+    "examples/phosphor/preview.webp",
+    "examples/packages/*/package.json",
+    "examples/projects/*.json",
     "data/themes/afterglow-dark.json",
     "data/themes/afterglow-light.json",
 ]

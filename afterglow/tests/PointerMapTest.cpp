@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// The bundled packs with a pointer map (pPointerMap), CRT Curve and Tilt,
-// move the pointer the way their pictures move the content, in the pane
-// chain and in the window chain. A pane of black and white cells, as a
+// The packs of this repository with a pointer map (pPointerMap), the
+// example packs CRT Curve and Tilt, move the pointer the way their pictures
+// move the content, in the pane chain and in the window chain. A pane of black and white cells, as a
 // checkerboard, goes through the pack offscreen. At each pixel of the
 // picture, the cell that the map gives must have the colour drawn there.
 
@@ -16,6 +16,7 @@
 #include <AfterglowVt/Terminal.h>
 
 #include <QDir>
+#include <QFile>
 #include <QGuiApplication>
 #include <QImage>
 #include <QTemporaryDir>
@@ -59,7 +60,7 @@ QVariantMap packValues()
 
 } // namespace
 
-TEST(PointerMap, TheBundledMapsFindTheCellDrawnUnderThePointer)
+TEST(PointerMap, TheMapsOfThePacksFindTheCellDrawnUnderThePointer)
 {
     if (!s_device) {
         if (s_noVulkan)
@@ -92,12 +93,15 @@ TEST(PointerMap, TheBundledMapsFindTheCellDrawnUnderThePointer)
     pane.params.id = 1;
 
     // The packs by name, at values that move the content: not whatever else
-    // the data directories hold. A bundled pack with a map joins the list.
+    // the data directories hold. A bundled or example pack with a map joins
+    // the list.
     const QStringList mapped{QStringLiteral("crt-curve"), QStringLiteral("tilt")};
-    const QStringList bundled =
-        QDir(QStringLiteral(AFTERGLOW_SOURCE_SHADERS)).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
-    ASSERT_TRUE(bundled.contains(QStringLiteral("tilt"))) << AFTERGLOW_SOURCE_SHADERS;
-    for (const QString& id : bundled) {
+    const QStringList packs =
+        QDir(QStringLiteral(AFTERGLOW_SOURCE_SHADERS)).entryList(QDir::Dirs | QDir::NoDotAndDotDot)
+        + QDir(QStringLiteral(AFTERGLOW_EXAMPLE_SHADERS)).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    ASSERT_TRUE(packs.contains(QStringLiteral("tilt"))) << AFTERGLOW_EXAMPLE_SHADERS;
+    ASSERT_TRUE(packs.contains(QStringLiteral("phosphor-panes"))) << AFTERGLOW_SOURCE_SHADERS;
+    for (const QString& id : packs) {
         ShaderLibrary::Refs refs;
         refs.pane = {id};
         const auto chains = library.build(refs, {});
@@ -165,6 +169,12 @@ int main(int argc, char** argv)
         return 1;
     qputenv("XDG_CONFIG_HOME", home.filePath(QStringLiteral("config")).toUtf8());
     qputenv("XDG_DATA_HOME", home.filePath(QStringLiteral("data-home")).toUtf8());
+    // The example packs are the user's packs of this test, through a link:
+    // the library makes its preset directory beside them.
+    if (!QDir().mkpath(home.filePath(QStringLiteral("config/phosphor-works/afterglow")))
+        || !QFile::link(QStringLiteral(AFTERGLOW_EXAMPLE_SHADERS),
+                        home.filePath(QStringLiteral("config/phosphor-works/afterglow/shaders"))))
+        return 1;
     QGuiApplication app(argc, argv);
     AfterglowRender::Testing::Device made = AfterglowRender::Testing::makeDevice();
     s_device = std::move(made.device);

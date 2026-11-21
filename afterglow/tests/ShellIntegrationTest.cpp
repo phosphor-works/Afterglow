@@ -522,11 +522,34 @@ TEST_P(ShellFeatures, TheMarksTellTheShellsState)
         EXPECT_TRUE(until(state(ShellState::Continuation))) << o.take();
         ASSERT_TRUE(s.pty->write("b\"\r"));
         EXPECT_TRUE(until(state(ShellState::Prompt))) << o.take();
-        // Ctrl+C at the secondary prompt: the next primary one.
+        // Ctrl+C at the secondary prompt: the next primary one. The echo of a
+        // typed key says that the line editor reads: the shell prints the
+        // mark as it draws PS2, before the editor starts.
         ASSERT_TRUE(s.pty->write("echo \"\r"));
         EXPECT_TRUE(until(state(ShellState::Continuation))) << o.take();
+        o.take();
+        ASSERT_TRUE(s.pty->write("q"));
+        EXPECT_TRUE(o.wait("q")) << o.take();
         ASSERT_TRUE(s.pty->write("\x03"));
-        EXPECT_TRUE(until(state(ShellState::Prompt))) << o.take();
+        // Readline's SIGINT handler only sets a flag that its loop checks:
+        // a signal between that check and the blocking read() waits for the
+        // next key (1 run in 30 for bash here). A user's next key draws the
+        // prompt; a second Ctrl+C, at a prompt or not, is that key here.
+        std::unique_lock lock(o.mutex);
+        if (!o.changed.wait_for(lock, std::chrono::seconds(3), [&o] {
+                return o.terminal.shellState() == ShellState::Prompt;
+            })) {
+            lock.unlock();
+            ASSERT_TRUE(s.pty->write("\x03"));
+        } else {
+            lock.unlock();
+        }
+        EXPECT_TRUE(until(state(ShellState::Prompt)))
+            << shell << " screen:\n"
+            << [&o] {
+                   std::lock_guard screen(o.mutex);
+                   return o.terminal.text(AfterglowVt::Terminal::TextScope::Screen);
+               }();
     }
     o.exit();
 }
@@ -1420,7 +1443,7 @@ TEST(Ssh, InstallsTheTerminfoEntryOnceOrFallsBack)
     EXPECT_EQ(Afterglow::Ssh::run({"-p", "2222", "prod"}), 7);
     EXPECT_EQ(ssh.take(), QStringList({"ARGS [-p] [2222] [prod]", "TERM=afterglow"}));
     // The cache names no host, and only its owner can read it.
-    QFile cache(ssh.dir.filePath("state/afterglow/ssh-terminfo"));
+    QFile cache(ssh.dir.filePath("state/phosphor-works/afterglow/ssh-terminfo"));
     ASSERT_TRUE(cache.open(QIODevice::ReadOnly));
     const QByteArray cached = cache.readAll();
     EXPECT_FALSE(cached.contains("10.0.0.5") || cached.contains("alice")) << cached.toStdString();

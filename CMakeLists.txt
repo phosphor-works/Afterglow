@@ -93,19 +93,9 @@ if(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR STREQUAL "")
     set(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR "${CMAKE_INSTALL_DATADIR}/zsh/site-functions")
 endif()
 
-# Installed layout: the executables in bin/; afterglow's libraries, its own
-# copies of the phosphor libraries and their layer-shell plugin in a private
-# lib/afterglow/, so a system install of phosphor is never touched.
-# afterglow and aglow-mux find that directory and no other run path (aglow is
-# static); the libraries in it and the plugin set their own run paths where
-# they are installed (afterglow/CMakeLists.txt, and mux/CMakeLists.txt for
-# aglow-mux alone).
-set(AFTERGLOW_PRIVATE_LIBDIR "${CMAKE_INSTALL_LIBDIR}/afterglow")
-# The path from the executables to it, also for an absolute LIBDIR or a
-# BINDIR deeper than bin/.
-file(RELATIVE_PATH AFTERGLOW_PRIVATE_LIBDIR_FROM_BIN "${CMAKE_INSTALL_FULL_BINDIR}" "${CMAKE_INSTALL_FULL_LIBDIR}/afterglow")
-set(AFTERGLOW_INSTALL_RPATH "$ORIGIN/${AFTERGLOW_PRIVATE_LIBDIR_FROM_BIN}")
-set(CMAKE_INSTALL_RPATH "${AFTERGLOW_INSTALL_RPATH}")
+# The installed layout, the private library directory and the run path are in
+# cmake/AfterglowInstallDirs.cmake, which needs the suite folder's name from
+# the phosphor-libs tree: cmake/AfterglowPhosphor.cmake includes it.
 # The private libraries of aglow-mux, which it installs alone and afterglow
 # installs with its own in a whole build. AglowOnlyCheck.cmake checks for
 # them in the installation of aglow-mux alone.
@@ -164,12 +154,9 @@ set(QT_MIN_VERSION "${AFTERGLOW_QT_MIN}.0")
 set(QT_NO_PRIVATE_MODULE_WARNING ON)
 find_package(Qt6 ${AFTERGLOW_QT_MIN} REQUIRED COMPONENTS Core Gui ShaderTools)
 message(STATUS "Afterglow uses Qt ${Qt6_VERSION} private APIs; rebuild Afterglow after changing the Qt build.")
+# It appends $ORIGIN and $ORIGIN/../lib to the run path, which
+# cmake/AfterglowInstallDirs.cmake replaces after it.
 qt_standard_project_setup()
-# qt_standard_project_setup() appends $ORIGIN and $ORIGIN/../lib to the run
-# path: the executables would then load a library from bin/ or from the
-# shared lib/ of the prefix (a Qt in ~/.local/lib, say) before the Qt of the
-# build. They search only the private directory.
-set(CMAKE_INSTALL_RPATH "${AFTERGLOW_INSTALL_RPATH}")
 
 # Qt's signals/slots/emit keywords collide with ordinary identifiers (the
 # phosphor libraries name variables `slots`); use Q_SIGNALS / Q_EMIT instead.

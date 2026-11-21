@@ -192,7 +192,7 @@ int main(int argc, char** argv)
         // The font, shaders and animations are fixed here, not left to the
         // defaults, so runs stay comparable with the recorded baselines: those
         // ran with animated cursor, scrolling and splits, and before the
-        // overview, pane-effect, tab-switch and overlay-fade packs existed.
+        // event packs (Shaders.overview and the three others) existed.
         // Every event pack is off, so a pack added later does not change the runs.
         QJsonObject noEventShaders;
         for (const QString& key : ShaderEventKeys)
@@ -357,7 +357,7 @@ int main(int argc, char** argv)
         } else if (mode == QLatin1String("scripts")) {
             const QString scriptDir = QFileInfo(str("config")).absolutePath() + QStringLiteral("/benchmark-scripts");
             QDir().mkpath(scriptDir);
-            QFile source(str("repo") + QStringLiteral("/data/examples/phosphor/scripts/phosphor.luau"));
+            QFile source(str("repo") + QStringLiteral("/examples/phosphor/scripts/phosphor.luau"));
             if (!source.open(QIODevice::ReadOnly))
                 throw std::runtime_error("Cannot read Phosphor script");
             QByteArray scriptSource = source.readAll();

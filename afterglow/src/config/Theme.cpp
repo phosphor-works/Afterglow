@@ -6,6 +6,7 @@
 #include "app/BuildTree.h"
 
 #include <AfterglowProto/Color.h>
+#include <PhosphorPaths/SuiteDirectories.h>
 
 #include <QColor>
 #include <QDir>
@@ -261,11 +262,8 @@ QStringList searchDirs(const QString& configDirectory)
 {
     // Beside the config file, as its scripts are: afterglow --config
     // DIR/config.json takes DIR/themes in place of the user's own.
-    QStringList dirs{
-        (configDirectory.isEmpty()
-             ? QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + QStringLiteral("/afterglow")
-             : configDirectory)
-        + QStringLiteral("/themes")};
+    QStringList dirs{(configDirectory.isEmpty() ? PhosphorPaths::appConfigDir() : configDirectory)
+                     + QStringLiteral("/themes")};
     const QString bundled = bundledDirectory();
     // A build-tree binary puts the checkout above the data directories, so
     // that an installed copy does not shadow the themes that it is testing.
@@ -273,7 +271,7 @@ QStringList searchDirs(const QString& configDirectory)
     if (checkout && !bundled.isEmpty()) {
         dirs << bundled;
     }
-    dirs << dataDirs(QStringLiteral("afterglow/themes"));
+    dirs << dataDirs(PhosphorPaths::appSubdir() + QStringLiteral("/themes"));
     if (!checkout && !bundled.isEmpty()) {
         dirs << bundled;
     }

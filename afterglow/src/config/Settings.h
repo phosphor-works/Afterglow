@@ -274,7 +274,7 @@ struct AnimationSettings
     QString tabCurve = QStringLiteral("spring:13,0.9");
     int tabDuration = 400;
     int paneEffectDuration = 420; ///< panes opening and closing (Shaders.paneEffects)
-    int contextDuration = 1000; ///< a pane's portal to another host, user or container (Shaders.paneEffects)
+    int contextDuration = 1000; ///< a pane's change to another host, user or container (Shaders.paneEffects)
     /// An overlay's fade in and out over its pane (Shaders.overlayTransition),
     /// as splitCurve. The fade stops the first time it reaches its target, so
     /// a curve that overshoots never bounces back.
@@ -452,16 +452,16 @@ struct Settings
     ModifierRemap modifierRemap;
     /// Shader references for each chain, applied in order: a pack's directory
     /// name (normally its id), or "<package>.<pack>" for package packs.
-    ShaderRefs shaders{.overview = QStringLiteral("pane-deck"),
-                       .tabTransition = QStringLiteral("tab-switch"),
-                       .paneEffects = QStringLiteral("pane-effects"),
+    ShaderRefs shaders{.overview = QStringLiteral("phosphor-overview"),
+                       .tabTransition = QStringLiteral("phosphor-tabs"),
+                       .paneEffects = QStringLiteral("phosphor-panes"),
                        .overlayTransition = QStringLiteral("overlay-fade")};
     /// Reference -> { parameter: value }.
     QVariantMap shaderParams;
     bool operator==(const Settings&) const = default;
 };
 
-/// The config file (~/.config/afterglow/config.json) on phosphor-config,
+/// The config file (~/.config/phosphor-works/afterglow/config.json) on phosphor-config,
 /// with live reload when the file changes. The file holds only the values
 /// that differ from the defaults; a missing file means every default, and so
 /// does an empty one that held no settings (an empty file that held settings

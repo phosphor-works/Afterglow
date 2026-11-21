@@ -23,6 +23,8 @@
 #include <QLoggingCategory>
 #include <QSet>
 #include <QStandardPaths>
+
+#include <PhosphorPaths/SuiteDirectories.h>
 #include <QTimer>
 
 #include <algorithm>
@@ -540,8 +542,7 @@ ScriptHost::ScriptHost(Callbacks callbacks, QObject* parent)
     , m_callbacks(std::move(callbacks))
     , m_watchdog(std::make_shared<PhosphorScripting::LuauWatchdog>())
     , m_searchPaths(defaultSearchPaths())
-    , m_stateDirectory(QStandardPaths::writableLocation(QStandardPaths::GenericStateLocation)
-                       + QStringLiteral("/afterglow/scripts"))
+    , m_stateDirectory(PhosphorPaths::appStateDir() + QStringLiteral("/scripts"))
 {
     QFile prelude(QStringLiteral(":/afterglow/scripting/afterglow.luau"));
     if (prelude.open(QIODevice::ReadOnly)) {
@@ -565,10 +566,9 @@ QStringList ScriptHost::defaultSearchPaths()
     // standardLocations lists the most important first; scripts want the reverse.
     const QStringList data = QStandardPaths::standardLocations(QStandardPaths::GenericDataLocation);
     for (auto it = data.crbegin(); it != data.crend(); ++it) {
-        dirs.append(*it + QStringLiteral("/afterglow/scripts"));
+        dirs.append(*it + QLatin1Char('/') + PhosphorPaths::appSubdir() + QStringLiteral("/scripts"));
     }
-    dirs.append(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
-                + QStringLiteral("/afterglow/scripts"));
+    dirs.append(PhosphorPaths::appConfigDir() + QStringLiteral("/scripts"));
     return dirs;
 }
 
