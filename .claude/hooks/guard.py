@@ -137,8 +137,8 @@ MSG_CTL = (
     'drive their instance.'
 )
 MSG_MUX = (
-    "`afterglow mux`, `afterglow ctl --session`, `aglow-mux` (`afterglow-mux` in an older build) and "
-    "`afterglow --mux-attach` reach the user's mux daemon, which holds the user's terminal sessions. Its sockets "
+    "`afterglow mux`, `afterglow ctl --session`, `afterglow mcp`, `aglow-mux` (`afterglow-mux` in an older build) "
+    "and `afterglow --mux-attach` reach the user's mux daemon, which holds the user's terminal sessions. Its sockets "
     'are in $XDG_RUNTIME_DIR/aglow-mux and $XDG_STATE_HOME/aglow-mux (else ~/.local/state/aglow-mux), so '
     'WAYLAND_DISPLAY does not isolate it. Name a private runtime directory and a private state directory under /tmp '
     'on the command (XDG_RUNTIME_DIR=/tmp/... XDG_STATE_HOME=/tmp/...), and kill the sessions that you made with the '
@@ -508,10 +508,13 @@ def isolated_mux(env):
 
 
 def reaches_mux(word, args):
-    """Whether afterglow ARGS or a daemon of MUX_DAEMONS reaches a mux daemon: afterglow mux (but not its help),
-    afterglow ctl --session, afterglow --mux-attach, and the daemon itself (but not its --help or --version)."""
+    """Whether afterglow ARGS or a daemon of MUX_DAEMONS reaches a mux daemon: afterglow mux and afterglow mcp (but
+    not their help), afterglow ctl --session, afterglow --mux-attach, and the daemon itself (but not its --help or
+    --version)."""
     if word == 'afterglow':
         if args[:2] == ['ctl', '--session']:
+            return True
+        if args[:1] == ['mcp'] and args[1:2] not in (['-h'], ['--help']):
             return True
         if any(a == '--mux-attach' or a.startswith('--mux-attach=') for a in args):
             return True
@@ -534,7 +537,7 @@ def drives_instance(word, args):
 LAUNCH_VALUES = {'-d', '--working-directory', '--title', '--config', '-o', '--override', '--class', '--mux-attach'}
 NO_WINDOW = {'-h', '--help', '-?', '--help-all', '-v', '--version', '--config-reference'}
 # The words after afterglow that run something else than the terminal
-NO_TERMINAL = {'ctl', 'ssh', 'mux', 'run', 'transfer', 'dnd', 'icat', 'clipboard'}
+NO_TERMINAL = {'ctl', 'ssh', 'mux', 'mcp', 'run', 'transfer', 'dnd', 'icat', 'clipboard'}
 
 
 def launches_window(args):

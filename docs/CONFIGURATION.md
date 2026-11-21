@@ -135,6 +135,17 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 | `openWith` | `""` |  | Command for opening links. Afterglow splits it into words, adds the URL as the last argument and runs it without a shell. Quotes keep spaces in one word. An empty value uses the desktop browser. |
 | `schemes` | `["http", "https", "mailto", "ftp", "file"]` |  | URL schemes that open without a prompt. Links with other schemes ask first. |
 
+## Mcp
+
+| Key | Default | Range or choices | Meaning |
+| --- | --- | --- | --- |
+| `endSessionOnExit` | `true` |  | End the session of afterglow mcp when the server exits, also when it crashes. When two servers use one session, it ends when the last of them exits. When this is off, the session keeps running, and a new server can use it again with --session. A session that a server adopted with --adopt never ends with the server. |
+| `maxWaitTimeout` | `3600000` | 1000–86400000 | The longest time in milliseconds that a call of the run and wait tools of afterglow mcp can ask for. A longer timeout uses this value. A command that runs longer goes on, and the agent calls wait again. |
+| `outputLimit` | `65536` | 1024–1048576 | The most bytes of UTF-8 text that one result of the run, wait and read tools of afterglow mcp carries. A longer text loses its start, and the result says that it was cut. |
+| `screenshotMaxSize` | `2048` | 64–16384 | The longest side in pixels of a screenshot that the screenshot tool of afterglow mcp returns. Afterglow scales a larger image down. |
+| `tailLines` | `200` | 1–1000000 | The number of lines at the end of the output that the run and wait tools of afterglow mcp return when the call gives no tail_lines. |
+| `waitTimeout` | `120000` | 1000–86400000 | Milliseconds that the run and wait tools of afterglow mcp wait when the call gives no timeout. A value above Mcp.maxWaitTimeout uses Mcp.maxWaitTimeout. The server reads its settings when it starts. |
+
 ## Mouse
 
 | Key | Default | Range or choices | Meaning |
@@ -154,6 +165,8 @@ A color in `Colors` has one of the forms of [color values](APPEARANCE.md#color-v
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
+| `agentColor` | `""` |  | The color of the badge of an agent session. An empty value uses the bright magenta of the palette (color13), so that a theme sets it. |
+| `agentLabel` | `"agent"` |  | The text of the badge on each tab of a window that shows an agent session, and of the prefix in its title, such as [agent]. An agent session is the session of afterglow mcp. An empty value shows no badge and no prefix. |
 | `eventQueue` | `4` | 1–64 | Most mebibytes of requests, such as bells, notifications and clipboard requests, that wait while the window of a session is slow. The session keeps one queue of this size, and each pane keeps another. A request that does not fit gets the answer of a session that no window shows. A request that finds the queue of its pane empty always fits. A change applies when Afterglow next attaches to a session. |
 | `keptNotifications` | `8` | 0–100 | The largest number of notifications that each pane of a mux session keeps while no window shows the session. The next window that shows the session shows them, oldest first. Notifications.enabled and Notifications.rateLimit apply to them, so a value above the rate limit only drops the newest. Notifications.filters applies when a window shows them, so a filtered notification also takes a place. When a pane has more, the oldest goes. The notifications of a pane take at most 256 KiB, and a larger one keeps no icon. A pane also keeps a bell and a flash, whatever this value. The session does not keep clipboard writes. The value 0 keeps no notifications. A change applies at once to a session that a window shows. |
 | `onClose` | `"kill"` | `"kill"`, `"detach"` | What closing the window of a mux session, or its last tab or pane, does. With kill, the session and its programs end, as in a window outside a session. With detach, the session keeps running with its tabs and splits, and afterglow mux attach shows it again. Closing another tab or pane of the window ends only the programs of that tab or pane. With either value, the session keeps running after afterglow mux detach or a takeover by another window. It also keeps running after a quit of Afterglow, a crash or a lost connection. The window of a project that opens into a session always keeps its session. |

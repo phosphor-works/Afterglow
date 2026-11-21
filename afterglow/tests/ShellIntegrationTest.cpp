@@ -589,9 +589,16 @@ TEST_P(ShellFeatures, APasteOfTwoLinesRunsBoth)
     })) << o.text;
     EXPECT_EQ(o.terminal.lastExitCode(), std::optional<int>(1));
     std::size_t outputs = 0;
+    std::vector<std::optional<int>> codes;
     for (const AfterglowVt::SemanticRegion& region : o.terminal.semanticRegions()) {
-        if (region.id > before && region.kind == AfterglowVt::SemanticZoneKind::Output)
+        if (region.id > before && region.kind == AfterglowVt::SemanticZoneKind::Output) {
             ++outputs;
+            codes.push_back(region.exitCode);
+        }
+    }
+    // Each line's own exit code: bash's PS0 ends the line before with its D.
+    if (GetParam() == "bash") {
+        EXPECT_EQ(codes, (std::vector<std::optional<int>>{0, 1}));
     }
     // Bash runs each line as a command of its own. Zsh and Fish run the
     // command line that the paste made as one.

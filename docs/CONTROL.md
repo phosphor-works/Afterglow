@@ -7,6 +7,7 @@ Other programs can control Afterglow with the command line or the control socket
 They can list panes, send text, create panes, set titles, show notifications and run actions.
 They can also run a program over a pane (an [overlay](#overlays)), save a [screenshot](#screenshots) and run the commands of scripts.
 The `watch` command writes each event as a JSON line, such as `{"args":[3,"vim"],"event":"titleChanged"}`.
+For an agent such as Claude Code, [`afterglow mcp`](MCP.md) gives these calls as MCP tools, on a mux session of its own.
 
 ```sh
 afterglow ctl --help

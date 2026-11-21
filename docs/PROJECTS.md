@@ -206,6 +206,7 @@ The ID maps connect saved labels to runtime IDs.
 Project creation uses the structural action budget.
 Window snapshots contain `project`. An unnamed window has an empty project name.
 
+The `open_project` and `save_project` tools of the [MCP server](MCP.md#open_project) open a project in the agent's own mux session, and save that session as a project, also with no window.
 The [project script](../examples/scripts/projects.luau) shows a native selector.
 The [control socket](CONTROL.md#control-calls) supplies `projects`, `saveProject` and `openProject`.
 The CLI prints save and open results as JSON.
