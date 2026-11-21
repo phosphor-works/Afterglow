@@ -21,6 +21,7 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -75,6 +76,13 @@ public:
         /// The session's environment, over which the launches of new panes
         /// are prepared (the daemon's selectSession answer).
         std::optional<InheritedEnvironment> environment;
+        /// The directory of the user's projects, beside the config file that
+        /// the server read: open_project reads there, save_project writes.
+        QString projects;
+        /// A new connection to the daemon, as a descriptor that the caller
+        /// owns, or -1 with @p error: the commands of scripts take a
+        /// connection each, which the daemon relays to the window.
+        std::function<int(QString* error)> connect;
     };
 
     McpTools(DaemonLink& link, const Settings& settings, Session session, QObject* parent = nullptr);
@@ -86,6 +94,8 @@ public:
 
 private:
     struct Wait;
+    struct ProjectOpen;
+    struct ScriptRun;
     /// A run of this server: where its output starts, and the newest shell
     /// region before it.
     struct RunRecord
@@ -108,6 +118,36 @@ private:
     void read(PhosphorMcp::McpCall call);
     void screenshot(PhosphorMcp::McpCall call);
     void closePane(PhosphorMcp::McpCall call);
+    // The tools of projects and of the commands of scripts, in McpWorkflows.cpp.
+    static QList<PhosphorMcp::McpTool> workflowDefinitions();
+    void openProject(PhosphorMcp::McpCall call);
+    /// The next step of @p open, which ends the call after the last one.
+    void openNext(const std::shared_ptr<ProjectOpen>& open);
+    /// Closes the panes that @p open made, and fails its call with @p text.
+    void failOpen(const std::shared_ptr<ProjectOpen>& open, const QString& text);
+    void saveProject(PhosphorMcp::McpCall call);
+    /// Writes project @p name from the session's @p layout and the
+    /// directories of its panes.
+    void writeProject(const CallPtr& call, const QString& name, bool overwrite, const QJsonValue& layout,
+                      const std::shared_ptr<QHash<quint32, QString>>& directories);
+    void listScriptCommands(PhosphorMcp::McpCall call);
+    void runScriptCommand(PhosphorMcp::McpCall call);
+    /// A connection of its own that selected the session, for the commands
+    /// target, or nullptr with the failed @p call.
+    DaemonLink* commandLink(PhosphorMcp::McpCall& call);
+    /// Selects the session on @p link, then lists the commands of scripts of
+    /// the window that shows it, for @p next. @p failed says why not.
+    void listCommands(DaemonLink* link, std::function<void(const QString&)> failed,
+                      std::function<void(const QJsonArray&)> next);
+    /// A failed call of a link of the commands target, for the model.
+    QString commandsFailure(const DaemonLink::Error& error) const;
+    void sendInput(const std::shared_ptr<ScriptRun>& run, qsizetype from);
+    void startRun(const std::shared_ptr<ScriptRun>& run);
+    void finishRun(const std::shared_ptr<ScriptRun>& run, const QJsonValue& value, const DaemonLink::Error* error);
+    /// Ends @p run's connection, which ends the run in the window.
+    void dropRun(const std::shared_ptr<ScriptRun>& run);
+    /// Fails every run of a script command with @p text.
+    void endScriptRuns(const QString& text);
 
     /// The pane object of @p pane in the answer of listPanes, or an empty one.
     static QJsonObject paneIn(const QJsonValue& panes, quint32 pane);
@@ -148,6 +188,9 @@ private:
     QHash<quint32, RunRecord> m_runs;
     /// The shell state of each pane, from listPanes and shellChanged.
     QHash<quint32, QString> m_shells;
+    /// The runs of commands of scripts, each with a connection of its own.
+    std::map<quint64, std::shared_ptr<ScriptRun>> m_scriptRuns;
+    quint64 m_nextScriptRun = 0;
     /// Why the tools cannot reach the session any more.
     QString m_ended;
 };

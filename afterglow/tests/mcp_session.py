@@ -7,8 +7,10 @@ Each server runs with a private XDG_RUNTIME_DIR, XDG_STATE_HOME, XDG_CONFIG_HOME
 variables of an allow list, so that no server reaches the user's mux daemon, Afterglow, bus or shell files. The
 servers of a run share one private daemon, which the first one starts. Bash is the shell of the session, with the
 shell integration of the source tree (an afterglow in a build tree reads it) and an rc file that sets the prompt that
-the checks wait for. Bash is required. The zsh and gdb cases skip with a reason when the program is not in PATH. At the
-end, and on a failure, the run ends every server, session and daemon that it started.
+the checks wait for. Bash is required. The zsh and gdb cases skip with a reason when the program is not in PATH. The
+case of a script command opens a window of the session in a headless KWin of its own, on a bus of its own, and skips
+with a reason without kwin_wayland or dbus-run-session, or when the window cannot start. At the end, and on a failure,
+the run ends every server, session, window and daemon that it started.
 
 Usage: mcp_session.py AFTERGLOW [CASE...]
 """
@@ -24,6 +26,11 @@ import tempfile
 import time
 import traceback
 from pathlib import Path
+
+# One KWin configuration for every runner: the user's KWin plugins must not
+# load into the test compositor.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from nested_desktop import KWINRC  # noqa: E402
 
 VERSION = '2026-07-28'
 META = {'io.modelcontextprotocol/protocolVersion': VERSION, 'io.modelcontextprotocol/clientCapabilities': {}}
@@ -93,6 +100,11 @@ class Home:
                   'Control': {'eventInterval': 100}, 'Mcp': mcp}
         (self.app / 'config.json').write_text(json.dumps(config))
 
+    def log_file(self, name):
+        log = open(self.root / f'{name}.log', 'w')
+        self.logs.append(log)
+        return log
+
     def server(self, *args, check_start=True):
         server = Server(self, list(args))
         self.servers.append(server)
@@ -144,6 +156,8 @@ class Home:
     def close(self):
         for server in self.servers:
             server.kill()
+        for log in self.logs:
+            log.close()
         for name in self.sessions():
             self.daemon('killSession', [name])
         # The daemon ends with its last session. One that does not, and every
@@ -215,7 +229,7 @@ class Server:
                 self.notifications.append(message)
         return self.replies.pop(id)
 
-    def start_call(self, name, progress=None, **arguments):
+    def start_call(self, name, /, progress=None, **arguments):
         extra = {'progressToken': progress} if progress is not None else {}
         return self.request('tools/call', {'name': name, 'arguments': arguments}, **extra)
 
@@ -224,16 +238,16 @@ class Server:
         check('result' in reply, f'a protocol error: {reply}')
         return reply['result']
 
-    def call(self, name, timeout=30.0, **arguments):
+    def call(self, name, timeout=30.0, /, **arguments):
         return self.result(self.start_call(name, **arguments), timeout)
 
-    def tool(self, name, timeout=30.0, **arguments):
+    def tool(self, name, timeout=30.0, /, **arguments):
         """A call that must succeed: its structured content, or its text."""
         result = self.call(name, timeout, **arguments)
         check(not result.get('isError'), f'{name} {arguments} failed: {result["content"][0]["text"]}')
         return result.get('structuredContent', result['content'][0]['text'])
 
-    def error(self, name, timeout=30.0, **arguments):
+    def error(self, name, timeout=30.0, /, **arguments):
         """A call that must fail as a tool: its text."""
         result = self.call(name, timeout, **arguments)
         check(result.get('isError'), f'{name} {arguments} did not fail: {result}')
@@ -293,10 +307,13 @@ def discover_and_tools(home):
     check(bad['error']['code'] == -32022 and bad['error']['data']['requested'] == '2025-11-25', bad)
     tools = s.reply(s.request('tools/list'))['result']['tools']
     names = [t['name'] for t in tools]
-    check(names == ['list_panes', 'open_pane', 'run', 'wait', 'send', 'read', 'screenshot', 'close_pane'], names)
+    check(names == ['list_panes', 'open_pane', 'run', 'wait', 'send', 'read', 'screenshot', 'close_pane',
+                    'open_project', 'save_project', 'list_script_commands', 'run_script_command'], names)
     expected = {'list_panes': (True, False), 'open_pane': (False, False), 'run': (False, True),
                 'wait': (True, False), 'send': (False, True), 'read': (True, False),
-                'screenshot': (True, False), 'close_pane': (False, True)}
+                'screenshot': (True, False), 'close_pane': (False, True), 'open_project': (False, False),
+                'save_project': (False, True), 'list_script_commands': (True, False),
+                'run_script_command': (False, True)}
     for tool in tools:
         hints = tool['annotations']
         check(set(hints) >= {'readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'}, tool)
@@ -684,6 +701,184 @@ def zsh_paste(home):
         check(result['exit_codes'] == [4] and result['exit_code'] == 4, result)
     finally:
         home.settings()
+
+
+def write_project(home, name, document):
+    directory = home.app / 'projects'
+    directory.mkdir(exist_ok=True)
+    (directory / f'{name}.json').write_text(json.dumps(document))
+
+
+def project_pane(label, cwd, command=()):
+    return {'pane': {'id': label, 'cwd': str(cwd), 'title': '', 'command': list(command)}}
+
+
+@case
+def projects(home):
+    """open_project opens a saved project into the agent's own session, and save_project saves the session back."""
+    work = home.home / 'work'
+    work.mkdir(exist_ok=True)
+    # sh through PATH: the project looks its programs up as a pane does.
+    marker = ['sh', '-c', 'echo project-c; exec sleep 600']
+    write_project(home, 'dev', {
+        'version': 1, 'active_tab': 't2', 'session': True,
+        'tabs': [
+            {'id': 't1', 'title': 'Edit', 'active_pane': 'b',
+             'tree': {'direction': 'right', 'ratio': 0.3,
+                      'first': project_pane('a', home.home),
+                      'second': {'direction': 'down', 'ratio': 0.5,
+                                 'first': project_pane('b', work), 'second': project_pane('d', work)}}},
+            {'id': 't2', 'title': 'Run', 'active_pane': 'c', 'tree': project_pane('c', work, marker)},
+        ]})
+    s = home.server()
+    first = s.first_pane()
+    opened = s.tool('open_project', name='dev')
+    ids = opened['panes']
+    check(sorted(ids) == ['a', 'b', 'c', 'd'] and opened['name'] == 'dev', opened)
+    panes = s.panes()
+    check(len(panes) == 5 and all(ids[label] in panes for label in ids), panes)
+    # The tabs of the project come after the session's own, in their order,
+    # with the splits of the first one in one tab.
+    tab = {label: panes[ids[label]]['tab'] for label in ids}
+    check(tab['a'] == tab['b'] == tab['d'] and tab['c'] == tab['a'] + 1 and tab['a'] > panes[first]['tab'], tab)
+    wait_for(lambda: 'project-c' in s.tool('read', pane=ids['c'])['text'], 10, 'pane c did not run its command')
+    # No session of the project's name: the project opened here.
+    check('dev' not in home.sessions(), home.sessions())
+    text = s.error('open_project', name='missing')
+    check('dev' in text, text)
+
+    saved = s.tool('save_project', name='saved')
+    path = Path(saved['path'])
+    check(path == home.app / 'projects' / 'saved.json' and saved['panes'] == 5, saved)
+    document = json.loads(path.read_text())
+    check(document['session'] is True and len(document['tabs']) == 3, document)
+    split = document['tabs'][1]['tree']
+    check(split['direction'] == 'right' and split['second']['direction'] == 'down', split)
+    leaves = {}
+
+    def collect(node):
+        if 'pane' in node:
+            leaves[int(node['pane']['id'])] = node['pane']
+        else:
+            collect(node['first'])
+            collect(node['second'])
+    for t in document['tabs']:
+        collect(t['tree'])
+    check(leaves[ids['c']]['command'] == marker and leaves[ids['a']]['command'] == [], leaves)
+    check(leaves[ids['b']]['cwd'] == str(work), leaves)
+    # The active tab of the project has the focus, and is the active tab of the save.
+    check(document['tabs'][int(document['active_tab']) - 1]['active_pane'] == str(ids['c']), document)
+    # A saved project stays without overwrite.
+    text = s.error('save_project', name='saved')
+    check('overwrite' in text, text)
+    check(s.tool('save_project', name='saved', overwrite=True)['name'] == 'saved', 'the overwrite failed')
+    check(s.error('save_project', name='no/name'), 'a name with a slash saved')
+    # The saved project opens again, in the session of another server.
+    other = home.server()
+    again = other.tool('open_project', name='saved')
+    check(len(again['panes']) == 5 and len(other.panes()) == 6, (again, other.panes()))
+
+
+@case
+def script_commands_without_a_window(home):
+    s = home.server()
+    text = s.error('list_script_commands')
+    check('afterglow mux attach ' + s.session in text, text)
+    text = s.error('run_script_command', pane=s.first_pane(), script='x', command='y')
+    check('afterglow mux attach ' + s.session in text, text)
+
+
+SCRIPT = """local script = {}
+script.metadata = {
+    commands = {
+        echo = { summary = "Echo the arguments and the input", stdin = true },
+        plain = { summary = "Read no input" },
+    },
+}
+function script.run_command(command, ev)
+    if command == "echo" then
+        return {
+            afterglow.output(ev, table.concat(ev.args, " ") .. "|" .. (ev.stdin or "nil")),
+            afterglow.output_error(ev, "to stderr"),
+            afterglow.exit(ev, 3),
+        }
+    end
+    return afterglow.exit(ev, 0)
+end
+return script
+"""
+
+
+@case
+def script_command_through_a_window(home):
+    """A window of the session in a headless KWin of the run's own, with a script of the run's config, runs the
+    command. Never the user's display: KWin and the window get the run's runtime directory and a bus of their own."""
+    for program in ('kwin_wayland', 'dbus-run-session'):
+        if not shutil.which(program):
+            raise Skip(f'{program} is not in PATH')
+    scripts = home.app / 'scripts'
+    scripts.mkdir(exist_ok=True)
+    (scripts / 'mcptest.luau').write_text(SCRIPT)
+    (home.config / 'kwinrc').write_text(KWINRC)
+    s = home.server()
+    pane = s.first_pane()
+    display = f'aglow-mcp-{os.getpid()}'
+    env = home.env()
+    kwin = subprocess.Popen(['dbus-run-session', '--', 'kwin_wayland', '--virtual', '--socket', display,
+                             '--width', '1100', '--height', '750', '--no-lockscreen', '--no-global-shortcuts',
+                             '--no-kactivities'], env=env, stdout=home.log_file('kwin'), stderr=subprocess.STDOUT,
+                            start_new_session=True)
+    window = None
+    try:
+        try:
+            wait_for(lambda: (home.runtime / display).exists() or kwin.poll() is not None, 15)
+        except Failure:
+            raise Skip('the headless KWin made no display in 15 s')
+        if kwin.poll() is not None:
+            raise Skip('the headless KWin did not start (no GPU?)')
+        window_env = dict(env, WAYLAND_DISPLAY=display, QT_QPA_PLATFORM='wayland', QT_QPA_PLATFORMTHEME='generic',
+                          QT_QUICK_CONTROLS_STYLE='Basic')
+        window = subprocess.Popen(['dbus-run-session', '--', home.binary, 'mux', 'attach', s.session],
+                                  env=window_env, stdout=home.log_file('window'), stderr=subprocess.STDOUT,
+                                  start_new_session=True)
+        wait_for(lambda: home.sessions().get(s.session, {}).get('attached') or window.poll() is not None, 30,
+                 'no window showed the session')
+        if window.poll() is not None:
+            # No Vulkan device in a container: the window cannot draw.
+            tail = (home.root / 'window.log').read_text(errors='replace')[-600:]
+            raise Skip(f'the window of the session exited at its start: {tail}')
+
+        def listed():
+            result = s.call('list_script_commands')
+            if result.get('isError'):
+                return None
+            found = {(c['script'], c['command']): c for c in result['structuredContent']['commands']}
+            return found if ('mcptest', 'echo') in found else None
+        commands = wait_for(listed, 20, 'the window lists no command of the script')
+        check(commands[('mcptest', 'echo')]['stdin'] is True and not commands[('mcptest', 'plain')]['stdin'],
+              commands)
+        result = s.tool('run_script_command', pane=pane, script='mcptest', command='echo', args=['a', 'b c'],
+                        stdin='in')
+        check(result == {'exit_code': 3, 'stdout': 'a b c|in', 'stderr': 'to stderr', 'truncated': False}, result)
+        result = s.tool('run_script_command', pane=pane, script='mcptest', command='echo')
+        check(result['stdout'] == '|nil', result)
+        text = s.error('run_script_command', pane=pane, script='mcptest', command='plain', stdin='x')
+        check('standard input' in text, text)
+        text = s.error('run_script_command', pane=pane, script='mcptest', command='none')
+        check('list_script_commands' in text, text)
+        # A pane of another session is no pane of this window.
+        other = home.server()
+        text = s.error('run_script_command', pane=other.first_pane(), script='mcptest', command='plain')
+        check('shows in its window' in text, text)
+    finally:
+        for process in (window, kwin):
+            if process and process.poll() is None:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
 
 
 def main():

@@ -99,8 +99,10 @@ qt_add_library(afterglow_app STATIC
     # Here, not with Mcp.cpp: the tests check the tool definitions.
     src/mcp/DaemonLink.cpp
     src/mcp/DaemonLink.h
+    src/mcp/McpToolParts.h
     src/mcp/McpTools.cpp
     src/mcp/McpTools.h
+    src/mcp/McpWorkflows.cpp
     # Here, not with Ctl: the socket tests drive it too.
     src/control/IpcClient.cpp
     src/control/IpcClient.h

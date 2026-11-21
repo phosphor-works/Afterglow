@@ -126,7 +126,7 @@ std::optional<AfterglowVt::Rgb> colorNamed(std::string_view name)
 /// window's control target takes it, whose router refuses another count.
 std::optional<std::size_t> arity(std::string_view fn)
 {
-    if (fn == "listPanes" || fn == "focusedPane")
+    if (fn == "listPanes" || fn == "focusedPane" || fn == "layout")
         return 0;
     if (fn == "focus" || fn == "close" || fn == "detachTab")
         return 1;
@@ -406,6 +406,23 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
     }
     if (fn == "focusedPane")
         return ipcReply(request.id.value_or(0), std::int64_t(session.focusedPane()));
+    if (fn == "layout") {
+        // The tabs and splits that the daemon keeps, which the window that
+        // shows the session sends after each change: an agent saves a
+        // project of a session that no window shows from them.
+        Layout layout = session.layout();
+        layout.moved.clear();
+        // Commands can carry secrets: they leave only with read access.
+        if (!readText) {
+            for (auto& [id, values] : layout.values)
+                values.command.clear();
+        }
+        std::string reply = ipcReply(request.id.value_or(0), toJson(layout));
+        if (reply.size() > IpcServerConnection::MaxWaitingBytes - connection.waitingBytes()) {
+            return failed(request, "the layout of session '" + session.name() + "' is larger than one answer can hold");
+        }
+        return reply;
+    }
     if (fn == "sendText") {
         if (args.size() != 2 || !args[1].isString())
             return ipcError(request.id, IpcErrorCode::InvalidArg, "sendText takes (pane, text)");
