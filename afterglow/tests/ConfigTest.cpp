@@ -979,6 +979,44 @@ TEST_F(ConfigTest, ReadsTheBadgeOfAnAgentSession)
     EXPECT_EQ(none.settings().mux.agentLabel, QString());
 }
 
+// The settings of afterglow mcp: the defaults of the plan, the user's values,
+// and the clamp of each number to its bounds.
+TEST_F(ConfigTest, ReadsTheSettingsOfTheMcpServer)
+{
+    SettingsStore defaults(write(QStringLiteral("mcp-default.json"), "{}"));
+    const McpSettings& d = defaults.settings().mcp;
+    EXPECT_EQ(d.waitTimeout, 120000);
+    EXPECT_EQ(d.maxWaitTimeout, 3600000);
+    EXPECT_EQ(d.outputLimit, 65536);
+    EXPECT_EQ(d.tailLines, 200);
+    EXPECT_EQ(d.screenshotMaxSize, 2048);
+    EXPECT_TRUE(d.endSessionOnExit);
+    SettingsStore given(write(QStringLiteral("mcp.json"),
+                              R"({"Mcp": {"waitTimeout": 5000, "maxWaitTimeout": 60000, "outputLimit": 4096,
+                                          "tailLines": 10, "screenshotMaxSize": 512, "endSessionOnExit": false}})"));
+    const McpSettings& g = given.settings().mcp;
+    EXPECT_EQ(g.waitTimeout, 5000);
+    EXPECT_EQ(g.maxWaitTimeout, 60000);
+    EXPECT_EQ(g.outputLimit, 4096);
+    EXPECT_EQ(g.tailLines, 10);
+    EXPECT_EQ(g.screenshotMaxSize, 512);
+    EXPECT_FALSE(g.endSessionOnExit);
+    SettingsStore low(write(QStringLiteral("mcp-low.json"),
+                            R"({"Mcp": {"waitTimeout": 1, "maxWaitTimeout": -5, "outputLimit": 0, "tailLines": 0,
+                                        "screenshotMaxSize": 1}})"));
+    EXPECT_EQ(low.settings().mcp.waitTimeout, McpSettings::MinTimeout);
+    EXPECT_EQ(low.settings().mcp.maxWaitTimeout, McpSettings::MinTimeout);
+    EXPECT_EQ(low.settings().mcp.outputLimit, 1024);
+    EXPECT_EQ(low.settings().mcp.tailLines, 1);
+    EXPECT_EQ(low.settings().mcp.screenshotMaxSize, 64);
+    SettingsStore high(write(QStringLiteral("mcp-high.json"),
+                             R"({"Mcp": {"waitTimeout": 999999999, "outputLimit": 99999999,
+                                         "screenshotMaxSize": 99999}})"));
+    EXPECT_EQ(high.settings().mcp.waitTimeout, McpSettings::MaxTimeout);
+    EXPECT_EQ(high.settings().mcp.outputLimit, McpSettings::MaxOutputLimit);
+    EXPECT_EQ(high.settings().mcp.screenshotMaxSize, 16384);
+}
+
 // The variables that a session takes from Afterglow: tmux 3.8's without
 // MSYSTEM, WINDOWID and the XDG_ desktop names, or the user's names, without
 // the ones that are not variable names or that Afterglow keeps for itself.

@@ -644,6 +644,10 @@ The `foreground` of `ls` is the process in the daemon's terminal of the pane.
 While a pane decodes an image, `get-text`, `send-key`, `colors` and `set-colors` fail at once with the code `TRY_AGAIN` and `pane N decodes an image: try again`.
 So do the calls `mark` and `shellRegions`.
 The daemon also answers the calls `mark` and `shellRegions`, and `getText` with the scope `since`, while no window shows the session (see [text since a mark](CONTROL.md#text-since-a-mark)).
+The daemon answers the call `layout` itself, with or without a window. It takes no arguments, and gives the tabs and splits of the session as the daemon keeps them for the next window: `tabs` (each with `tree`, `focused`, `zoomed` and `title`), `current`, and `values` (the `title` and `command` of the panes that have one).
+A tree lists its nodes in preorder: a split is `["right", RATIO]` or `["down", RATIO]` before its two sides, and a pane is its ID.
+The commands are empty without `Control.allowReadText`.
+The [MCP server](MCP.md#save_project) saves a project of a session from it.
 A window waits up to 5 seconds for its own reads (see [limits](#limits)).
 The daemon checks the arguments in another order than a window does.
 `screenshot` fails with `denied` before the daemon checks the pane ID.
@@ -712,7 +716,7 @@ The results of `open-directory`, `open-project` and `save-project` also use the 
 
 ### Agent sessions
 
-An agent session is the session of a program that drives its panes for an agent, such as `afterglow mcp`.
+An agent session is the session of a program that drives its panes for an agent, such as [`afterglow mcp`](MCP.md).
 `afterglow mux new --agent` also makes one.
 
 | What | An agent session | Another session |
@@ -738,6 +742,8 @@ An agent session limits what the agent reaches through its tools to the panes of
 
 In a session pane, `aglow run` and `afterglow run` run the commands of the scripts of the window that shows the session.
 The daemon runs no scripts. It passes the connection of the command to that window.
+A client that selected an [agent session](#agent-sessions) with `selectSession` reaches the commands of the window that shows that session in the same way, from any process: the [MCP server](MCP.md#run_script_command) does.
+Its runs name a pane of the session.
 The window runs the command as for one of its own panes, with its own settings (`Control.enabled`, `Scripts.enabled` and the limits of `Scripts`).
 A command acts on the pane that it names, as the window shows it. `aglow run` names the pane of the client, unless `--pane` names another pane of the session.
 A command that names no pane (pane 0) acts on the focused pane of the window that shows the session.
@@ -753,7 +759,8 @@ A command that is not marked `remote` fails as a command that does not exist.
 | Case | Result |
 | --- | --- |
 | No window shows the session | `CALL_FAILED`: `no window shows session 'NAME', and only a window runs the commands of scripts` |
-| The client does not run in a session pane of the daemon, nor below a program of one. A program that runs a terminal of its own, such as an editor, stays in the pane. A server that left the pane, such as a tmux server, does not. | `CALL_FAILED`: `only a client in a session pane reaches the mux daemon for the commands of scripts` |
+| The client did not select an agent session, and does not run in a session pane of the daemon, nor below a program of one. A program that runs a terminal of its own, such as an editor, stays in the pane. A server that left the pane, such as a tmux server, does not. | `CALL_FAILED`: `only a client in a session pane reaches the mux daemon for the commands of scripts` |
+| The client selected an agent session that has `Control.enabled` off | `CALL_FAILED`: `session 'NAME' takes no control calls (Control.enabled)` |
 | The session has 64 command clients already | `CALL_FAILED`: `session 'NAME' has 64 command clients already` |
 | The window's ID of the pane makes the run request longer than 1 MiB. `aglow run` refuses such a run before it sends it. | `CALL_FAILED`: `with the window's ID of its pane, the run request is over 1 MiB` |
 | The run names a pane of the daemon that the window does not show | `CALL_FAILED`: `no pane N of session 'NAME' shows in its window` |

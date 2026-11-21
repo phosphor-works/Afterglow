@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // The command clients of session panes: `aglow run` and `afterglow run`,
-// whose AFTERGLOW_SOCKET names the daemon. The daemon runs no scripts, so it
-// passes each such connection to the window that shows the session of the
-// client's pane. The window serves it on a connection to its own Afterglow,
+// whose AFTERGLOW_SOCKET names the daemon, and `afterglow mcp`, which selected
+// its agent session. The daemon runs no scripts, so it passes each such
+// connection to the window that shows the session of the client's pane, or
+// of the agent session. The window serves it on a connection to its own Afterglow,
 // whose commands target answers as it answers a pane outside a session. The
 // daemon reads whole request lines and passes them on, and passes the lines
 // of the window back: replies, the output of runs and the end.
@@ -28,7 +29,23 @@ std::string Daemon::startRelay(const IpcRequest& request, std::string line, pid_
                                IpcServerConnection& connection)
 {
     std::uint32_t pane = 0;
-    Session* const session = sessionOfProcess(caller, &pane);
+    // An agent's MCP server selected its agent session: its runs name their
+    // panes, and it reaches no other session. Its process can run in a pane
+    // of another session (an agent in the user's session pane), so the
+    // selection comes first.
+    Session* session = nullptr;
+    if (const auto selected = m_selected.find(&connection); selected != m_selected.end()) {
+        const auto it = std::find_if(m_sessions.begin(), m_sessions.end(), [&selected](const auto& s) {
+            return s->serial() == selected->second.serial;
+        });
+        if (it != m_sessions.end() && (*it)->options().agent) {
+            if (!(*it)->options().control.enabled)
+                return failed(request, "session '" + (*it)->name() + "' takes no control calls (Control.enabled)");
+            session = it->get();
+        }
+    }
+    if (!session)
+        session = sessionOfProcess(caller, &pane);
     if (!session)
         return failed(request, "only a client in a session pane reaches the mux daemon for the commands of scripts");
     Attachment* const window = showing(session->name());

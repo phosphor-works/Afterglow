@@ -5,6 +5,7 @@
 
 #include "ControlSocket.h"
 #include "IpcClient.h"
+#include "SessionLaunch.h"
 #include "../Pane.h"
 #include "../PaneLaunch.h"
 #include "../config/Keybinds.h"
@@ -462,42 +463,6 @@ private:
     bool m_failed = false; ///< no connection, or no session to act on: reported
     std::optional<InheritedEnvironment> m_environment; ///< sessionEnvironment()
 };
-
-/// @p path with a leading ~ as the home directory.
-QString expandHome(const QString& path)
-{
-    return path == QLatin1String("~") || path.startsWith(QLatin1String("~/")) ? QDir::homePath() + path.mid(1) : path;
-}
-
-/// The program of a new tab or split of a session, prepared as a window
-/// that shows the session prepares one, with the settings of the default
-/// config file and over @p inherited, the session's environment: the
-/// daemon runs it there. Shell integration reads the shell and the saved
-/// variables from it, not from this command's environment (ctl can run from
-/// an ssh login or cron). Without @p inherited, the daemon gave none: this
-/// process's. Without @p directory, it starts where the pane is
-/// (Window.workingDirectory inherit), which the daemon knows.
-QJsonValue sessionLaunch(QString directory, const QStringList& command, const InheritedEnvironment* inherited,
-                         const QVariantMap& environment = {})
-{
-    SettingsStore store;
-    const Settings& settings = store.settings();
-    directory = expandHome(directory);
-    if (directory.isEmpty()) {
-        const QString setting = settings.window.workingDirectory;
-        if (setting == QLatin1String("home"))
-            directory = QDir::homePath();
-        else if (!setting.isEmpty() && setting != QLatin1String("inherit") && QFileInfo(expandHome(setting)).isDir())
-            directory = expandHome(setting);
-    }
-    // As TerminalWindow prepares a pane of its session.
-    AfterglowMux::Launch launch =
-        localLaunch(settings, directory.isEmpty() ? QDir::homePath() : directory, command, inherited, environment);
-    if (directory.isEmpty())
-        launch.workingDirectory.clear();
-    return QJsonDocument::fromJson(QByteArray::fromStdString(AfterglowProto::Json::write(AfterglowMux::toJson(launch))))
-        .object();
-}
 
 QString unescape(const QString& s)
 {
@@ -1044,7 +1009,9 @@ int runCtl(int argc, char** argv)
         if (client.toDaemon()) {
             if (!launch.windowOnly.isEmpty())
                 return QStringLiteral("%1 is not for a pane of a mux session").arg(launch.windowOnly);
-            callArgs.append(sessionLaunch(directory, trailing, client.sessionEnvironment(), launch.environment));
+            const SettingsStore store;
+            callArgs.append(
+                sessionLaunch(store.settings(), directory, trailing, client.sessionEnvironment(), launch.environment));
         } else if (!launch.options.isEmpty()) {
             callArgs.append(launch.options);
         }

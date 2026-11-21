@@ -690,7 +690,7 @@ A script with commands must have a `run_command` function.
 
 | Source | How |
 | --- | --- |
-| `shell` | `aglow run <id> <command> [ARGS…]` (see [control](CONTROL.md#aglow-run)) |
+| `shell` | `aglow run <id> <command> [ARGS…]` (see [control](CONTROL.md#aglow-run)). Also the `run_script_command` tool of the [MCP server](MCP.md#run_script_command), through the window that shows the agent's session. |
 | `palette` | The command palette, for a command with `palette` |
 | `menu` | The Scripts submenu of the context menu, for a command with `palette` |
 | `key` | `script:<id>.<command>` in `Keybinds.bindings`, in a key table or in a key sequence (see [input](INPUT.md)) |

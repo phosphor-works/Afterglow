@@ -244,8 +244,10 @@ private:
     // The command clients of session panes (`aglow run`), which the window
     // of the session serves, in DaemonCommands.cpp.
     /// Passes @p connection, whose first request is @p request, read from
-    /// @p line, to the window that shows the session of the caller's pane.
-    /// Empty: the window answers. Else the error.
+    /// @p line, to the window that shows the session of the caller's pane,
+    /// or of the agent session that the connection selected (`afterglow
+    /// mcp`, whose process runs in no pane of the session). Empty: the
+    /// window answers. Else the error.
     std::string startRelay(const AfterglowProto::IpcRequest& request, std::string line, pid_t caller,
                            AfterglowProto::IpcServerConnection& connection);
     /// Passes the lines of a relayed @p connection to its window, while the

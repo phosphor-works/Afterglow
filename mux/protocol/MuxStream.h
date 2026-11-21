@@ -242,7 +242,9 @@ struct RelayFrame
     RelayPart part = RelayPart::Bytes;
     std::string bytes{}; ///< Bytes: never empty
     /// Open: the daemon's ID of the pane of the client, or of the ssh
-    /// session that the client's socket belongs to. Never 0.
+    /// session that the client's socket belongs to. 0 for a client of the
+    /// commands target in no pane, which selected an agent session
+    /// (`afterglow mcp`): its runs name their panes. Never 0 for Remote.
     std::uint32_t pane = 0;
     RelayKind kind = RelayKind::Commands; ///< Open
     std::string host{}; ///< Open of RelayKind::Remote: the host of the ssh session (ev.remote.host), never empty
