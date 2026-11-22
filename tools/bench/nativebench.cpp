@@ -151,6 +151,7 @@ int main(int argc, char** argv)
     // The plugin paths and the names, as afterglow sets them.
     Afterglow::prepareApplication();
     BenchApplication qt(argc, argv);
+    Afterglow::restoreEnvironment();
     qt.setQuitOnLastWindowClosed(false);
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
     QCommandLineParser parser;

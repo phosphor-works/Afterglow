@@ -80,7 +80,9 @@ with tempfile.TemporaryDirectory(prefix='afterglow-headless-') as temporary:
         QT_QPA_PLATFORMTHEME=args.platform_theme,
     )
     # A run from an Afterglow pane, a mux session or tmux must not hand the tests the user's sockets.
-    for name in ('AFTERGLOW_SOCKET', 'AFTERGLOW_PANE_ID', 'AFTERGLOW_SESSION', 'TMUX'):
+    # An Afterglow from before restoreEnvironment() also handed its panes its shell integration, which
+    # the tests' own startup sets when it was not given.
+    for name in ('AFTERGLOW_SOCKET', 'AFTERGLOW_PANE_ID', 'AFTERGLOW_SESSION', 'TMUX', 'QT_WAYLAND_SHELL_INTEGRATION'):
         env.pop(name, None)
     if args.icd:
         env.update(
