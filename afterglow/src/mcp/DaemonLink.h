@@ -11,6 +11,7 @@
 #include <QString>
 
 #include <functional>
+#include <optional>
 
 class QSocketNotifier;
 
@@ -47,6 +48,21 @@ public:
     static constexpr const char* QueueFull = "QUEUE_FULL";
     /// The most bytes of requests that wait for the daemon to read them.
     static constexpr qsizetype MaxQueuedBytes = qsizetype(64) << 20;
+    /// The process that listens at the other end of a connection: the
+    /// daemon. The start time tells a daemon that ended from a later
+    /// process with the same process ID.
+    struct Peer
+    {
+        qint64 pid = 0;
+        quint64 started = 0; ///< in clock ticks after the boot, from /proc/PID/stat
+        bool operator==(const Peer&) const = default;
+    };
+    /// The process that listened on the socket that @p fd connected to
+    /// (SO_PEERCRED), when it still runs. Nothing when the kernel gives no
+    /// process ID (another PID namespace) or its /proc entry does not read.
+    static std::optional<Peer> peerOf(int fd);
+    /// Whether @p peer still runs: a later process with its ID does not count.
+    static bool runs(const Peer& peer);
     /// Runs once for each call, from the event loop: with the result, or with
     /// @p error set. Never inside call().
     using Answer = std::function<void(const QJsonValue& result, const Error* error)>;
@@ -60,6 +76,12 @@ public:
     bool isOpen() const
     {
         return m_fd >= 0;
+    }
+    /// The daemon at the other end, read when the link was made: it stays
+    /// after the link closed.
+    const std::optional<Peer>& peer() const
+    {
+        return m_peer;
     }
     /// Whether a call of @p target with @p fn and @p args fits in one
     /// request line (AfterglowProto::IpcConnection::MaxRequestBytes).
@@ -102,6 +124,7 @@ private:
     void answerLater(Answer answer, Error error);
 
     int m_fd = -1;
+    std::optional<Peer> m_peer;
     QSocketNotifier* m_readNotifier = nullptr;
     QSocketNotifier* m_writeNotifier = nullptr;
     QByteArray m_in;

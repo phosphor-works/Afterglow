@@ -34,8 +34,14 @@
 #include <memory>
 #include <utility>
 
+#include <cerrno>
+#include <cstring>
+
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <signal.h>
+#include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 using namespace Afterglow;
@@ -210,6 +216,9 @@ public:
         /// A new connection to the daemon: with it, the session ends with
         /// the server (McpTools::Session::endsWithServer).
         std::function<int(QString*, bool*)> connect;
+        /// The link and the fake daemon's end of it, instead of a socket pair.
+        int linkFd = -1;
+        int daemonFd = -1;
     };
 
     explicit Harness(quint32 startingPane = 0, int eventInterval = 20)
@@ -222,9 +231,11 @@ public:
         const quint32 startingPane = options.startingPane;
         const int eventInterval = options.eventInterval;
         ensureApplication();
-        int link[2];
+        int link[2] = {options.linkFd, options.daemonFd};
         int mcp[2];
-        EXPECT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, link), 0);
+        if (link[0] < 0) {
+            EXPECT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, link), 0);
+        }
         EXPECT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, mcp), 0);
         daemon.fd = link[1];
         m_client = mcp[1];
@@ -1164,6 +1175,147 @@ TEST(McpToolsSession, ALostLinkBindsTheSessionAgainAndClosesTheNewLink)
         << textOf(listed).toStdString();
     EXPECT_TRUE(listed.value(QLatin1String("isError")).toBool());
     ::close(other.fd);
+}
+
+namespace {
+
+/// A socket that another process listens on, as a daemon does: a connection
+/// to it names that process (SO_PEERCRED). The child calls listen() on a
+/// socket that this process made and keeps, so this process accepts, and the
+/// child runs until end().
+struct OtherListener
+{
+    QTemporaryDir dir;
+    sockaddr_un address = {};
+    int listener = -1;
+    pid_t child = -1;
+
+    OtherListener()
+    {
+        address.sun_family = AF_UNIX;
+        const QByteArray path = QFile::encodeName(dir.filePath(QStringLiteral("socket")));
+        EXPECT_LT(std::size_t(path.size()), sizeof address.sun_path);
+        std::memcpy(address.sun_path, path.constData(), std::size_t(path.size()));
+        listener = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        EXPECT_EQ(::bind(listener, reinterpret_cast<const sockaddr*>(&address), sizeof address), 0);
+        int ready[2];
+        EXPECT_EQ(::pipe2(ready, O_CLOEXEC), 0);
+        child = ::fork();
+        if (child == 0) {
+            // Only system calls: the parent can have threads.
+            if (::listen(listener, 4) != 0)
+                ::_exit(1);
+            const char byte = 1;
+            (void)!::write(ready[1], &byte, 1);
+            for (;;)
+                ::pause();
+        }
+        EXPECT_GT(child, 0);
+        ::close(ready[1]);
+        char byte = 0;
+        EXPECT_EQ(::read(ready[0], &byte, 1), 1);
+        ::close(ready[0]);
+    }
+
+    ~OtherListener()
+    {
+        end();
+        ::close(listener);
+    }
+
+    /// A connection: the client's end, and the end that this process accepted.
+    std::pair<int, int> connect()
+    {
+        const int client = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        EXPECT_EQ(::connect(client, reinterpret_cast<const sockaddr*>(&address), sizeof address), 0);
+        const int served = ::accept4(listener, nullptr, nullptr, SOCK_CLOEXEC);
+        EXPECT_GE(served, 0);
+        return {client, served};
+    }
+
+    /// The child ends, as a daemon that stopped.
+    void end()
+    {
+        if (child <= 0)
+            return;
+        ::kill(child, SIGKILL);
+        int status = 0;
+        while (::waitpid(child, &status, 0) < 0 && errno == EINTR) { }
+        child = -1;
+    }
+};
+
+/// The text of list_panes after the link of @p h closed, once it has @p words.
+QString listAfterTheLink(Harness& h, const char* words)
+{
+    QJsonObject listed;
+    EXPECT_TRUE(pumpUntil(
+        [&] {
+            listed = h.call(QStringLiteral("list_panes"), {});
+            return textOf(listed).contains(QLatin1String(words));
+        },
+        [] { }))
+        << textOf(listed).toStdString();
+    EXPECT_TRUE(listed.value(QLatin1String("isError")).toBool());
+    return textOf(listed);
+}
+
+} // namespace
+
+// The daemon stopped, and a later one started before the server connects
+// again: a session of the same name there is another one, which a bind and
+// a close would end. The server binds nothing there, and says that the
+// session ended with the daemon that stopped.
+TEST(McpToolsSession, ALostLinkToADaemonThatStoppedBindsNothingOnALaterDaemon)
+{
+    OtherListener stopped;
+    OtherListener later;
+    const auto [link, served] = stopped.connect();
+    auto [handed, laterEnd] = later.connect();
+    {
+        Harness h(Harness::Options{0,
+                                   20,
+                                   {},
+                                   [&handed](QString*, bool*) {
+                                       return std::exchange(handed, -1);
+                                   },
+                                   link,
+                                   served});
+        stopped.end();
+        ::shutdown(h.daemon.fd, SHUT_RDWR);
+        listAfterTheLink(h, "That daemon stopped, and session agent ended with it");
+        EXPECT_EQ(handed, -1);
+    }
+    // The server closed the connection to the later daemon with nothing sent.
+    char byte = 0;
+    EXPECT_EQ(::recv(laterEnd, &byte, 1, MSG_DONTWAIT), 0);
+    ::close(laterEnd);
+}
+
+// The daemon that closed the link still runs, but the server reaches
+// another one: it binds nothing there, and says that the session may run on.
+TEST(McpToolsSession, ALostLinkToADaemonThatRunsOnBindsNothingOnAnother)
+{
+    OtherListener first;
+    OtherListener other;
+    const auto [link, served] = first.connect();
+    auto [handed, otherEnd] = other.connect();
+    {
+        Harness h(Harness::Options{0,
+                                   20,
+                                   {},
+                                   [&handed](QString*, bool*) {
+                                       return std::exchange(handed, -1);
+                                   },
+                                   link,
+                                   served});
+        ::shutdown(h.daemon.fd, SHUT_RDWR);
+        const QString words = QStringLiteral("may run on in the mux daemon of process %1").arg(first.child);
+        listAfterTheLink(h, qPrintable(words));
+    }
+    char byte = 0;
+    EXPECT_EQ(::recv(otherEnd, &byte, 1, MSG_DONTWAIT), 0);
+    ::close(otherEnd);
 }
 
 // The link closed because the daemon ended: the session ended with it.

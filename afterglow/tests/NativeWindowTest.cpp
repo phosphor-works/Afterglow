@@ -17191,6 +17191,10 @@ TEST_F(NativeWindow, APaneThatJoinsAnotherSessionComesStraightBack)
     ASSERT_TRUE(waitFor([&] {
         return QFileInfo::exists(pidFile);
     }));
+    // The program writes its PID before the window heard PaneOpened, and a
+    // pane that is still arriving does not move (TerminalWindow::joinSession).
+    // Its echo comes in a frame, which only an opened channel carries.
+    ASSERT_TRUE(echoes(moving, QStringLiteral("before")));
     const pid_t pid = pid_t(fileContent(pidFile).trimmed().toInt());
     ASSERT_GT(pid, 0);
     const std::uint32_t movingId = moving->sessionPaneId();
@@ -17213,10 +17217,16 @@ TEST_F(NativeWindow, APaneThatJoinsAnotherSessionComesStraightBack)
                      });
     ASSERT_TRUE(waitFor(
         [&] {
-            return away->has_value() && back->has_value();
+            return away->has_value();
         },
         10000));
-    ASSERT_EQ((*away)->first, QString());
+    // A refused first move sends no move back.
+    ASSERT_TRUE((*away)->first.isEmpty()) << (*away)->first.toStdString();
+    ASSERT_TRUE(waitFor(
+        [&] {
+            return back->has_value();
+        },
+        10000));
     // Refused at once, as the pane has not arrived there yet, or the window
     // here still holds it, or taken back: never a lost session.
     const QStringList refusals{QStringLiteral("This pane is still arriving in session there"),

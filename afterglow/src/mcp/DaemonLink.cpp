@@ -16,6 +16,7 @@
 
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 namespace Afterglow {
@@ -41,7 +42,62 @@ QByteArray callLine(qint64 id, const QString& target, const QString& fn, const Q
         + '\n';
 }
 
+/// The start time of process @p pid, when it runs: nothing for no process
+/// and for one that ended and waits for its parent (a zombie).
+std::optional<quint64> startOf(qint64 pid)
+{
+    const QByteArray path = "/proc/" + QByteArray::number(pid) + "/stat";
+    const int fd = ::open(path.constData(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return std::nullopt;
+    char buffer[4096];
+    qsizetype size = 0;
+    for (;;) {
+        const ssize_t n = ::read(fd, buffer + size, sizeof buffer - 1 - std::size_t(size));
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n <= 0)
+            break;
+        size += n;
+        if (std::size_t(size) == sizeof buffer - 1)
+            break;
+    }
+    ::close(fd);
+    // The name in parentheses can hold spaces and parentheses: the fields
+    // after it start at the last ')'. They are the state (field 3) up to the
+    // start time (field 22).
+    const QByteArray line(buffer, size);
+    const qsizetype end = line.lastIndexOf(')');
+    if (end < 0)
+        return std::nullopt;
+    const QList<QByteArray> fields = line.mid(end + 1).simplified().split(' ');
+    if (fields.size() < 20 || fields[0] == "Z" || fields[0] == "X")
+        return std::nullopt;
+    bool ok = false;
+    const quint64 started = fields[19].toULongLong(&ok);
+    if (!ok)
+        return std::nullopt;
+    return started;
+}
+
 } // namespace
+
+std::optional<DaemonLink::Peer> DaemonLink::peerOf(int fd)
+{
+    struct ucred credentials = {};
+    socklen_t length = sizeof credentials;
+    if (::getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credentials, &length) != 0 || credentials.pid <= 0)
+        return std::nullopt;
+    const std::optional<quint64> started = startOf(credentials.pid);
+    if (!started)
+        return std::nullopt;
+    return Peer{credentials.pid, *started};
+}
+
+bool DaemonLink::runs(const Peer& peer)
+{
+    return startOf(peer.pid) == peer.started;
+}
 
 DaemonLink::DaemonLink(int fd, QObject* parent)
     : QObject(parent)
@@ -61,6 +117,8 @@ DaemonLink::DaemonLink(int fd, QObject* parent)
         });
         return;
     }
+    // Read now: fail() closes the descriptor before closed() asks.
+    m_peer = peerOf(m_fd);
     m_readNotifier = new QSocketNotifier(m_fd, QSocketNotifier::Read, this);
     connect(m_readNotifier, &QSocketNotifier::activated, this, &DaemonLink::readable);
     m_writeNotifier = new QSocketNotifier(m_fd, QSocketNotifier::Write, this);

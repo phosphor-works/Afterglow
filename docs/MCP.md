@@ -104,6 +104,8 @@ The mux daemon closes the connection of a server that does not read its answers 
 Then the server cannot use its session any more.
 When the session ends with the server, the server binds it again on a new connection, and closes that connection.
 Then the session ends, unless another server binds it.
+The server binds again only through the same daemon process.
+A daemon that started later can have a different session with the same name, and the server does not end it.
 When the link closed because the daemon stopped, the session ended with the daemon.
 Then each tool fails with a message that says so.
 

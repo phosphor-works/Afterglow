@@ -97,7 +97,9 @@ public:
         /// closes, the server binds it on a new connection (connect) and
         /// closes that: the daemon lets a session run on whose connection it
         /// closed because the server read nothing, and the server cannot
-        /// use it any more.
+        /// use it any more. Only on a connection to the same daemon process
+        /// (DaemonLink::peer): a later daemon may hold another session of
+        /// the same name.
         bool endsWithServer = false;
     };
 
@@ -228,8 +230,8 @@ private:
 
     void onEvent(const QString& name, const QJsonArray& args);
     /// The link to the daemon closed: lets the daemon end the session first
-    /// when it ends with the server (Session::endsWithServer), then ends
-    /// every wait.
+    /// when it ends with the server (Session::endsWithServer) and the same
+    /// daemon still runs, then ends every wait.
     void linkClosed(const QString& reason);
     /// Ends every wait with @p text, and every later call: the session is gone.
     void endAll(const QString& text);

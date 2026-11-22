@@ -26,6 +26,8 @@
 #include <limits>
 #include <utility>
 
+#include <unistd.h>
+
 namespace Afterglow {
 
 namespace {
@@ -460,6 +462,29 @@ void McpTools::linkClosed(const QString& reason)
             endAll(QStringLiteral("lost the mux daemon: %1. Session %2 may run on, as the server cannot reach the "
                                   "daemon to end it (%3): end it with afterglow mux kill %2.")
                        .arg(reason, m_session.name, why));
+        }
+        return;
+    }
+    // Only the daemon that closed the link keeps the session. A daemon that
+    // started after that one ended may hold another session of the same
+    // name: a bind and a close would end that one.
+    const std::optional<DaemonLink::Peer>& before = m_link.peer();
+    const std::optional<DaemonLink::Peer> now = DaemonLink::peerOf(fd);
+    if (!before || !now || *before != *now) {
+        ::close(fd);
+        if (before && !DaemonLink::runs(*before)) {
+            endAll(QStringLiteral("lost the mux daemon: %1. That daemon stopped, and session %2 ended with it: "
+                                  "restart the server for a new one.")
+                       .arg(reason, m_session.name));
+        } else if (before) {
+            endAll(QStringLiteral("lost the mux daemon: %1. Session %2 may run on in the mux daemon of process %3, "
+                                  "which the server cannot reach now.")
+                       .arg(reason, m_session.name)
+                       .arg(before->pid));
+        } else {
+            endAll(QStringLiteral("lost the mux daemon: %1. Session %2 may run on, as the server cannot tell "
+                                  "whether the mux daemon that it reaches now kept it.")
+                       .arg(reason, m_session.name));
         }
         return;
     }
