@@ -43,7 +43,7 @@
 
 let
   # The archives that cmake/AfterglowDependencies.cmake pins, and the Luau and
-  # valijson archives that the pinned phosphor-libs commit pins in its
+  # jsoncons archives that the pinned phosphor-libs commit pins in its
   # cmake/PhosphorDependencies.cmake. The sandbox has no network, so they are
   # fetched here as fixed-output derivations and handed to CMake as one
   # directory (AFTERGLOW_DEPS_ARCHIVES, which also sets PHOSPHOR_DEPS_ARCHIVES),
@@ -52,11 +52,11 @@ let
   # hashes the archive file itself. A pin that changes there changes here too.
   depsArchives = linkFarm "afterglow-deps-archives" [
     {
-      name = "phosphor-libs-435beef0470229525bd0675c11422f262d4c9582.tar.gz";
+      name = "phosphor-libs-05c411aab54f7771e5f50f1639ac118be6b15876.tar.gz";
       path = fetchurl {
-        url = "https://github.com/phosphor-works/phosphor-libs/archive/435beef0470229525bd0675c11422f262d4c9582.tar.gz";
-        # sha256 7655c619c6721b42db7d5424f47aad94daa5ce40e9e021349b74cd21c1677e31
-        hash = "sha256-dlXGGcZyG0LbfVQk9HqtlNqlzkDp4CE0m3TNIcFnfjE=";
+        url = "https://github.com/phosphor-works/phosphor-libs/archive/05c411aab54f7771e5f50f1639ac118be6b15876.tar.gz";
+        # sha256 b7c5f99b0b2a22d1e0deb678c82daaa268eb6bd9002bab500fff2fe26b423936
+        hash = "sha256-t8X5mwsqItHg3rZ4yC2qomjra9kAK6tQD/8v4mtCOTY=";
       };
     }
     {
@@ -116,11 +116,11 @@ let
       };
     }
     {
-      name = "valijson-1.1.3.tar.gz";
+      name = "jsoncons-1.10.0.tar.gz";
       path = fetchurl {
-        url = "https://github.com/tristanpenman/valijson/archive/refs/tags/v1.1.3.tar.gz";
-        # sha256 887b53b1a924f6fe0b35fa3bbc9bbbe5ae8c72097b7f0f7c17b45f4cfa646029
-        hash = "sha256-iHtTsakk9v4LNfo7vJu75a6Mcgl7fw98F7RfTPpkYCk=";
+        url = "https://github.com/danielaparker/jsoncons/archive/refs/tags/v1.10.0.tar.gz";
+        # sha256 c829350a2eece662beb378143e2ab1c1cbb07d703687bf168626665a8a7d8bc1
+        hash = "sha256-yCk1Ci7s5mK+s3gUPiqxwcuwfXA2h78WhiZmWop9i8E=";
       };
     }
   ];
@@ -216,6 +216,7 @@ stdenv.mkDerivation {
       zlib
       bsd2
       bsd3
+      boost
       ijg
       libpng2
       mit

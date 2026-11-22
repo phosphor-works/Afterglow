@@ -88,7 +88,7 @@ if(AFTERGLOW_DEPS_ARCHIVES AND NOT PHOSPHOR_DEPS_ARCHIVES)
         "Directory with the archives that the phosphor-libs tree pins, for an offline build" FORCE)
 endif()
 
-# The pins of the archives that the libraries fetch (Luau, valijson). The module
+# The pins of the archives that the libraries fetch (Luau, jsoncons). The module
 # must be included at the top scope: its PHOSPHOR_DEPS list is a directory
 # variable, and a library that included it itself would hide the list from its
 # siblings. It loads no second CPM: cmake/AfterglowDependencies.cmake has

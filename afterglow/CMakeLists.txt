@@ -332,7 +332,7 @@ install(FILES ${AFTERGLOW_LICENSE_TEXTS} DESTINATION ${CMAKE_INSTALL_DATADIR}/li
 # zlib-ng and xxHash, the image codecs and Little CMS of aglow-mux and aglow,
 # and the Unicode tables of the terminal core
 # (cmake/AfterglowDependencies.cmake). So do the notices of Luau, which is
-# statically linked into PhosphorScripting, and of valijson; the phosphor
+# statically linked into PhosphorScripting, and of jsoncons; the phosphor
 # rules that install them are skipped with the others
 # (cmake/AfterglowPhosphor.cmake).
 afterglow_install_bundled_notices(${CMAKE_INSTALL_DATADIR}/licenses/afterglow)
@@ -351,45 +351,42 @@ if(NOT PHOSPHOR_SYSTEM_LUAU)
     install(FILES "${AFTERGLOW_LUAU_SOURCE_DIR}/lua_LICENSE.txt" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
             RENAME LICENSE.Lua)
 endif()
-# valijson (BSD-2-Clause) is header-only, and PhosphorFsLoader and
-# PhosphorMcp compile its headers in. Each library fetches the pinned archive
-# unless it takes the system's headers: PHOSPHORFSLOADER_USE_SYSTEM_VALIJSON,
-# and PHOSPHORMCP_USE_SYSTEM_VALIJSON, whose AUTO follows the first. System
-# headers are a separate package with their own notice. The notice goes with
-# the binaries when either library fetched the archive.
-# phosphor_fetch_dependency(valijson) sets valijson_SOURCE_DIR in that
-# library's scope, and phosphor-mcp keeps its resolved choice (ON or OFF, never
-# AUTO) in _phosphormcp_system_valijson there. A library that fetched the
-# archive without a source directory that this build finds is a configure
-# error: its notice would be missing from the install.
-get_directory_property(AFTERGLOW_MCP_SYSTEM_VALIJSON DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/phosphor-mcp"
-    DEFINITION _phosphormcp_system_valijson)
-if(NOT AFTERGLOW_MCP_SYSTEM_VALIJSON MATCHES "^(ON|OFF)$")
-    message(FATAL_ERROR "phosphor-mcp did not resolve PHOSPHORMCP_USE_SYSTEM_VALIJSON to ON or OFF (_phosphormcp_system_valijson is '${AFTERGLOW_MCP_SYSTEM_VALIJSON}'), so the build cannot tell whether the valijson license must install with the binaries.")
-endif()
-set(AFTERGLOW_VALIJSON_SOURCE_DIR "")
-foreach(AFTERGLOW_VALIJSON_USER IN ITEMS phosphor-fsloader phosphor-mcp)
-    if(AFTERGLOW_VALIJSON_USER STREQUAL "phosphor-fsloader")
-        set(AFTERGLOW_VALIJSON_SYSTEM "${PHOSPHORFSLOADER_USE_SYSTEM_VALIJSON}")
-    else()
-        set(AFTERGLOW_VALIJSON_SYSTEM "${AFTERGLOW_MCP_SYSTEM_VALIJSON}")
+# jsoncons (BSL-1.0) is header-only, and its headers are compiled into
+# PhosphorFsLoader, so its notice goes with that library. Two of those headers
+# carry an MIT notice of their own, which goes too: grisu3, which writes
+# doubles, and a5hash, which every jsoncons header includes. LICENSE.jsoncons
+# holds the BSL text and then both notices, copied from the headers so that
+# they follow the pinned version. System headers
+# (PHOSPHORFSLOADER_USE_SYSTEM_JSONCONS) are a separate package with their own
+# notice, and phosphor-fsloader fetches no archive for them.
+if(NOT PHOSPHORFSLOADER_USE_SYSTEM_JSONCONS)
+    # phosphor_fetch_dependency(jsoncons) sets jsoncons_SOURCE_DIR in that library's scope.
+    get_directory_property(AFTERGLOW_JSONCONS_SOURCE_DIR DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/phosphor-fsloader"
+        DEFINITION jsoncons_SOURCE_DIR)
+    if(NOT EXISTS "${AFTERGLOW_JSONCONS_SOURCE_DIR}/LICENSE")
+        message(FATAL_ERROR "The jsoncons license was not found in '${AFTERGLOW_JSONCONS_SOURCE_DIR}', and it must install with the binaries.")
     endif()
-    if(AFTERGLOW_VALIJSON_SYSTEM)
-        continue()
-    endif()
-    get_directory_property(AFTERGLOW_VALIJSON_DIR
-        DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/${AFTERGLOW_VALIJSON_USER}" DEFINITION valijson_SOURCE_DIR)
-    if(NOT AFTERGLOW_VALIJSON_DIR)
-        message(FATAL_ERROR "${AFTERGLOW_VALIJSON_USER} uses the pinned valijson, but its source directory was not found, and its license must install with the binaries.")
-    endif()
-    set(AFTERGLOW_VALIJSON_SOURCE_DIR "${AFTERGLOW_VALIJSON_DIR}")
-endforeach()
-if(AFTERGLOW_VALIJSON_SOURCE_DIR)
-    if(NOT EXISTS "${AFTERGLOW_VALIJSON_SOURCE_DIR}/LICENSE")
-        message(FATAL_ERROR "The valijson license was not found in '${AFTERGLOW_VALIJSON_SOURCE_DIR}', and it must install with the binaries.")
-    endif()
-    install(FILES "${AFTERGLOW_VALIJSON_SOURCE_DIR}/LICENSE" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
-            RENAME LICENSE.valijson)
+    file(READ "${AFTERGLOW_JSONCONS_SOURCE_DIR}/LICENSE" AFTERGLOW_JSONCONS_NOTICE)
+    foreach(_jsoncons_entry
+            "utility/detail/grisu3.hpp|Copyright \\(c\\) [0-9]+ Florian Loitsch.*OTHER DEALINGS IN THE SOFTWARE\\."
+            "nonstd/a5hash.hpp|Copyright \\(c\\) [0-9]+ Aleksey Vaneev.*DEALINGS IN THE SOFTWARE\\.")
+        string(REGEX MATCH "^([^|]+)[|](.+)$" _jsoncons_matched "${_jsoncons_entry}")
+        set(_jsoncons_header "${CMAKE_MATCH_1}")
+        set(_jsoncons_pattern "${CMAKE_MATCH_2}")
+        set(_jsoncons_notice "")
+        if(EXISTS "${AFTERGLOW_JSONCONS_SOURCE_DIR}/include/jsoncons/${_jsoncons_header}")
+            file(READ "${AFTERGLOW_JSONCONS_SOURCE_DIR}/include/jsoncons/${_jsoncons_header}" _jsoncons_text)
+            string(REGEX MATCH "${_jsoncons_pattern}" _jsoncons_notice "${_jsoncons_text}")
+        endif()
+        if(NOT _jsoncons_notice)
+            message(FATAL_ERROR "The MIT notice of jsoncons/${_jsoncons_header} was not found in '${AFTERGLOW_JSONCONS_SOURCE_DIR}/include', and it must install with the binaries.")
+        endif()
+        # The notice is in a C comment: drop the indent and the "*" of each line.
+        string(REGEX REPLACE "\n[ \t]*\\*?[ \t]?" "\n" _jsoncons_notice "${_jsoncons_notice}")
+        string(APPEND AFTERGLOW_JSONCONS_NOTICE "\n----\n\njsoncons/${_jsoncons_header} (MIT):\n\n${_jsoncons_notice}\n")
+    endforeach()
+    file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/LICENSE.jsoncons" CONTENT "${AFTERGLOW_JSONCONS_NOTICE}" @ONLY)
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/LICENSE.jsoncons" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow)
 endif()
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shaders/ DESTINATION ${CMAKE_INSTALL_DATADIR}/${AFTERGLOW_SHADER_SUBDIR})
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/themes/ DESTINATION ${CMAKE_INSTALL_DATADIR}/${AFTERGLOW_DATA_SUBDIR}/themes)
