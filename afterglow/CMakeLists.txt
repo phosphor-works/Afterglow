@@ -343,7 +343,11 @@ if(NOT PHOSPHOR_SYSTEM_LUAU)
             RENAME LICENSE.Lua)
 endif()
 # jsoncons (BSL-1.0) is header-only, and its headers are compiled into
-# PhosphorFsLoader, so its notice goes with that library. System headers
+# PhosphorFsLoader, so its notice goes with that library. Two of those headers
+# carry an MIT notice of their own, which goes too: grisu3, which writes
+# doubles, and a5hash, which every jsoncons header includes. LICENSE.jsoncons
+# holds the BSL text and then both notices, copied from the headers so that
+# they follow the pinned version. System headers
 # (PHOSPHORFSLOADER_USE_SYSTEM_JSONCONS) are a separate package with their own
 # notice, and phosphor-fsloader fetches no archive for them.
 if(NOT PHOSPHORFSLOADER_USE_SYSTEM_JSONCONS)
@@ -353,8 +357,27 @@ if(NOT PHOSPHORFSLOADER_USE_SYSTEM_JSONCONS)
     if(NOT EXISTS "${AFTERGLOW_JSONCONS_SOURCE_DIR}/LICENSE")
         message(FATAL_ERROR "The jsoncons license was not found in '${AFTERGLOW_JSONCONS_SOURCE_DIR}', and it must install with the binaries.")
     endif()
-    install(FILES "${AFTERGLOW_JSONCONS_SOURCE_DIR}/LICENSE" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
-            RENAME LICENSE.jsoncons)
+    file(READ "${AFTERGLOW_JSONCONS_SOURCE_DIR}/LICENSE" AFTERGLOW_JSONCONS_NOTICE)
+    foreach(_jsoncons_entry
+            "utility/detail/grisu3.hpp|Copyright \\(c\\) [0-9]+ Florian Loitsch.*OTHER DEALINGS IN THE SOFTWARE\\."
+            "nonstd/a5hash.hpp|Copyright \\(c\\) [0-9]+ Aleksey Vaneev.*DEALINGS IN THE SOFTWARE\\.")
+        string(REGEX MATCH "^([^|]+)[|](.+)$" _jsoncons_matched "${_jsoncons_entry}")
+        set(_jsoncons_header "${CMAKE_MATCH_1}")
+        set(_jsoncons_pattern "${CMAKE_MATCH_2}")
+        set(_jsoncons_notice "")
+        if(EXISTS "${AFTERGLOW_JSONCONS_SOURCE_DIR}/include/jsoncons/${_jsoncons_header}")
+            file(READ "${AFTERGLOW_JSONCONS_SOURCE_DIR}/include/jsoncons/${_jsoncons_header}" _jsoncons_text)
+            string(REGEX MATCH "${_jsoncons_pattern}" _jsoncons_notice "${_jsoncons_text}")
+        endif()
+        if(NOT _jsoncons_notice)
+            message(FATAL_ERROR "The MIT notice of jsoncons/${_jsoncons_header} was not found in '${AFTERGLOW_JSONCONS_SOURCE_DIR}/include', and it must install with the binaries.")
+        endif()
+        # The notice is in a C comment: drop the indent and the "*" of each line.
+        string(REGEX REPLACE "\n[ \t]*\\*?[ \t]?" "\n" _jsoncons_notice "${_jsoncons_notice}")
+        string(APPEND AFTERGLOW_JSONCONS_NOTICE "\n----\n\njsoncons/${_jsoncons_header} (MIT):\n\n${_jsoncons_notice}\n")
+    endforeach()
+    file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/LICENSE.jsoncons" CONTENT "${AFTERGLOW_JSONCONS_NOTICE}" @ONLY)
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/LICENSE.jsoncons" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow)
 endif()
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shaders/ DESTINATION ${CMAKE_INSTALL_DATADIR}/${AFTERGLOW_SHADER_SUBDIR})
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/themes/ DESTINATION ${CMAKE_INSTALL_DATADIR}/${AFTERGLOW_DATA_SUBDIR}/themes)
