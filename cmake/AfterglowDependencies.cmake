@@ -5,7 +5,7 @@
 # commit that it builds the Phosphor libraries from, and the third-party
 # libraries. Each archive is pinned by version, URL and SHA-256. This file is
 # the only place a pin lives. The phosphor-libs tree pins its own archives
-# (Luau, valijson) in its cmake/PhosphorDependencies.cmake, which works the
+# (Luau, jsoncons) in its cmake/PhosphorDependencies.cmake, which works the
 # same way.
 #
 # The archives are built into the tree, not taken from the system, so that the
@@ -39,7 +39,7 @@
 # Bumping a pin: change its VERSION, URL, FILE and SHA256 together, with the
 # hash taken from a download that you checked against a second source. The
 # Nix package fetches the same archives: change nix/package.nix with it, and
-# with a phosphor-libs pin also the Luau and valijson archives of that commit.
+# with a phosphor-libs pin also the Luau and jsoncons archives of that commit.
 
 include_guard(GLOBAL)
 
@@ -49,10 +49,10 @@ set(AFTERGLOW_DEPS phosphor-libs zlib-ng xxhash libpng libjpeg-turbo libwebp lcm
 # The phosphor-libs commit (LGPL-2.1-or-later, phosphor-works/phosphor-libs)
 # that the Phosphor libraries are built from (cmake/AfterglowPhosphor.cmake).
 # A commit, not a release, so VERSION is the commit hash.
-set(AFTERGLOW_DEP_phosphor-libs_VERSION "435beef0470229525bd0675c11422f262d4c9582")
-set(AFTERGLOW_DEP_phosphor-libs_URL "https://github.com/phosphor-works/phosphor-libs/archive/435beef0470229525bd0675c11422f262d4c9582.tar.gz")
-set(AFTERGLOW_DEP_phosphor-libs_FILE "phosphor-libs-435beef0470229525bd0675c11422f262d4c9582.tar.gz")
-set(AFTERGLOW_DEP_phosphor-libs_SHA256 "7655c619c6721b42db7d5424f47aad94daa5ce40e9e021349b74cd21c1677e31")
+set(AFTERGLOW_DEP_phosphor-libs_VERSION "05c411aab54f7771e5f50f1639ac118be6b15876")
+set(AFTERGLOW_DEP_phosphor-libs_URL "https://github.com/phosphor-works/phosphor-libs/archive/05c411aab54f7771e5f50f1639ac118be6b15876.tar.gz")
+set(AFTERGLOW_DEP_phosphor-libs_FILE "phosphor-libs-05c411aab54f7771e5f50f1639ac118be6b15876.tar.gz")
+set(AFTERGLOW_DEP_phosphor-libs_SHA256 "b7c5f99b0b2a22d1e0deb678c82daaa268eb6bd9002bab500fff2fe26b423936")
 
 # zlib-ng (Zlib license), in its zlib-compatible build: o=z images, file
 # transfer compression, and the inflate of the bundled libpng. The hash

@@ -100,7 +100,7 @@ that names a checkout fails or changes for no reason in this repository, check t
 - The renderer uses Qt private APIs. After a Qt update, rebuild everything in the capped scope:
   `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build --clean-first -j6`.
 - The pinned archives (phosphor-libs, zlib-ng, xxHash, libpng, libjpeg-turbo, libwebp and Little CMS from
-  `cmake/AfterglowDependencies.cmake`, and Luau and valijson from `cmake/PhosphorDependencies.cmake` in the pinned
+  `cmake/AfterglowDependencies.cmake`, and Luau and jsoncons from `cmake/PhosphorDependencies.cmake` in the pinned
   phosphor-libs tree) download into the CPM cache, `.cache/cpm` in this repository. A configure without network
   works once that cache holds them, or with `-DAFTERGLOW_DEPS_ARCHIVES` naming a directory that
   `cmake -DAFTERGLOW_DEPS_FETCH=<dir> -P cmake/AfterglowDependencies.cmake` filled.
