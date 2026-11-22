@@ -44,7 +44,7 @@ See the [release notes](CHANGELOG.md) for supported features.
 The application uses GPL-3.0-or-later, and so does the mux daemon `aglow-mux`. The libraries in `libs/` and the `aglow` client use LGPL-2.1-or-later.
 Most bundled shader packs use LGPL-2.1-or-later. Third-party themes use MIT.
 The icon uses CC-BY-SA-4.0.
-The binaries include zlib-ng (Zlib license), xxHash (BSD-2-Clause), valijson (BSD-2-Clause), Luau (MIT) and Lua (MIT).
+The binaries include zlib-ng (Zlib license), xxHash (BSD-2-Clause), jsoncons (BSL-1.0), Luau (MIT) and Lua (MIT).
 `aglow` and `aglow-mux` include zlib-ng and xxHash.
 `aglow` and `aglow-mux` also include libpng (libpng-2.0 license), libjpeg-turbo (IJG and BSD-3-Clause licenses), libwebp (BSD-3-Clause) and Little CMS (MIT).
 This software is based in part on the work of the Independent JPEG Group.
@@ -52,6 +52,6 @@ The character tables of `afterglow` and `aglow-mux` come from the Unicode Charac
 A static `aglow` also includes parts of glibc and of the GCC runtime libraries.
 Each file, or `REUSE.toml` for a file without a header, identifies its license.
 The [LICENSES directory](LICENSES) contains the license texts of the files in this repository.
-The installation also includes the license texts of zlib-ng, xxHash, libpng, libjpeg-turbo, libwebp, Little CMS, the Unicode Character Database, valijson, Luau and Lua.
+The installation also includes the license texts of zlib-ng, xxHash, libpng, libjpeg-turbo, libwebp, Little CMS, the Unicode Character Database, jsoncons, Luau and Lua.
 For a static `aglow`, it also includes `LICENSE.glibc` and `LICENSE.libstdc++`.
 [Build and install](docs/BUILD.md#install) tells where they go.

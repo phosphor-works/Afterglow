@@ -58,7 +58,7 @@ The first configuration downloads source archives. It needs network access one t
 | CPM.cmake | `cmake/AfterglowDependencies.cmake` | Downloads the other archives |
 | phosphor-libs | `cmake/AfterglowDependencies.cmake` | Gives the Phosphor libraries. The pin is a commit of phosphor-libs |
 | Luau | `cmake/PhosphorDependencies.cmake` in phosphor-libs | Runs the Luau scripts |
-| valijson | `cmake/PhosphorDependencies.cmake` in phosphor-libs | Checks Phosphor JSON files against their schemas |
+| jsoncons | `cmake/PhosphorDependencies.cmake` in phosphor-libs | Checks Phosphor JSON files against their schemas |
 | zlib-ng | `cmake/AfterglowDependencies.cmake` | Compresses and decompresses images and file transfers |
 | xxHash | `cmake/AfterglowDependencies.cmake` | Calculates the block hashes of delta file transfers |
 | libpng | `cmake/AfterglowDependencies.cmake` | Decodes PNG images in `aglow` and `aglow-mux` |
@@ -280,7 +280,7 @@ The license notices of the third-party code in the binaries go in `share/license
 | `LICENSE.Unicode` | The Unicode License v3 of the Unicode Character Database, from which the character width and grapheme tables of `afterglow` and `aglow-mux` come | Always |
 | `NOTICE.IJG` | The statement that `aglow` and `aglow-mux` are based in part on the work of the Independent JPEG Group | Always |
 | `LICENSE.Luau` and `LICENSE.Lua` | The notices of Luau and of Lua, which the scripts of `afterglow` run with | Unless the build uses the system's Luau (`PHOSPHOR_SYSTEM_LUAU`) |
-| `LICENSE.valijson` | The notice of valijson, which `afterglow` checks JSON files with | Unless the build uses the system's valijson (`PHOSPHORFSLOADER_USE_SYSTEM_VALIJSON`) |
+| `LICENSE.jsoncons` | The notice of jsoncons, which `afterglow` checks JSON files with | Unless the build uses the system's jsoncons (`PHOSPHORFSLOADER_USE_SYSTEM_JSONCONS`) |
 | `LICENSE.glibc` | The notice of the GNU C Library, with the steps to link `aglow` again with another C library | When `aglow` is static |
 | `LICENSE.libstdc++` | The notice of libstdc++ and libgcc, with the GCC Runtime Library Exception | When `aglow` is static |
 

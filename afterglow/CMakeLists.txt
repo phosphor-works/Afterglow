@@ -323,7 +323,7 @@ install(FILES ${AFTERGLOW_LICENSE_TEXTS} DESTINATION ${CMAKE_INSTALL_DATADIR}/li
 # zlib-ng and xxHash, the image codecs and Little CMS of aglow-mux and aglow,
 # and the Unicode tables of the terminal core
 # (cmake/AfterglowDependencies.cmake). So do the notices of Luau, which is
-# statically linked into PhosphorScripting, and of valijson; the phosphor
+# statically linked into PhosphorScripting, and of jsoncons; the phosphor
 # rules that install them are skipped with the others
 # (cmake/AfterglowPhosphor.cmake).
 afterglow_install_bundled_notices(${CMAKE_INSTALL_DATADIR}/licenses/afterglow)
@@ -342,19 +342,19 @@ if(NOT PHOSPHOR_SYSTEM_LUAU)
     install(FILES "${AFTERGLOW_LUAU_SOURCE_DIR}/lua_LICENSE.txt" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
             RENAME LICENSE.Lua)
 endif()
-# valijson (BSD-2-Clause) is header-only, and its headers are compiled into
+# jsoncons (BSL-1.0) is header-only, and its headers are compiled into
 # PhosphorFsLoader, so its notice goes with that library. System headers
-# (PHOSPHORFSLOADER_USE_SYSTEM_VALIJSON) are a separate package with their own
+# (PHOSPHORFSLOADER_USE_SYSTEM_JSONCONS) are a separate package with their own
 # notice, and phosphor-fsloader fetches no archive for them.
-if(NOT PHOSPHORFSLOADER_USE_SYSTEM_VALIJSON)
-    # phosphor_fetch_dependency(valijson) sets valijson_SOURCE_DIR in that library's scope.
-    get_directory_property(AFTERGLOW_VALIJSON_SOURCE_DIR DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/phosphor-fsloader"
-        DEFINITION valijson_SOURCE_DIR)
-    if(NOT EXISTS "${AFTERGLOW_VALIJSON_SOURCE_DIR}/LICENSE")
-        message(FATAL_ERROR "The valijson license was not found in '${AFTERGLOW_VALIJSON_SOURCE_DIR}', and it must install with the binaries.")
+if(NOT PHOSPHORFSLOADER_USE_SYSTEM_JSONCONS)
+    # phosphor_fetch_dependency(jsoncons) sets jsoncons_SOURCE_DIR in that library's scope.
+    get_directory_property(AFTERGLOW_JSONCONS_SOURCE_DIR DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/phosphor-fsloader"
+        DEFINITION jsoncons_SOURCE_DIR)
+    if(NOT EXISTS "${AFTERGLOW_JSONCONS_SOURCE_DIR}/LICENSE")
+        message(FATAL_ERROR "The jsoncons license was not found in '${AFTERGLOW_JSONCONS_SOURCE_DIR}', and it must install with the binaries.")
     endif()
-    install(FILES "${AFTERGLOW_VALIJSON_SOURCE_DIR}/LICENSE" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
-            RENAME LICENSE.valijson)
+    install(FILES "${AFTERGLOW_JSONCONS_SOURCE_DIR}/LICENSE" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
+            RENAME LICENSE.jsoncons)
 endif()
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shaders/ DESTINATION ${CMAKE_INSTALL_DATADIR}/${AFTERGLOW_SHADER_SUBDIR})
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/themes/ DESTINATION ${CMAKE_INSTALL_DATADIR}/${AFTERGLOW_DATA_SUBDIR}/themes)
