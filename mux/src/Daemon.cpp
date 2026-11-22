@@ -284,11 +284,12 @@ Daemon::Exit Daemon::run()
                     endSession(session);
                 continue;
             }
-            // The window closed and Mux.onClose is kill. Its own window
-            // sends it, so a window that another took the session from
-            // cannot end it. A window that closed the last pane of the
-            // session ends it too: as when its last program exits.
-            if (attachment->takeKill() || own->empty())
+            // The window closed and Mux.onClose is kill, for a session
+            // that is not an agent's (killed()). Its own window sends it, so
+            // a window that another took the session from cannot end it. A
+            // window that closed the last pane of the session ends it too:
+            // as when its last program exits.
+            if (killed(*attachment, *own) || own->empty())
                 endSession(session);
         }
         for (Attachment* attachment : over) {
@@ -380,13 +381,23 @@ Daemon::Exit Daemon::run()
             return !c->open();
         });
         // The agent sessions whose last bound connection went: a client that
-        // crashed or was killed ends its session too.
-        for (const std::uint64_t serial : std::exchange(m_unbound, {})) {
+        // crashed or was killed ends its session too. After the events of
+        // the watch above: the next pass tells the watchers of their end.
+        for (auto bound = m_bound.begin(); bound != m_bound.end();) {
+            if (!bound->second.empty()) {
+                ++bound;
+                continue;
+            }
+            const std::uint64_t serial = bound->first;
+            // endSession() erases only this one, which goes first.
+            bound = m_bound.erase(bound);
             const auto it = std::find_if(m_sessions.begin(), m_sessions.end(), [serial](const auto& s) {
                 return s->serial() == serial;
             });
-            if (it != m_sessions.end())
+            if (it != m_sessions.end()) {
                 endSession(it);
+                m_again = true;
+            }
         }
         // Whether the poll saw it or not: a client that connected since the
         // poll waits in a backlog, and an idle daemon would close its
@@ -451,7 +462,7 @@ bool Daemon::read(IpcServerConnection& connection)
         }
         // A window answers it later, or the call sent its answer itself.
         if (!reply.empty())
-            connection.send(std::move(reply));
+            sendTo(connection, std::move(reply));
         // The connection is the window's now: its other lines go there as
         // they are.
         if (m_relayOf.contains(&connection)) {
@@ -577,14 +588,27 @@ std::string Daemon::callerEnvironment(const IpcRequest& request, const IpcServer
 
 std::string Daemon::newSession(const IpcRequest& request, const IpcServerConnection& connection)
 {
-    if (request.args.size() != 2)
-        return ipcError(request.id, IpcErrorCode::InvalidArg, "newSession takes (protocol, options)");
+    if (request.args.size() < 2 || request.args.size() > 3)
+        return ipcError(request.id, IpcErrorCode::InvalidArg, "newSession takes (protocol, options[, {bind}])");
     if (auto error = versionError(request))
         return *error;
     std::string error;
     auto options = sessionOptions(request.args[1], &error);
     if (!options)
         return ipcError(request.id, IpcErrorCode::InvalidArg, error);
+    // The binding in the same call: an agent's server that dies between a
+    // newSession and a bindSession would leave a session that nothing ends.
+    bool bind = false;
+    if (request.args.size() == 3) {
+        const Json::Value& extra = request.args[2];
+        const Json::Value* value = extra.isObject() ? extra.find("bind") : nullptr;
+        if (!value || !value->isBool() || extra.toObject().size() != 1)
+            return ipcError(request.id, IpcErrorCode::InvalidArg,
+                            "the third argument of newSession is {bind: boolean}");
+        bind = value->toBool();
+        if (bind && !options->agent)
+            return ipcError(request.id, IpcErrorCode::InvalidArg, "only an agent session is bound");
+    }
     if (options->callerEnvironment) {
         // The caller's own (the proxy in the user's ssh login), with the
         // client's variables over it.
@@ -623,9 +647,15 @@ std::string Daemon::newSession(const IpcRequest& request, const IpcServerConnect
         return ipcError(request.id, Error::SpawnFailed, "cannot start the program of session '" + name + "': " + error);
     }
     const std::uint32_t first = session->panes().front()->id();
+    // Each allocation before the session joins the others: a failure ends
+    // its program and leaves no session behind, bound or not.
+    m_sessions.reserve(m_sessions.size() + 1);
+    std::string reply = ipcReply(request.id.value_or(0), Json::Object{{"name", name}, {"pane", std::int64_t(first)}});
+    if (bind)
+        this->bind(session->serial(), connection);
     m_sessions.push_back(std::move(session));
     m_hadSession = true;
-    return ipcReply(request.id.value_or(0), Json::Object{{"name", name}, {"pane", std::int64_t(first)}});
+    return reply;
 }
 
 std::string Daemon::listSessions(const IpcRequest& request, pid_t caller)
@@ -665,11 +695,21 @@ std::string Daemon::adoptSession(const IpcRequest& request)
     const auto it = find(name);
     if (it == m_sessions.end())
         return ipcError(request.id, Error::NoSuchSession, "no session named '" + name + "'");
-    if (!(*it)->options().agent) {
-        (*it)->adopt();
-        // A window that shows it marks it from now.
-        tellWindow(**it, "agent", {});
-    }
+    // The window's settings say whether an agent may take the session: it
+    // reads the text of an adopted session whatever Control.allowReadText
+    // says. A guard against a mistake, not a boundary: any client of the
+    // user can attach and read the panes.
+    const ControlOptions& control = (*it)->options().control;
+    if (!control.enabled)
+        return failed(request, "session '" + name + "' takes no control calls (Control.enabled)");
+    if (!control.allowAdopt)
+        return failed(request, "session '" + name + "' cannot be adopted (Control.allowAdopt)");
+    // Also an agent session that an agent started: it is the user's now, and
+    // the connections that bound it end it no more.
+    (*it)->markAdopted();
+    m_bound.erase((*it)->serial());
+    // A window that shows it, or that the daemon waits for, marks it after
+    // its layout (Attachment::pump()).
     return ipcReply(request.id.value_or(0), nullptr);
 }
 
@@ -695,8 +735,20 @@ std::string Daemon::bindSession(const IpcRequest& request, const IpcServerConnec
     // theirs, also when an agent adopted it.
     if (!session.options().agent || session.adopted())
         return failed(request, "session '" + name + "' is not an agent session that an agent started: it is not bound");
-    m_bound[session.serial()].insert(&connection);
+    this->bind(session.serial(), connection);
     return ipcReply(request.id.value_or(0), nullptr);
+}
+
+void Daemon::bind(std::uint64_t serial, const IpcServerConnection& connection)
+{
+    const auto [bound, made] = m_bound.try_emplace(serial);
+    try {
+        bound->second.insert(&connection);
+    } catch (const std::exception&) {
+        if (made)
+            m_bound.erase(bound);
+        throw;
+    }
 }
 
 void Daemon::endSession(std::vector<std::unique_ptr<Session>>::iterator session)
@@ -761,11 +813,15 @@ std::string Daemon::attach(const IpcRequest& request)
     auto attachment = std::make_unique<Attachment>(name);
     // The window names itself by its serial in the calls that change the
     // session's panes (windowRefusal).
+    const bool agent = (*session)->options().agent;
     std::string reply = ipcReply(request.id.value_or(0),
                                  Json::Object{{"name", name},
                                               {"window", std::int64_t(attachment->serial())},
                                               {"environment", environmentJson((*session)->options().environment)},
-                                              {"agent", (*session)->options().agent}});
+                                              {"agent", agent}});
+    // A session that becomes an agent session after this answer tells the
+    // window then.
+    attachment->setAgentTold(agent);
     // read() moves it to the attachments once the answer went, and only then
     // takes the session from the window that shows it (takeOver()): a
     // connection that cannot be the stream leaves the session where it is.
@@ -805,8 +861,9 @@ std::string Daemon::detach(const IpcRequest& request)
     // when its last program exits. Its late input (applyLate) would end it
     // too, but an attachment that failed meanwhile has none. So does a window
     // that closed with Mux.onClose kill before the call (catchUp() read its
-    // Kill): a finished window's Kill is read no more.
-    if (attachment->takeKill() || (*session)->empty())
+    // Kill), unless the session is an agent's (killed()): a finished
+    // window's Kill is read no more.
+    if (killed(*attachment, **session) || (*session)->empty())
         endSession(session);
     return ipcReply(request.id.value_or(0), nullptr);
 }
@@ -976,10 +1033,17 @@ std::optional<std::string> Daemon::breakOutPanes(Session& from, Layout layout, s
     options.size = {};
     auto session = std::make_unique<Session>(*fresh, std::move(options), m_fileLimit, m_images);
     session->setSerial(++m_lastSessionSerial);
+    // Panes that leave a session of the user stay the user's, and those that
+    // leave an agent session end as the old one does: with the connections
+    // that bound it, or, when none did, only when someone kills it.
+    if (from.adopted())
+        session->markAdopted();
     std::vector<std::unique_ptr<MuxPane>> panes;
     panes.reserve(ids.size());
     std::vector<std::pair<std::uint32_t, MuxPane*>> removed;
     removed.reserve(ids.size());
+    if (const auto bound = m_bound.find(from.serial()); bound != m_bound.end() && !bound->second.empty())
+        m_bound.emplace(session->serial(), bound->second);
     // From here nothing allocates but the window (guarded).
     for (const std::uint32_t id : ids) {
         panes.push_back(from.take(id));
@@ -1240,8 +1304,25 @@ void Daemon::reap()
                 return true;
             });
         }
+        m_bound.erase(session.serial());
         it = m_sessions.erase(it);
     }
+}
+
+bool Daemon::killed(Attachment& attachment, const Session& session)
+{
+    // Read either way: a Kill counts once.
+    const bool kill = attachment.takeKill();
+    // An agent session ends with its agent, not with a window that shows
+    // it: its window only detaches, also one that missed the agent call.
+    return kill && !session.options().agent;
+}
+
+void Daemon::sendTo(IpcServerConnection& connection, std::string line)
+{
+    if (connection.open() && line.size() > IpcServerConnection::MaxWaitingBytes - connection.waitingBytes())
+        m_overflowed.insert(&connection);
+    connection.send(std::move(line));
 }
 
 bool Daemon::idle() const

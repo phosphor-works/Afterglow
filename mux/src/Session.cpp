@@ -104,7 +104,7 @@ bool Session::addPane(std::uint32_t id, const Launch& launch, const PaneSize& si
     m_panes.reserve(m_panes.size() + 1);
     // Before the program runs too: `afterglow ctl watch` hears its first
     // title.
-    pane->setWatched(m_watched);
+    pane->setWatched(m_watched, m_watchText);
     if (!pane->start(std::move(spawn), launch.launchedProgram, error))
         return false;
     m_layout.addTab(id);
@@ -152,7 +152,7 @@ std::unique_ptr<MuxPane> Session::take(std::uint32_t id)
     // Another session takes it, which may not be watched: what it told while
     // it was here is this session's.
     keepLeftEvents(*pane);
-    pane->setWatched(false);
+    pane->setWatched(false, false);
     return pane;
 }
 
@@ -169,17 +169,19 @@ void Session::keepLeftEvents(MuxPane& pane) noexcept
     }
 }
 
-void Session::setWatched(bool watched)
+void Session::setWatched(bool watched, bool text)
 {
-    if (watched == m_watched)
+    text = watched && text;
+    if (watched == m_watched && text == m_watchText)
         return;
-    m_watched = watched;
     if (!watched) {
         m_moved.clear();
         m_left.clear();
     }
+    m_watched = watched;
+    m_watchText = text;
     for (const auto& pane : m_panes)
-        pane->setWatched(watched);
+        pane->setWatched(watched, text);
 }
 
 void Session::adopt(std::vector<std::unique_ptr<MuxPane>> panes, Layout layout) noexcept
@@ -189,7 +191,7 @@ void Session::adopt(std::vector<std::unique_ptr<MuxPane>> panes, Layout layout) 
     // The new session's watch: `afterglow ctl watch` of the old one hears
     // nothing more of them.
     for (const auto& pane : m_panes)
-        pane->setWatched(m_watched);
+        pane->setWatched(m_watched, m_watchText);
 }
 
 void Session::join(std::unique_ptr<MuxPane> pane) noexcept
@@ -198,7 +200,7 @@ void Session::join(std::unique_ptr<MuxPane> pane) noexcept
     // notifications. The calls that the old window did not get yet are kept
     // when the daemon gives the pane this session's window
     // (MuxPane::setWindow), which then gets them, or the next one does.
-    pane->setWatched(m_watched);
+    pane->setWatched(m_watched, m_watchText);
     pane->setKeptNotifications(std::size_t(m_options.keptNotifications));
     // And the answer to OSC 99's query of this session's window. Out of
     // memory, the pane keeps the old one: it still joins whole.

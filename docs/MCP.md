@@ -49,26 +49,39 @@ afterglow mcp [--session NAME] [--adopt] [--cwd DIR]
 | Option | Function |
 | --- | --- |
 | `--session NAME` | Use session `NAME`, or create it. Without this option, the server creates a session with a new name. |
-| `--adopt` | With `--session`: use `NAME` also when it is not an agent session, and make it one. The server never ends that session. |
+| `--adopt` | With `--session`: use `NAME` also when it is not an agent session, and make it one. The server never ends that session. The session needs `Control.allowAdopt`, also an agent session that an agent started. |
 | `--cwd DIR` | Start the first pane of a new session in `DIR`. The default is the working directory. |
 
-The name of a new session is `mcp-`, the name of the working directory, `-` and 8 random hexadecimal digits.
+The name of a new session is `mcp-`, the name of the directory of the first pane, `-` and 8 random hexadecimal digits.
+The directory of the first pane is `DIR` of `--cwd`, else the working directory.
 Each character that a session name cannot have becomes `_`.
-`list_panes` and the instructions of the server give the name.
+`list_panes` gives the name, and the server writes it on standard error.
 
 | Problem | Message | Exit status |
 | --- | --- | --- |
 | An unknown option, or an option without its value | The usage | 2 |
+| `--session` with a name that a session cannot have | `--session takes the name of a session: ...` and the rule | 2 |
 | `--adopt` without `--session` | `--adopt needs --session NAME: the session to adopt` | 2 |
+| `--cwd DIR` that is not a directory | `no directory DIR` | 1 |
+| No `--cwd`, and the working directory was removed | `the current directory was removed, so give an absolute directory with --cwd` | 1 |
 | `--session NAME` of a session that is not an agent session, without `--adopt` | `session NAME is not an agent session: give --adopt to make it one, which the server then never ends` | 1 |
 | `--adopt` with a name that no session has | `no session is named NAME, so there is none to adopt` | 1 |
+| `Control.enabled` is off, and the server makes a new session | `Control.enabled is off in FILE, and the tools need the control calls of the session: turn it on` | 1 |
+| `Control.enabled` is off for the session of `--session NAME` | `Control.enabled is off for session NAME, and the tools need its control calls` | 1 |
 | The mux daemon does not start | Why it did not start | 1 |
+
+The server exits with status 0 when the client closes the standard input or the standard output of the server, and at SIGTERM or SIGHUP.
+A failed read or write of the protocol gives status 1.
+SIGINT and SIGKILL end the server at once.
+At each end of the server, the daemon ends the session when the server bound it.
 
 ## The session
 
 The server uses the mux daemon of this computer.
 When no daemon runs, the server starts one.
-The session is an [agent session](MUX.md#agent-sessions): it keeps its read access, and a window that shows it marks it with a badge.
+The session is an [agent session](MUX.md#agent-sessions): it keeps its read access.
+A window that shows it marks it with one badge at the start of its tab bar.
+A window of the session detaches when it closes, also at the close of its last tab or pane, whatever `Mux.onClose` says.
 
 | Case | End of the session |
 | --- | --- |
@@ -76,13 +89,23 @@ The session is an [agent session](MUX.md#agent-sessions): it keeps its read acce
 | The same, with `Mcp.endSessionOnExit` off | Never with the server. Start a new server with `--session NAME` to use it again. |
 | Two servers with the same `--session` | When the last of the two exits |
 | A session that the server adopted with `--adopt` | Never with the server. It is your session. |
+| A session that a server adopted before, named by a later server with `--session` | Never with the server. It stays your session. |
 | Any session | When its last pane closes, or with `afterglow mux kill NAME` |
 
 Two servers on one session share its panes.
 Each server knows only the commands that it ran itself.
+Two servers that start at the same time with the same `--session NAME` share one session.
+When the session of `--session NAME` ends while a new server joins it, the new server makes it again.
 
 When the session ends while the server runs, each tool fails with a message that says so.
 Restart the server to get a new session.
+
+The mux daemon closes the connection of a server that does not read its answers (see [limits](MUX.md#limits)).
+Then the server cannot use its session any more.
+When the session ends with the server, the server binds it again on a new connection, and closes that connection.
+Then the session ends, unless another server binds it.
+When the link closed because the daemon stopped, the session ended with the daemon.
+Then each tool fails with a message that says so.
 
 ## Tools
 
@@ -128,29 +151,36 @@ Each tool tells the client what it does with its hints.
 ### open_pane
 
 `where` `tab` opens a new tab.
-With `pane`, the tab comes after the tab of that pane, and starts in its directory.
-Without `pane`, the tab starts in the directory of the first pane of the session.
+With `pane`, the tab comes after the tab of that pane.
+Without `pane`, the tab comes after the tab that has the focus, and starts in the directory of the server: `--cwd`, else its working directory.
 `where` `split` splits `pane` on the side of `direction`: `left`, `right` (the default), `up` or `down`.
 
 The new pane runs `argv`, or your shell with shell integration.
 The server prepares the program with the settings of your config file, as `afterglow ctl --session` does.
 `env` sets variables for the program: a string sets a variable, and `false` removes it.
-`cwd` is an absolute directory, or one that starts with `~`.
+`cwd` is an absolute directory, `~`, or a directory that starts with `~/`.
+Without `cwd`, a pane with `pane` starts where `Window.workingDirectory` says.
+With `inherit`, the default, it starts in the directory of `pane`.
 
 While no window shows the session, its panes have the size of a new window (`Window.initialColumns` and `Window.initialRows`).
 A split halves its pane.
 When the pane has no room for a split, the tool fails and tells the agent to open a tab.
 Open tabs to get many panes with no window.
+While a window shows the session, a split with no room opens as a tab, as in the window.
 
 ### run
 
 `run` types a shell command in a pane, and waits for the shell's next prompt.
 It needs [shell integration](CONTROL.md#shell-states) in the pane.
 
-1. The server makes sure that the shell of the pane shows its prompt.
-2. It sends the command as a paste, and then the Enter key.
+1. The server makes sure that the shell of the pane shows an empty prompt. In a pane that the server opened, it first waits for the first prompt of the shell.
+2. It sends the command as a paste, with the Enter key in the same write. The daemon writes them only while the shell shows an empty prompt.
 3. It waits until the shell shows a new prompt.
 4. It returns the exit codes and the text since the command was sent.
+
+`timeout_ms` counts from the call, the wait for the first prompt included.
+A command of several lines needs bracketed paste in the shell, the default of bash 5.1, zsh 5.1, fish and later versions.
+Without bracketed paste, the shell runs each line at its line end, and `run` can end after the first line.
 
 `run` refuses a pane in these cases:
 
@@ -161,6 +191,8 @@ It needs [shell integration](CONTROL.md#shell-states) in the pane.
 | The shell waits for the rest of a command | `pane N waits for the rest of a command: send keys ctrl+c` |
 | Someone typed text at the prompt | `pane N has text at its prompt that someone typed: ask the user, or send keys ctrl+u to clear it` |
 | A `run`, or a `wait` with `until` `finished`, of this server waits on the pane | `pane N has a run or a wait until finished of this server already: wait for it` |
+| A pane that the server opened shows no prompt before the timeout | `pane N showed no prompt in T ms: its shell has no shell integration, or has not started. Use send and wait.` |
+| The shell left its empty prompt after the check, for example when someone typed | `the command did not go: ...`. The command is not sent. |
 
 `output` is the text from the command line to the next prompt, as the pane shows it.
 It keeps the last `tail_lines` lines (`Mcp.tailLines` by default) and the last `Mcp.outputLimit` bytes.
@@ -184,11 +216,15 @@ Thus a command of several lines that runs nothing, such as lines of comments onl
 | The new prompt shows | `status` `finished` |
 | The timeout comes first (`timeout_ms`, else `Mcp.waitTimeout`) | `status` `running`, with the output so far. The command goes on. Call `wait` with `until` `finished` on the pane. |
 | The command is incomplete, for example an open quote or a `\` at the end | A tool error. The shell waits for the rest. Send the keys `ctrl+c` to drop the command. |
+| Fish keeps an incomplete command in its editor, and starts nothing | At the timeout, `status` `running` and a text that says so. The server does not wait for the command any more. |
 | The pane closes, or the session ends | A tool error that says which |
 | `Control.enabled` goes off | A tool error. The tools stop until the server restarts. |
-| A pane decodes an image, and cannot answer for a moment (`TRY_AGAIN`) | A tool error. Call the tool again. |
+| A pane decodes an image, and cannot answer for a moment (`TRY_AGAIN`) | The server asks again a moment later, within the timeout. It never sends the command two times. |
 
 When you type in the pane while `run` waits, your command becomes part of the run.
+When the client cancels a `run` after the command went, the command runs, and the server stops the wait.
+The pane can change its width or clear its screen after the server sent the command. Then `output` holds only the output of the last command, and `truncated` is true.
+When the daemon cannot give the output, the result has the exit codes, an empty `output`, and a text that says why. An example is a text that is larger than one answer can hold.
 
 ### wait
 
@@ -196,8 +232,8 @@ When you type in the pane while `run` waits, your command becomes part of the ru
 | --- | --- |
 | `finished` | The command of a `run` of this server ends. The result is as for `run`. Without a run of this server, at a prompt, it answers at once with the exit code and the output of the last command. While a command of another client runs, it waits for that command. |
 | `text` | New text in the pane matches `pattern` |
-| `quiet` | No text changes in the pane for `quiet_ms` milliseconds |
-| `closed` | The pane closes |
+| `quiet` | No text changes in the pane for `quiet_ms` milliseconds, and at least two times `Control.eventInterval` |
+| `closed` | The pane closes. A pane that closed before the wait answers at once. A pane ID that the server never saw fails. |
 
 `pattern` is a regular expression of PCRE2, with at most 1024 characters.
 `^` and `$` match at the start and the end of each line.
@@ -205,13 +241,19 @@ Each check reads only the text since the last check, and the line in progress.
 Thus a prompt with no line end after it, such as `(gdb) `, matches.
 A match across more lines than came in since the last check can fail: match within one line.
 When more than 1 MiB of text comes between two checks, the check reads only its last 1 MiB.
+At the timeout, one more check reads the text that came last.
+On the alternate screen, or after a program cleared the screen or the pane changed its width, a check reads the whole screen.
+Thus a match can come from text that was on the screen before the wait.
+
+The events of a pane come at most once in each `Control.eventInterval`, and as late.
+Thus `quiet` waits at least two times that interval. The server reads the interval from its config file.
 
 | Result field | Content |
 | --- | --- |
 | `status` | `finished`, `matched`, `quiet` or `closed` when it happened. `running` when the timeout came first. |
 | `matched` | True when it happened |
-| `match` | For `text`: the text that matched |
-| `output` | The text since the wait began. For `finished` after a `run` of this server, since the run began. For `text`, the text that the last check read. |
+| `match` | For `text`: the text that matched, at most `Mcp.outputLimit` bytes. A cut removes its start. |
+| `output` | The text since the wait began. For `finished` after a `run` of this server, since the run began. For a match of `text`, the text that the check that matched read. |
 
 A `run` and a `wait` that the client gave a progress token send progress notifications.
 The progress is the number of rows since the start, and the message is the newest line, at most 200 characters.
@@ -235,6 +277,9 @@ Give one or more of these arguments. They go in this order:
 Use `run` for shell commands.
 After `send`, call `wait` or `read`.
 
+When the pane decodes an image (`TRY_AGAIN`), the server sends that part again a moment later.
+When a part fails after the parts before it went, the error names the parts that went: send only what did not go.
+
 ### read
 
 | `scope` | Text |
@@ -244,6 +289,7 @@ After `send`, call `wait` or `read`.
 | `last_output` | The output of the last command (shell integration) |
 
 The text keeps its end: a cut removes its start.
+The daemon also keeps the end when the text is larger than its 1 MiB.
 `max_bytes` is at most `Mcp.outputLimit`.
 
 ### screenshot
@@ -257,6 +303,8 @@ An image with a side longer than `Mcp.screenshotMaxSize` is scaled down. `scaled
 
 `close_pane` closes a pane, and its program ends.
 The last pane of the session needs `end_session` true: the session ends with it.
+The mux daemon decides in the same step as the close whether the pane is the last one.
+Thus two closes at the same time never end the session without `end_session` true.
 
 ### open_project
 
@@ -281,6 +329,9 @@ The focus goes to the active pane of the active tab of the project.
 | The project file breaks a [limit](PROJECTS.md#project-files) | A tool error that names the limit |
 | A pane has no room for its split while no window shows the session | A tool error that tells the agent to ask you to attach a window. The panes that the open made close. |
 | The daemon refuses a pane | A tool error. The panes that the open made close. |
+| The open fails, and its panes are the only panes of the session | The last of them stays open, so that the session does not end. The tool error says which pane stays. |
+| The program of a pane ended before the next pane splits it | The next pane opens in a tab of its own, with a warning |
+| The client cancels the call | The panes that opened stay, and no more open |
 
 ### save_project
 
@@ -290,7 +341,7 @@ It needs no window: the mux daemon keeps the layout of the session.
 
 | Field of a pane | Value |
 | --- | --- |
-| `cwd` | The directory that the shell reported, else the directory of its program, else your home directory |
+| `cwd` | The directory that the shell reported, else the directory of its program, else your home directory with a warning |
 | `command` | The command that started the pane: the `argv` of `open_pane`, or the command of a project. Never a command that was typed in a shell. A command over the limits of a project saves as the shell, with a warning. |
 | `title` | The title that you gave the pane in a window |
 
@@ -304,6 +355,7 @@ A project has at most 16 tabs and 32 panes. A save of a larger session fails, an
 
 `list_script_commands` lists the commands of the scripts that you enabled, as the window that shows the session has them.
 `stdin` is true for a command that reads standard input.
+When the window gives no list in `Mcp.waitTimeout`, the tool fails.
 
 ### run_script_command
 
@@ -311,6 +363,7 @@ A project has at most 16 tabs and 32 panes. A save of a larger session fails, an
 The command gets `args`, and `stdin` when the script marks it `stdin = true`.
 `ev.source` is `shell`, and `ev.cwd` is the directory of the pane.
 The tool waits until the command ends, and returns its exit status and its output.
+`exit_code` is 0 to 255, as `aglow run` gives it: a script that gives another status gives 1.
 `stdout` and `stderr` together are at most `Mcp.outputLimit` bytes, and `stderr` takes at most half of it.
 A cut removes the start of the text, and `truncated` is then true.
 
@@ -320,6 +373,7 @@ The mux daemon runs no scripts. The window that shows the session runs the comma
 | Problem | Result |
 | --- | --- |
 | No window shows the session | A tool error that tells the agent to ask you to run `afterglow mux attach NAME` |
+| `Scripts.enabled` or `Control.enabled` is off in the window | A tool error that says so |
 | No enabled script has the command | A tool error |
 | `stdin` for a command that reads no standard input | A tool error |
 | The timeout comes first (`timeout_ms`, else `Mcp.waitTimeout`) | A tool error. The server ends the run, as `aglow run` does at Ctrl+C. |
@@ -329,12 +383,13 @@ The mux daemon runs no scripts. The window that shows the session runs the comma
 ## Settings
 
 The server reads the settings of the default config file once, when it starts.
+The `--config` and `-o` options of a running Afterglow do not change them.
 After a change, restart the server.
 See the [configuration reference](CONFIGURATION.md#mcp).
 
 | Setting | Default | Function |
 | --- | --- | --- |
-| `Mcp.waitTimeout` | 120000 ms | The timeout of `run`, `wait` and `run_script_command` when the call gives none |
+| `Mcp.waitTimeout` | 120000 ms | The timeout of `run`, `wait` and `run_script_command` when the call gives none, and of `list_script_commands`. A value above `Mcp.maxWaitTimeout` uses `Mcp.maxWaitTimeout`. |
 | `Mcp.maxWaitTimeout` | 3600000 ms | The longest timeout that a call can ask for |
 | `Mcp.outputLimit` | 65536 bytes | The most UTF-8 text that one result of `run`, `wait`, `read` or `run_script_command` carries |
 | `Mcp.tailLines` | 200 | The lines of output of `run` and `wait` when the call gives no `tail_lines` |
@@ -342,7 +397,8 @@ See the [configuration reference](CONFIGURATION.md#mcp).
 | `Mcp.endSessionOnExit` | true | End the session with the server |
 
 The session follows `Control.enabled` and `Control.eventInterval`, as each [session](MUX.md#control-of-a-session) does.
-Turn off `Control.enabled` to stop every agent.
+A change of `Control.enabled` reaches a session only through a window that shows the session.
+To stop the agent of a session that no window shows, end the session with `afterglow mux kill NAME`.
 
 ## Limits
 
@@ -350,6 +406,7 @@ Turn off `Control.enabled` to stop every agent.
 | --- | --- | --- |
 | `command` of `run`, `text` and `paste` of `send` | One request to the daemon: 1 MiB, with the JSON escapes of the text | The tool fails, and sends nothing |
 | A request line of the client | 13 MiB | The server answers with an error, and drops the line |
+| Requests that wait for the mux daemon to read them | 64 MiB | The tool fails, and sends nothing |
 | `keys` of `send` | 4096 | The tool fails |
 | `pattern` of `wait` | 1024 characters | The tool fails |
 | Panes of a session | 256 | `open_pane` and `open_project` fail |

@@ -351,14 +351,40 @@ if(NOT PHOSPHOR_SYSTEM_LUAU)
     install(FILES "${AFTERGLOW_LUAU_SOURCE_DIR}/lua_LICENSE.txt" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
             RENAME LICENSE.Lua)
 endif()
-# valijson (BSD-2-Clause) is header-only, and its headers are compiled into
-# PhosphorFsLoader, so its notice goes with that library. System headers
-# (PHOSPHORFSLOADER_USE_SYSTEM_VALIJSON) are a separate package with their own
-# notice, and phosphor-fsloader fetches no archive for them.
-if(NOT PHOSPHORFSLOADER_USE_SYSTEM_VALIJSON)
-    # phosphor_fetch_dependency(valijson) sets valijson_SOURCE_DIR in that library's scope.
-    get_directory_property(AFTERGLOW_VALIJSON_SOURCE_DIR DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/phosphor-fsloader"
-        DEFINITION valijson_SOURCE_DIR)
+# valijson (BSD-2-Clause) is header-only, and PhosphorFsLoader and
+# PhosphorMcp compile its headers in. Each library fetches the pinned archive
+# unless it takes the system's headers: PHOSPHORFSLOADER_USE_SYSTEM_VALIJSON,
+# and PHOSPHORMCP_USE_SYSTEM_VALIJSON, whose AUTO follows the first. System
+# headers are a separate package with their own notice. The notice goes with
+# the binaries when either library fetched the archive.
+# phosphor_fetch_dependency(valijson) sets valijson_SOURCE_DIR in that
+# library's scope, and phosphor-mcp keeps its resolved choice (ON or OFF, never
+# AUTO) in _phosphormcp_system_valijson there. A library that fetched the
+# archive without a source directory that this build finds is a configure
+# error: its notice would be missing from the install.
+get_directory_property(AFTERGLOW_MCP_SYSTEM_VALIJSON DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/phosphor-mcp"
+    DEFINITION _phosphormcp_system_valijson)
+if(NOT AFTERGLOW_MCP_SYSTEM_VALIJSON MATCHES "^(ON|OFF)$")
+    message(FATAL_ERROR "phosphor-mcp did not resolve PHOSPHORMCP_USE_SYSTEM_VALIJSON to ON or OFF (_phosphormcp_system_valijson is '${AFTERGLOW_MCP_SYSTEM_VALIJSON}'), so the build cannot tell whether the valijson license must install with the binaries.")
+endif()
+set(AFTERGLOW_VALIJSON_SOURCE_DIR "")
+foreach(AFTERGLOW_VALIJSON_USER IN ITEMS phosphor-fsloader phosphor-mcp)
+    if(AFTERGLOW_VALIJSON_USER STREQUAL "phosphor-fsloader")
+        set(AFTERGLOW_VALIJSON_SYSTEM "${PHOSPHORFSLOADER_USE_SYSTEM_VALIJSON}")
+    else()
+        set(AFTERGLOW_VALIJSON_SYSTEM "${AFTERGLOW_MCP_SYSTEM_VALIJSON}")
+    endif()
+    if(AFTERGLOW_VALIJSON_SYSTEM)
+        continue()
+    endif()
+    get_directory_property(AFTERGLOW_VALIJSON_DIR
+        DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/${AFTERGLOW_VALIJSON_USER}" DEFINITION valijson_SOURCE_DIR)
+    if(NOT AFTERGLOW_VALIJSON_DIR)
+        message(FATAL_ERROR "${AFTERGLOW_VALIJSON_USER} uses the pinned valijson, but its source directory was not found, and its license must install with the binaries.")
+    endif()
+    set(AFTERGLOW_VALIJSON_SOURCE_DIR "${AFTERGLOW_VALIJSON_DIR}")
+endforeach()
+if(AFTERGLOW_VALIJSON_SOURCE_DIR)
     if(NOT EXISTS "${AFTERGLOW_VALIJSON_SOURCE_DIR}/LICENSE")
         message(FATAL_ERROR "The valijson license was not found in '${AFTERGLOW_VALIJSON_SOURCE_DIR}', and it must install with the binaries.")
     endif()

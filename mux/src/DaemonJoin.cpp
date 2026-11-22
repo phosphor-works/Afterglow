@@ -94,6 +94,14 @@ std::string Daemon::joinRefusal(const IpcRequest& request, const Session& from, 
         return failed(request, "placement must be left, right, up, down, new-tab or new-window");
     }
     *side = *place;
+    // An agent reads the text of each pane of its session: a pane whose
+    // session keeps its text from clients (Control.allowReadText) does not
+    // go there. A guard against a mistake, as Control.allowAdopt.
+    if (to.options().agent && !from.options().control.allowReadText) {
+        return failed(request,
+                      "pane " + std::to_string(id) + " cannot join agent session '" + to.name() + "': session '"
+                          + from.name() + "' keeps its text (Control.allowReadText)");
+    }
     if (to.panes().size() >= MaxSessionPanes)
         return tooManyPanes(request, to);
     // The calls that tell the windows wait in no queue past Mux.eventQueue.
@@ -143,7 +151,8 @@ void Daemon::joinPanes(Session& from, std::uint32_t id, Session& to, std::uint32
         title = values.mapped().title;
     }
     const char* const place = side ? sideName(*side) : "tab";
-    Json::Array placed{std::int64_t(id), std::int64_t(beside), place, std::move(command), std::move(title)};
+    // Its program ran before: the window takes its first frame as no news.
+    Json::Array placed{std::int64_t(id), std::int64_t(beside), place, std::move(command), std::move(title), false};
     Json::Array left{std::int64_t(id), to.name()};
     const std::string fromName = from.name();
     std::vector<std::pair<std::uint32_t, MuxPane*>> removed;

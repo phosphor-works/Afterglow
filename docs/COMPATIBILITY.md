@@ -31,7 +31,7 @@ The table below lists the protocols that Afterglow supports, each with the tests
 | Kitty notifications (OSC 99), with OSC 9 and OSC 777 | Chunks, icons with one icon cache (`g`) for the whole application that keeps the 32 icons used last, buttons, sounds, close and activation reports, the capability query; filter rules as Kitty's `filter_notification` (`Notifications.filters`) | `Notification.*`, `Extensions.LegacyNotificationsRejectControlsAndBadUtf8`, `ConfigTest.NotificationFilterRules`, `NativeWindow.NotificationReplacementAndApplicationImageCache`, `NativeWindow.NotificationFiltersDropWhatTheyMatch`; [hide notifications](DESKTOP.md#hide-notifications-of-programs) |
 | Kitty clipboard (OSC 5522), OSC 52 and paste events (mode 5522) | Several MIME types, passwords for reads and writes, the primary selection | `Clipboard.*`, `Clipboard.PasteEventsModeIsReported`, `NativeWindow.KittenClipboard*`, `NativeWindow.AnAllowedClipboardPasswordAllowsLaterWrites` |
 | Kitty file transfer (OSC 5113), drag and drop (OSC 72) | See [Kitty file transfer](DESKTOP.md#kitty-file-transfer) and [Kitty drag and drop](DESKTOP.md#kitty-drag-and-drop) | `Transfer.*`, `Dnd.*`, `afterglow_transfer_kitten_relay`, `NativeWindow.Kitty*` |
-| Shell integration (OSC 133 and OSC 633), contexts (OSC 3008), the working directory (OSC 7) | Prompt, command and output marks, `click_events=1` and `click_events=2`, `special_key=1`, the secondary prompt (`k=s`), `redraw`, `cmdline` and `cmdline_url`; the context stack; `file://` directories | `Terminal.ShellIntegrationCommands`, `Extensions.VSCodeShellIntegration`, `Extensions.SystemdContexts`, `Terminal.WorkingDirectoryReportsOnlyChanges` |
+| Shell integration (OSC 133 and OSC 633), contexts (OSC 3008), the working directory (OSC 7) | Prompt, command and output marks, `click_events=1` and `click_events=2`, `special_key=1`, the secondary prompt (`k=s`, OSC 633 `F`), `redraw`, `cmdline` and `cmdline_url`; the context stack; `file://` directories | `Terminal.ShellIntegrationCommands`, `Extensions.VSCodeShellIntegration`, `ShellMarks.*`, `Extensions.SystemdContexts`, `Terminal.WorkingDirectoryReportsOnlyChanges` |
 | Program status (OSC 7501), ConEmu progress and directory (OSC 9;4, OSC 9;9) | Status, progress and the working directory | `ProgramStatus.*`, `Extensions.ConEmuCommands` |
 | iTerm2 (OSC 1337) | `File` with animated GIF, WebP and APNG images, `MultipartFile`, `FilePart`, `FileEnd`, `SetUserVar`, `CurrentDir`, `ClearScrollback`, `ReportCellSize`, `SetMark`, `RemoteHost`, `Copy`, `RequestAttention`, `CursorShape` | `Extensions.ITerm2Commands`, `Extensions.ITerm2AnimatedImagesPlayAndLoop`, `PaneAnimation.AnITerm2GifPlaysThroughThePanesDecoder`, `Extensions.ITerm2SetMarkMarksTheCursorRowOnTheMainScreen`, `Extensions.Downloads*`, `Terminal.BellsRingOnlyForBel` |
 | Hyperlinks (OSC 8) | Links with and without an id, across wrapped lines and reflow | `Reflow.StyleAndLinkRunAcrossWrapsKeepItsReferences`, `StateSync.TextStylesLinksAndText` |
@@ -184,14 +184,23 @@ A byte that is not UTF-8 becomes U+FFFD.
 A C1 control sent as UTF-8 (U+0080 to U+009F) prints nothing.
 
 The command line keeps no control characters except line feeds and tabs. A byte that is not UTF-8 becomes U+FFFD.
-A command that erases the whole screen (ED 2) moves the start of its output to the top of the screen.
+A command can erase the whole screen with ED 2, or with ED 0 from the top left corner. Then its output starts at the top of the screen.
+OSC 133 `A` and OSC 633 `A` start a new prompt only as the first mark, or after a `C` or a `D` mark.
+Another such mark comes from a shell that draws the same prompt again, for example after a resize or Ctrl+L.
+OSC 133 `N` ends the last command, and always starts a new prompt.
+A `D` mark with no command (Enter on an empty line) keeps the shell at its prompt.
+OSC 133 `A;k=s` and `P;k=s` and OSC 633 `F` mark a secondary prompt, also on the alternate screen.
+For a shell that sends no `A`, an OSC 133 `P` mark without `k=s` starts a new prompt. It does so as the first mark, or after the end of a command.
+Other `P` marks are parts of the open prompt.
+OSC 633 `G`, `H` and `I` change nothing.
+A command can start and end on the alternate screen, where a killed full-screen program leaves the shell. It has no output to read.
 OSC 3008 contexts form a stack. A `start` for a context that is open ends the contexts inside it.
 A terminal reset (RIS or the Reset command) keeps the context stack, as the [context specification](https://uapi-group.org/specifications/specs/osc_context/) requires.
 
 ## Downloads, input methods and bidirectional text
 
 A new `MultipartFile`, a terminal reset or the end of the pane's program ends a file that has no `FileEnd`.
-A new shell prompt is a prompt mark (OSC 133 `A` or `N`, or OSC 633 `A`) after a command start mark (`C`).
+A new shell prompt is a prompt mark after a command start mark (`C`). The prompt marks are OSC 133 `A`, `N` and a `P` that starts a prompt, and OSC 633 `A`.
 One new prompt does not end the file, because a job in the background can still send it.
 A second new prompt with no `FilePart` after the first ends it, because the program that sent it has stopped.
 A prompt mark with no `C` before it does not count, because a shell sends it each time it draws the same prompt again.

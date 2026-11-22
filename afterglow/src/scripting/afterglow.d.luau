@@ -58,9 +58,10 @@ export type Pane = {
 export type Overview = { open: boolean, highlighted: number, cards: { number } }
 -- cols and rows: the cells that fit in the window. A top or bottom window dock is cols wide.
 -- session: the mux session that the window shows, else "". session_host: the ssh destination
--- of that session's daemon, "" for this computer.
+-- of that session's daemon, "" for this computer. agent: that session is an agent session.
 export type Window = { id: number, project: string, project_directory: string, focused: boolean, active_tab: number,
-    active_pane: number, overview: Overview, session: string, session_host: string, cols: number, rows: number }
+    active_pane: number, overview: Overview, session: string, session_host: string, agent: boolean, cols: number,
+    rows: number }
 export type Tab = { id: number, window: number, index: number, title: string, active: boolean, active_pane: number }
 -- Detached metadata, captured before dispatch. Editing it cannot mutate the host.
 -- Zero active IDs mean that no terminal window currently has keyboard focus.

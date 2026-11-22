@@ -779,7 +779,8 @@ def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mu
     # Bash replaces only the part after the colon.
     yield 'afterglow ctl action script:', last_part(':', {'nav.open', 'nav.list'})
     yield 'afterglow ctl signal ', {str(n) for n in range(8)}
-    yield 'afterglow ctl watch ', set()
+    yield 'afterglow ctl watch ', ctl('watch')
+    yield 'afterglow ctl watch --text-changes ', set()
     yield 'afterglow ctl overlay -', has('--pane', *overlay)
     yield 'afterglow ctl overlay --capture ', {'stdout', 'file', 'none'}
     yield 'afterglow ctl overlay --cwd ', {'adir'}

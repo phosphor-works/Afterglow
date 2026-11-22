@@ -1648,8 +1648,12 @@ void MuxClient::handleFrames()
                     }
                     if (call.value(QLatin1String("fn")).toString() == QLatin1String("agent")) {
                         // An agent adopted the session: the window marks it.
-                        // Only the daemon's own call (ID 0) says so.
-                        if (id.toInteger() == 0 && !std::exchange(m_agent, true))
+                        // Only the daemon's own call (ID 0) says so: the
+                        // daemon passes no client's call of this name.
+                        if (id.toInteger() != 0)
+                            qCWarning(lcMux) << "session" << m_session << "got the call agent with ID" << id.toInteger()
+                                             << ", which only the daemon makes, with ID 0";
+                        else if (!std::exchange(m_agent, true))
                             Q_EMIT agentChanged();
                     } else if (call.value(QLatin1String("fn")).toString() == QLatin1String("paneLeft")) {
                         // `afterglow ctl --session` moved the pane to another

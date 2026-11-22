@@ -301,7 +301,8 @@ _afterglow_ctl()
     open-directory) _afterglow_unused --layout ;;
     save-project) _afterglow_unused $pane --overwrite ;;
     open-project) _afterglow_unused --new "--into-session|--no-session" ;;
-    watch | scripts | projects) ;;
+    watch) _afterglow_unused --text-changes ;;
+    scripts | projects) ;;
     *) _afterglow_unused $pane ;;
     esac
 }

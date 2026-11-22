@@ -24,14 +24,14 @@ namespace AfterglowMux {
 
 /// Changes when a call, its arguments or its result change. Each end checks
 /// it: the client calls Fn::Version first on each connection, and the daemon
-/// refuses a newSession, an attach, a newPane, a breakOut, a joinPane, a
-/// selectSession or a selectPane of another version: the calls that take it
-/// as their first argument. The codecs of the attach stream (MuxStream.h), of the
-/// host calls on it (MuxHost.h) and of the state frames in it
-/// (AfterglowVt::StateCodec, StateSync.h) change with it. MuxProtocolTest
-/// pins the keys of the options to this number, so that a new key changes it
-/// too.
-inline constexpr int ProtocolVersion = 32;
+/// refuses a callerEnvironment, a newSession, an attach, a newPane, a
+/// breakOut, a joinPane, a selectSession or a selectPane of another version:
+/// the calls that take it as their first argument. The codecs of the attach
+/// stream (MuxStream.h), of the host calls on it (MuxHost.h) and of the state
+/// frames in it (AfterglowVt::StateCodec, StateSync.h) change with it.
+/// MuxProtocolTest pins the keys of the options to this number, so that a
+/// new key changes it too.
+inline constexpr int ProtocolVersion = 33;
 
 /// The phosphor-ipc target of the daemon's calls.
 inline constexpr const char* Target = "mux";
@@ -57,10 +57,13 @@ inline constexpr const char* GetTextScopeNames =
 /// before the cursor's place: a window and the daemon say the same.
 inline constexpr const char* CursorScopeError = "cursor is for the screen, scrollback and last-output scopes";
 /// The options of getText, as the error for another option names them.
-inline constexpr const char* TextOptionNames = "the options are ansi, cursor, wrap_markers and mark";
+inline constexpr const char* TextOptionNames = "the options are ansi, cursor, wrap_markers, keep_end and mark";
 /// The error of getText for a mark that is not one that the mark call gave.
 inline constexpr const char* MarkOptionError =
-    "the getText option mark is the object {row, col} that the mark call gives";
+    "the getText option mark is the object {row, col, epoch} that the mark call gives";
+/// The message of Error::StaleMark: a window and the daemon say the same.
+inline constexpr const char* StaleMarkMessage =
+    "the mark is from before the pane changed its width or cleared its screen: take a new mark";
 /// The error of getText for the since scope without a mark, or a mark with
 /// another scope.
 inline constexpr const char* MarkScopeError = "the scope since takes the option mark, and no other scope takes it";
@@ -69,8 +72,12 @@ inline constexpr std::array<std::string_view, 3> ShellRegionKinds{"prompt", "inp
 
 namespace Fn {
 inline constexpr const char* Version = "version"; ///< () -> {version, protocol}
-inline constexpr const char* NewSession =
-    "newSession"; ///< (protocol, options) -> {name, pane}: pane is its first pane's ID
+/// (protocol, options[, {bind}]) -> {name, pane}: pane is its first pane's
+/// ID. With bind true, the new session is bound to this connection in the
+/// same call, as bindSession binds it: a client that dies between two calls
+/// leaves no agent session that nothing ends. Only an agent session
+/// (SessionOptions::agent) is bound.
+inline constexpr const char* NewSession = "newSession";
 /// (protocol, environment) -> null: the environment of the caller
 /// (environmentJson()), which a session that a later newSession call on
 /// this connection starts with SessionOptions::callerEnvironment takes.
@@ -82,16 +89,21 @@ inline constexpr const char* CallerEnvironment = "callerEnvironment";
 inline constexpr const char* ListSessions = "listSessions"; ///< () -> [session]
 inline constexpr const char* KillSession = "killSession"; ///< (name) -> null
 /// (name) -> null: session `name` becomes an agent session, for the rest of
-/// its life. It can then not be bound: it is the user's.
+/// its life. It is the user's: it can then not be bound, and the connections
+/// that bound an agent session that an agent started no longer end it. The
+/// session's Control.enabled and Control.allowAdopt must be on (CALL_FAILED
+/// otherwise): a guard against a mistake, not a boundary.
 inline constexpr const char* AdoptSession = "adoptSession";
 /// (name) -> null: the agent session `name` ends when the last connection
-/// that bound it closes, also when its client is killed. A session that was
+/// that bound it closes, also when its client is killed, but not when the
+/// daemon closes a connection whose client did not read its output in time
+/// (a stopped client): that client is still there. A session that was
 /// adopted is refused.
 inline constexpr const char* BindSession = "bindSession";
 /// (name) -> null: the session no longer ends with this connection.
 inline constexpr const char* UnbindSession = "unbindSession";
 /// (protocol, name, {takeover, eventQueue, history}) -> {name, window,
-/// environment}: after the answer, the connection of the call carries the
+/// environment, agent}: after the answer, the connection of the call carries the
 /// session's stream (MuxStream.h). The client sends nothing after the call
 /// until the answer came, and then starts the stream, which writes first:
 /// the daemon sends nothing after the answer until then. So neither side's
@@ -99,7 +111,9 @@ inline constexpr const char* UnbindSession = "unbindSession";
 /// proxy`). window is the serial of the window, which its newPane and
 /// breakOut give. environment is the session's environment
 /// (SessionOptions::environment, environmentJson()), which the window's
-/// launches of new panes change, as the daemon does.
+/// launches of new panes change, as the daemon does. agent: the session is an
+/// agent session (SessionOptions::agent); one that becomes one later sends
+/// the window the agent call of the control target after its layout.
 inline constexpr const char* Attach = "attach";
 /// (name) -> null: the window of the session closes, and the session keeps running.
 inline constexpr const char* Detach = "detach";
@@ -187,9 +201,24 @@ inline constexpr const char* NotAttached = "NOT_ATTACHED";
 /// split and newTab of `afterglow ctl`, start none.
 inline constexpr const char* TooManyPanes = "TOO_MANY_PANES";
 /// A pane cannot answer now, and can a moment later: the daemon's pane
-/// decodes an image, or a window's session pane still gets its rows from
-/// the daemon. A window and the daemon give the same code.
+/// decodes an image, the window of the session has not taken the calls
+/// before this one (Mux.eventQueue), or a window's session pane still gets
+/// its rows from the daemon, or has no frame yet for mark, shellRegions,
+/// paste and sendKeys. A window and the daemon give the same code.
 inline constexpr const char* TryAgain = "TRY_AGAIN";
+/// A getText since a mark that the pane's text no longer matches: the pane
+/// changed its width, cleared its screen or was reset after the mark. A
+/// window and the daemon give the same code.
+inline constexpr const char* StaleMark = "STALE_MARK";
+/// A paste with the option prompt while the shell of the pane is not at a
+/// primary prompt with an empty command line: nothing went.
+inline constexpr const char* NotAtPrompt = "NOT_AT_PROMPT";
+/// A close with endSession false of the last pane of a session: nothing
+/// closed.
+inline constexpr const char* LastPane = "LAST_PANE";
+/// A split that the pane has no room for, while no window shows the session
+/// (a window makes a tab of it).
+inline constexpr const char* NoRoom = "NO_ROOM";
 } // namespace Error
 
 /// The environment variable with the descriptor of a pipe that a client
@@ -284,8 +313,10 @@ struct PaneSize
 struct ControlOptions
 {
     bool enabled = true; ///< Control.enabled: off, the session takes no control calls
-    /// Control.allowReadText: get-text, screenshots, the command lines in ls,
-    /// and the command lines and user variables in the events of watch.
+    /// Control.allowReadText: get-text, screenshots, the commands of the
+    /// panes in ls and in the layout call, the values of their user
+    /// variables and the command line of their programs in ls, and the
+    /// command lines and user variables in the events of watch.
     bool allowReadText = false;
     /// Why the client's settings allow no remote commands, as the refusal
     /// of a call says it ("remote commands are off (SETTING)"), or empty:
@@ -295,6 +326,10 @@ struct ControlOptions
     /// events of one kind for one pane of `afterglow ctl watch`, 0 to
     /// MaxEventInterval.
     int eventInterval = 100;
+    /// Control.allowAdopt: adoptSession may make this session an agent
+    /// session. A guard against a mistake, not a boundary: any client of the
+    /// user can attach and read the panes.
+    bool allowAdopt = false;
     bool operator==(const ControlOptions&) const = default;
 };
 

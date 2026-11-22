@@ -1007,6 +1007,12 @@ void Attachment::pump(Session* session)
         sendEvent(layout);
         m_layoutSent = true;
     }
+    // A session that became an agent session after the attach answer: the
+    // window marks it, and detaches at its close (ID 0: no answer).
+    if (session && !m_finish && m_layoutSent && !m_agentTold && session->options().agent) {
+        sendControl(R"({"id":0,"fn":"agent","args":[]})");
+        m_agentTold = true;
+    }
     // The panes that exited first: their last calls and their PaneClosed do
     // not wait behind the calls of the live ones.
     sendClosed();

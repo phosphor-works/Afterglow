@@ -7,6 +7,8 @@
 #include "RemoteSockets.h"
 #include "../config/Settings.h"
 
+#include <AfterglowProto/IpcServer.h>
+
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QPointer>
@@ -90,8 +92,24 @@ void ControlApi::sendText(double pane, const QString& text)
 
 void ControlApi::paste(double pane, const QString& text)
 {
-    if (const auto id = paneId(pane))
-        failed(m_control.paste(*id, text));
+    if (const auto id = paneId(pane)) {
+        QString code;
+        failWithCode(m_control.paste(*id, text, &code), code);
+    }
+}
+
+void ControlApi::failWithCode(const QString& error, const QString& code)
+{
+    if (error.isEmpty())
+        return;
+    if (code.isEmpty()) {
+        failed(error);
+        return;
+    }
+    // A code of its own goes only through a pending reply. Past the
+    // router's limit of waiting calls, the router fails the call.
+    if (const PendingReply reply = deferCall(error))
+        reply->fail(code, error);
 }
 
 ControlApi::PendingReply ControlApi::deferCall(const QString& noClient)
@@ -167,28 +185,27 @@ void ControlApi::getText(double pane, const QString& scope, const QVariantMap& o
     const auto id = paneId(pane);
     if (!id)
         return;
+    // The options, then the scope, as the daemon checks them.
+    AfterglowVt::TextFormat format;
+    std::optional<AfterglowVt::TextMark> mark;
+    if (failed(Control::textFormat(options, format, &mark)))
+        return;
     const bool since = scope == QLatin1String("since");
+    if (since != mark.has_value()) {
+        failed(QLatin1String(AfterglowMux::MarkScopeError));
+        return;
+    }
     const auto s = Control::scopeFromName(scope);
     if (!s && !since) {
         failed(QStringLiteral("scope is ") + QLatin1String(AfterglowMux::GetTextScopeNames));
         return;
     }
-    AfterglowVt::TextFormat format;
-    std::optional<AfterglowVt::SemanticPosition> mark;
-    if (failed(Control::textFormat(options, format, &mark)))
-        return;
-    if (since != mark.has_value()) {
-        failed(QLatin1String(AfterglowMux::MarkScopeError));
-        return;
-    }
     // The answer goes from here, so that a refusal can have a code of its
-    // own: TRY_AGAIN for rows that a session pane still gets.
+    // own: TRY_AGAIN for rows that a session pane still gets, STALE_MARK
+    // for a mark from before a reflow or a clear.
     const PendingReply reply = deferCall(QStringLiteral("getText needs a client connection"));
     if (!reply)
         return;
-    // The end of a command's output and of what came since a mark holds
-    // its result: a cut keeps it.
-    format.keepEnd = since || *s == Control::TextScope::LastOutput;
     QString text, code;
     bool truncated = false, trimmed = false;
     const QString error = since ? m_control.readTextSince(*id, *mark, format, text, truncated, trimmed, code)
@@ -209,8 +226,10 @@ void ControlApi::getText(double pane, const QString& scope, const QVariantMap& o
 QVariantMap ControlApi::mark(double pane)
 {
     QVariantMap mark;
-    if (const auto id = paneId(pane))
-        failed(m_control.markOfPane(*id, mark));
+    if (const auto id = paneId(pane)) {
+        QString code;
+        failWithCode(m_control.markOfPane(*id, mark, code), code);
+    }
     return mark;
 }
 
@@ -225,19 +244,27 @@ QVariantList ControlApi::shellRegions(double pane, double after)
     const auto id = paneId(pane);
     if (!id)
         return regions;
-    if (!Control::isWhole(after) || after < 0 || after > double(1LL << 53)) {
-        failed(QStringLiteral("after is a region ID: a whole number from 0"));
+    if (!Control::isWhole(after) || after < 0 || after >= Control::RegionIdLimit) {
+        failWithCode(Control::BadRegionAfter, QLatin1String(AfterglowProto::IpcErrorCode::InvalidArg));
         return regions;
     }
-    failed(m_control.shellRegions(*id, quint64(after), regions));
+    QString code;
+    failWithCode(m_control.shellRegions(*id, quint64(after), regions, code), code);
     return regions;
+}
+
+QString ControlApi::launchCode(const QString& error)
+{
+    return error == Control::NoRoomForPane ? QLatin1String(AfterglowMux::Error::NoRoom) : QString();
 }
 
 uint ControlApi::split(double pane, const QString& direction, const QStringList& command)
 {
     quint32 created = 0;
-    if (const auto id = paneId(pane))
-        failed(m_control.split(*id, direction, command, {}, created));
+    if (const auto id = paneId(pane)) {
+        const QString error = m_control.split(*id, direction, command, {}, created);
+        failWithCode(error, launchCode(error));
+    }
     return created;
 }
 
@@ -252,8 +279,10 @@ uint ControlApi::newTab(double pane, const QString& workingDirectory, const QStr
 uint ControlApi::split(double pane, const QString& direction, const QStringList& command, const QVariantMap& options)
 {
     quint32 created = 0;
-    if (const auto id = paneId(pane))
-        failed(m_control.clientSplit(*id, direction, command, options, created));
+    if (const auto id = paneId(pane)) {
+        const QString error = m_control.clientSplit(*id, direction, command, options, created);
+        failWithCode(error, launchCode(error));
+    }
     return created;
 }
 
@@ -316,8 +345,10 @@ void ControlApi::resizePane(double pane, const QString& direction, double cells)
 
 void ControlApi::sendKeys(double pane, const QStringList& keys)
 {
-    if (const auto id = paneId(pane))
-        failed(m_control.sendKeys(*id, keys));
+    if (const auto id = paneId(pane)) {
+        QString code;
+        failWithCode(m_control.sendKeys(*id, keys, &code), code);
+    }
 }
 
 void ControlApi::scroll(double pane, const QString& unit, double amount)
@@ -346,15 +377,7 @@ void ControlApi::setColors(double pane, const QVariantMap& colors, bool reset)
     if (!id)
         return;
     QString code;
-    const QString error = m_control.setColors(*id, colors, reset, &code);
-    if (code.isEmpty()) {
-        failed(error);
-        return;
-    }
-    // A code of its own goes only through a pending reply. Past the
-    // router's limit of waiting calls, the router fails the call.
-    if (const PendingReply reply = deferCall(error))
-        reply->fail(code, error);
+    failWithCode(m_control.setColors(*id, colors, reset, &code), code);
 }
 
 void ControlApi::setFontSize(double pane, const QString& size)

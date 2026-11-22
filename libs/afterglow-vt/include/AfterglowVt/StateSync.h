@@ -39,13 +39,17 @@
 // thus names the same text at both ends.
 //
 // What a frame carries: both screens (their rows, the history with the
-// stable id of each row, the cursor), the styles and links of their cells,
-// the modes, the colors, the cursor shape, the title and the working
-// directory, the extra cursors, the OSC 133 marks and semantic regions, the
-// program status, the shell contexts, the region scrolls since the last
-// frame, the cell size, and the images with their placements: the pixels of
-// each frame go once, in parts, and an image shows once all of its frames
-// came.
+// stable id of each row, the cursor, the layout epoch), the count of rows
+// that got other text, which with the layout epoch makes the epoch of a text
+// mark, the styles and links of their cells, the modes, the colors, the
+// cursor shape, the title and the working directory, the extra cursors, the
+// OSC 133 marks and semantic regions with the shell's facts (whether it
+// marks its prompts, whether its program exited, the last exit code, the
+// prompt id, a continuation prompt), the program status, the shell
+// contexts, the region scrolls since the last frame, the cell size, a count of the changes of the text (which
+// the held frames carry too), and the images with their placements: the
+// pixels of each frame go once, in parts, and an image shows once all of
+// its frames came.
 
 namespace AfterglowVt {
 
@@ -117,7 +121,8 @@ public:
     /// screens. It carries what a host shows of a terminal that it does not
     /// draw, when it changed: the modes, the colors, the title and the
     /// working directory, the OSC 133 marks, the program status, the shell
-    /// contexts and the extra cursors. The rows, the history, the cursors,
+    /// contexts, the extra cursors, and whether the text changed
+    /// (Terminal::contentGeneration()). The rows, the history, the cursors,
     /// the cell size and the images wait, and so do the region scrolls: the
     /// caller keeps them for the next update(), which sends the screens as
     /// they are then. Empty when none of those sections changed.
@@ -293,6 +298,7 @@ private:
     std::string m_contexts;
     std::string m_extraCursors;
     std::string m_cellSize;
+    std::string m_content;
     std::uint64_t m_generation = 0; ///< Terminal::generation() at the last frame
     std::uint64_t m_statusSerial = 0; ///< ProgramStatus::serial() at the last frame
     std::size_t m_replicaHistory = ~std::size_t(0);

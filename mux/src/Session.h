@@ -49,7 +49,9 @@ public:
     }
     /// Whether `afterglow ctl watch` watches the session: its panes, and
     /// those that start or come later, keep what their terminals tell for it.
-    void setWatched(bool watched);
+    /// The changes of their text only with @p text, while a watcher
+    /// subscribed to textChanged: a flood of output then costs nothing.
+    void setWatched(bool watched, bool text);
     /// The watch events of a pane that left the session (take(), reap()),
     /// which `afterglow ctl watch` hears before the pane's end.
     struct LeftEvents
@@ -189,8 +191,9 @@ public:
     /// the panes that start later get the variables.
     void applySettings(const SessionSettings& settings);
     /// Makes the session an agent session for the rest of its life
-    /// (Fn::AdoptSession): it keeps read access, and is never bound.
-    void adopt()
+    /// (Fn::AdoptSession): it keeps read access, and is never bound. A
+    /// session that its panes break out to keeps the mark (Daemon::breakOutPanes).
+    void markAdopted() noexcept
     {
         m_options.agent = true;
         m_options.control.allowReadText = true;
@@ -216,6 +219,7 @@ private:
     bool m_adopted = false;
     std::uint64_t m_serial = 0;
     bool m_watched = false;
+    bool m_watchText = false;
     std::vector<std::uint32_t> m_moved;
     std::vector<LeftEvents> m_left;
     std::uint64_t m_layoutChanges = 0;

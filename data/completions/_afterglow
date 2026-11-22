@@ -290,7 +290,8 @@ _afterglow_ctl() {
     save-project) _arguments $pane '--overwrite[replace a project with the name]' '1:name:' ;;
     open-project) _arguments '--new[launch the layout again]' '(--no-session)--into-session[open into a mux session]' '(--into-session)--no-session[open into a window]' '1:name:' ;;
     action) _arguments $pane '1:action:_afterglow_actions' ;;
-    watch|scripts|projects) ;;
+    watch) _arguments '--text-changes[print textChanged too]' ;;
+    scripts|projects) ;;
     *) _arguments $pane ;;
     esac
 }
@@ -362,7 +363,7 @@ _afterglow_mcp() {
     _arguments \
         '(- *)'{-h,--help}'[show the usage]' \
         '--session[use or create the session]:session:' \
-        '--adopt[make a session that is not an agent session one]' \
+        '--adopt[with --session, make your own session an agent session]' \
         '--cwd[start the first pane in the directory]:directory:_directories'
 }
 

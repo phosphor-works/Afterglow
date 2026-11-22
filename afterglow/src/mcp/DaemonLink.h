@@ -42,6 +42,11 @@ public:
         QString code; ///< the daemon's error code, empty when the connection failed
         QString message;
     };
+    /// The code of a call that the link refused: the requests before it
+    /// that wait for the daemon to read them hold MaxQueuedBytes.
+    static constexpr const char* QueueFull = "QUEUE_FULL";
+    /// The most bytes of requests that wait for the daemon to read them.
+    static constexpr qsizetype MaxQueuedBytes = qsizetype(64) << 20;
     /// Runs once for each call, from the event loop: with the result, or with
     /// @p error set. Never inside call().
     using Answer = std::function<void(const QJsonValue& result, const Error* error)>;

@@ -857,8 +857,9 @@ TEST(Terminal, SemanticRegionsKeepTheNewest1024)
     Term t(20, 5);
     t.feed("\x1b]133;A\a");
     const std::uint64_t first = t.t.semanticRegions().front().id;
+    // A prompt after a D is a new one, with a region of its own.
     for (int i = 0; i < 1099; ++i) {
-        t.feed("\x1b]133;A\a");
+        t.feed("\x1b]133;D\a\x1b]133;A\a");
     }
     const auto regions = t.t.semanticRegions();
     ASSERT_EQ(regions.size(), 1024u);
@@ -1071,6 +1072,10 @@ TEST(Terminal, ShellInputIsTheTextBeforeTheCursor)
     // Erased again: only blanks.
     t.feed("\b\b\b\b    \b\b\b\b");
     EXPECT_FALSE(t.t.shellInput());
+    // Blanks before the cursor are no typed text either.
+    t.feed("ab\b\b  ");
+    EXPECT_FALSE(t.t.shellInput());
+    t.feed("\b\b");
     // Typed text that wraps.
     t.feed(std::string(40, 'x'));
     EXPECT_TRUE(t.t.shellInput());
@@ -1084,35 +1089,50 @@ TEST(Terminal, ShellInputIsTheTextBeforeTheCursor)
 
 // textSince gives the text from a mark to the cursor, also after the mark's
 // row scrolled into the history; from the oldest row kept once the row left
-// it; the screen on the alternate screen and after a clear.
+// it; the screen on the alternate screen. A clear makes the mark stale.
 TEST(Terminal, TextSinceAMark)
 {
     Term t(20, 4, 5);
     t.feed("before\r\n$ ");
-    const SemanticPosition mark = t.t.textMark();
+    const TextMark mark = t.t.textMark();
     t.feed("cmd\r\none\r\ntwo\r\nthree");
-    bool truncated = true, trimmed = true;
-    EXPECT_EQ(t.t.textSince(mark, 1024, &truncated, &trimmed, {}), "cmd\none\ntwo\nthree");
+    bool truncated = true, trimmed = true, stale = true;
+    EXPECT_EQ(t.t.textSince(mark, 1024, &truncated, &trimmed, &stale, {}), "cmd\none\ntwo\nthree");
     EXPECT_FALSE(truncated);
+    EXPECT_FALSE(trimmed);
+    EXPECT_FALSE(stale);
+    // The mark's row in the history, still kept.
+    t.feed("\r\nfour");
+    const Screen& primary = t.t.primaryScreen();
+    ASSERT_GE(primary.absoluteIndexOf(mark.row), 0);
+    ASSERT_LT(std::size_t(primary.absoluteIndexOf(mark.row)), primary.historySize());
+    EXPECT_EQ(t.t.textSince(mark, 1024, &truncated, &trimmed, &stale, {}), "cmd\none\ntwo\nthree\nfour");
     EXPECT_FALSE(trimmed);
     // Past the 5 rows of history and 4 of the screen, the mark's row goes.
     for (int i = 0; i < 12; ++i)
         t.feed("\r\nline " + std::to_string(i));
-    const std::string all = t.t.textSince(mark, 1024, &truncated, &trimmed, {});
+    const std::string all = t.t.textSince(mark, 1024, &truncated, &trimmed, &stale, {});
     EXPECT_TRUE(trimmed);
     EXPECT_FALSE(truncated);
     EXPECT_TRUE(all.starts_with("line 3\n")) << all;
     EXPECT_TRUE(all.ends_with("line 11")) << all;
     // The alternate screen has no history: its screen.
     t.feed("\x1b[?1049h\x1b[HFULL");
-    EXPECT_EQ(t.t.textSince(mark, 1024, &truncated, &trimmed, {}), "FULL");
+    EXPECT_EQ(t.t.textSince(mark, 1024, &truncated, &trimmed, &stale, {}), "FULL");
     EXPECT_FALSE(trimmed);
+    EXPECT_FALSE(stale);
     t.feed("\x1b[?1049l");
-    // A clear moves the cursor above a new mark: the screen.
+    // A clear gives the rows of the mark other text: the mark is stale, and
+    // one taken after it reads again.
     t.feed("\r\n\r\n\r\n");
-    const SemanticPosition low = t.t.textMark();
+    const TextMark low = t.t.textMark();
     t.feed("\x1b[2J\x1b[Hcleared");
-    EXPECT_EQ(t.t.textSince(low, 1024, &truncated, &trimmed, {}), "cleared");
+    EXPECT_EQ(t.t.textSince(low, 1024, &truncated, &trimmed, &stale, {}), "");
+    EXPECT_TRUE(stale);
+    const TextMark after = t.t.textMark();
+    t.feed("\r\nnext");
+    EXPECT_EQ(t.t.textSince(after, 1024, &truncated, &trimmed, &stale, {}), "\nnext");
+    EXPECT_FALSE(stale);
 }
 
 // keepEnd cuts a long text at the start of a row and keeps its end, where
@@ -1120,32 +1140,33 @@ TEST(Terminal, TextSinceAMark)
 TEST(Terminal, KeepEndKeepsTheLastRows)
 {
     Term t(20, 4, 100);
-    const SemanticPosition mark = t.t.textMark();
+    const TextMark mark = t.t.textMark();
     for (int i = 0; i < 30; ++i)
         t.feed("row " + std::to_string(i) + "\r\n");
     t.feed("done");
     TextFormat end;
     end.keepEnd = true;
     bool truncated = false, trimmed = false;
-    const std::string kept = t.t.textSince(mark, 40, &truncated, &trimmed, end);
+    const std::string kept = t.t.textSince(mark, 40, &truncated, &trimmed, nullptr, end);
     EXPECT_TRUE(truncated);
     EXPECT_LE(kept.size(), 40u);
     EXPECT_TRUE(kept.ends_with("row 29\ndone")) << kept;
     EXPECT_TRUE(kept.starts_with("row ")) << kept;
-    const std::string start = t.t.textSince(mark, 40, &truncated, &trimmed, {});
+    const std::string start = t.t.textSince(mark, 40, &truncated, &trimmed, nullptr, {});
     EXPECT_TRUE(truncated);
     EXPECT_TRUE(start.starts_with("row 0\n")) << start;
     // A text that fits is whole, and not cut.
-    const std::string whole = t.t.textSince(mark, 4096, &truncated, &trimmed, end);
+    const std::string whole = t.t.textSince(mark, 4096, &truncated, &trimmed, nullptr, end);
     EXPECT_FALSE(truncated);
     EXPECT_TRUE(whole.starts_with("row 0\n")) << whole;
     // Blank rows before the end that fits are no cut.
     Term blank(20, 4, 100);
-    const SemanticPosition top = blank.t.textMark();
+    const TextMark top = blank.t.textMark();
     blank.feed("\r\n\r\n\r\n\r\nlast");
-    EXPECT_EQ(blank.t.textSince(top, 4, &truncated, &trimmed, end), "last");
+    EXPECT_EQ(blank.t.textSince(top, 4, &truncated, &trimmed, nullptr, end), "last");
     EXPECT_FALSE(truncated);
-    // The last output keeps its end too.
+    // The last output keeps its end too: the rows that fit in 30 bytes, and
+    // the empty row of its D.
     Term out(20, 4, 100);
     out.feed("\x1b]133;A\x07$ \x1b]133;B\x07make\r\n\x1b]133;C\x07");
     for (int i = 0; i < 30; ++i)
@@ -1153,7 +1174,19 @@ TEST(Terminal, KeepEndKeepsTheLastRows)
     out.feed("\x1b]133;D;2\x07");
     const std::string last = out.t.text(Terminal::TextScope::LastOutput, 30, &truncated, end);
     EXPECT_TRUE(truncated);
-    EXPECT_TRUE(last.ends_with("out 29\n") || last.ends_with("out 29")) << last;
+    EXPECT_EQ(last, "out 26\nout 27\nout 28\nout 29\n");
+    // In ANSI, a row after one that wraps first ends the style that that
+    // one left open: what fits still fits.
+    Term ansi(10, 4, 100);
+    const TextMark styled = ansi.t.textMark();
+    ansi.feed("\x1b[31mrrrrrrrrrr\x1b[mabc");
+    TextFormat both = end;
+    both.ansi = true;
+    // Each row alone takes 17 and 3 bytes, and 23 together.
+    EXPECT_EQ(ansi.t.textSince(styled, 21, &truncated, &trimmed, nullptr, both), "abc");
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ(ansi.t.textSince(styled, 30, &truncated, &trimmed, nullptr, both), "\x1b[0;31mrrrrrrrrrr\x1b[mabc");
+    EXPECT_FALSE(truncated);
 }
 
 // A held pane whose shell exited at its prompt: nothing draws the prompt
@@ -1208,13 +1241,31 @@ constexpr std::string_view KittyPixel = "\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\";
 TEST(Terminal, ResetDuringACommandKeepsItsFinish)
 {
     // RIS (as `reset` sends it) in the middle of a command: the shell's D
-    // still finishes the command.
-    Term t(20, 4);
-    t.feed(
-        "\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07\x1b"
-        "c\x1b]133;D;0\x07");
-    ASSERT_EQ(t.host.commandsStarted.size(), 1u);
-    EXPECT_EQ(t.host.commandsFinished, std::vector<int>{0});
+    // still finishes the command, with its code, and the command runs until
+    // then. Whole, and a byte at a time.
+    const std::string marks = "\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07\x1b";
+    for (const bool bytewise : {false, true}) {
+        Term t(20, 4);
+        const auto feed = [&](std::string_view bytes) {
+            if (!bytewise)
+                return t.feed(bytes);
+            for (const char c : bytes)
+                t.feed(std::string_view(&c, 1));
+        };
+        feed(marks + "c");
+        EXPECT_EQ(t.t.shellState(), ShellState::Running) << bytewise;
+        const std::uint64_t prompt = t.t.lastPromptId();
+        feed("\x1b]133;D;7\x07");
+        ASSERT_EQ(t.host.commandsStarted.size(), 1u);
+        EXPECT_EQ(t.host.commandsFinished, std::vector<int>{7});
+        EXPECT_EQ(t.t.lastExitCode(), 7);
+        // No prompt since the reset: no shell to tell of yet.
+        EXPECT_EQ(t.t.shellState(), ShellState::None);
+        feed("\x1b]133;A\x07$ ");
+        EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+        EXPECT_GT(t.t.lastPromptId(), prompt);
+        EXPECT_EQ(t.t.lastExitCode(), 7);
+    }
 }
 
 TEST(Terminal, CommandFinishesWhileTheAlternateScreenIsActive)
@@ -1302,6 +1353,24 @@ TEST(Terminal, OutputThatItsCommandClearsGoesOnFromTheTop)
     t.feed("\x1b]133;D;0\x07\r\n\x1b]133;A\x07$ \x1b]133;B\x07wide\r\n\x1b]133;C\x07\r\n\r\nold");
     t.feed("\x1b[?40h\x1b[?3hcleared");
     EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "cleared");
+}
+
+TEST(Terminal, OutputThatItsCommandErasesFromTheHomeGoesOnFromTheTop)
+{
+    // clear as CSI H CSI J (ED 0 from the top left corner) erases the same
+    // rows as ED 2: the output is what comes after, as there.
+    Term t(20, 6);
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07watch\r\n\x1b]133;C\x07\r\n\r\n\r\nold");
+    t.feed("\x1b[H\x1b[Jnew");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "new");
+    ASSERT_FALSE(t.t.semanticRegions().empty());
+    EXPECT_EQ(t.t.semanticRegionText(t.t.semanticRegions().back().id), "new");
+    // ED 0 from elsewhere erases only a part: the output keeps its start.
+    t.feed(
+        "\x1b]133;D;0\x07\r\n\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07"
+        "a\r\nb");
+    t.feed("\x1b[4;2H\x1b[J");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "a\nb");
 }
 
 TEST(Terminal, AnOsc8LinkOverTheLimitEndsTheLinkBefore)

@@ -35,10 +35,11 @@ qint64 daemonId(quint32 id)
 
 /// A pane map of Control as the daemon writes one: the daemon's ID of the
 /// pane, window 0, the ID of a tab its place from 1, and no context, which
-/// the daemon does not know. The command leaves only with read access.
-QJsonObject daemonPaneMap(const Control& control, QVariantMap map)
+/// the daemon does not know. The command leaves only with read access,
+/// which a pane of an agent session (@p agentSession) always has.
+QJsonObject daemonPaneMap(const Control& control, QVariantMap map, bool agentSession)
 {
-    map = control.clientPaneMap(std::move(map));
+    map = control.clientPaneMap(std::move(map), agentSession);
     map.insert(QStringLiteral("id"), daemonId(map.value(QStringLiteral("id")).toUInt()));
     map.insert(QStringLiteral("window"), 0);
     map.insert(QStringLiteral("tab_id"), map.value(QStringLiteral("tab")).toInt() + 1);
@@ -156,8 +157,12 @@ QString sessionOwner(const TerminalWindow& window, qint64 client)
 MuxClient::ControlAnswer answerNow(Control& control, TerminalWindow& window, const QString& fn, const QJsonArray& args)
 {
     const bool otherHost = !window.sessionHost().isEmpty();
+    // An agent session keeps its read access, which the daemon checked: the
+    // window does not ask its own Control.allowReadText.
+    const bool agent = window.showsAgentSession();
     if (fn == QLatin1String("placePane")) {
-        // The daemon started it for `afterglow ctl split` or `new-tab`.
+        // The daemon started it for `afterglow ctl split` or `new-tab`
+        // (started), or it moved in from another session.
         const qint64 id = args.at(0).toInteger(-1);
         if (id <= 0 || id > 0xffffffffLL)
             return failed(QStringLiteral("placePane takes a pane"));
@@ -168,7 +173,9 @@ MuxClient::ControlAnswer answerNow(Control& control, TerminalWindow& window, con
             command << word.toString();
         // A refusal goes back for a call that waits for an answer: the
         // daemon's own placement (ID 0) gets none.
-        Pane* placed = window.placeSessionPane(std::uint32_t(id), paneAt(window, args, 1), direction, command);
+        const bool started = args.at(5).toBool(false);
+        Pane* placed =
+            window.placeSessionPane(std::uint32_t(id), paneAt(window, args, 1), direction, command, 0.5, started);
         if (!placed)
             placed = window.sessionPane(std::uint32_t(id));
         if (!placed) {
@@ -236,8 +243,10 @@ MuxClient::ControlAnswer answerNow(Control& control, TerminalWindow& window, con
             return failed(error);
         QString text;
         bool truncated = false;
-        if (const QString error = control.readText(id, *scope, text, format, &truncated); !error.isEmpty())
-            return failed(error);
+        QString code;
+        if (const QString error = control.readText(id, *scope, text, format, &truncated, &code, agent);
+            !error.isEmpty())
+            return failed(error, code);
         // As the daemon answers getText.
         return {QJsonObject{{QStringLiteral("text"), text}, {QStringLiteral("truncated"), truncated}}, {}};
     }
@@ -314,7 +323,7 @@ MuxClient::ControlAnswer answerNow(Control& control, TerminalWindow& window, con
         if (otherHost && reachesThisComputer(action))
             return failed(OtherHostRunsNothingHere);
         // As the control target of the window: some read pane text.
-        if (const QString error = control.runClientAction(id, action); !error.isEmpty())
+        if (const QString error = control.runClientAction(id, action, agent); !error.isEmpty())
             return failed(error);
         return {};
     }
@@ -377,13 +386,14 @@ void answerSessionCall(Control& control, const Settings& settings, TerminalWindo
         if (!pane)
             return reply(failed(noPane(args, 0), QStringLiteral("no_pane")));
         QString code;
+        // The stdout of an agent session's overlay leaves as its text does.
         error = control.clientOverlay(
             owner, pane->id(), *spec,
             [reply](const QString& error, const QString& code, const QVariantMap& result) {
                 reply(error.isEmpty() ? MuxClient::ControlAnswer{QJsonObject::fromVariantMap(result), {}}
                                       : failed(error, code));
             },
-            code);
+            code, window.showsAgentSession());
         if (!error.isEmpty())
             return reply(failed(error, code));
         control.sessionOverlayOpened(owner);
@@ -426,9 +436,11 @@ void answerSessionCall(Control& control, const Settings& settings, TerminalWindo
                 return reply(failed(noPane(args, 1)));
             target = beside->id();
         }
-        const Control::PaneMoved moved = [&control, reply](const QString& error, const QVariantMap& result) {
-            reply(error.isEmpty() ? MuxClient::ControlAnswer{daemonPaneMap(control, result), {}} : failed(error));
-        };
+        const Control::PaneMoved moved =
+            [&control, reply, agent = window.showsAgentSession()](const QString& error, const QVariantMap& result) {
+                reply(error.isEmpty() ? MuxClient::ControlAnswer{daemonPaneMap(control, result, agent), {}}
+                                      : failed(error));
+            };
         if (fn == QLatin1String("movePane"))
             control.movePane(pane->id(), target, args.at(2).toString(), moved);
         else

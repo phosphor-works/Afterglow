@@ -26,10 +26,14 @@ class SettingsStore;
 
 /// The calls of the control socket's "control" target. A call that fails
 /// sends an error reply (CALL_FAILED) with Control's message, and its return
-/// value is dropped. The overlay, screenshot, openProject, movePane and
-/// detachTab calls can answer later. Overlay and screenshot fail with codes
-/// of their own too. The signals name the events that a client can
-/// subscribe to. ControlSocket sends them; Qt never emits them.
+/// value is dropped. The overlay, screenshot, getText, openProject, movePane
+/// and detachTab calls can answer later. Some calls fail with codes of their
+/// own too, as the daemon gives them for a session's panes: overlay and
+/// screenshot (busy, denied, no_pane and others), getText (TRY_AGAIN,
+/// STALE_MARK), mark, shellRegions, paste and sendKeys (TRY_AGAIN),
+/// shellRegions (INVALID_ARG), split (NO_ROOM) and setColors (session_pane).
+/// The signals name the events that a client can subscribe to.
+/// ControlSocket sends them; Qt never emits them.
 class ControlApi : public QObject, protected PhosphorIpc::IpcCallContext
 {
     Q_OBJECT
@@ -49,10 +53,11 @@ public:
     /// first-output-on-screen, last-visited-output or since. Answers
     /// {text, truncated}, and for since also trimmed.
     Q_INVOKABLE void getText(double pane, const QString& scope);
-    /// getText() with @p options: ansi, cursor and wrap_markers, booleans,
-    /// and the mark of since (Control::textFormat).
+    /// getText() with @p options: ansi, cursor, wrap_markers and keep_end,
+    /// booleans, and the mark of since (Control::textFormat). A mark from
+    /// before a reflow or a clear fails with the code STALE_MARK.
     Q_INVOKABLE void getText(double pane, const QString& scope, const QVariantMap& options);
-    /// The cursor's place, {row, col}, for getText since.
+    /// The cursor's place, {row, col, epoch}, for getText since.
     Q_INVOKABLE QVariantMap mark(double pane);
     /// The semantic regions (OSC 133) of @p pane whose id is larger than
     /// @p after, oldest first.
@@ -217,12 +222,19 @@ Q_SIGNALS:
     void contextChanged(uint pane, const QString& context);
     /// What the pane's shell does: none, prompt, continuation or running.
     void shellChanged(uint pane, const QString& state);
-    /// The pane's text, or how it shows, changed: merged, and with no text.
+    /// The pane's text, or how it shows, changed: cells that a program
+    /// wrote (also with the text that they had), the cursor, the view or a
+    /// reflow. Merged, and with no text.
     void textChanged(uint pane);
 
 private:
     /// Sends @p error as the call's error reply. True when there is one.
     bool failed(const QString& error);
+    /// failed(), with @p code when there is one: that goes only through a
+    /// pending reply.
+    void failWithCode(const QString& error, const QString& code);
+    /// The code of a split's refusal @p error: NO_ROOM, or none.
+    static QString launchCode(const QString& error);
     /// The pane ID in @p value, or nothing after an error reply.
     std::optional<quint32> paneId(double value);
     using PendingReply = std::shared_ptr<PhosphorIpc::IpcPendingReply>;

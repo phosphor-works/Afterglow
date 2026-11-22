@@ -21,6 +21,7 @@ qt_add_executable(afterglow_app_tests
     ../src/DockArea.cpp
     MomentumScrollTest.cpp
     ../src/animation/MomentumScroll.cpp
+    ShownTextTest.cpp
 )
 target_include_directories(afterglow_app_tests PRIVATE ../src)
 target_link_libraries(afterglow_app_tests PRIVATE Qt6::Core Afterglow::Vt Afterglow::Render GTest::gtest_main)
@@ -118,11 +119,12 @@ target_include_directories(afterglow_mux_client_tests PRIVATE ${PROJECT_SOURCE_D
 afterglow_test_runs(afterglow_mux_client_tests AFTERGLOW_MUX aglow-mux)
 gtest_discover_tests(afterglow_mux_client_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
-# The tool definitions of afterglow mcp, with no daemon. The tools run
-# against a daemon of their own in mcp_session.py.
+# afterglow mcp with no daemon: the tool definitions, the helpers, DaemonLink
+# and the handlers against a fake daemon. The tools run against a daemon of
+# their own in mcp_session.py.
 qt_add_executable(afterglow_mcp_tests McpToolsTest.cpp)
 target_link_libraries(afterglow_mcp_tests PRIVATE afterglow_app GTest::gtest_main)
-gtest_discover_tests(afterglow_mcp_tests)
+gtest_discover_tests(afterglow_mcp_tests PROPERTIES TIMEOUT 60)
 
 # A popup as the window's settings make it look, rendered offscreen.
 qt_add_executable(afterglow_popup_tests PopupLookTest.cpp)
@@ -172,6 +174,13 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME afterglow_mcp_session
         COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/mcp_session.py $<TARGET_FILE:afterglow>)
     set_tests_properties(afterglow_mcp_session PROPERTIES TIMEOUT 600)
+    # The case that needs a window of the session, in a headless KWin: it draws on the GPU
+    # (77: no kwin_wayland, dbus-run-session or Vulkan device).
+    add_test(NAME afterglow_mcp_session_window
+        COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/mcp_session.py $<TARGET_FILE:afterglow>
+                script_command_through_a_window)
+    set_tests_properties(afterglow_mcp_session_window PROPERTIES TIMEOUT 300 RESOURCE_LOCK gpu LABELS gpu
+        SKIP_RETURN_CODE 77)
     # Fails when docs/CONFIGURATION.md is not what the schema generates.
     add_test(NAME afterglow_configuration_reference
         COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tools/generate-reference.py --check $<TARGET_FILE:afterglow>)

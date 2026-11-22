@@ -927,12 +927,13 @@ TEST_F(ConfigTest, ReadsTheEventQueueOfASessionWithinTheDaemonsBounds)
     EXPECT_EQ(key("Control", "eventInterval").value(QStringLiteral("maximum")).toInteger(),
               AfterglowMux::MaxEventInterval);
     // A session that no window showed follows the Control settings of the
-    // afterglow mux new that started it: the same defaults.
+    // afterglow mux new or afterglow mcp that started it: the same defaults.
     const AfterglowMux::ControlOptions daemon;
     const ControlSettings control;
     EXPECT_EQ(daemon.enabled, control.enabled);
     EXPECT_EQ(daemon.allowReadText, control.allowReadText);
     EXPECT_EQ(daemon.eventInterval, control.eventInterval);
+    EXPECT_EQ(daemon.allowAdopt, control.allowAdopt);
     for (const auto& [given, expected] : std::vector<std::pair<int, std::size_t>>{{16, 16}, {0, 1}, {1000, 64}}) {
         SettingsStore store(
             write(QStringLiteral("queue.json"), QStringLiteral(R"({"Mux": {"eventQueue": %1}})").arg(given).toUtf8()));
@@ -963,8 +964,9 @@ TEST_F(ConfigTest, ReadsTheKeptNotificationsOfASessionWithinTheDaemonsBounds)
     }
 }
 
-// The badge of an agent session: "agent" in the palette's bright magenta by
-// default, the user's text and color, and no badge for an empty text.
+// The badge of an agent session: "agent" with no color of its own by
+// default (the window then takes color13 of the palette), the user's text
+// and color, and no badge for an empty text.
 TEST_F(ConfigTest, ReadsTheBadgeOfAnAgentSession)
 {
     SettingsStore defaults(write(QStringLiteral("agent-default.json"), "{}"));
@@ -975,12 +977,55 @@ TEST_F(ConfigTest, ReadsTheBadgeOfAnAgentSession)
     EXPECT_EQ(given.settings().mux.agentLabel, QStringLiteral("claude"));
     ASSERT_TRUE(given.settings().mux.agentColor);
     EXPECT_EQ(*given.settings().mux.agentColor, (AfterglowVt::Rgb{0x10, 0x20, 0x30}));
+    EXPECT_TRUE(given.problems().isEmpty()) << given.problems().join(QLatin1Char('\n')).toStdString();
     SettingsStore none(write(QStringLiteral("agent-none.json"), R"({"Mux": {"agentLabel": ""}})"));
     EXPECT_EQ(none.settings().mux.agentLabel, QString());
 }
 
-// The settings of afterglow mcp: the defaults of the plan, the user's values,
-// and the clamp of each number to its bounds.
+// A color that is none: the default, and a problem that says so, as for the
+// colors of Colors.
+TEST_F(ConfigTest, ReportsAnAgentColorThatIsNoColor)
+{
+    SettingsStore store(write(QStringLiteral("agent-color.json"), R"({"Mux": {"agentColor": "not-a-color"}})"));
+    EXPECT_FALSE(store.settings().mux.agentColor);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Mux.agentColor is not a color")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+// One line in the tab bar and the title: the label loses its spaces at the
+// ends and its control characters, and is cut at MaxAgentLabel with a
+// problem that says so.
+TEST_F(ConfigTest, KeepsTheAgentLabelToOneShortLine)
+{
+    SettingsStore spaced(
+        write(QStringLiteral("agent-spaced.json"), "{\"Mux\": {\"agentLabel\": \"  ai\\u001b[31m\\u0007bot\\t \"}}"));
+    EXPECT_EQ(spaced.settings().mux.agentLabel, QStringLiteral("ai[31mbot"));
+    EXPECT_TRUE(spaced.problems().isEmpty()) << spaced.problems().join(QLatin1Char('\n')).toStdString();
+    const QString exact(MuxSettings::MaxAgentLabel, QLatin1Char('a'));
+    SettingsStore fits(write(QStringLiteral("agent-fits.json"),
+                             QStringLiteral(R"({"Mux": {"agentLabel": "%1"}})").arg(exact).toUtf8()));
+    EXPECT_EQ(fits.settings().mux.agentLabel, exact);
+    EXPECT_TRUE(fits.problems().isEmpty());
+    SettingsStore longer(write(QStringLiteral("agent-long.json"),
+                               QStringLiteral(R"({"Mux": {"agentLabel": "%1b"}})").arg(exact).toUtf8()));
+    EXPECT_EQ(longer.settings().mux.agentLabel, exact);
+    EXPECT_TRUE(
+        mentions(longer.problems(),
+                 QStringLiteral("Mux.agentLabel is longer than %1 UTF-16 units").arg(MuxSettings::MaxAgentLabel)))
+        << longer.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+// Control.allowAdopt: off by default, and on when the user says so.
+TEST_F(ConfigTest, ReadsWhetherAnAgentCanAdoptASession)
+{
+    SettingsStore defaults(write(QStringLiteral("adopt-default.json"), "{}"));
+    EXPECT_FALSE(defaults.settings().control.allowAdopt);
+    SettingsStore given(write(QStringLiteral("adopt.json"), R"({"Control": {"allowAdopt": true}})"));
+    EXPECT_TRUE(given.settings().control.allowAdopt);
+}
+
+// The settings of afterglow mcp: the defaults, the user's values, and the
+// clamp of each number to its bounds.
 TEST_F(ConfigTest, ReadsTheSettingsOfTheMcpServer)
 {
     SettingsStore defaults(write(QStringLiteral("mcp-default.json"), "{}"));
@@ -1006,15 +1051,24 @@ TEST_F(ConfigTest, ReadsTheSettingsOfTheMcpServer)
                                         "screenshotMaxSize": 1}})"));
     EXPECT_EQ(low.settings().mcp.waitTimeout, McpSettings::MinTimeout);
     EXPECT_EQ(low.settings().mcp.maxWaitTimeout, McpSettings::MinTimeout);
-    EXPECT_EQ(low.settings().mcp.outputLimit, 1024);
+    EXPECT_EQ(low.settings().mcp.outputLimit, McpSettings::MinOutputLimit);
     EXPECT_EQ(low.settings().mcp.tailLines, 1);
-    EXPECT_EQ(low.settings().mcp.screenshotMaxSize, 64);
+    EXPECT_EQ(low.settings().mcp.screenshotMaxSize, McpSettings::MinScreenshotSize);
     SettingsStore high(write(QStringLiteral("mcp-high.json"),
-                             R"({"Mcp": {"waitTimeout": 999999999, "outputLimit": 99999999,
+                             R"({"Mcp": {"waitTimeout": 999999999, "maxWaitTimeout": 999999999,
+                                         "outputLimit": 99999999, "tailLines": 99999999,
                                          "screenshotMaxSize": 99999}})"));
     EXPECT_EQ(high.settings().mcp.waitTimeout, McpSettings::MaxTimeout);
+    EXPECT_EQ(high.settings().mcp.maxWaitTimeout, McpSettings::MaxTimeout);
     EXPECT_EQ(high.settings().mcp.outputLimit, McpSettings::MaxOutputLimit);
-    EXPECT_EQ(high.settings().mcp.screenshotMaxSize, 16384);
+    EXPECT_EQ(high.settings().mcp.tailLines, McpSettings::MaxTailLines);
+    EXPECT_EQ(high.settings().mcp.screenshotMaxSize, McpSettings::MaxScreenshotSize);
+    // The time of a call that gives none is at most the longest that one
+    // can ask for, for every tool that waits.
+    SettingsStore capped(
+        write(QStringLiteral("mcp-capped.json"), R"({"Mcp": {"waitTimeout": 600000, "maxWaitTimeout": 60000}})"));
+    EXPECT_EQ(capped.settings().mcp.waitTimeout, 60000);
+    EXPECT_EQ(capped.settings().mcp.maxWaitTimeout, 60000);
 }
 
 // The variables that a session takes from Afterglow: tmux 3.8's without
@@ -2405,6 +2459,7 @@ TEST_F(ConfigTest, StructDefaultsAgreeWithTheSchema)
     EXPECT_TRUE(read.quickTerminal == expected.quickTerminal);
     EXPECT_TRUE(read.control == expected.control);
     EXPECT_TRUE(read.mux == expected.mux);
+    EXPECT_TRUE(read.mcp == expected.mcp);
     EXPECT_TRUE(read.mouse == expected.mouse);
     EXPECT_TRUE(read.links == expected.links);
     EXPECT_TRUE(read.colors == expected.colors);
@@ -2555,6 +2610,41 @@ TEST_F(ConfigTest, EnsureFileCreatesAnEmptyPrivateFileOnce)
     EXPECT_EQ(read(path), QByteArray(R"({"Window": {"padding": 9}})"));
 }
 
+// A file that cannot be made, where its directory cannot be made: no file
+// for the editor, no write, and the settings stay.
+TEST_F(ConfigTest, EnsureFileAndWriteFailWhereNoFileCanBeMade)
+{
+    if (::geteuid() == 0)
+        GTEST_SKIP() << "root writes anyway";
+    const QString locked = m_home.filePath(QStringLiteral("unwritable"));
+    ASSERT_TRUE(QDir().mkpath(locked));
+    const QString path = locked + QStringLiteral("/sub/config.json");
+    SettingsStore store(path);
+    const Settings before = store.settings();
+    ASSERT_TRUE(QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+    const bool ensured = store.ensureFile();
+    const bool written = store.write(QStringLiteral("Window"), QStringLiteral("padding"), 9);
+    QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    EXPECT_FALSE(ensured);
+    EXPECT_FALSE(written);
+    EXPECT_FALSE(QFile::exists(path));
+    EXPECT_TRUE(store.settings() == before);
+}
+
+// Scripts.enabled and Control.enabled fail closed in read() for a value that
+// is no boolean, and persisted() gives the value that read() takes.
+TEST_F(ConfigTest, PersistedSwitchesFailClosedAsTheyRead)
+{
+    SettingsStore store(
+        write(QStringLiteral("switches.json"), R"({"Control": {"enabled": "maybe"}, "Scripts": "off"})"));
+    EXPECT_FALSE(store.settings().control.enabled);
+    EXPECT_FALSE(store.settings().scripts);
+    EXPECT_EQ(store.persisted(QStringLiteral("Control"), QStringLiteral("enabled")), QVariant(false));
+    EXPECT_EQ(store.persisted(QStringLiteral("Scripts"), QStringLiteral("enabled")), QVariant(false));
+    SettingsStore plain(write(QStringLiteral("switches-on.json"), "{}"));
+    EXPECT_EQ(plain.persisted(QStringLiteral("Control"), QStringLiteral("enabled")), QVariant(true));
+}
+
 TEST_F(ConfigTest, ThemeEditsApplyWhileTheConfigDoesNotParse)
 {
     const QString theme = write(QStringLiteral("theme.json"), R"({"foreground": "#445566"})");
@@ -2679,7 +2769,8 @@ TEST_F(ConfigTest, AWriteThatCannotBeSavedChangesNothing)
         QFile::setPermissions(directory, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
         QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
         EXPECT_FALSE(written);
-        EXPECT_EQ(store.persisted(QStringLiteral("Terminal"), QStringLiteral("scrollLines")).toInt(), 5);
+        // The settings in use, not the file, which the store left as it was.
+        EXPECT_EQ(store.settings().scrollLines, 5);
         // The store closes with the file writable again: it must not save the
         // lost change then, over what the user has in the file.
     }

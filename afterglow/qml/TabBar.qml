@@ -19,14 +19,17 @@ QQC.ToolBar {
     }
 
     readonly property color ink: systemPalette.windowText
-    // The badge of an agent session's window (ChromeController::agentMarker).
+    // The badge of an agent session's window (ChromeController::agentMarker),
+    // which gives both or neither.
     readonly property var agent: controller.agentMarker || ({})
     readonly property string agentLabel: agent.label || ""
-    readonly property color agentColor: agent.color || systemPalette.highlight
+    readonly property color agentColor: agent.color ?? "transparent"
     readonly property int count: controller.tabTitles.length
     readonly property real minTab: 110
     readonly property real maxTab: 220
-    readonly property real available: width - addButton.width - 4
+    // The tabs start after the badge.
+    readonly property real stripX: agentBadge.visible ? agentBadge.x + agentBadge.width + 6 : 0
+    readonly property real available: width - stripX - addButton.width - 4
     readonly property real tabWidth: Math.max(minTab, Math.min(maxTab, available / Math.max(1, count)))
 
     // Dragging: the tab being moved, where it would land, and where it is drawn.
@@ -122,9 +125,48 @@ QQC.ToolBar {
         }
     }
 
+    // The window shows an agent session: once for the window, before its
+    // tabs. Its own area takes the clicks, so a double-click on it opens no
+    // tab.
+    Rectangle {
+        id: agentBadge
+        objectName: "agentBadge"
+        visible: bar.agentLabel.length > 0
+        x: 8
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.verticalCenterOffset: 1
+        // A long label is cut short: the tabs keep most of the bar.
+        width: visible ? Math.min(agentText.implicitWidth + 10, Math.max(40, bar.width * 0.2)) : 0
+        height: 16
+        radius: 4
+        color: Qt.rgba(bar.agentColor.r, bar.agentColor.g, bar.agentColor.b, 0.18)
+        border.color: Qt.rgba(bar.agentColor.r, bar.agentColor.g, bar.agentColor.b, 0.6)
+        Accessible.role: Accessible.StaticText
+        Accessible.name: qsTr("Agent session: %1").arg(bar.agentLabel)
+        Text {
+            id: agentText
+            // The badge's name says it once.
+            Accessible.ignored: true
+            anchors.centerIn: parent
+            width: Math.min(implicitWidth, parent.width - 8)
+            text: bar.agentLabel
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: bar.agentColor
+            font.pixelSize: 10
+            font.bold: true
+        }
+        MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            QQC.ToolTip.visible: containsMouse
+            QQC.ToolTip.text: qsTr("An agent drives this session")
+        }
+    }
+
     Flickable {
         id: strip
-        x: 0
+        x: bar.stripX
         width: Math.min(bar.available, contentWidth)
         height: bar.height
         contentWidth: bar.count * bar.tabWidth
@@ -238,36 +280,12 @@ QQC.ToolBar {
                     }
                 }
 
-                // An agent session's tab: a badge.
-                Rectangle {
-                    id: agentChip
-                    visible: bar.agentLabel.length > 0
-                    anchors.left: contextChip.right
-                    anchors.leftMargin: visible ? (contextChip.visible || status.visible ? 6 : 10) : 0
-                    anchors.verticalCenter: parent.verticalCenter
-                    anchors.verticalCenterOffset: 1
-                    width: visible ? agentText.implicitWidth + 10 : 0
-                    height: 16
-                    radius: 4
-                    color: Qt.rgba(bar.agentColor.r, bar.agentColor.g, bar.agentColor.b, 0.18)
-                    border.color: Qt.rgba(bar.agentColor.r, bar.agentColor.g, bar.agentColor.b, 0.6)
-                    Text {
-                        id: agentText
-                        anchors.centerIn: parent
-                        text: bar.agentLabel
-                        textFormat: Text.PlainText
-                        color: bar.agentColor
-                        font.pixelSize: 10
-                        font.bold: true
-                    }
-                }
-
                 QQC.Label {
-                    anchors.left: agentChip.right
+                    anchors.left: contextChip.right
                     anchors.right: closeButton.left
                     anchors.verticalCenter: parent.verticalCenter
                     anchors.verticalCenterOffset: 1
-                    anchors.leftMargin: agentChip.visible || contextChip.visible || status.visible ? 6 : 14
+                    anchors.leftMargin: contextChip.visible || status.visible ? 6 : 14
                     anchors.rightMargin: 4
                     text: tab.shownTitle
                     textFormat: Text.PlainText

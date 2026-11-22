@@ -105,6 +105,8 @@ __afterglow_funsub=0
 # Set while the prompt carries afterglow's marks, not those of a prompt that
 # has its own OSC 133 or 633 integration.
 __afterglow_marks=0
+# Set once readline has read its inputrc.
+__afterglow_readline=0
 __afterglow_begin='' __afterglow_end='' __afterglow_start='' __afterglow_entry='' __afterglow_secondary=''
 __afterglow_before_prompt() {
     __afterglow_status=$?
@@ -149,7 +151,8 @@ __afterglow_prompt() {
     # Every copy: a venv or conda activate puts its text before them.
     [[ -n $__afterglow_begin ]] && PS1=${PS1//"$__afterglow_begin"/}
     [[ -n $__afterglow_end ]] && PS1=${PS1//"$__afterglow_end"/}
-    [[ -n $__afterglow_secondary ]] && PS2=${PS2//"$__afterglow_secondary"/}
+    # Unset under set -u is no error: a PS2 that the user unset.
+    [[ -n $__afterglow_secondary ]] && PS2=${PS2-} PS2=${PS2//"$__afterglow_secondary"/}
     local current=${PS0-}
     current=${current#"$__afterglow_start"}
     local begin='' end='' start='' secondary=''
@@ -158,21 +161,29 @@ __afterglow_prompt() {
         __afterglow_marks=0
     else
         __afterglow_marks=1
-        begin='\[\e]133;A;redraw=1\a\]' start=$'\e]133;C\a'
+        # The end of the line before in a paste of several lines, with its
+        # exit code: bash prints PS0 before each line that it runs, and PS2
+        # before a line that goes on, and $? there is the status of the line
+        # before. With no command running, the terminal takes no D. Without
+        # promptvars, $? would stay text: the D has no code.
+        local code=
+        shopt -q promptvars && code=';$?'
+        begin='\[\e]133;A;redraw=1\a\]' start=$'\e]133;D'$code$'\a\e]133;C\a'
         # The prompt of a command that goes on (an open quote, a \ at the
         # end): the shell waits for the rest of it.
-        secondary='\[\e]133;A;k=s\a\]'
+        secondary='\[\e]133;D'$code'\a\]\[\e]133;A;k=s\a\]'
     fi
     # A bar while the user edits the command, the configured cursor for it.
-    # The vi mode sets its own cursors, with show-mode-in-prompt.
-    if [[ $__afterglow_features != *" no-cursor "* && :$SHELLOPTS: != *:vi:* ]]; then
+    # The vi mode sets its own cursors, with show-mode-in-prompt. Readline
+    # reads its inputrc (editing-mode vi) at its first line, after this
+    # prompt: bind reads it now, as a bind in ~/.bashrc does.
+    if (( ! __afterglow_readline )) && [[ -o emacs || -o vi ]]; then
+        bind -v >/dev/null 2>&1
+    fi
+    __afterglow_readline=1
+    if [[ $__afterglow_features != *" no-cursor "* ]] && ! shopt -oq vi; then
         end+="\\[\\e[${__afterglow_cursor} q\\]" start+=$'\e[0 q'
     fi
-    # The end of the line before in a paste of several lines, with its exit
-    # code: bash prints PS0 before each line that it runs, and $? there is
-    # the status of the line before. At the first line no command runs, and
-    # the terminal takes no D. Without promptvars, $? would stay text.
-    (( __afterglow_marks )) && shopt -q promptvars && start=$'\e]133;D;$?\a'$start
     if [[ $__afterglow_features != *" no-title "* ]]; then
         end+="\\[\\e]2;${__afterglow_host}\\w\\a\\]"
         # Without promptvars, PS0 would show the substitution as text.
@@ -184,7 +195,7 @@ __afterglow_prompt() {
     (( __afterglow_marks )) && end+='\[\e]133;B\a\]'
     __afterglow_begin=$begin __afterglow_end=$end __afterglow_start=$start __afterglow_secondary=$secondary
     PS1=$begin$PS1$end
-    PS2=$secondary$PS2
+    PS2=$secondary${PS2-}
     PS0=$start$current
     [[ $__afterglow_features == *" no-cwd "* ]] && return "$__afterglow_status"
     local LC_ALL=C path=$PWD encoded='' char hex i

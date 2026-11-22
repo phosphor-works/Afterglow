@@ -19,6 +19,7 @@
 #include "config/Settings.h"
 #include "control/CommandSocket.h"
 #include "control/Control.h"
+#include "control/Ctl.h"
 #include "mux/MuxCommands.h"
 #include "MuxProtocol.h"
 #include "scripting/ScriptControl.h"
@@ -199,9 +200,9 @@ QProcessEnvironment isolatedEnvironment(const QString& runtime)
     env.insert(QStringLiteral("XDG_CONFIG_HOME"), runtime + QStringLiteral("/config"));
     env.insert(QStringLiteral("XDG_DATA_HOME"), runtime + QStringLiteral("/data"));
     env.insert(QStringLiteral("XDG_CACHE_HOME"), runtime + QStringLiteral("/cache"));
-    for (const QString& name :
-         {QStringLiteral("AFTERGLOW_PANE_ID"), QStringLiteral("AFTERGLOW_SESSION"), QStringLiteral("TMUX"),
-          QStringLiteral("TMUX_PANE"), QStringLiteral("WAYLAND_DISPLAY"), QStringLiteral("DISPLAY")})
+    for (const QString& name : {QStringLiteral("AFTERGLOW_PANE_ID"), QStringLiteral("AFTERGLOW_SESSION"),
+                                QStringLiteral("AFTERGLOW_SOCKET"), QStringLiteral("TMUX"), QStringLiteral("TMUX_PANE"),
+                                QStringLiteral("WAYLAND_DISPLAY"), QStringLiteral("DISPLAY")})
         env.remove(name);
     return env;
 }
@@ -2170,8 +2171,6 @@ std::optional<bool> waitsInPoll(qint64 pid)
     return ok && number == SYS_ppoll;
 }
 
-// The options go in an object after the call's arguments, and only when one
-// is given: (pane, scope) stays the call of plain text.
 // paste reads its text as send-text does and sends it in one call: a paste
 // in parts would get the paste marks for each part. A text whose request
 // does not fit in a request line is refused before ctl connects.
@@ -2182,9 +2181,12 @@ TEST(CtlBinaryTest, PasteSendsItsTextInOneCall)
     AgainstTarget r =
         ctlAgainst(done, three + QStringList{QStringLiteral("a\\nb")}, {}, -1, {}, QStringLiteral("paste"));
     EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(callNames(r), QStringList{QStringLiteral("paste")});
     EXPECT_EQ(lastArgs(r), (QJsonArray{3, QStringLiteral("a\nb")}));
     r = ctlAgainst(done, three + QStringList{QStringLiteral("--raw"), QStringLiteral("a\\nb")}, {}, -1, {},
                    QStringLiteral("paste"));
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(callNames(r), QStringList{QStringLiteral("paste")});
     EXPECT_EQ(lastArgs(r), (QJsonArray{3, QStringLiteral("a\\nb")}));
     // Standard input over the limit of a send-text part, in one call.
     const QByteArray long_(300 * 1024, 'x');
@@ -2199,7 +2201,22 @@ TEST(CtlBinaryTest, PasteSendsItsTextInOneCall)
                                  QByteArray(200 * 1024, '\x1f'));
     EXPECT_EQ(big.status, 2) << qPrintable(big.err);
     EXPECT_TRUE(big.err.contains(QStringLiteral("a paste goes in one request of 1 MiB"))) << qPrintable(big.err);
+    // The edge: the text with its quotes and brackets (["..."]) fills the
+    // room of a paste in its request, and one byte more does not go.
+    const qsizetype room = qsizetype(AfterglowProto::IpcConnection::MaxRequestBytes) - CtlRequestRoom - 4;
+    r = ctlAgainst(done, three + QStringList{QStringLiteral("--stdin")}, QByteArray(room, 'x'), -1, {},
+                   QStringLiteral("paste"));
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(lastArgs(r).at(1).toString().size(), room);
+    const Isolated over =
+        isolate(QStringLiteral(AFTERGLOW_BINARY),
+                {QStringLiteral("ctl"), QStringLiteral("paste"), QStringLiteral("--stdin")}, QByteArray(room + 1, 'x'));
+    EXPECT_EQ(over.status, 2) << qPrintable(over.err);
+    EXPECT_TRUE(over.err.contains(QStringLiteral("a paste goes in one request of 1 MiB"))) << qPrintable(over.err);
 }
+
+// The options go in an object after the call's arguments, and only when one
+// is given: (pane, scope) stays the call of plain text.
 
 TEST(CtlBinaryTest, TextAndLaunchOptionsGoInTheirCalls)
 {
@@ -2966,6 +2983,32 @@ TEST(MuxCommandsLine, PaneZeroIsTheFocusedPaneOfTheSessionWindow)
         MuxCommands::forWindow(remoteRun, AfterglowProto::Remote::Target, windowPane, QStringLiteral("s"), &error),
         remoteRun);
     EXPECT_TRUE(error.empty()) << error;
+}
+
+// A relay to an endpoint of RemoteSockets (a session of another host) for a
+// client in no pane of the session, such as one that selected an agent
+// session: the endpoint serves the focused pane of the session's window,
+// as a session of this computer does.
+TEST(MuxCommandsLine, ARelayOfPaneZeroToAnEndpointIsTheFocusedPane)
+{
+    MuxCommands::Host host;
+    host.pane = [](std::uint32_t id) {
+        return id == 3 ? std::optional<quint32>(41) : std::nullopt;
+    };
+    host.focused = [] {
+        return std::optional<quint32>(42);
+    };
+    QString error;
+    EXPECT_EQ(MuxCommands::relayPane(host, 0, QStringLiteral("s"), &error), std::optional<quint32>(42));
+    EXPECT_EQ(MuxCommands::relayPane(host, 3, QStringLiteral("s"), &error), std::optional<quint32>(41));
+    EXPECT_TRUE(error.isEmpty()) << qPrintable(error);
+    EXPECT_FALSE(MuxCommands::relayPane(host, 4, QStringLiteral("s"), &error));
+    EXPECT_EQ(error, QStringLiteral("no pane 4 of session 's' shows in its window"));
+    host.focused = [] {
+        return std::optional<quint32>();
+    };
+    EXPECT_FALSE(MuxCommands::relayPane(host, 0, QStringLiteral("s"), &error));
+    EXPECT_EQ(error, QStringLiteral("no pane of session 's' has the focus in its window"));
 }
 
 TEST(MuxCommandsLine, AClientOfAnSshSessionReachesOnlyTheRemoteTarget)

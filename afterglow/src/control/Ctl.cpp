@@ -64,10 +64,9 @@ of the active window or of the window that was active last.
 With --session NAME, the commands act on mux session NAME (afterglow mux),
 and pane IDs are those of the mux daemon. In a pane of a session, they act
 on that session. While no window shows the session, only ls, send-text,
-paste, get-text, send-key, colors, set-colors, set-user-var, signal-program, split,
-new-tab, move-pane, detach-tab, close, watch and focus without --direction
-work. get-text then reads no --selection or --last-visited-output: the
-window has them.
+paste, get-text, send-key, colors, set-colors, set-user-var, signal-program,
+split, new-tab, move-pane, detach-tab, close, focus and watch work. get-text
+then reads no --selection or --last-visited-output: the window has them.
 For a session, split and new-tab prepare the program with the settings of
 the default config file, not the --config or -o of a running Afterglow.
 
@@ -144,7 +143,8 @@ the default config file, not the --config or -o of a running Afterglow.
                                         (cells, or N% of the pane) or --border makes a
                                         popup at POS (center, top, bottom, left, right,
                                         top-left, top-right, bottom-left or bottom-right)
-  watch                                 print events as JSON lines until interrupted
+  watch [--text-changes]                print events as JSON lines until interrupted, and
+                                        textChanged only with --text-changes
 
 LAUNCH options of split and new-tab, as kitten @ launch has them:
   --env NAME=VALUE   set a variable for CMD (NAME alone removes it), again for more
@@ -186,11 +186,27 @@ constexpr int ScreenshotTimeoutMs = 3 * ReplyTimeoutMs;
 // Its own default, which the usage names, the same as that setting's.
 constexpr int DefaultResizeCells = 2;
 static_assert(Control::MaxResizeCells == WindowSettings::MaxResizeStepCells);
+static_assert(std::size_t(CtlMaxText) == AfterglowPty::Pty::MaxPendingInput);
+// The most bytes of a paste's text in its one request, with its escapes.
+constexpr qsizetype CtlMaxPaste = IpcClient::MaxLineBytes - CtlRequestRoom;
 
 int fail(const QString& message, int status = 1)
 {
     std::fprintf(stderr, "afterglow ctl: %s\n", qPrintable(message));
     return status;
+}
+
+/// The note on stderr for a text of @p pane that getText cut: the text on
+/// stdout stays the pane's. A window and the daemon cut at the same limit.
+void textCut(qint64 pane)
+{
+    fail(QStringLiteral("the text of pane %1 is cut at its limit of %2 MiB").arg(pane).arg(Pane::MaxText >> 20));
+}
+
+/// The refusal of a paste that does not fit in its one request.
+QString pasteTooLong()
+{
+    return QStringLiteral("a paste goes in one request of %1 MiB").arg(IpcClient::MaxLineBytes >> 20);
 }
 
 /// The control target of the afterglow that runs this pane, else of the main
@@ -1059,9 +1075,15 @@ int runCtl(int argc, char** argv)
         return 0;
     }
     if (command == QLatin1String("watch")) {
+        // textChanged comes with each burst of output, also with the lines
+        // that a watch prints into a pane that it watches, which would then
+        // feed itself: only when asked for.
+        const bool textChanges = takeFlag(QStringLiteral("--text-changes"));
         if (const auto error = extra(0))
             return usage(*error);
         for (const QString& event : events()) {
+            if (event == QLatin1String("textChanged") && !textChanges)
+                continue;
             if (!client.subscribe(event))
                 return 1;
         }
@@ -1157,7 +1179,8 @@ int runCtl(int argc, char** argv)
     };
 
     // The commands on a pane check their arguments before the pane is
-    // looked up, and send-text --stdin reads its input then: a usage error
+    // looked up, and send-text, paste and overlay read their standard
+    // input then: a usage error
     // or refused input never waits for a connection, nor fails as one. Each
     // leaves what it does with the pane in act.
     std::function<int(qint64 pane)> act;
@@ -1177,15 +1200,16 @@ int runCtl(int argc, char** argv)
         const bool paste = command == QLatin1String("paste");
         QString text;
         // Refused as aglow run refuses its input, with the status of a
-        // usage error.
-        const QString tooLong = QStringLiteral("text over %1 MiB").arg(CtlMaxText >> 20);
+        // usage error. A paste goes in one request: no more is read for it.
+        const qsizetype most = paste ? CtlMaxPaste : CtlMaxText;
+        const QString tooLong = paste ? pasteTooLong() : QStringLiteral("text over %1 MiB").arg(CtlMaxText >> 20);
         if (takeFlag(QStringLiteral("--stdin"))) {
             if (const auto error = extra(0))
                 return usage(*error);
             if (!trailing.isEmpty())
                 return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
             int status = 0;
-            const std::optional<QString> input = readStdin(CtlMaxText, tooLong, status);
+            const std::optional<QString> input = readStdin(most, tooLong, status);
             if (!input)
                 return status;
             text = *input;
@@ -1197,7 +1221,7 @@ int runCtl(int argc, char** argv)
             if (!raw) {
                 text = unescape(text);
             }
-            if (text.toUtf8().size() > CtlMaxText)
+            if (text.toUtf8().size() > most)
                 return fail(tooLong, AfterglowProto::Run::UsageError);
         }
         if (paste) {
@@ -1205,8 +1229,9 @@ int runCtl(int argc, char** argv)
             // paste of its own. The text with its JSON escaping fits in the
             // request line, with room for the rest of the request.
             const qsizetype escaped = QJsonDocument(QJsonArray{text}).toJson(QJsonDocument::Compact).size();
-            if (escaped > IpcClient::MaxLineBytes - CtlRequestRoom) {
-                return fail(QStringLiteral("a paste goes in one request of 1 MiB, and this text needs %1 bytes there")
+            if (escaped > CtlMaxPaste) {
+                return fail(QStringLiteral("%1, and this text needs %2 bytes there with its escapes")
+                                .arg(pasteTooLong())
                                 .arg(escaped),
                             AfterglowProto::Run::UsageError);
             }
@@ -1320,8 +1345,7 @@ int runCtl(int argc, char** argv)
             std::fwrite(text.constData(), 1, std::size_t(text.size()), stdout);
             if (answer.value(QLatin1String("truncated")).toBool()) {
                 // On stderr: the text on stdout stays the pane's.
-                std::fprintf(stderr, "afterglow ctl: the text of pane %lld is cut at its limit of 1 MiB\n",
-                             static_cast<long long>(pane));
+                textCut(pane);
             }
             // A line feed after the cursor's sequences would move the
             // cursor that they put back.
@@ -1759,6 +1783,9 @@ int runCtl(int argc, char** argv)
                 if (!text)
                     return 1;
                 overlayInput = text->toObject().value(QLatin1String("text")).toString().toUtf8();
+                // The program reads what was kept, as the text of get-text.
+                if (text->toObject().value(QLatin1String("truncated")).toBool())
+                    textCut(pane);
             }
             if (overlayInput) {
                 // In parts before the call: a list can be larger than one request.

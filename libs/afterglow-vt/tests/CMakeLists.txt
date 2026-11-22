@@ -17,6 +17,7 @@ add_executable(afterglow_vt_tests
     ScreenTest.cpp
     SearchTest.cpp
     SelectionTest.cpp
+    ShellMarksTest.cpp
     SixelTest.cpp
     StateSyncTest.cpp
     TerminalTest.cpp

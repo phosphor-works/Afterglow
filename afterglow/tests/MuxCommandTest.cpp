@@ -756,7 +756,7 @@ TEST_F(MuxCommandTest, CreatesListsAndKillsASessionAndTheDaemonEndsWithIt)
 
     const Result listed = mux({"ls"});
     EXPECT_EQ(listed.status, 0) << listed.err;
-    EXPECT_NE(listed.out.find("NAME  STATE     PANES  AGENT\n1     detached      1  \n"), std::string::npos)
+    EXPECT_NE(listed.out.find("NAME  STATE     PANES  AGENT\n1     detached      1  no\n"), std::string::npos)
         << listed.out;
 
     // A program runs and stdin is no terminal: no question, a refusal.
@@ -1111,8 +1111,13 @@ TEST_F(MuxCommandTest, CtlActsOnASessionWithoutAWindow)
 
     const Result listed = ctl({"--session", "work", "ls"});
     EXPECT_EQ(listed.status, 0) << listed.err;
-    // The first pane of the daemon, focused.
-    EXPECT_NE(listed.out.find("\n1*"), std::string::npos) << listed.out;
+    // The first pane of the daemon, focused. Its program marks no prompts:
+    // its shell is none.
+    EXPECT_EQ(listed.out.rfind("PANE  WIN  TAB  SHELL        TITLE", 0), 0u) << listed.out;
+    const std::size_t first = listed.out.find("\n1*");
+    ASSERT_NE(first, std::string::npos) << listed.out;
+    EXPECT_NE(listed.out.substr(first, listed.out.find('\n', first + 1) - first).find(" none "), std::string::npos)
+        << listed.out;
     EXPECT_TRUE(waitFor([&] {
         return ctl({"--session", "work", "get-text"}).out.find("hello") != std::string::npos;
     }));
@@ -1153,6 +1158,24 @@ TEST_F(MuxCommandTest, CtlActsOnASessionWithoutAWindow)
     EXPECT_EQ(one.status, 0) << one.err;
     EXPECT_EQ(one.out.find("\"id\": 1"), std::string::npos) << one.out;
     EXPECT_NE(one.out.find("\"id\": 2"), std::string::npos) << one.out;
+}
+
+// `new --agent` makes an agent session, which ls marks in its AGENT column:
+// yes for it, no for another session, and no row ends in blanks.
+TEST_F(MuxCommandTest, NewAgentMakesASessionThatLsMarks)
+{
+    std::vector<std::string> agent{"new", "--detach", "--agent", "--name", "agent"};
+    const auto command = waitsForTheTest();
+    agent.insert(agent.end(), command.begin(), command.end());
+    const Result made = mux(agent);
+    ASSERT_EQ(made.status, 0) << made.err;
+    EXPECT_EQ(made.out, "agent\n");
+    ASSERT_EQ(mux(newWaiting("plain")).status, 0);
+    const Result listed = mux({"ls"});
+    EXPECT_EQ(listed.status, 0) << listed.err;
+    EXPECT_NE(listed.out.find("agent  detached      1  yes\n"), std::string::npos) << listed.out;
+    EXPECT_NE(listed.out.find("plain  detached      1  no\n"), std::string::npos) << listed.out;
+    EXPECT_EQ(listed.out.find(" \n"), std::string::npos) << listed.out;
 }
 
 // The session has the Control settings of the `afterglow mux new` that made
@@ -1594,8 +1617,42 @@ TEST_F(MuxCommandTest, CtlWatchPrintsTheEventsOfASession)
     watch.join();
     EXPECT_EQ(watched.status, 1) << watched.err;
     EXPECT_NE(watched.err.find("session 'seen' ended"), std::string::npos) << watched.err;
+    // textChanged only with --text-changes: the new tabs drew their
+    // prompts, and the watch above had none of it.
+    EXPECT_EQ(readFile(printed).find(R"("event":"textChanged")"), std::string::npos) << readFile(printed);
     // A watch that comes after the end finds no session.
     const Result after = ctl({"--session", "seen", "watch"});
     EXPECT_EQ(after.status, 1) << after.err;
     EXPECT_NE(after.err.find("'seen'"), std::string::npos) << after.err;
+}
+
+// With --text-changes, the watch also prints the text changes of a session's
+// panes, which come with the output of their programs.
+TEST_F(MuxCommandTest, CtlWatchPrintsTextChangesWhenAsked)
+{
+    ASSERT_EQ(mux(newWaiting("typed")).status, 0);
+    const std::string printed = m_dir + "/watch-text.out";
+    setVariable("AFTERGLOW_TEST_BINARY", AFTERGLOW_BINARY);
+    setVariable("WATCH_OUT", printed);
+    Result watched;
+    std::thread watch([this, &watched] {
+        watched = run({"-c",
+                       "exec timeout 12 \"$AFTERGLOW_TEST_BINARY\" ctl --session typed watch --text-changes "
+                       "> \"$WATCH_OUT\""},
+                      "/bin/sh");
+    });
+    // Output until the watch printed its change: then it subscribed.
+    const auto seen = [&printed] {
+        return readFile(printed).find(R"(,"event":"textChanged"})") != std::string::npos;
+    };
+    for (int i = 0; i < 20 && !seen(); ++i) {
+        EXPECT_EQ(ctl({"--session", "typed", "send-text", "x"}).status, 0);
+        waitFor(seen, 500ms);
+    }
+    EXPECT_TRUE(seen()) << readFile(printed);
+    EXPECT_EQ(mux({"kill", "--force", "typed"}).status, 0);
+    watch.join();
+    EXPECT_EQ(watched.status, 1) << watched.err;
+    // An option that watch does not take is a usage error.
+    EXPECT_EQ(ctl({"--session", "typed", "watch", "--text"}).status, 2);
 }

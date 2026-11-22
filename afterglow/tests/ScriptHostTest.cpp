@@ -1040,6 +1040,29 @@ return s
     EXPECT_EQ(rec.applied[1].value(QStringLiteral("text")), QStringLiteral("2"));
 }
 
+// The snapshot gives each window's agent field to scripts as the host's
+// window maps hold it (Control::state fills it from showsAgentSession).
+TEST_F(ScriptHostTest, AWindowSaysWhetherItShowsAnAgentSession)
+{
+    WRITE(user, QStringLiteral("agent.luau"), R"(
+return {
+    on_bell = function(ev)
+        local agent = {}
+        for _, window in ev.terminal.windows do
+            table.insert(agent, tostring(window.id) .. "=" .. tostring(window.agent))
+        end
+        return afterglow.copy(table.concat(agent, ","))
+    end,
+}
+)");
+    windows = {QVariantMap{{"id", 1}, {"session", "agent-1"}, {"agent", true}},
+               QVariantMap{{"id", 2}, {"session", ""}, {"agent", false}}};
+    host->setEnabled(true);
+    host->dispatch(QStringLiteral("on_bell"), 7);
+    ASSERT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(rec.applied[0].value(QStringLiteral("text")), QStringLiteral("1=true,2=false"));
+}
+
 TEST_F(ScriptHostTest, CreationResultsAreQueuedAndDeliveredOnlyToTheirOwner)
 {
     WRITE(user, QStringLiteral("creator.luau"), R"(

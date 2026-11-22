@@ -25,6 +25,10 @@ namespace {
 constexpr qsizetype MaxRequestBytes = qsizetype(AfterglowProto::IpcConnection::MaxRequestBytes);
 /// The longest line that the daemon sends (its output limit).
 constexpr qsizetype MaxFrameBytes = qsizetype(AfterglowProto::IpcConnection::MaxFrameBytes);
+/// The most that one wake of the read notifier reads: a daemon that writes
+/// without a pause leaves the event loop its timers and the client's
+/// requests. The notifier wakes again for the rest.
+constexpr int MaxReadsAtOnce = 16;
 
 QByteArray callLine(qint64 id, const QString& target, const QString& fn, const QJsonArray& args)
 {
@@ -43,9 +47,20 @@ DaemonLink::DaemonLink(int fd, QObject* parent)
     : QObject(parent)
     , m_fd(fd)
 {
-    // The writes wait in m_out, never in the kernel's send().
-    ::fcntl(m_fd, F_SETFL, ::fcntl(m_fd, F_GETFL) | O_NONBLOCK);
-    ::fcntl(m_fd, F_SETFD, FD_CLOEXEC);
+    // The writes wait in m_out, never in the kernel's send(): a socket that
+    // would block there would stop the whole server.
+    const int flags = ::fcntl(m_fd, F_GETFL);
+    if (flags < 0 || ::fcntl(m_fd, F_SETFL, flags | O_NONBLOCK) != 0 || ::fcntl(m_fd, F_SETFD, FD_CLOEXEC) != 0) {
+        const QString reason = QStringLiteral("cannot set up the connection to the mux daemon: %1")
+                                   .arg(QString::fromLocal8Bit(std::strerror(errno)));
+        ::close(m_fd);
+        m_fd = -1;
+        // From the event loop, as fail() says it.
+        QTimer::singleShot(0, this, [this, reason] {
+            Q_EMIT closed(reason);
+        });
+        return;
+    }
     m_readNotifier = new QSocketNotifier(m_fd, QSocketNotifier::Read, this);
     connect(m_readNotifier, &QSocketNotifier::activated, this, &DaemonLink::readable);
     m_writeNotifier = new QSocketNotifier(m_fd, QSocketNotifier::Write, this);
@@ -55,6 +70,10 @@ DaemonLink::DaemonLink(int fd, QObject* parent)
 
 DaemonLink::~DaemonLink()
 {
+    // The notifiers go before their descriptor: one of a closed descriptor
+    // that a later socket reuses would watch that socket.
+    delete m_readNotifier;
+    delete m_writeNotifier;
     if (m_fd >= 0)
         ::close(m_fd);
 }
@@ -113,6 +132,17 @@ void DaemonLink::send(const QByteArray& line, qint64 id, Answer answer)
         }
         return;
     }
+    // A daemon that reads no requests: the queue does not grow without end.
+    if (m_out.size() + line.size() > MaxQueuedBytes) {
+        m_subscriptions.remove(id);
+        if (answer) {
+            answerLater(std::move(answer),
+                        {QLatin1String(QueueFull),
+                         QStringLiteral("the mux daemon has not read the %1 MiB of requests before this one")
+                             .arg(m_out.size() >> 20)});
+        }
+        return;
+    }
     if (answer)
         m_answers.insert(id, std::move(answer));
     m_out += line;
@@ -142,7 +172,7 @@ void DaemonLink::writable()
 void DaemonLink::readable()
 {
     char buffer[65536];
-    while (m_fd >= 0) {
+    for (int reads = 0; m_fd >= 0 && reads < MaxReadsAtOnce; ++reads) {
         const ssize_t got = ::recv(m_fd, buffer, sizeof buffer, 0);
         if (got < 0) {
             if (errno == EINTR)
@@ -190,7 +220,9 @@ void DaemonLink::frame(const QByteArray& line)
     if (type == QLatin1String("event")) {
         const qint64 subscription = object.value(QLatin1String("subscriptionId")).toInteger(-1);
         if (const auto it = m_subscriptions.constFind(subscription); it != m_subscriptions.constEnd()) {
-            Q_EMIT event(*it, object.value(QLatin1String("args")).toArray());
+            // A copy: a slot that fails the connection clears m_subscriptions.
+            const QString name = *it;
+            Q_EMIT event(name, object.value(QLatin1String("args")).toArray());
         } else if (!object.contains(QLatin1String("subscriptionId"))) {
             Q_EMIT targetEvent(object.value(QLatin1String("target")).toString(),
                                object.value(QLatin1String("signal")).toString(),

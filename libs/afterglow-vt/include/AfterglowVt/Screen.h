@@ -239,6 +239,13 @@ public:
     {
         return m_historyRewinds;
     }
+    /// Grows with each call that writes cells, erases them, moves rows,
+    /// changes the history or the size: what the text of the screen reads
+    /// may differ after it. A write of the same text counts too.
+    std::uint64_t contentSerial() const noexcept
+    {
+        return m_contentSerial;
+    }
     /// Absolute index for a stable id, or -1 if that row is gone.
     long long absoluteIndexOf(std::uint64_t stableId) const noexcept
     {
@@ -300,6 +307,7 @@ private:
     std::uint64_t m_rowsDropped = 0;
     std::uint64_t m_layoutEpoch = 0;
     std::uint64_t m_historyRewinds = 0;
+    std::uint64_t m_contentSerial = 0;
     StyleTable m_styles;
 };
 

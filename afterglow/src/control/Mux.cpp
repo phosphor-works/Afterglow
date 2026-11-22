@@ -60,7 +60,10 @@ Commands:
                               print its name.
         --agent               Create an agent session, as afterglow mcp
                               does: it keeps read access for afterglow ctl,
-                              and its window marks it.
+                              and its window marks it. An afterglow mcp
+                              --session NAME with Mcp.endSessionOnExit on
+                              binds it, and the session ends when that
+                              server exits.
   attach [NAME] [--no-takeover]
                               Show a session in a window. Without NAME, the
                               only session, or a new one when none runs.
@@ -442,7 +445,8 @@ int listSessions(int argc, char** argv)
     std::printf("%-*s  %-8s  %5s  %s\n", int(width), "NAME", "STATE", "PANES", "AGENT");
     for (const auto& s : list) {
         // An agent session, and the connections of agents that it ends with.
-        const std::string agent = !s.agent ? std::string()
+        // A word for each row: a blank column would end the line in spaces.
+        const std::string agent = !s.agent ? std::string("no")
             : s.bound > 0                  ? "yes, bound to " + std::to_string(s.bound)
                                            : std::string("yes");
         std::printf("%-*s  %-8s  %5d  %s\n", int(width), printable(s.name).c_str(),

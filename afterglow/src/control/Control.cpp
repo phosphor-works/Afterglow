@@ -498,6 +498,7 @@ QVariantMap Control::state() const
                                    {QStringLiteral("overview"), w->overviewState()},
                                    {QStringLiteral("session"), w->sessionName()},
                                    {QStringLiteral("session_host"), w->sessionHost()},
+                                   {QStringLiteral("agent"), w->showsAgentSession()},
                                    {QStringLiteral("cols"), grid.width()},
                                    {QStringLiteral("rows"), grid.height()}});
         for (const auto& tab : w->tabs()) {
@@ -537,12 +538,19 @@ QString Control::sendText(quint32 id, const QString& text)
     return p->sendInput(text.toStdString(), false) ? QString() : QStringLiteral("program closed or input queue full");
 }
 
-QString Control::paste(quint32 id, const QString& text)
+QString Control::paste(quint32 id, const QString& text, QString* code)
 {
     Pane* p = find(id);
     if (!p) {
         return noPane(id);
     }
+    // No paste at all: an empty bracketed paste would still reach the
+    // program, as two markers with nothing between them.
+    if (text.isEmpty())
+        return {};
+    // A blank replica's modes are none of the program's: no bracketed paste.
+    if (QString error; notSynced(*p, error, code))
+        return error;
     // As a paste in the window (TerminalWindow::pasteText): bracketed when
     // the program asked for it, with the line ends as Enter and no other
     // control. No question for an unsafe paste: the client chose the text,
@@ -629,7 +637,7 @@ QString Control::resizePane(quint32 id, const QString& direction, double cells)
     return {};
 }
 
-QString Control::sendKeys(quint32 id, const QStringList& keys)
+QString Control::sendKeys(quint32 id, const QStringList& keys, QString* code)
 {
     if (keys.isEmpty())
         return QStringLiteral("sendKeys needs a key");
@@ -647,6 +655,9 @@ QString Control::sendKeys(quint32 id, const QStringList& keys)
     Pane* p = find(id);
     if (!p)
         return noPane(id);
+    // A blank replica's keyboard modes are none of the program's.
+    if (QString error; notSynced(*p, error, code))
+        return error;
     // Encoded for the program's keyboard mode, as a typed key is.
     const std::string bytes = p->readTerminal([&named](const AfterglowVt::Terminal& t) {
         std::string out;
@@ -791,16 +802,16 @@ std::optional<OverlaySpec> Control::clientOverlaySpec(const QStringList& argv, c
 }
 
 QString Control::clientOverlay(const QString& owner, quint32 pane, const OverlaySpec& spec, OverlayReply reply,
-                               QString& code)
+                               QString& code, bool agentSession)
 {
     return overlay(
         owner, {}, pane, spec,
-        [reply = std::move(reply), self = QPointer<Control>(this)](const QString& error, const QString& code,
-                                                                   const QVariantMap& result) {
+        [reply = std::move(reply), self = QPointer<Control>(this),
+         agentSession](const QString& error, const QString& code, const QVariantMap& result) {
             if (!error.isEmpty())
                 return reply(error, code, {});
             QVariantMap answer = result;
-            if (!self || !self->m_settings.settings().control.allowReadText)
+            if (!self || (!agentSession && !self->m_settings.settings().control.allowReadText))
                 answer.remove(QStringLiteral("stdout"));
             reply({}, {}, answer);
         },

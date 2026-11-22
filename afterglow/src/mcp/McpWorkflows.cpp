@@ -19,6 +19,7 @@
 #include "MuxProtocol.h"
 
 #include <AfterglowProto/Ipc.h>
+#include <AfterglowProto/IpcServer.h>
 #include <AfterglowProto/Json.h>
 #include <AfterglowProto/Run.h>
 
@@ -159,58 +160,6 @@ McpTool runScriptCommandTool()
     return tool;
 }
 
-/// One step of an open of a project: a pane in a new tab, or a split of a
-/// pane of the project that opened before it.
-struct ProjectStep
-{
-    qsizetype leaf = 0; ///< the pane that opens, in the order of ProjectStore::panes
-    qsizetype target = -1; ///< the pane that it splits, -1 for a new tab
-    QString direction;
-};
-
-/// The panes of the split tree @p node of a project.
-qsizetype leaves(const QJsonObject& node)
-{
-    if (node.contains(L("pane")))
-        return 1;
-    return leaves(node.value(L("first")).toObject()) + leaves(node.value(L("second")).toObject());
-}
-
-/// The splits that make the tree @p node, whose first pane, @p holder,
-/// holds all its room already: each split splits the pane that holds its
-/// room, for the first pane of its second side, and then each side is made
-/// in its own room. @p next is the leaf of the tree's first pane. The daemon
-/// splits a pane in halves, as a window that splits it: the ratios of the
-/// project stay out.
-void planSplits(const QJsonObject& node, qsizetype holder, qsizetype& next, QList<ProjectStep>& steps)
-{
-    if (node.contains(L("pane"))) {
-        ++next;
-        return;
-    }
-    const QJsonObject first = node.value(L("first")).toObject();
-    const qsizetype second = next + leaves(first);
-    steps.append({second, holder, node.value(L("direction")).toString()});
-    planSplits(first, holder, next, steps);
-    planSplits(node.value(L("second")).toObject(), second, next, steps);
-}
-
-/// The split tree of a project from @p tree, a tab of the daemon's layout in
-/// preorder, from the node at @p at, with @p leaf for each pane.
-QJsonObject nested(const std::vector<AfterglowMux::LayoutNode>& tree, std::size_t& at,
-                   const std::function<QJsonObject(std::uint32_t)>& leaf)
-{
-    const AfterglowMux::LayoutNode& node = tree.at(at++);
-    if (node.pane != 0)
-        return {{L("pane"), leaf(node.pane)}};
-    const QJsonObject first = nested(tree, at, leaf);
-    const QJsonObject second = nested(tree, at, leaf);
-    return {{L("direction"), node.down ? L("down") : L("right")},
-            {L("ratio"), node.ratio},
-            {L("first"), first},
-            {L("second"), second}};
-}
-
 } // namespace
 
 struct McpTools::ProjectOpen
@@ -221,6 +170,7 @@ struct McpTools::ProjectOpen
     QList<ProjectStore::Launch> launches;
     QStringList labels; ///< the ID of each pane in the project
     QList<qint64> ids; ///< the daemon's ID of each pane, 0 until it opened
+    QList<bool> marks; ///< whether the shell of each pane marks its prompts
     /// The pane that has the focus in each tab, the active tab's last.
     QList<qsizetype> focus;
     qsizetype at = 0;
@@ -274,6 +224,7 @@ void McpTools::openProject(McpCall call)
         open->labels.append(leaf.value(L("id")).toString());
     }
     open->ids = QList<qint64>(open->launches.size(), 0);
+    open->marks = QList<bool>(open->launches.size(), false);
     qsizetype next = 0;
     qsizetype active = -1;
     for (const QJsonValue& value : document.value(L("tabs")).toArray()) {
@@ -329,30 +280,56 @@ void McpTools::openNext(const std::shared_ptr<ProjectOpen>& open)
         const ProjectStore::Launch& launch = open->launches.at(step.leaf);
         const QJsonObject prepared = sessionLaunch(m_settings, launch.cwd, launch.command,
                                                    m_session.environment ? &*m_session.environment : nullptr);
-        const bool split = step.target >= 0;
+        open->marks[step.leaf] = marksPrompts(
+            variableIn(prepared.value(L("environment")).toArray(), QStringLiteral("AFTERGLOW_SHELL_FEATURES")));
+        // A pane of the project whose program ended at once has no room to
+        // split: the pane that would split it opens in a tab of its own.
+        const bool split = step.target >= 0 && !m_closed.contains(quint32(open->ids.at(step.target)));
+        if (step.target >= 0 && !split) {
+            open->warnings << QStringLiteral("Pane %1 opened in a tab of its own: pane %2, which it splits, ended")
+                                  .arg(open->labels.at(step.leaf), open->labels.at(step.target));
+        }
         const QJsonArray args{split ? open->ids.at(step.target) : open->beside, split ? step.direction : launch.cwd,
                               QJsonArray::fromStringList(launch.command), prepared};
         m_link.call(split ? QStringLiteral("split") : QStringLiteral("newTab"), args,
                     [this, open, step, split](const QJsonValue& value, const DaemonLink::Error* error) {
-                        const QString label = open->labels.at(step.leaf);
-                        if (error) {
-                            // With no window, the panes have the size of a new
-                            // window, and halving it runs out.
-                            if (split && error->message.contains(L("not enough room"))) {
-                                return failOpen(open,
-                                                QStringLiteral("pane %1 of project %2 has no room for its split while "
-                                                               "no window shows session %3: ask the user to attach a "
-                                                               "window (afterglow mux attach %3), then open it again")
-                                                    .arg(label, open->name, m_session.name));
+                        // The panes that opened stay, and the call is answered.
+                        if (open->cancelled)
+                            return;
+                        if (error && split) {
+                            // The pane to split ended while the call went: a tab.
+                            // The daemon may answer the split before it tells
+                            // of the end (paneClosed), so the pane list says.
+                            const auto target = quint32(open->ids.at(step.target));
+                            if (m_closed.contains(target)) {
+                                --open->at;
+                                return openNext(open);
                             }
-                            return failOpen(open,
-                                            QStringLiteral("cannot open pane %1 of project %2: %3")
-                                                .arg(label, open->name, failure(*error)));
+                            m_link.call(QStringLiteral("listPanes"), {},
+                                        [this, open, step, target, failed = *error](const QJsonValue& panes,
+                                                                                    const DaemonLink::Error* error) {
+                                            if (open->cancelled)
+                                                return;
+                                            if (!error && paneIn(panes, target).isEmpty()) {
+                                                m_closed.insert(target);
+                                                --open->at;
+                                                return openNext(open);
+                                            }
+                                            failStep(open, step, failed);
+                                        });
+                            return;
                         }
-                        open->ids[step.leaf] = value.toInteger();
+                        if (error)
+                            return failStep(open, step, *error);
+                        const qint64 id = value.toInteger();
+                        open->ids[step.leaf] = id;
+                        m_seen.insert(quint32(id));
+                        // A shell with shell integration marks a prompt soon.
+                        if (open->marks.at(step.leaf))
+                            m_starting.insert(quint32(id));
                         // The next tab goes after this one.
                         if (!split)
-                            open->beside = value.toInteger();
+                            open->beside = id;
                         openNext(open);
                     });
         return;
@@ -372,22 +349,62 @@ void McpTools::openNext(const std::shared_ptr<ProjectOpen>& open)
     McpResult result = McpResult::structured(QJsonObject{{L("name"), open->name},
                                                          {L("panes"), panes},
                                                          {L("warnings"), QJsonArray::fromStringList(open->warnings)}});
-    result.addText(QStringLiteral("Opened project %1 in session %2: %3 panes.")
-                       .arg(open->name, m_session.name)
-                       .arg(open->labels.size()));
+    result.addText(QStringLiteral("Opened project %1 in session %2: %3.")
+                       .arg(open->name, m_session.name, McpParts::panes(open->labels.size())));
     if (!open->warnings.isEmpty())
         result.addText(open->warnings.join(QLatin1Char('\n')));
     open->call.finish(result);
 }
 
+void McpTools::failStep(const std::shared_ptr<ProjectOpen>& open, const ProjectStep& step,
+                        const DaemonLink::Error& error)
+{
+    const QString label = open->labels.at(step.leaf);
+    // With no window, the panes have the size of a new window, and halving
+    // it runs out.
+    if (error.code == L(AfterglowMux::Error::NoRoom)) {
+        return failOpen(open,
+                        QStringLiteral("pane %1 of project %2 has no room for its split while no window shows "
+                                       "session %3: ask the user to attach a window (afterglow mux attach %3), "
+                                       "then open it again")
+                            .arg(label, open->name, m_session.name));
+    }
+    failOpen(open, QStringLiteral("cannot open pane %1 of project %2: %3").arg(label, open->name, failure(error)));
+}
+
 void McpTools::failOpen(const std::shared_ptr<ProjectOpen>& open, const QString& text)
 {
-    // The session keeps no part of the project.
+    // The session keeps no part of the project, but its last pane: a close of
+    // that one would end the session, and the server with it.
+    QList<qint64> panes;
     for (const qint64 pane : std::as_const(open->ids)) {
         if (pane != 0)
-            m_link.call(QStringLiteral("close"), {pane}, [](const QJsonValue&, const DaemonLink::Error*) { });
+            panes.append(pane);
     }
-    open->call.fail(text);
+    if (panes.isEmpty()) {
+        open->call.fail(text);
+        return;
+    }
+    auto left = std::make_shared<qsizetype>(panes.size());
+    auto kept = std::make_shared<qint64>(0);
+    for (const qint64 pane : std::as_const(panes)) {
+        m_link.call(QStringLiteral("close"), {pane, QJsonObject{{L("endSession"), false}}},
+                    [this, open, text, left, kept, pane](const QJsonValue&, const DaemonLink::Error* error) {
+                        if (hasCode(error, AfterglowMux::Error::LastPane))
+                            *kept = pane;
+                        if (--*left > 0)
+                            return;
+                        if (*kept == 0) {
+                            open->call.fail(text);
+                            return;
+                        }
+                        open->call.fail(QStringLiteral("%1. Pane %2 of the project stays open: it is the last pane "
+                                                       "of session %3")
+                                            .arg(text)
+                                            .arg(*kept)
+                                            .arg(m_session.name));
+                    });
+    }
 }
 
 void McpTools::saveProject(McpCall call)
@@ -438,6 +455,11 @@ void McpTools::saveProject(McpCall call)
                                                     {m_session.name, qint64(id)},
                                                     [this, shared, name, overwrite, layout, directories, left,
                                                      id](const QJsonValue& value, const DaemonLink::Error* error) {
+                                                        // Lost: the save would hold nothing true.
+                                                        if (error && error->code.isEmpty()) {
+                                                            shared->fail(failure(*error));
+                                                            return;
+                                                        }
                                                         const QString cwd = value.toString();
                                                         if (!error && !cwd.isEmpty() && QFileInfo(cwd).isDir())
                                                             directories->insert(id, cwd);
@@ -485,6 +507,9 @@ void McpTools::writeProject(const CallPtr& call, const QString& name, bool overw
                             .arg(ProjectStore::MaxCommandArgBytes);
             command.clear();
         }
+        if (!directories->contains(pane)) {
+            warnings << QStringLiteral("Pane %1: its directory is not known. Saved with your home directory").arg(pane);
+        }
         return QJsonObject{{L("id"), QString::number(pane)},
                            {L("cwd"), directories->value(pane, QDir::homePath())},
                            {L("title"), textPrefix(title, ProjectStore::MaxTitle)},
@@ -525,7 +550,7 @@ void McpTools::writeProject(const CallPtr& call, const QString& name, bool overw
 DaemonLink* McpTools::commandLink(McpCall& call)
 {
     QString error;
-    const int fd = m_session.connect ? m_session.connect(&error) : -1;
+    const int fd = m_session.connect ? m_session.connect(&error, nullptr) : -1;
     if (fd < 0) {
         call.fail(QStringLiteral("cannot reach the mux daemon: %1").arg(error));
         return nullptr;
@@ -539,7 +564,7 @@ QString McpTools::commandsFailure(const DaemonLink::Error& error) const
     // the command closed or detached.
     if (error.code.isEmpty())
         return error.message;
-    if (error.message.contains(L("no window shows session"))) {
+    if (error.code == L(AfterglowMux::Error::NotAttached)) {
         return QStringLiteral(
                    "no window shows session %1, and only a window runs the commands of scripts. Ask the "
                    "user to run afterglow mux attach %1.")
@@ -547,6 +572,12 @@ QString McpTools::commandsFailure(const DaemonLink::Error& error) const
     }
     if (error.code == L(Run::NoSuchCommand))
         return QStringLiteral("%1. list_script_commands lists the commands.").arg(error.message);
+    if (error.code == L(AfterglowProto::IpcErrorCode::NoSuchTarget)) {
+        return QStringLiteral(
+                   "the window that shows session %1 runs no commands of scripts: Scripts.enabled or "
+                   "Control.enabled is off there")
+            .arg(m_session.name);
+    }
     return failure(error);
 }
 
@@ -579,6 +610,18 @@ void McpTools::listScriptCommands(McpCall call)
         if (guarded)
             guarded->deleteLater();
     });
+    // A window that does not answer: the connection goes, as at a cancel. The
+    // timer is the link's, and goes with it.
+    auto* timeout = new QTimer(link);
+    timeout->setSingleShot(true);
+    connect(timeout, &QTimer::timeout, link, [this, shared, guarded] {
+        shared->fail(QStringLiteral("the window that shows session %1 did not list its commands in %2 ms")
+                         .arg(m_session.name)
+                         .arg(m_settings.mcp.waitTimeout));
+        if (guarded)
+            guarded->deleteLater();
+    });
+    timeout->start(m_settings.mcp.waitTimeout);
     listCommands(
         link,
         [shared, guarded](const QString& text) {
@@ -675,7 +718,7 @@ void McpTools::runScriptCommand(McpCall call)
                     // Only the end goes back: what is far before it goes now.
                     const qsizetype keep = m_settings.mcp.outputLimit;
                     if (text.size() > 2 * keep) {
-                        text.remove(0, text.size() - keep);
+                        keepEnd(text, keep);
                         running->truncated = true;
                     }
                 }
@@ -725,7 +768,7 @@ void McpTools::runScriptCommand(McpCall call)
             if (run->input)
                 sendInput(run, 0);
             else
-                startRun(run);
+                startScriptRun(run);
         });
 }
 
@@ -745,13 +788,13 @@ void McpTools::sendInput(const std::shared_ptr<ScriptRun>& run, qsizetype from)
                             return dropRun(run);
                         }
                         if (last)
-                            startRun(run);
+                            startScriptRun(run);
                         else
                             sendInput(run, from + qsizetype(size));
                     });
 }
 
-void McpTools::startRun(const std::shared_ptr<ScriptRun>& run)
+void McpTools::startScriptRun(const std::shared_ptr<ScriptRun>& run)
 {
     // No directory: the command gets the pane's, as the window knows it.
     run->link->call(L(Run::Target), QStringLiteral("run"),
@@ -773,7 +816,7 @@ void McpTools::finishRun(const std::shared_ptr<ScriptRun>& run, const QJsonValue
     const int limit = m_settings.mcp.outputLimit;
     const Output err = shape(run->err, 0, limit / 2, false);
     const Output out = shape(run->out, 0, limit - err.text.toUtf8().size(), false);
-    const qint64 exit = value.toObject().value(L("exit")).toInteger(1);
+    const qint64 exit = exitStatus(value.toObject().value(L("exit")));
     McpResult result =
         McpResult::structured(QJsonObject{{L("exit_code"), exit},
                                           {L("stdout"), out.text},

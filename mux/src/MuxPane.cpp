@@ -222,7 +222,10 @@ MuxPane::Facts MuxPane::facts(bool userVars) const
         if (userVars)
             facts.userVars = m_userVars;
     }
-    facts.shell = m_shellState.load();
+    // A program that exited runs no shell, as Terminal::shellState() says
+    // of a window's pane: the daemon's terminal never hears of the exit
+    // (terminalProtocol()), and the pane leaves at the next reap.
+    facts.shell = m_exited ? AfterglowVt::ShellState::None : m_shellState.load();
     facts.input = m_shellInput.load();
     if (const int code = m_lastExit.load(); code != NoExitCode)
         facts.lastExit = code;
@@ -266,18 +269,18 @@ std::optional<MuxPane::Text> MuxPane::firstOutputOnScreen(const AfterglowVt::Tex
     return text;
 }
 
-std::optional<MuxPane::Text> MuxPane::textSince(AfterglowVt::SemanticPosition from,
+std::optional<MuxPane::Text> MuxPane::textSince(const AfterglowVt::TextMark& from,
                                                 const AfterglowVt::TextFormat& format) const
 {
     std::lock_guard lock(m_mutex);
     if (m_decoding)
         return std::nullopt;
     Text text;
-    text.text = m_terminal.textSince(from, MaxText, &text.truncated, &text.trimmed, format);
+    text.text = m_terminal.textSince(from, MaxText, &text.truncated, &text.trimmed, &text.stale, format);
     return text;
 }
 
-std::optional<AfterglowVt::SemanticPosition> MuxPane::textMark() const
+std::optional<AfterglowVt::TextMark> MuxPane::textMark() const
 {
     std::lock_guard lock(m_mutex);
     if (m_decoding)
@@ -889,19 +892,20 @@ void MuxPane::commandStarted(std::string_view command)
 {
     std::string encoded = Host::encode(Host::make(Host::Kind::CommandStarted, {}, std::string(command)));
     bool wake = false;
-    // The terminal calls this from its feed, under m_mutex: the state that
-    // listPanes reads changes before the event leaves, not after the rest of
-    // the read, so a client that heard the event reads the state after it.
-    bool watched = updateShellLocked();
+    bool watched = false;
     {
         // With the state that a new window gets, under one lock: setWindow()
-        // sends the start again.
+        // sends the start again. The terminal calls this from its feed,
+        // under m_mutex: the shell's state and the command that listPanes
+        // reads change before the events leave, not after the rest of the
+        // read, so a client that heard shellChanged reads both after it.
         std::lock_guard lock(m_hostMutex);
-        if (m_watched)
-            watched = watchLocked({WatchEvent::Kind::CommandStarted, {}, std::string(command)}) || watched;
         m_command = command;
         m_commandRunning = true;
         m_commandStart = std::chrono::steady_clock::now();
+        watched = updateShellLocked(true);
+        if (m_watched)
+            watched = watchLocked({WatchEvent::Kind::CommandStarted, {}, std::string(command)}) || watched;
         // A start that went before still has its end to come.
         m_commandForwarded =
             queueLocked(std::move(encoded), Host::Kind::CommandStarted, Fit::Queue, &wake) || m_commandForwarded;
@@ -913,10 +917,12 @@ void MuxPane::commandStarted(std::string_view command)
 void MuxPane::commandFinished(int exitCode)
 {
     bool wake = false;
-    // As in commandStarted(): the exit code and the state before the event.
-    bool watched = updateShellLocked();
+    bool watched = false;
     {
+        // As in commandStarted(): the exit code, the state and the command
+        // change before the events leave.
         std::lock_guard lock(m_hostMutex);
+        watched = updateShellLocked(true);
         Host::Call call = Host::make(Host::Kind::CommandFinished, {}, {}, exitCode);
         // Measured here: the window may get the start and the end together.
         call.value = std::uint64_t(
@@ -1423,6 +1429,30 @@ MuxPane::Input MuxPane::input(std::string_view bytes)
     return m_exited || !m_pty->accepting() ? Input::Gone : Input::Full;
 }
 
+std::optional<MuxPane::Input> MuxPane::inputAtPrompt(std::string_view bytes, AfterglowVt::ShellState& state,
+                                                     bool& decoding)
+{
+    decoding = false;
+    state = AfterglowVt::ShellState::None;
+    if (!m_pty || m_exited)
+        return Input::Gone;
+    // The feed holds the lock: no output moves the shell off its prompt
+    // between the check and the write. Without a decode, no change of the
+    // daemon's thread waits for the feed (change()), so no input waits
+    // before this one.
+    std::lock_guard lock(m_mutex);
+    if (m_decoding) {
+        decoding = true;
+        return std::nullopt;
+    }
+    state = m_terminal.shellState();
+    if (state != AfterglowVt::ShellState::Prompt || m_terminal.shellInput())
+        return std::nullopt;
+    if (m_pty->write(bytes))
+        return Input::Written;
+    return m_exited || !m_pty->accepting() ? Input::Gone : Input::Full;
+}
+
 void MuxPane::change(std::function<void()> change)
 {
     bool watched = false;
@@ -1441,16 +1471,23 @@ void MuxPane::change(std::function<void()> change)
         m_wake();
 }
 
-bool MuxPane::updateShellLocked()
+bool MuxPane::updateShellLocked(bool hostHeld)
 {
-    // A change of the text, which carries no text: the watchers read it if
-    // they want it. One waits for many (watchLocked).
+    std::unique_lock<std::mutex> host(m_hostMutex, std::defer_lock);
+    const auto push = [&](WatchEvent event) {
+        if (!hostHeld && !host.owns_lock())
+            host.lock();
+        return watchLocked(std::move(event));
+    };
+    // A change of what the text reads, which carries no text: the watchers
+    // read it if they want it. One waits for many (watchLocked). Titles,
+    // colours and replies change none.
     bool watched = false;
-    if (const std::uint64_t generation = m_terminal.textGeneration();
-        generation != m_textGeneration && m_watched.load()) {
-        m_textGeneration = generation;
-        std::lock_guard lock(m_hostMutex);
-        watched = watchLocked({WatchEvent::Kind::Text});
+    if (m_watchText.load()) {
+        if (const std::uint64_t generation = m_terminal.contentGeneration(); generation != m_contentGeneration) {
+            m_contentGeneration = generation;
+            watched = push({WatchEvent::Kind::Text});
+        }
     }
     m_shellInput.store(m_terminal.shellInput());
     const std::optional<int> exit = m_terminal.lastExitCode();
@@ -1463,8 +1500,7 @@ bool MuxPane::updateShellLocked()
     m_promptId = prompt;
     if (m_shellState.exchange(state) == state && !newPrompt)
         return watched;
-    std::lock_guard lock(m_hostMutex);
-    return watchLocked({WatchEvent::Kind::Shell, std::string(AfterglowVt::shellStateName(state))}) || watched;
+    return push({WatchEvent::Kind::Shell, std::string(AfterglowVt::shellStateName(state))}) || watched;
 }
 
 bool MuxPane::watchLocked(WatchEvent event)
@@ -1483,6 +1519,16 @@ bool MuxPane::watchLocked(WatchEvent event)
         // kind, at the end. Events waited already: the daemon wakes for the
         // first.
         using Kind = WatchEvent::Kind;
+        // And the last change of the text: a watcher that waits for the end
+        // of a burst hears it after the events before it. One change stands
+        // for all, so one waits at most past the limit.
+        if (event.kind == Kind::Text) {
+            std::erase_if(m_watchEvents, [](const WatchEvent& waiting) {
+                return waiting.kind == Kind::Text;
+            });
+            m_watchEvents.push_back(std::move(event));
+            return false;
+        }
         if (event.kind != Kind::Title && event.kind != Kind::Status && event.kind != Kind::UserVar
             && event.kind != Kind::Shell)
             return false;
@@ -1553,10 +1599,20 @@ std::string MuxPane::title() const
     return m_title;
 }
 
-void MuxPane::setWatched(bool watched)
+void MuxPane::setWatched(bool watched, bool text)
 {
-    std::lock_guard lock(m_hostMutex);
+    text = watched && text;
+    // In the order of the feed's locks. The changes of the text count from
+    // now: the generation that the last feed left would make the first one
+    // that a new watcher hears, also of a pane that joins a watched session.
+    // While an image decodes, the terminal is the reader thread's: the
+    // change that the decode's feed makes counts, as one more.
+    std::lock_guard lock(m_mutex);
+    if (text && !m_watchText.load() && !m_decoding)
+        m_contentGeneration = m_terminal.contentGeneration();
+    std::lock_guard host(m_hostMutex);
     m_watched = watched;
+    m_watchText = text;
     if (!watched) {
         m_watchEvents.clear();
         m_watchBytes = 0;
@@ -1606,7 +1662,14 @@ void MuxPane::setOptions(const AfterglowVt::TerminalOptions& options)
 void MuxPane::reset()
 {
     change([this] {
+        // A reset forgets the shell's marks: at a prompt the shell draws it
+        // again, with its marks, as in a window (Pane::resetTerminal). Only
+        // a shell that marks its prompts gets the key, not a program that
+        // would read it.
+        const bool prompt = m_terminal.shellState() == AfterglowVt::ShellState::Prompt && !m_terminal.modes().altScreen;
         m_terminal.reset();
+        if (prompt)
+            writeDirect("\x0c");
     });
 }
 

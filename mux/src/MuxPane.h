@@ -114,6 +114,12 @@ public:
     };
     /// Input of an attached window for the program.
     Input input(std::string_view bytes);
+    /// input() only while the shell waits at a primary prompt with an empty
+    /// command line, which it checks in the same step as the write: no
+    /// output of the program comes between. Nothing when it does not, with
+    /// what the shell does in @p state, or while an image decodes
+    /// (@p decoding).
+    std::optional<Input> inputAtPrompt(std::string_view bytes, AfterglowVt::ShellState& state, bool& decoding);
     /// The size that an attached window measured.
     void resize(const PaneSize& size);
     /// The programs' TMPDIR (Terminal::setTemporaryDirectory). Before start().
@@ -248,11 +254,16 @@ public:
         std::uint64_t milliseconds = 0; ///< CommandFinished: how long it ran
     };
     /// The most events, and bytes of them, that wait for the daemon: past
-    /// them, a new title, status or value of a user variable takes the place
-    /// of the last one of its kind that waits, and the other new events go.
+    /// them, a new title, status, shell state or value of a user variable
+    /// takes the place of the last one of its kind that waits, a change of
+    /// the text moves the one that waits to the end (or waits as one more,
+    /// when none does), and the other new events go.
     static constexpr std::size_t MaxWatchEvents = 1024;
     static constexpr std::size_t MaxWatchBytes = std::size_t(4) << 20;
-    void setWatched(bool watched);
+    /// Whether the daemon watches the pane, and with @p text whether it
+    /// wants the changes of its text too (a watcher of textChanged): only
+    /// the changes from then on count. Takes the terminal's lock.
+    void setWatched(bool watched, bool text);
     /// The events since the last take, oldest first.
     std::vector<WatchEvent> takeWatchEvents();
     /// A text of the terminal, and whether its limit cut it. @p trimmed:
@@ -263,6 +274,8 @@ public:
         std::string text;
         bool truncated = false;
         bool trimmed = false;
+        /// textSince(): the mark is of another Terminal::textEpoch().
+        bool stale = false;
     };
     /// The text of @p scope, for `afterglow ctl get-text`. Nothing while an
     /// image decodes: the terminal is in the middle of a parse, whose lock
@@ -271,14 +284,16 @@ public:
     /// The most bytes of text(), textSince() and firstOutputOnScreen(), as
     /// the terminal reads by default and a window's pane reads.
     static constexpr std::size_t MaxText = 1024 * 1024;
+    // The most that Mcp.outputLimit takes is this limit.
+    static_assert(MaxText == std::size_t(1) << 20);
     /// The first output with a row on the screen (kitty's
     /// first_cmd_output_on_screen), empty for none. Nothing while an image
     /// decodes, as text().
     std::optional<Text> firstOutputOnScreen(const AfterglowVt::TextFormat& format = {}) const;
     /// Terminal::textSince(). Nothing while an image decodes, as text().
-    std::optional<Text> textSince(AfterglowVt::SemanticPosition from, const AfterglowVt::TextFormat& format) const;
+    std::optional<Text> textSince(const AfterglowVt::TextMark& from, const AfterglowVt::TextFormat& format) const;
     /// Terminal::textMark(). Nothing while an image decodes, as text().
-    std::optional<AfterglowVt::SemanticPosition> textMark() const;
+    std::optional<AfterglowVt::TextMark> textMark() const;
     /// The semantic regions whose id is larger than @p after, oldest
     /// first. Nothing while an image decodes, as text().
     std::optional<std::vector<AfterglowVt::SemanticRegion>> semanticRegions(std::uint64_t after) const;
@@ -493,14 +508,17 @@ private:
     std::atomic<AfterglowVt::ShellState> m_shellState{AfterglowVt::ShellState::None};
     std::atomic<bool> m_shellInput{false};
     std::atomic<int> m_lastExit{NoExitCode};
-    /// The newest prompt region that the watchers heard of. Under m_mutex.
+    /// The newest prompt that the watchers heard of (Terminal::lastPromptId).
+    /// Under m_mutex.
     std::uint64_t m_promptId = 0;
-    /// Terminal::textGeneration() that the watchers heard of. Under m_mutex.
-    std::uint64_t m_textGeneration = 0;
+    /// Terminal::contentGeneration() that the watchers of the text heard of,
+    /// from when they started to watch it (setWatched()). Under m_mutex.
+    std::uint64_t m_contentGeneration = 0;
     /// Takes the shell's state from the terminal, under m_mutex, and tells
     /// the watchers of a change, or of a new prompt, and of a change of the
-    /// text. True when the daemon must wake for it.
-    bool updateShellLocked();
+    /// text. True when the daemon must wake for it. @p hostHeld: the caller
+    /// holds m_hostMutex too.
+    bool updateShellLocked(bool hostHeld = false);
 
     /// A call that waits for the window. PointerShape, UserVar and
     /// ProtocolLost wait empty, and take their newest value when they go.
@@ -573,6 +591,8 @@ private:
     /// Atomic for a feed that changes text: it takes m_hostMutex only
     /// while the daemon watches.
     std::atomic<bool> m_watched{false};
+    /// A watcher wants the changes of the text (setWatched()).
+    std::atomic<bool> m_watchText{false};
     std::vector<WatchEvent> m_watchEvents;
     std::size_t m_watchBytes = 0; ///< of m_watchEvents
     /// The terminal's title and size, for facts() while an image decodes.

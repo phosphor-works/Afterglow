@@ -18,6 +18,7 @@
 
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <memory>
 #include <optional>
@@ -45,6 +46,16 @@ struct SemanticPosition
 {
     std::uint64_t row = 0;
     int col = 0;
+};
+/// A place in the text of the primary screen, for Terminal::textSince():
+/// a stable row id and a column, with the epoch of the row ids
+/// (Terminal::textEpoch()) that it was taken in.
+struct TextMark
+{
+    std::uint64_t row = 0;
+    int col = 0;
+    std::uint64_t epoch = 0;
+    bool operator==(const TextMark&) const = default;
 };
 struct SemanticRegion
 {
@@ -98,19 +109,19 @@ struct TextFormat
     /// At the end: the cursor's place on the screen (CUP), its shape
     /// (DECSCUSR) and whether it shows (DECTCEM).
     bool cursor = false;
-    /// A text over its limit keeps its end, from the start of a row, and
-    /// not its start: the end of a command's output holds its result. A
-    /// row longer than the limit alone is cut from its start, as without
-    /// it. TextScope::Screen ignores it: the rows of one screen fit.
+    /// A text over its limit keeps its last rows and drops the rows before
+    /// them: the end of a command's output holds its result. The text
+    /// starts at the start of a row. When the last row alone is over the
+    /// limit, the text is the start of that row, cut at the limit.
     bool keepEnd = false;
 };
 
 /// What the shell in a terminal does, from its OSC 133 marks.
 enum class ShellState : std::uint8_t {
-    None, ///< no prompt mark since the last reset: no shell integration
+    None, ///< no prompt mark since the last reset (no shell integration), or the program exited
     Prompt, ///< at a primary prompt or its command line (A or B, before C)
     Continuation, ///< at a secondary prompt (A;k=s): the shell waits for the rest of a command
-    Running, ///< not at a prompt: a command runs, or the next prompt has not come yet
+    Running, ///< a command runs, or one ended and the next prompt has not come yet
 };
 
 /// The name of @p state in the control target's pane objects and events.
@@ -570,6 +581,21 @@ public:
     {
         return m_textGeneration;
     }
+    /// Changes when what text(), textSince() and the screen show could
+    /// differ: cells written or erased (also with the same text), rows
+    /// moved, the history, the size, the cursor's place, the active screen
+    /// and the viewport. Titles, colours, modes, replies and shell marks
+    /// alone leave it. A cursor that moves away and back between two reads
+    /// counts as no change.
+    std::uint64_t contentGeneration() const noexcept;
+    /// The epoch of the row ids of TextMark: it changes when the ids of the
+    /// primary screen could name rows of other text, at a reflow (a new
+    /// width), an unscroll (CSI + T) and an erase of the whole screen (ED 2,
+    /// ED 0 from the top left corner, a reset).
+    std::uint64_t textEpoch() const noexcept
+    {
+        return m_primary->layoutEpoch() + m_rowRenewals;
+    }
 
     const std::string& title() const noexcept
     {
@@ -608,32 +634,42 @@ public:
     {
         return m_semanticZone != SemanticZone::Output;
     }
-    /// What the shell does. Taken from the semantic regions and the zone
-    /// of the cursor: a reset (RIS) forgets them, and the state is None
-    /// until the shell marks its next prompt.
+    /// What the shell does, from its marks: Running while a command runs,
+    /// also across a reset (RIS); else None until the shell marks a prompt
+    /// after the last reset, and after the program exited.
     ShellState shellState() const noexcept;
     /// True when the command line holds typed text: text between the input
     /// mark (OSC 133 B) and the cursor, other than blanks. False without a
     /// B mark (the shell marks no input), and while the user's cursor is at
     /// the start of what they typed.
     bool shellInput() const;
-    /// The exit code of the newest closed output region, if that region
-    /// has one (its D mark gave a code).
-    std::optional<int> lastExitCode() const;
-    /// The id of the newest prompt region (OSC 133 A or P), 0 for none. A
-    /// new one says that the shell drew a prompt, also when the state that
-    /// shellState() gives is the same as before: a command can start and
-    /// end between two reads of its output.
-    std::uint64_t lastPromptId() const noexcept;
-    /// The cursor's place on the primary screen, with its row as a stable
-    /// row id (as SemanticPosition): a mark for textSince().
-    SemanticPosition textMark() const;
+    /// The exit code of the last command that ended, if its D mark gave
+    /// one: none for a command that the next prompt ended without a D.
+    std::optional<int> lastExitCode() const noexcept
+    {
+        return m_lastExitCode;
+    }
+    /// Grows with each new prompt, 0 before the first: OSC 133 A or OSC 633
+    /// A as the first or after a command or an empty line, each OSC 133 N,
+    /// and a P that starts a prompt, first or after a command (a shell that
+    /// sends no A). A prompt that the shell draws again (a resize, Ctrl+L) keeps it.
+    /// A new one says that the shell drew a prompt, also when the state that
+    /// shellState() gives is the same as before: a command can start and end
+    /// between two reads of its output.
+    std::uint64_t lastPromptId() const noexcept
+    {
+        return m_lastPromptId;
+    }
+    /// The cursor's place on the primary screen, as a mark for textSince().
+    TextMark textMark() const;
     /// The text of the primary screen from @p from to the cursor. The text
-    /// of the screen on the alternate screen, which has no history, and
-    /// when the cursor is before @p from (a program cleared the screen).
-    /// @p trimmed: the row of @p from left the scrollback, and the text
-    /// starts at the oldest row that is kept.
-    std::string textSince(SemanticPosition from, std::size_t maxBytes, bool* truncated, bool* trimmed,
+    /// of the screen on the alternate screen, which has no history, and of
+    /// the live screen when the cursor went above the row of @p from. From
+    /// @p from to the end of its row when the cursor is left of it on that
+    /// row (a carriage return). @p trimmed: the row of @p from left the
+    /// scrollback, and the text starts at the oldest row that is kept.
+    /// @p stale: @p from is of another textEpoch(), and the text is empty.
+    std::string textSince(const TextMark& from, std::size_t maxBytes, bool* truncated, bool* trimmed, bool* stale,
                           const TextFormat& format) const;
     /// A resize kept the prompt's previous layout for the shell to repaint,
     /// and the shell has not finished yet (OSC 133;B). Renderers can keep showing
@@ -1070,14 +1106,17 @@ private:
         int col = 0;
         bool valid = false;
     };
-    std::vector<SemanticRegion> m_semanticRegions;
+    /// Oldest first. A deque: the oldest goes at each new one once there
+    /// are MaxSemanticRegions.
+    std::deque<SemanticRegion> m_semanticRegions;
     /// At least the largest start or end row in m_semanticRegions. A region
     /// scroll whose top row is past it can move or drop none of them, so a
     /// line feed at a margin need not walk them all.
     std::uint64_t m_semanticRegionsLastRow = 0;
     std::uint64_t m_nextSemanticId = 1;
-    void beginSemanticRegion(SemanticZoneKind kind);
-    void closeSemanticRegion(std::optional<int> exitCode = {});
+    /// The new region's id, 0 on the alternate screen.
+    std::uint64_t beginSemanticRegion(SemanticZoneKind kind);
+    void closeSemanticRegion();
     Mark m_inputStart; ///< B: where the command is typed
     Mark m_outputStart; ///< C
     Mark m_outputEnd; ///< D
@@ -1089,11 +1128,35 @@ private:
     /// that the limit left out do not count as cut.
     std::string textBetween(const Mark& from, const Mark& to, std::size_t maxBytes, bool* truncated,
                             const TextFormat& format, bool trimmed = false) const;
+    /// The text of the rows @p first to @p last (absolute indices of
+    /// @p scr), from column @p firstCol of the first to @p lastCol of the
+    /// last. @p trimmed: as textBetween().
+    std::string textOfRows(const Screen& scr, long long first, int firstCol, long long last, int lastCol,
+                           std::size_t maxBytes, bool* truncated, const TextFormat& format, bool trimmed) const;
+    /// The text of the rows of @p scr from absolute index @p top, a screen
+    /// high, without the line feeds at its end.
+    std::string screenText(const Screen& scr, std::size_t top, std::size_t maxBytes, bool* truncated,
+                           const TextFormat& format) const;
     /// The escape sequences of TextFormat::cursor.
     std::string cursorText() const;
     /// The DECSCUSR number of the cursor's shape and blink.
     int cursorStyleNumber() const noexcept;
+    /// The command that runs ended: with @p exitCode from its D, or -1 for
+    /// none (a D without one, the next prompt).
     void finishCommand(int exitCode);
+    /// A secondary prompt (OSC 133 A;k=s or P;k=s, OSC 633 F): the shell
+    /// waits for the rest of the command line.
+    void continuationPrompt();
+    /// A new prompt (A, N, or a P that starts one): the marks since the
+    /// last prompt count from here, and what programs reported is over.
+    void backAtPrompt();
+    /// A prompt mark (OSC 133 A or P, OSC 633 A) after a command, after a
+    /// D, or as the first: else the shell draws the open one again. N is
+    /// always new.
+    bool promptIsNew() const noexcept
+    {
+        return !m_shellMarked || m_commandSincePrompt || m_endSincePrompt;
+    }
     int m_reportedDark = -1; ///< the theme mode last reported (mode 2031)
     bool m_hasCursorColor = false;
 
@@ -1146,6 +1209,9 @@ private:
     /// Where the secondary (PS2) prompt started (OSC 133 A;k=s), for the y of
     /// click_events=2. Invalid until a shell sends one after its prompt.
     Mark m_secondaryPrompt;
+    /// The shell shows a secondary prompt (shellState()): also on the
+    /// alternate screen, and after the row of m_secondaryPrompt went.
+    bool m_continuation = false;
     /// The marks that move with their rows, in a fixed order.
     std::array<Mark*, 4> marks() noexcept
     {
@@ -1184,9 +1250,41 @@ private:
     /// Input that came while the terminal held it.
     std::string m_heldInput;
     /// A command started (C) since the last prompt mark: the next one is a
-    /// new prompt, not the shell drawing the same one again. A D only closes
-    /// the command that a C opened, so it adds nothing.
+    /// new prompt, not the shell drawing the same one again. For an iTerm2
+    /// file, a D only closes the command that a C opened, so it adds nothing.
     bool m_commandSincePrompt = false;
+    /// A D came since the last prompt mark: the shell ended a command, or
+    /// an empty line, and the next prompt is a new one.
+    bool m_endSincePrompt = false;
+    /// The shell marked a prompt since the last reset.
+    bool m_shellMarked = false;
+    std::optional<int> m_lastExitCode;
+    std::uint64_t m_lastPromptId = 0;
+    /// The regions of the open prompt and of the running command's output,
+    /// 0 for none: a prompt drawn again reopens its region, and D gives its
+    /// code to the output, whatever region a program's marks opened since.
+    std::uint64_t m_promptRegionId = 0;
+    std::uint64_t m_outputRegionId = 0;
+    /// Rows of the primary screen that got other text with the same ids:
+    /// unscrolls and erases of the whole screen (textEpoch()).
+    std::uint64_t m_rowRenewals = 0;
+    /// The writes to cells that no Screen call makes (contentGeneration()).
+    std::uint64_t m_contentWrites = 0;
+    /// What contentGeneration() saw last, and its value.
+    struct ContentState
+    {
+        std::uint64_t writes = 0;
+        std::uint64_t primary = 0;
+        std::uint64_t alternate = 0;
+        bool altScreen = false;
+        int primaryX = 0, primaryY = 0, alternateX = 0, alternateY = 0;
+        bool primaryWrap = false, alternateWrap = false;
+        std::size_t primaryView = 0;
+        bool operator==(const ContentState&) const = default;
+    };
+    ContentState contentState() const noexcept;
+    mutable ContentState m_contentSeen;
+    mutable std::uint64_t m_contentGeneration = 0;
     void endITerm2Multipart();
     void semanticPrompt(std::string_view args);
     void vscodeShellIntegration(std::string_view args);

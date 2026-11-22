@@ -75,8 +75,30 @@ function __afterglow_preexec {
     [[ $__afterglow_features == *" no-cursor "* ]] || (( __afterglow_vi )) || printf '\033[0 q'
     [[ $__afterglow_features == *" no-title "* ]] || printf '\033]2;%s%s\007' "$__afterglow_host" "${1//[[:cntrl:]]}"
 }
+# zsh runs the hooks that precmd_functions held when the prompt began. A hook
+# after this one (a theme's, or one that a deferred loader added) sets PS1
+# again: this one goes last for the next prompts, and this prompt gets its
+# marks from a scheduled event, which runs after every hook.
 function __afterglow_precmd {
-    local result=$?
+    typeset -g __afterglow_status=$?
+    emulate -L zsh
+    if [[ ${precmd_functions[-1]} != __afterglow_precmd ]]; then
+        precmd_functions=(${precmd_functions:#__afterglow_precmd} __afterglow_precmd)
+        __afterglow_after_hooks
+    else
+        __afterglow_prompt
+    fi
+}
+# Runs __afterglow_prompt after the rest of this prompt's hooks.
+function __afterglow_after_hooks {
+    if zmodload zsh/sched 2>/dev/null; then
+        sched +0 __afterglow_prompt
+    else
+        __afterglow_prompt
+    fi
+}
+function __afterglow_prompt {
+    local result=$__afterglow_status
     emulate -L zsh
     local begin=$'%{\e]133;A;redraw=1\a%}' end=$'%{\e]133;B\a%}'
     # The prompt of a command that goes on (an open quote, a \ at the end):
@@ -136,6 +158,7 @@ function __afterglow_setup {
     fi
     preexec_functions+=(__afterglow_preexec)
     precmd_functions+=(__afterglow_precmd)
-    __afterglow_precmd
+    typeset -g __afterglow_status=0
+    __afterglow_after_hooks
 }
 precmd_functions+=(__afterglow_setup)

@@ -4,13 +4,18 @@
 """Drives `afterglow mcp` as an MCP client does: one JSON-RPC message per line on its standard input and output.
 
 Each server runs with a private XDG_RUNTIME_DIR, XDG_STATE_HOME, XDG_CONFIG_HOME and HOME under /tmp, and only the
-variables of an allow list, so that no server reaches the user's mux daemon, Afterglow, bus or shell files. The
-servers of a run share one private daemon, which the first one starts. Bash is the shell of the session, with the
-shell integration of the source tree (an afterglow in a build tree reads it) and an rc file that sets the prompt that
-the checks wait for. Bash is required. The zsh and gdb cases skip with a reason when the program is not in PATH. The
-case of a script command opens a window of the session in a headless KWin of its own, on a bus of its own, and skips
-with a reason without kwin_wayland or dbus-run-session, or when the window cannot start. At the end, and on a failure,
-the run ends every server, session, window and daemon that it started.
+variables of an allow list, so that no server reaches the user's mux daemon, Afterglow, bus or shell files. The first
+server of a case starts a private daemon, which ends with the last session of the case: each case starts with no
+session and no daemon. Bash is the shell of the session, with the shell integration of the source tree (an afterglow
+in a build tree reads it) and an rc file that sets the prompt that the checks wait for. Bash is required. The zsh and
+gdb cases skip with a reason when the program is not in PATH. At the end, on a failure and at SIGTERM, the run ends
+every server, session, window and daemon that it started. A run that SIGKILL ended leaves its directory: the next
+run ends what still runs there, and removes it.
+
+Without a CASE, every case runs but script_command_through_a_window, which opens a window of the session in a
+headless KWin of its own, on a bus of its own, and draws on the GPU. It skips with a reason without kwin_wayland or
+dbus-run-session, or without a Vulkan device. A name that is not a case fails. The exit status is 77 when each case
+that ran skipped.
 
 Usage: mcp_session.py AFTERGLOW [CASE...]
 """
@@ -30,16 +35,21 @@ from pathlib import Path
 # One KWin configuration for every runner: the user's KWin plugins must not
 # load into the test compositor.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from nested_desktop import KWINRC  # noqa: E402
+from nested_desktop import KWINRC, exit_on_sigterm  # noqa: E402
 
 VERSION = '2026-07-28'
 META = {'io.modelcontextprotocol/protocolVersion': VERSION, 'io.modelcontextprotocol/clientCapabilities': {}}
 PROMPT = 'mcp$ '
 ALLOWED = {'PATH', 'LANG', 'LANGUAGE', 'TZ', 'USER', 'LOGNAME', 'LD_LIBRARY_PATH'}
+ROOT_PREFIX = 'aglow-mcp-'
 
 
 class Failure(Exception):
     pass
+
+
+class Timeout(Failure):
+    """No message came in time: the server is alive, and can still answer."""
 
 
 class Skip(Exception):
@@ -49,6 +59,51 @@ class Skip(Exception):
 def check(condition, message):
     if not condition:
         raise Failure(message)
+
+
+def processes_of(runtime, skip=()):
+    """The processes whose environment names the runtime directory @runtime: a daemon, its panes, a KWin."""
+    marker = f'XDG_RUNTIME_DIR={runtime}'.encode()
+    found = []
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit() or int(entry.name) in skip:
+            continue
+        try:
+            if marker in (entry / 'environ').read_bytes().split(b'\0'):
+                found.append(int(entry.name))
+        except OSError:
+            continue
+    return found
+
+
+def kill_all(pids):
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def sweep_stale_runs():
+    """Ends what a run that SIGKILL ended left (a ctest timeout): the processes in its directories, and the
+    directories. A run that still runs keeps its own."""
+    for root in Path('/tmp').glob(ROOT_PREFIX + '*'):
+        try:
+            runner = int((root / 'runner.pid').read_text())
+            os.kill(runner, 0)
+            continue
+        except ProcessLookupError:
+            pass
+        except (OSError, ValueError):
+            # No pid file: one of another user, or a run that makes its
+            # directory now, whose pid file comes at once.
+            try:
+                if not os.access(root, os.W_OK) or time.time() - root.stat().st_mtime < 60:
+                    continue
+            except OSError:
+                continue
+        kill_all(processes_of(root / 'run', skip={os.getpid()}))
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def wait_for(probe, timeout=10.0, message='timed out'):
@@ -71,7 +126,8 @@ class Home:
         if not self.bash:
             raise Failure('bash is not in PATH: the run needs it')
         # Under /tmp: a socket path has at most 107 bytes.
-        self.root = Path(tempfile.mkdtemp(prefix='aglow-mcp-', dir='/tmp'))
+        self.root = Path(tempfile.mkdtemp(prefix=ROOT_PREFIX, dir='/tmp'))
+        (self.root / 'runner.pid').write_text(str(os.getpid()))
         self.runtime = self.root / 'run'
         self.home = self.root / 'home'
         self.config = self.root / 'config'
@@ -94,10 +150,10 @@ class Home:
         env.setdefault('PATH', '/usr/bin:/bin')
         return env
 
-    def settings(self, shell=None, **mcp):
+    def settings(self, shell=None, control=None, **mcp):
         """The config file that the next server reads, once, when it starts."""
         config = {'Terminal': {'shell': shell or self.bash, 'confirmClose': False},
-                  'Control': {'eventInterval': 100}, 'Mcp': mcp}
+                  'Control': dict({'eventInterval': 100}, **(control or {})), 'Mcp': mcp}
         (self.app / 'config.json').write_text(json.dumps(config))
 
     def log_file(self, name):
@@ -112,65 +168,79 @@ class Home:
             server.wait_started()
         return server
 
-    def daemon(self, fn, args=(), target='mux'):
-        """One call of the daemon's mux target, as a raw phosphor-ipc client."""
+    def daemon(self, fn, args=(), absent=None):
+        """One call of the daemon's mux target, as a raw phosphor-ipc client: its answer, or None when no daemon
+        answers (it closed the connection, or it sent no line in 5 s). @p absent when none runs: its socket is
+        gone, or refuses the connection."""
         path = self.runtime / 'aglow-mux' / 'socket'
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(5)
-            try:
-                s.connect(str(path))
-            except OSError:
-                return None
-            s.sendall((json.dumps({'type': 'call', 'id': 1, 'target': target, 'fn': fn, 'args': list(args)})
-                       + '\n').encode())
-            data = b''
-            while not data.endswith(b'\n'):
-                chunk = s.recv(65536)
-                if not chunk:
-                    break
-                data += chunk
-        reply = json.loads(data.splitlines()[0]) if data else {}
-        return reply
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(5)
+                try:
+                    s.connect(str(path))
+                except (FileNotFoundError, ConnectionRefusedError):
+                    return absent
+                s.sendall((json.dumps({'type': 'call', 'id': 1, 'target': 'mux', 'fn': fn, 'args': list(args)})
+                           + '\n').encode())
+                data = b''
+                while not data.endswith(b'\n'):
+                    chunk = s.recv(65536)
+                    if not chunk:
+                        return None
+                    data += chunk
+            return json.loads(data.splitlines()[0])
+        except (OSError, ValueError):
+            return None
 
     def sessions(self):
+        """The sessions of the daemon by name. A daemon that does not answer fails the check: no session ends
+        there, and a check that one ended would pass. One that does not run has none: the daemon exits after
+        the end of its last session, as soon as it has no connection."""
+        reply = self.daemon('listSessions', absent={'result': []})
+        check(reply is not None and 'result' in reply, f'the daemon did not list its sessions: {reply}')
+        return {s['name']: s for s in reply['result']}
+
+    def sessions_if_any(self):
+        """The sessions, or none when no daemon runs: the end of a case and of the run."""
         reply = self.daemon('listSessions')
         return {s['name']: s for s in reply.get('result', [])} if reply else {}
+
+    def settle(self):
+        """Two calls of the daemon, one after the other: the end of a connection that closed before them, which
+        the daemon reads in the same turn of its loop as the first call at most, is done by the second."""
+        self.sessions()
+        self.sessions()
 
     def mux(self, *args):
         return subprocess.run([self.binary, 'mux', *args], env=self.env(), capture_output=True, text=True, timeout=30)
 
     def our_processes(self):
         """The processes whose environment names this run's runtime directory: the daemon and the panes."""
-        marker = f'XDG_RUNTIME_DIR={self.runtime}'.encode()
-        found = []
-        for entry in Path('/proc').iterdir():
-            if not entry.name.isdigit() or int(entry.name) == os.getpid():
-                continue
-            try:
-                if marker in (entry / 'environ').read_bytes().split(b'\0'):
-                    found.append(int(entry.name))
-            except OSError:
-                continue
-        return found
+        return processes_of(self.runtime, skip={os.getpid()})
+
+    def end_sessions(self):
+        for name in self.sessions_if_any():
+            self.daemon('killSession', [name])
 
     def close(self):
-        for server in self.servers:
-            server.kill()
-        for log in self.logs:
-            log.close()
-        for name in self.sessions():
-            self.daemon('killSession', [name])
-        # The daemon ends with its last session. One that does not, and every
-        # pane of this run, ends here.
+        """Ends all that the run started, each step also when one before it failed, and removes the directory."""
         try:
-            wait_for(lambda: not self.our_processes(), 5)
-        except Failure:
-            for pid in self.our_processes():
+            for server in self.servers:
                 try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-        shutil.rmtree(self.root, ignore_errors=True)
+                    server.kill()
+                except Exception:
+                    traceback.print_exc()
+            for log in self.logs:
+                log.close()
+            self.end_sessions()
+            # The daemon ends with its last session. One that does not, and
+            # every pane of this run, ends here.
+            try:
+                wait_for(lambda: not self.our_processes(), 5)
+            except Failure:
+                kill_all(self.our_processes())
+        finally:
+            shutil.rmtree(self.root, ignore_errors=True)
 
 
 class Server:
@@ -208,7 +278,7 @@ class Server:
         while b'\n' not in self.buffer:
             left = deadline - time.monotonic()
             if left <= 0:
-                raise Failure(f'no message from the server; its stderr:\n{self.stderr()}')
+                raise Timeout(f'no message from the server; its stderr:\n{self.stderr()}')
             ready, _, _ = select.select([self.process.stdout], [], [], left)
             if not ready:
                 continue
@@ -279,18 +349,32 @@ class Server:
         return self.process.returncode
 
     def kill(self, sig=signal.SIGKILL):
-        if self.process.poll() is None:
-            self.process.send_signal(sig)
-            self.process.wait(10)
-        self.log.close()
+        try:
+            if self.process.poll() is None:
+                self.process.send_signal(sig)
+                self.process.wait(10)
+        finally:
+            for pipe in (self.process.stdin, self.process.stdout):
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
+            self.log.close()
 
 
 CASES = []
+# The cases that run only when a run names them: they need a window, and a GPU.
+WINDOW_CASES = set()
 
 
 def case(function):
     CASES.append(function)
     return function
+
+
+def window_case(function):
+    WINDOW_CASES.add(function.__name__)
+    return case(function)
 
 
 @case
@@ -300,7 +384,8 @@ def discover_and_tools(home):
     reply = s.reply(s.request('server/discover'))
     discover = reply['result']
     check(discover['supportedVersions'] == [VERSION], discover)
-    check(s.session in discover['instructions'] and 'list_panes' in discover['instructions'], discover)
+    # The same instructions for every session, which a client caches for an hour.
+    check(s.session not in discover['instructions'] and 'list_panes' in discover['instructions'], discover)
     check(discover['_meta']['io.modelcontextprotocol/serverInfo']['name'] == 'afterglow', discover)
     check(discover['cacheScope'] == 'public', discover)
     bad = s.reply(s.request('tools/list', meta=dict(META, **{'io.modelcontextprotocol/protocolVersion': '2025-11-25'})))
@@ -370,7 +455,6 @@ def timeout_then_wait(home):
     s.at_prompt(pane)
     result = s.tool('run', pane=pane, command='sleep 2; echo do""ne', timeout_ms=1000)
     check(result['status'] == 'running' and result['exit_code'] is None, result)
-    # The pane is this server's until the run ends.
     # The command still runs: run refuses the pane.
     check('runs a command' in s.error('run', pane=pane, command='true'), 'a run in a busy pane')
     result = s.tool('wait', pane=pane, until='finished', timeout_ms=10000)
@@ -473,11 +557,12 @@ def wait_for_text(home):
     # The timeout of a pattern that never shows.
     result = s.tool('wait', pane=pane, until='text', pattern='never-there', timeout_ms=1000)
     check(result['status'] == 'running' and not result['matched'], result)
-    # quiet: no new text for that long.
-    s.tool('send', pane=pane, paste='for i in 1 2 3; do echo tick; sleep 0.2; done', keys=['enter'])
+    # quiet: no new text for that long, after the last tick, which comes 0.9 s after the first.
+    s.tool('send', pane=pane, paste="for i in 1 2 3 4; do sleep 0.3; echo t''ick$i; done", keys=['enter'])
     start = time.monotonic()
     result = s.tool('wait', pane=pane, until='quiet', quiet_ms=800, timeout_ms=10000)
-    check(result['status'] == 'quiet' and time.monotonic() - start >= 0.8, result)
+    check(result['status'] == 'quiet' and 'tick4' in result['output'], result)
+    check(time.monotonic() - start >= 1.7, (time.monotonic() - start, result))
     text = s.error('wait', pane=pane, until='text', pattern='(unclosed')
     check('regular expression' in text, text)
 
@@ -512,18 +597,23 @@ def flood(home):
            "| head -n 700000; echo END-OF-''FLOOD", keys=['enter'])
     start = time.monotonic()
     slowest = 0.0
+    # The reads that the server answered while the wait was still open: one
+    # that waited for the flood would come after it.
+    during = 0
     result = None
     while result is None:
         asked = time.monotonic()
         s.tool('read', pane=other)
         slowest = max(slowest, time.monotonic() - asked)
+        if waiting not in s.replies:
+            during += 1
         try:
             result = s.result(waiting, 0.3)
-        except Failure:
+        except Timeout:
             check(time.monotonic() - start < 120, 'the flood did not end')
     check(not result.get('isError') and result['structuredContent']['matched'], result)
-    check(slowest < 3, f'a read in another pane took {slowest:.1f} s during the flood')
-    print(f'  flood: {time.monotonic() - start:.1f} s, slowest read {slowest:.2f} s')
+    check(during >= 3, f'only {during} reads in another pane came during the flood')
+    print(f'  flood: {time.monotonic() - start:.1f} s, {during} reads during it, slowest {slowest:.2f} s')
 
 
 @case
@@ -552,13 +642,14 @@ def concurrent_runs(home):
     third = s.tool('open_pane', where='tab')['pane']
     for pane in (first, second, third):
         s.at_prompt(pane)
-    a = s.start_call('run', pane=first, command='sleep 2; echo A-done')
-    b = s.start_call('run', pane=second, command='sleep 2; echo B-done')
-    time.sleep(0.3)
-    asked = time.monotonic()
+    a = s.start_call('run', pane=first, command='sleep 3; echo A-done')
+    b = s.start_call('run', pane=second, command='sleep 3; echo B-done')
+    # The server answers in the order in which the calls end: a read that
+    # waited for a run would come after its answer.
     s.tool('read', pane=third)
-    check(time.monotonic() - asked < 1.5, 'a read waited for the runs')
+    check(a not in s.replies and b not in s.replies, 'a read waited for the runs')
     check('already' in s.error('run', pane=first, command='true'), 'a second run in a busy pane')
+    check(a not in s.replies, 'the run ended before the refusal of a second one')
     for id, word in ((a, 'A-done'), (b, 'B-done')):
         result = s.result(id, 15)['structuredContent']
         check(result['status'] == 'finished' and word in result['output'], result)
@@ -576,7 +667,10 @@ def refusals(home):
     s.tool('send', pane=pane, keys=['ctrl+u'])
     s.at_prompt(pane)
     sh = shutil.which('sh') or '/bin/sh'
-    plain = s.tool('open_pane', where='tab', argv=[sh])['pane']
+    plain = s.tool('open_pane', where='tab', argv=[sh, '-c', 'echo plain-started; exec sleep 600'])['pane']
+    # The program runs: the refusal is of a pane with no shell integration,
+    # not of one whose shell has not started.
+    wait_for(lambda: 'plain-started' in s.tool('read', pane=plain)['text'], 10, 'the plain pane did not start')
     text = s.error('run', pane=plain, command='true')
     check('no shell integration' in text, text)
     text = s.error('open_pane', where='split')
@@ -592,6 +686,14 @@ def sessions_and_adopt(home):
     check(one.session != two.session and one.session.startswith('mcp-'), (one.session, two.session))
     listed = home.sessions()
     check(listed[one.session]['agent'] and listed[one.session]['bound'] == 1, listed)
+    # A session takes Control.allowAdopt when it starts: off by default, so no server adopts it.
+    made = home.mux('new', '--detach', '--name', 'closed')
+    check(made.returncode == 0, made.stderr)
+    shut = home.server('--session', 'closed', '--adopt', check_start=False)
+    check(shut.process.wait(15) == 1 and 'Control.allowAdopt' in shut.stderr(), shut.stderr())
+    check(not home.sessions()['closed']['agent'], home.sessions())
+    home.daemon('killSession', ['closed'])
+    home.settings(control={'allowAdopt': True})
     made = home.mux('new', '--detach', '--name', 'plain')
     check(made.returncode == 0, made.stderr)
     refused = home.server('--session', 'plain', check_start=False)
@@ -600,7 +702,7 @@ def sessions_and_adopt(home):
     check(adopted.session == 'plain' and home.sessions()['plain']['agent'], home.sessions())
     check(home.sessions()['plain']['bound'] == 0, home.sessions())
     adopted.close()
-    time.sleep(0.5)
+    home.settle()
     check('plain' in home.sessions(), 'an adopted session ended with the server')
     home.daemon('killSession', ['plain'])
 
@@ -616,8 +718,9 @@ def session_ends_with_the_server(home):
         wait_for(lambda: s.session not in home.sessions(), 5, f'the session outlived the server ({how})')
     home.settings(endSessionOnExit=False)
     s = home.server()
+    check(home.sessions()[s.session]['bound'] == 0, home.sessions())
     s.close()
-    time.sleep(0.5)
+    home.settle()
     check(s.session in home.sessions(), 'the session ended with Mcp.endSessionOnExit false')
     home.daemon('killSession', [s.session])
     home.settings()
@@ -633,8 +736,11 @@ def two_servers_on_one_session(home):
             first.close()
         else:
             first.kill(how)
-        time.sleep(0.5)
-        check(first.session in home.sessions(), f'the session ended with the first server ({how})')
+        # The daemon read the end of the first server's connection.
+        wait_for(lambda: home.sessions().get(first.session, {}).get('bound') != 2, 5,
+                 f'the daemon did not see the first server end ({how})')
+        check(home.sessions().get(first.session, {}).get('bound') == 1,
+              f'the session ended with the first server ({how}): {home.sessions()}')
         check(second.tool('list_panes')['session'] == first.session, 'the second server lost the session')
         second.close()
         wait_for(lambda: first.session not in home.sessions(), 5, 'the session outlived its last server')
@@ -662,8 +768,41 @@ def close_the_last_pane(home):
     s.tool('close_pane', pane=other)
     text = s.error('close_pane', pane=pane)
     check('end_session' in text, text)
-    s.tool('close_pane', pane=pane, end_session=True)
+    check(s.session in home.sessions(), 'a refused close ended the session')
+    text = s.tool('close_pane', pane=pane, end_session=True)
+    check('ended' in text, text)
     wait_for(lambda: s.session not in home.sessions(), 5, 'the session outlived its last pane')
+
+
+@case
+def close_two_panes_at_once(home):
+    """Two closes at once of the two panes of a session: the daemon refuses the one that comes last."""
+    s = home.server()
+    first = s.first_pane()
+    second = s.tool('open_pane', where='tab')['pane']
+    calls = [s.start_call('close_pane', pane=first), s.start_call('close_pane', pane=second)]
+    results = [s.result(id) for id in calls]
+    refused = [r for r in results if r.get('isError')]
+    check(len(refused) == 1 and 'end_session' in refused[0]['content'][0]['text'], results)
+    check(s.session in home.sessions() and len(s.panes()) == 1, home.sessions())
+
+
+@case
+def run_in_a_new_pane(home):
+    """A run in a pane that the server just opened waits for the first prompt of its shell."""
+    s = home.server()
+    pane = s.tool('open_pane', where='tab')['pane']
+    result = s.tool('run', pane=pane, command='echo fi""rst')
+    check(result['status'] == 'finished' and 'first' in result['output'], result)
+
+
+@case
+def control_off(home):
+    """With Control.enabled off, no tool could reach a new session: the server makes none."""
+    home.settings(control={'enabled': False})
+    s = home.server(check_start=False)
+    check(s.process.wait(15) == 1 and 'Control.enabled' in s.stderr(), s.stderr())
+    check(not home.sessions_if_any(), home.sessions_if_any())
 
 
 @case
@@ -809,7 +948,7 @@ return script
 """
 
 
-@case
+@window_case
 def script_command_through_a_window(home):
     """A window of the session in a headless KWin of the run's own, with a script of the run's config, runs the
     command. Never the user's display: KWin and the window get the run's runtime directory and a bus of their own."""
@@ -844,9 +983,12 @@ def script_command_through_a_window(home):
         wait_for(lambda: home.sessions().get(s.session, {}).get('attached') or window.poll() is not None, 30,
                  'no window showed the session')
         if window.poll() is not None:
-            # No Vulkan device in a container: the window cannot draw.
             tail = (home.root / 'window.log').read_text(errors='replace')[-600:]
-            raise Skip(f'the window of the session exited at its start: {tail}')
+            # No Vulkan device in a container: the window cannot draw. Any
+            # other end at the start is a failure.
+            if 'failed to create the Vulkan' in tail:
+                raise Skip(f'the window has no Vulkan device: {tail}')
+            raise Failure(f'the window of the session exited at its start: {tail}')
 
         def listed():
             result = s.call('list_script_commands')
@@ -887,33 +1029,50 @@ def main():
         return 2
     binary = str(Path(sys.argv[1]).resolve())
     chosen = sys.argv[2:]
+    names = {function.__name__ for function in CASES}
+    unknown = [name for name in chosen if name not in names]
+    if unknown:
+        print(f'no case is named {", ".join(unknown)}. The cases: {", ".join(sorted(names))}', file=sys.stderr)
+        return 2
+    exit_on_sigterm()
+    sweep_stale_runs()
     home = Home(binary)
     failures = 0
+    ran = 0
+    skipped = 0
     try:
         for function in CASES:
-            if chosen and function.__name__ not in chosen:
+            name = function.__name__
+            if (chosen and name not in chosen) or (not chosen and name in WINDOW_CASES):
                 continue
+            ran += 1
             started = time.monotonic()
             try:
                 function(home)
-                print(f'PASS {function.__name__} ({time.monotonic() - started:.1f} s)', flush=True)
+                print(f'PASS {name} ({time.monotonic() - started:.1f} s)', flush=True)
             except Skip as skip:
-                print(f'SKIP {function.__name__}: {skip}', flush=True)
+                skipped += 1
+                print(f'SKIP {name}: {skip}', flush=True)
             except Exception:
                 failures += 1
-                print(f'FAIL {function.__name__}:\n{traceback.format_exc()}', flush=True)
+                print(f'FAIL {name}:\n{traceback.format_exc()}', flush=True)
             finally:
                 for server in home.servers:
                     server.kill()
                 home.servers.clear()
                 home.settings()
                 # Each case starts with no session of the ones before.
-                for name in home.sessions():
-                    home.daemon('killSession', [name])
+                home.end_sessions()
     finally:
         home.close()
-    print(f'{failures} failed' if failures else 'all passed')
-    return 1 if failures else 0
+    if failures:
+        print(f'{failures} failed')
+        return 1
+    if ran and skipped == ran:
+        print('all skipped')
+        return 77
+    print('all passed')
+    return 0
 
 
 if __name__ == '__main__':

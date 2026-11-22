@@ -383,7 +383,8 @@ Json::Value toJson(const ControlOptions& control)
     return Json::Object{{"enabled", control.enabled},
                         {"allowReadText", control.allowReadText},
                         {"remoteCommandsOff", control.remoteCommandsOff},
-                        {"eventInterval", control.eventInterval}};
+                        {"eventInterval", control.eventInterval},
+                        {"allowAdopt", control.allowAdopt}};
 }
 
 void readControl(Reader& outer, const Json::Value& object, ControlOptions& control)
@@ -398,6 +399,7 @@ void readControl(Reader& outer, const Json::Value& object, ControlOptions& contr
     c.string("remoteCommandsOff", control.remoteCommandsOff);
     if (const auto interval = c.integer("eventInterval", 0, MaxEventInterval))
         control.eventInterval = int(*interval);
+    c.boolean("allowAdopt", control.allowAdopt);
     c.noOtherKeys();
     outer.absorb(c);
 }

@@ -432,7 +432,8 @@ A change to `QuickTerminal.screen` applies after the quick terminal hides and sh
 ## Paste
 
 Afterglow removes control characters from pasted text, in bracketed and plain paste mode.
-It keeps tab, carriage return and line feed. It removes DEL and the C1 controls.
+It keeps tab. Each line end (a carriage return, a line feed, or both) goes as one carriage return, the Enter key.
+It removes every other control character, also DEL and the C1 controls.
 `Terminal.confirmUnsafePaste` asks before a paste with a line break (carriage return or line feed) into a program that does not use bracketed paste.
 A paste into a program that does not use paste events (OSC 5522), and each drop of text that pastes, have this limit:
 
@@ -494,6 +495,8 @@ Shell markers identify prompts, commands, exit status and working directories.
 Command navigation and Luau events use these markers.
 
 Bash and Zsh keep user startup files and prompt hooks.
+A prompt that has its own OSC 133 or OSC 633 marks keeps them. Afterglow then adds no marks, also none to the secondary prompt.
+The Zsh integration adds its marks after the prompt hooks of a theme, also after a hook that loads later.
 Fish 4 marks its prompts itself, and Afterglow keeps that.
 Afterglow does not change user startup files.
 It supports login and interactive flags.
@@ -592,7 +595,7 @@ The reason is that `ssh -G` shows `none` and the default value in the same way.
 To keep `ControlPath none`, set `Terminal.sshTerminfo` to `fallback`.
 With `-M`, the session does not join a master that runs already, and the install does not become a master.
 Thus the session authenticates on its own. When no master runs, you authenticate two times: for the install and for the session.
-Afterglow records the host in `$XDG_STATE_HOME/afterglow/ssh-terminfo`, by default under `~/.local/state`.
+Afterglow records the host in `$XDG_STATE_HOME/phosphor-works/afterglow/ssh-terminfo`, by default under `~/.local/state`.
 The file holds only hashes. A host without `tic` is recorded as a fallback host.
 Afterglow does not install the entry on that host again until the entry changes.
 To install the entry again, delete the file.

@@ -162,11 +162,16 @@ void sessionValues(AfterglowMux::SessionOptions& session, const Settings& settin
 
 AfterglowMux::SessionSettings sessionSettings(const Settings& settings, bool environment)
 {
-    AfterglowMux::SessionSettings out{settings.terminal,
-                                      {settings.control.enabled, settings.control.allowReadText,
-                                       remoteCommandsOff(settings).toStdString(), settings.control.eventInterval}};
-    out.keptNotifications = settings.mux.keptNotifications;
-    out.notificationCapabilities = settings.notifications ? NotificationCenter::capabilities() : std::string();
+    AfterglowMux::SessionSettings out{
+        .terminal = settings.terminal,
+        .control = {.enabled = settings.control.enabled,
+                    .allowReadText = settings.control.allowReadText,
+                    .remoteCommandsOff = remoteCommandsOff(settings).toStdString(),
+                    .eventInterval = settings.control.eventInterval,
+                    .allowAdopt = settings.control.allowAdopt},
+        .keptNotifications = settings.mux.keptNotifications,
+        .notificationCapabilities = settings.notifications ? NotificationCenter::capabilities() : std::string(),
+    };
     if (!environment)
         return out;
     for (const QString& name : settings.mux.updateEnvironment) {

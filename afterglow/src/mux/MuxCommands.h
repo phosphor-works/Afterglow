@@ -64,7 +64,9 @@ public:
         /// The window's ID of its focused pane, when that pane is one of the
         /// session's: pane 0 of a run of a client of a session of this
         /// computer, which for the Afterglow would be its own focused pane,
-        /// maybe of another window.
+        /// maybe of another window. For a session of another host, the pane
+        /// of a client in no pane (a relay of pane 0), whose remote endpoint
+        /// takes it as the client's own.
         std::function<std::optional<quint32>()> focused;
     };
 
@@ -124,6 +126,15 @@ public:
                                                 const std::function<std::optional<quint32>(std::uint32_t)>& pane,
                                                 const QString& session, std::string* error,
                                                 const std::function<std::optional<quint32>()>* focused = nullptr);
+
+    /// The window's pane of a relay to an endpoint of RemoteSockets that
+    /// names the daemon's pane @p pane (a client of a session of another
+    /// host, or of an ssh session in a session pane): the endpoint takes it
+    /// as the client's own. Pane 0, a client in no pane of the session, is
+    /// the focused pane of the window. Nothing, with @p error, for a pane
+    /// that the window does not show, or no focused pane of the session.
+    static std::optional<quint32> relayPane(const Host& host, std::uint32_t pane, const QString& session,
+                                            QString* error);
 
 private:
     struct Relay

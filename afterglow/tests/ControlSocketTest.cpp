@@ -934,6 +934,91 @@ TEST_F(ControlSocketTest, IntervalTurnedToZeroSendsWhatWaitsFirst)
     EXPECT_FALSE(dueTimerActive());
 }
 
+// The options of getText, mark and shellRegions as the daemon reads them: a
+// mark is {row, col, epoch} for the scope since and no other, keep_end is a
+// flag of every scope, and a bad `after` fails with INVALID_ARG in the
+// daemon's words. Each fails before a pane is looked up, and a pane that is
+// not there fails after.
+TEST_F(ControlSocketTest, TextCallsCheckTheirArgumentsAsTheDaemonDoes)
+{
+    ASSERT_TRUE(start(R"({"Control": {"allowReadText": true}})"));
+    QLocalSocket client;
+    ASSERT_TRUE(connect(client));
+    const auto failure = [this, &client](const QString& fn, const QJsonArray& args) {
+        const QJsonObject frame = call(client, fn, args);
+        EXPECT_EQ(frame.value(QStringLiteral("type")).toString(), QStringLiteral("error")) << qPrintable(fn);
+        return std::make_pair(frame.value(QStringLiteral("code")).toString(),
+                              frame.value(QStringLiteral("message")).toString());
+    };
+    const auto getText = [&failure](const QString& scope, const QJsonObject& options) {
+        return failure(QStringLiteral("getText"), {7, scope, options});
+    };
+    const auto called = std::make_pair(QStringLiteral("CALL_FAILED"), QString());
+    const auto calledWith = [&called](const char* message) {
+        return std::make_pair(called.first, QString::fromLatin1(message));
+    };
+    const QJsonObject mark{{QStringLiteral("row"), 3}, {QStringLiteral("col"), 0}, {QStringLiteral("epoch"), 1}};
+    const QString noPane = QStringLiteral("no pane 7");
+    EXPECT_EQ(getText(QStringLiteral("since"), {{QStringLiteral("mark"), mark}}), std::make_pair(called.first, noPane));
+    // A mark of the old shape, without its epoch, and one with a key more.
+    QJsonObject old = mark;
+    old.remove(QStringLiteral("epoch"));
+    EXPECT_EQ(getText(QStringLiteral("since"), {{QStringLiteral("mark"), old}}),
+              calledWith(AfterglowMux::MarkOptionError));
+    QJsonObject more = mark;
+    more.insert(QStringLiteral("x"), 1);
+    EXPECT_EQ(getText(QStringLiteral("since"), {{QStringLiteral("mark"), more}}),
+              calledWith(AfterglowMux::MarkOptionError));
+    QJsonObject negative = mark;
+    negative.insert(QStringLiteral("epoch"), -1);
+    EXPECT_EQ(getText(QStringLiteral("since"), {{QStringLiteral("mark"), negative}}),
+              calledWith(AfterglowMux::MarkOptionError));
+    EXPECT_EQ(getText(QStringLiteral("since"), {}), calledWith(AfterglowMux::MarkScopeError));
+    EXPECT_EQ(getText(QStringLiteral("screen"), {{QStringLiteral("mark"), mark}}),
+              calledWith(AfterglowMux::MarkScopeError));
+    // The options before the scope, as the daemon checks them.
+    EXPECT_EQ(getText(QStringLiteral("everything"), {{QStringLiteral("nope"), true}}).second,
+              QStringLiteral("unknown getText option nope: ") + QLatin1String(AfterglowMux::TextOptionNames));
+    EXPECT_EQ(getText(QStringLiteral("everything"), {}).second,
+              QStringLiteral("scope is ") + QLatin1String(AfterglowMux::GetTextScopeNames));
+    // keep_end is a flag of every scope but the selection.
+    EXPECT_EQ(getText(QStringLiteral("screen"), {{QStringLiteral("keep_end"), true}}),
+              std::make_pair(called.first, noPane));
+    EXPECT_EQ(getText(QStringLiteral("screen"), {{QStringLiteral("keep_end"), 1}}).second,
+              QStringLiteral("the getText option keep_end is true or false"));
+    EXPECT_TRUE(getText(QStringLiteral("selection"), {{QStringLiteral("keep_end"), true}})
+                    .second.startsWith(QStringLiteral("the selection is plain text")));
+
+    const auto badAfter = std::make_pair(QStringLiteral("INVALID_ARG"), Control::BadRegionAfter);
+    for (const double after : {-1.0, 1.5, Control::RegionIdLimit})
+        EXPECT_EQ(failure(QStringLiteral("shellRegions"), {7, after}), badAfter) << after;
+    EXPECT_EQ(failure(QStringLiteral("shellRegions"), {7, Control::RegionIdLimit - 1}),
+              std::make_pair(called.first, noPane));
+    EXPECT_EQ(failure(QStringLiteral("mark"), {7}), std::make_pair(called.first, noPane));
+    // An empty paste still names its pane.
+    EXPECT_EQ(failure(QStringLiteral("paste"), {7, QString()}), std::make_pair(called.first, noPane));
+}
+
+// textChanged merges as a title does: a burst of output is one event at the
+// start of the interval and one at its end, and the timer stops after.
+TEST_F(ControlSocketTest, MergesTheTextChangesOfAPane)
+{
+    ASSERT_TRUE(start(R"({"Control": {"eventInterval": 300}})"));
+    QLocalSocket client;
+    ASSERT_TRUE(connect(client));
+    ASSERT_TRUE(subscribe(client, QStringLiteral("textChanged")));
+    ASSERT_TRUE(subscribe(client, QStringLiteral("shellChanged")));
+    for (int i = 0; i < 100; ++i)
+        Q_EMIT m_control->textChanged(4);
+    // shellChanged goes at once, after what waits for its pane.
+    Q_EMIT m_control->shellChanged(4, QStringLiteral("prompt"));
+    EXPECT_EQ(events(client, 3),
+              (QStringList{QStringLiteral("textChanged:4"), QStringLiteral("textChanged:4"),
+                           QStringLiteral("shellChanged:4:prompt")}));
+    EXPECT_TRUE(events(client, 0, 500).isEmpty());
+    EXPECT_FALSE(dueTimerActive());
+}
+
 } // namespace
 
 // The events of a session in the daemon are the window's: `afterglow ctl

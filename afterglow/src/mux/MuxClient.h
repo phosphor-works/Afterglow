@@ -103,9 +103,12 @@ enum class MuxLoss : std::uint8_t {
 /// What a session pane that the window closes ends (MuxClient::release).
 enum class MuxRelease : std::uint8_t {
     Pane, ///< its program: the user closed the pane, and the window stays
-    Session, ///< the session: the window closes, and Mux.onClose is kill
-    /// nothing: the window closes, and Mux.onClose is detach, or Afterglow
-    /// quits, or the pane moved to a session of its own (breakOutLater)
+    /// the session: the window closes, and Mux.onClose is kill
+    /// (TerminalWindow::windowCloseRelease)
+    Session,
+    /// nothing: the window closes and keeps the session (Mux.onClose detach,
+    /// a project's or an agent's session), or Afterglow quits, or the pane
+    /// moved to a session of its own (breakOutLater)
     Nothing,
 };
 
@@ -220,7 +223,8 @@ public:
     /// The pane that showed @p id goes, and with MuxRelease::Pane its program
     /// ends in the daemon. A pane that moved out (breakOutLater) left already. The
     /// last one ends the link: when any pane went
-    /// with MuxRelease::Session, it also ends the session (Mux.onClose),
+    /// with MuxRelease::Session, it also ends the session
+    /// (TerminalWindow::windowCloseRelease),
     /// whichever pane of the window goes last. Both go on this window's
     /// stream, so a window that another one took the session from ends
     /// nothing.

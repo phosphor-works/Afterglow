@@ -39,6 +39,18 @@ QString scriptReadRefusal(const Settings& settings, bool clientRun)
     return {};
 }
 
+// A client reads a text of at most Pane::MaxText bytes: the result of a
+// tool of afterglow mcp holds no more (Mcp.outputLimit).
+static_assert(McpSettings::MaxOutputLimit == int(Pane::MaxText));
+
+/// A whole number that a double holds exactly, from 0 to @p most.
+bool wholeNumber(const QVariant& v, double most)
+{
+    const bool number = v.typeId() == QMetaType::Double || v.typeId() == QMetaType::Int
+        || v.typeId() == QMetaType::LongLong || v.typeId() == QMetaType::UInt || v.typeId() == QMetaType::ULongLong;
+    return number && Control::isWhole(v.toDouble()) && v.toDouble() >= 0 && v.toDouble() <= most;
+}
+
 } // namespace
 
 void Control::encodePng(QImage image, std::function<void(const QString& base64)> done)
@@ -109,37 +121,47 @@ QString Control::screenshot(quint32 id, CaptureScope scope, ScreenshotReply repl
 }
 
 QString Control::readText(quint32 id, TextScope scope, QString& out, const AfterglowVt::TextFormat& format,
-                          bool* truncated, QString* code)
+                          bool* truncated, QString* code, bool agentSession)
 {
     bool cut = false;
     if (!truncated)
         truncated = &cut;
     *truncated = false;
-    if (!m_settings.settings().control.allowReadText) {
+    if (!agentSession && !m_settings.settings().control.allowReadText) {
         return QStringLiteral("reading pane text is off (Control.allowReadText)");
     }
-    // Said, not dropped: the selection is plain text, and the text of a
-    // command's output ends before the cursor's place.
-    if (scope == TextScope::Selection && (format.ansi || format.cursor || format.wrapMarkers))
-        return QStringLiteral("the selection is plain text: ansi, cursor and wrap_markers are for the other scopes");
+    // Said, not dropped: the selection is plain text that is cut at its
+    // end, and the text of a command's output ends before the cursor's
+    // place.
+    if (scope == TextScope::Selection && (format.ansi || format.cursor || format.wrapMarkers || format.keepEnd))
+        return QStringLiteral(
+            "the selection is plain text: ansi, cursor, wrap_markers and keep_end are for the other scopes");
     if ((scope == TextScope::FirstOutputOnScreen || scope == TextScope::LastVisitedOutput) && format.cursor)
         return QLatin1String(AfterglowMux::CursorScopeError);
     Pane* p = find(id);
     if (!p) {
         return noPane(id);
     }
+    // The check of the first frame and the read: one refresh.
+    const Pane::RefreshOnce once(*p);
+    if (QString error; notSynced(*p, error, code))
+        return error;
+    // The end of a command's output holds its result: a cut keeps it, for
+    // every reader (getText, stdin_text of a launch, a session's client).
+    AfterglowVt::TextFormat read = format;
+    read.keepEnd = format.keepEnd || scope == TextScope::LastOutput;
     using AfterglowVt::Terminal;
     bool arriving = false;
     switch (scope) {
     case TextScope::Screen:
-        out = p->text(Terminal::TextScope::Screen, format, nullptr, truncated);
+        out = p->text(Terminal::TextScope::Screen, read, nullptr, truncated);
         break;
     case TextScope::Scrollback:
     case TextScope::LastOutput:
         // A session pane's rows that are still on their way are blank lines
         // in the text: it is not the program's yet.
-        out = p->text(scope == TextScope::Scrollback ? Terminal::TextScope::All : Terminal::TextScope::LastOutput,
-                      format, &arriving, truncated);
+        out = p->text(scope == TextScope::Scrollback ? Terminal::TextScope::All : Terminal::TextScope::LastOutput, read,
+                      &arriving, truncated);
         if (arriving) {
             out.clear();
             if (code)
@@ -149,13 +171,20 @@ QString Control::readText(quint32 id, TextScope scope, QString& out, const After
         break;
     case TextScope::FirstOutputOnScreen:
     case TextScope::LastVisitedOutput: {
-        // Empty when there is none, as the last output of a pane that ran nothing.
-        const QVariantMap read =
-            p->readOutputRegion(scope == TextScope::FirstOutputOnScreen ? Pane::OutputRegion::FirstOnScreen
-                                                                        : Pane::OutputRegion::LastVisited,
-                                Pane::MaxText, format);
-        out = read.value(QStringLiteral("text")).toString();
-        *truncated = read.value(QStringLiteral("truncated")).toBool();
+        // Empty when there is none, as the last output of a pane that ran
+        // nothing. Not when the rows of the region are on their way: an
+        // empty text would say that there is none.
+        const auto which = scope == TextScope::FirstOutputOnScreen ? Pane::OutputRegion::FirstOnScreen
+                                                                   : Pane::OutputRegion::LastVisited;
+        const QVariantMap region = p->readOutputRegion(which, Pane::MaxText, read, &arriving);
+        if (arriving) {
+            out.clear();
+            if (code)
+                *code = QLatin1String(AfterglowMux::Error::TryAgain);
+            return arrivingError(id);
+        }
+        out = region.value(QStringLiteral("text")).toString();
+        *truncated = region.value(QStringLiteral("truncated")).toBool();
         break;
     }
     case TextScope::Selection: {
@@ -174,7 +203,22 @@ QString Control::arrivingError(quint32 id)
     return QStringLiteral("the rows of pane %1 are still arriving from its session: try again").arg(id);
 }
 
-QString Control::readTextSince(quint32 id, AfterglowVt::SemanticPosition mark, const AfterglowVt::TextFormat& format,
+bool Control::notSynced(const Pane& pane, QString& error, QString* code)
+{
+    if (pane.sessionSynced())
+        return false;
+    // A pane that nobody saw yet may get its first frame only with the
+    // answer to a refresh, which this waits for.
+    pane.refreshSession();
+    if (pane.sessionSynced())
+        return false;
+    error = arrivingError(pane.id());
+    if (code)
+        *code = QLatin1String(AfterglowMux::Error::TryAgain);
+    return true;
+}
+
+QString Control::readTextSince(quint32 id, const AfterglowVt::TextMark& mark, const AfterglowVt::TextFormat& format,
                                QString& out, bool& truncated, bool& trimmed, QString& code)
 {
     truncated = trimmed = false;
@@ -185,8 +229,23 @@ QString Control::readTextSince(quint32 id, AfterglowVt::SemanticPosition mark, c
     Pane* p = find(id);
     if (!p)
         return noPane(id);
+    const Pane::RefreshOnce once(*p);
+    if (QString error; notSynced(*p, error, &code))
+        return error;
+    // What came since a mark ends with its result: a cut keeps it.
+    AfterglowVt::TextFormat read = format;
+    read.keepEnd = true;
     bool arriving = false;
-    out = p->textSince(mark, format, &truncated, &trimmed, &arriving);
+    bool stale = false;
+    out = p->textSince(mark, read, &truncated, &trimmed, &stale, &arriving);
+    // The rows of the mark hold other text now: what came since it cannot
+    // be told apart.
+    if (stale) {
+        out.clear();
+        truncated = trimmed = false;
+        code = QLatin1String(AfterglowMux::Error::StaleMark);
+        return QLatin1String(AfterglowMux::StaleMarkMessage);
+    }
     if (arriving) {
         out.clear();
         truncated = trimmed = false;
@@ -196,21 +255,33 @@ QString Control::readTextSince(quint32 id, AfterglowVt::SemanticPosition mark, c
     return {};
 }
 
-QString Control::markOfPane(quint32 id, QVariantMap& mark)
+QString Control::markOfPane(quint32 id, QVariantMap& mark, QString& code)
 {
     Pane* p = find(id);
     if (!p)
         return noPane(id);
-    const AfterglowVt::SemanticPosition position = p->textMark();
-    mark = {{QStringLiteral("row"), double(position.row)}, {QStringLiteral("col"), position.col}};
+    // A blank replica's cursor and epoch are none of the program's: a mark
+    // there would be stale, or take output that came before it.
+    const Pane::RefreshOnce once(*p);
+    if (QString error; notSynced(*p, error, &code))
+        return error;
+    const AfterglowVt::TextMark position = p->textMark();
+    mark = {{QStringLiteral("row"), double(position.row)},
+            {QStringLiteral("col"), position.col},
+            {QStringLiteral("epoch"), double(position.epoch)}};
     return {};
 }
 
-QString Control::shellRegions(quint32 id, quint64 after, QVariantList& regions)
+const QString Control::BadRegionAfter = QStringLiteral("shellRegions takes (pane[, after])");
+
+QString Control::shellRegions(quint32 id, quint64 after, QVariantList& regions, QString& code)
 {
     Pane* p = find(id);
     if (!p)
         return noPane(id);
+    const Pane::RefreshOnce once(*p);
+    if (QString error; notSynced(*p, error, &code))
+        return error;
     regions.clear();
     for (const AfterglowVt::SemanticRegion& region : p->semanticRegionsAfter(after)) {
         regions.append(QVariantMap{
@@ -294,35 +365,37 @@ const QString Control::TextScopeNames = QLatin1String(AfterglowMux::TextScopeNam
 const QString Control::BadTextScope = QStringLiteral("scope is ") + TextScopeNames;
 
 QString Control::textFormat(const QVariantMap& options, AfterglowVt::TextFormat& format,
-                            std::optional<AfterglowVt::SemanticPosition>* mark)
+                            std::optional<AfterglowVt::TextMark>* mark)
 {
     format = {};
     for (auto it = options.constBegin(); it != options.constEnd(); ++it) {
         if (it.key() == QLatin1String("mark") && mark) {
-            // As the daemon reads it: {row, col}, whole numbers that a double
-            // holds exactly, and no other key.
+            // As the daemon reads it (Json::Value::toInteger): {row, col,
+            // epoch}, whole numbers below 2^53, and no other key.
             const QVariantMap value = it.value().toMap();
             const QVariant row = value.value(QStringLiteral("row"));
             const QVariant col = value.value(QStringLiteral("col"));
-            const auto whole = [](const QVariant& v, double most) {
-                const bool number = v.typeId() == QMetaType::Double || v.typeId() == QMetaType::Int
-                    || v.typeId() == QMetaType::LongLong || v.typeId() == QMetaType::UInt
-                    || v.typeId() == QMetaType::ULongLong;
-                return number && isWhole(v.toDouble()) && v.toDouble() >= 0 && v.toDouble() <= most;
-            };
-            if (it.value().typeId() != QMetaType::QVariantMap || value.size() != 2 || !whole(row, double(1LL << 53))
-                || !whole(col, double(std::numeric_limits<int>::max())))
+            const QVariant epoch = value.value(QStringLiteral("epoch"));
+            constexpr double MostExact = double((1LL << 53) - 1);
+            if (it.value().typeId() != QMetaType::QVariantMap || value.size() != 3 || !wholeNumber(row, MostExact)
+                || !wholeNumber(col, double(std::numeric_limits<int>::max())) || !wholeNumber(epoch, MostExact))
                 return QLatin1String(AfterglowMux::MarkOptionError);
-            *mark = AfterglowVt::SemanticPosition{std::uint64_t(row.toDouble()), int(col.toDouble())};
+            *mark = AfterglowVt::TextMark{std::uint64_t(row.toDouble()), int(col.toDouble()),
+                                          std::uint64_t(epoch.toDouble())};
             continue;
         }
         bool* flag = it.key() == QLatin1String("ansi")  ? &format.ansi
             : it.key() == QLatin1String("cursor")       ? &format.cursor
             : it.key() == QLatin1String("wrap_markers") ? &format.wrapMarkers
+            : it.key() == QLatin1String("keep_end")     ? &format.keepEnd
                                                         : nullptr;
+        // A caller that takes no mark (a call that the daemon passes on,
+        // whose since scope the daemon answers) names the options it takes.
         if (!flag)
             return QStringLiteral("unknown getText option %1: %2")
-                .arg(it.key(), QLatin1String(AfterglowMux::TextOptionNames));
+                .arg(it.key(),
+                     mark ? QLatin1String(AfterglowMux::TextOptionNames)
+                          : QLatin1String("the options are ansi, cursor, wrap_markers and keep_end"));
         if (it.value().typeId() != QMetaType::Bool)
             return QStringLiteral("the getText option %1 is true or false").arg(it.key());
         *flag = it.value().toBool();
@@ -357,6 +430,8 @@ QString Control::captureRefusal(QString& code) const
     }
     return {};
 }
+
+const QString Control::NoRoomForPane = QStringLiteral("not enough room for another pane");
 
 QString Control::capture(quint32 id, CaptureScope scope, CaptureReply reply, QString& code, bool agentSession)
 {

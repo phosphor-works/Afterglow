@@ -250,6 +250,8 @@ function __afterglow_ctl
     switch $command
         case ls
             contains -- --json $argv; or set -a offer --json\t'Print JSON'
+        case watch
+            contains -- --text-changes $argv; or set -a offer --text-changes\t'Print textChanged too'
         case send-text paste
             # --stdin takes no text, and the text takes no --stdin.
             if not contains -- --stdin $argv
@@ -426,7 +428,7 @@ function __afterglow_mcp
     test $n -eq 0; and string match -q -- '-*' "$cur"
     and set -a offer -h\t'Show the usage' --help\t'Show the usage'
     contains -- --session $argv; or set -a offer --session\t'Use or create the session'
-    contains -- --adopt $argv; or set -a offer --adopt\t'Make a session that is not an agent session one'
+    contains -- --adopt $argv; or set -a offer --adopt\t'With --session, make your own session an agent session'
     contains -- --cwd $argv; or set -a offer --cwd\t'Start the first pane in the directory'
     __afterglow_print $offer
 end

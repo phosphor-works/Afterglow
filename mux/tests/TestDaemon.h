@@ -554,7 +554,9 @@ public:
     {
         return m_ended;
     }
-    /// The next line, without its '\n'; empty after @p timeoutMs or at the end.
+    /// The next line, without its '\n'. Empty when no byte comes in
+    /// @p timeoutMs (each read starts the wait again), at the end of the
+    /// connection (ended()), and when a poll or a read fails.
     std::string line(int timeoutMs = 5000)
     {
         while (true) {

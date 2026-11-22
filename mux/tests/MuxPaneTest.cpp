@@ -193,14 +193,15 @@ struct ShellPane
     std::unique_ptr<ImageDecoder> decoder;
     std::unique_ptr<MuxPane> pane;
 
-    /// @p watched: the daemon watches the pane from its start.
+    /// @p watched: the daemon watches the pane from its start, and with
+    /// @p text the changes of its text too.
     ShellPane(const std::string& script, const std::vector<std::string>& args, const std::string& directory,
-              bool watched = false)
+              bool watched = false, bool text = false)
     {
         decoder = std::make_unique<ImageDecoder>(AFTERGLOW_MUX);
         pane = std::make_unique<MuxPane>(1, AfterglowVt::TerminalOptions{}, PaneSize{80, 24, 10, 20}, std::string(),
                                          *decoder, [] { });
-        pane->setWatched(watched);
+        pane->setWatched(watched, text);
         AfterglowPty::SpawnOptions spawn;
         spawn.argv = {"/bin/sh", "-c", script, "sh"};
         spawn.argv.insert(spawn.argv.end(), args.begin(), args.end());
@@ -499,20 +500,35 @@ TEST(MuxPane, FactsGiveTheCheckedDirectoryOfTheShell)
 }
 
 // Whether the shell is at its prompt follows the daemon's own changes too:
-// a reset leaves the prompt, with no output after it.
+// a reset leaves the prompt, with no output after it. The exit code and the
+// typed text go with it, and the watch hears the state.
 TEST(MuxPane, AResetLeavesThePrompt)
 {
     TempDir home;
     ASSERT_FALSE(home.path.empty());
-    ShellPane shell("printf '\\033]133;A\\007$ '; exec sleep 60", {}, home.path.string());
+    ShellPane shell(
+        "printf '\\033]133;A\\007$ \\033]133;B\\007\\033]133;C\\007\\033]133;D;3\\007"
+        "\\033]133;A\\007$ \\033]133;B\\007typed'; exec sleep 60",
+        {}, home.path.string(), true);
     ASSERT_TRUE(shell.pane);
     ASSERT_TRUE(MuxTest::waitFor(
         [&] {
-            return shell.pane->facts().shell == AfterglowVt::ShellState::Prompt;
+            const MuxPane::Facts facts = shell.pane->facts();
+            return facts.shell == AfterglowVt::ShellState::Prompt && facts.lastExit == 3 && facts.input;
         },
         std::chrono::seconds(10)));
+    (void)shell.pane->takeWatchEvents();
     shell.pane->reset();
-    EXPECT_EQ(shell.pane->facts().shell, AfterglowVt::ShellState::None);
+    const MuxPane::Facts facts = shell.pane->facts();
+    EXPECT_EQ(facts.shell, AfterglowVt::ShellState::None);
+    EXPECT_FALSE(facts.lastExit);
+    EXPECT_FALSE(facts.input);
+    const std::vector<MuxPane::WatchEvent> events = shell.pane->takeWatchEvents();
+    const auto shellEvent = std::find_if(events.rbegin(), events.rend(), [](const MuxPane::WatchEvent& e) {
+        return e.kind == MuxPane::WatchEvent::Kind::Shell;
+    });
+    ASSERT_NE(shellEvent, events.rend());
+    EXPECT_EQ(shellEvent->name, "none");
 }
 
 // Past the limit of a watch's events, the newest title still takes the
@@ -538,4 +554,153 @@ TEST(MuxPane, AWatchPastItsLimitKeepsTheNewestTitle)
     EXPECT_TRUE(events.back().kind == MuxPane::WatchEvent::Kind::Title);
     EXPECT_EQ(events.back().text, "t1099");
     EXPECT_EQ(events.front().text, "t0");
+}
+
+// Past the limit of a watch's events, the last change of the text still
+// comes, after the events before it: a watcher that waits for the end of a
+// burst hears it. One change stands for all of them.
+TEST(MuxPane, AWatchPastItsLimitKeepsTheLastChangeOfTheText)
+{
+    TempDir home;
+    ASSERT_FALSE(home.path.empty());
+    ShellPane shell(
+        "i=0; while [ $i -lt 1100 ]; do printf '\\033]2;t%d\\007' $i; i=$((i+1)); done; "
+        "echo do''ne; exec sleep 60",
+        {}, home.path.string(), true, true);
+    ASSERT_TRUE(shell.pane);
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&shell] {
+            const auto text = shell.pane->text(AfterglowVt::Terminal::TextScope::Screen);
+            return text && text->text.find("done") != std::string::npos;
+        },
+        std::chrono::seconds(20)));
+    const std::vector<MuxPane::WatchEvent> events = shell.pane->takeWatchEvents();
+    ASSERT_FALSE(events.empty());
+    EXPECT_LE(events.size(), MuxPane::MaxWatchEvents + 1);
+    EXPECT_TRUE(events.back().kind == MuxPane::WatchEvent::Kind::Text);
+    EXPECT_EQ(std::count_if(events.begin(), events.end(),
+                            [](const MuxPane::WatchEvent& e) {
+                                return e.kind == MuxPane::WatchEvent::Kind::Text;
+                            }),
+              1);
+}
+
+// The changes of the text wait for the daemon only while a watcher wants
+// them, and count from then on: the text that came before is no change, also
+// at the next feed, here of a title alone.
+TEST(MuxPane, TheChangesOfTheTextCountOnlyForAWatcherOfThemFromItsStart)
+{
+    TempDir home;
+    ASSERT_FALSE(home.path.empty());
+    // Without echo: the typed line changes no text.
+    ShellPane shell(
+        "stty -echo; echo o''ne; read line; printf '\\033]2;t''t\\007'; read line; echo t''wo; exec sleep 60", {},
+        home.path.string(), true);
+    ASSERT_TRUE(shell.pane);
+    const auto shows = [&shell](const std::string& part) {
+        const auto text = shell.pane->text(AfterglowVt::Terminal::TextScope::Screen);
+        return text && text->text.find(part) != std::string::npos;
+    };
+    const auto count = [](const std::vector<MuxPane::WatchEvent>& events, MuxPane::WatchEvent::Kind kind) {
+        return std::count_if(events.begin(), events.end(), [kind](const MuxPane::WatchEvent& e) {
+            return e.kind == kind;
+        });
+    };
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&] {
+            return shows("one");
+        },
+        std::chrono::seconds(10)));
+    EXPECT_EQ(count(shell.pane->takeWatchEvents(), MuxPane::WatchEvent::Kind::Text), 0);
+    shell.pane->setWatched(true, true);
+    EXPECT_EQ(count(shell.pane->takeWatchEvents(), MuxPane::WatchEvent::Kind::Text), 0);
+    ASSERT_EQ(shell.pane->input("go\n"), MuxPane::Input::Written);
+    std::vector<MuxPane::WatchEvent> events;
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&] {
+            for (MuxPane::WatchEvent& event : shell.pane->takeWatchEvents())
+                events.push_back(std::move(event));
+            return count(events, MuxPane::WatchEvent::Kind::Title) > 0;
+        },
+        std::chrono::seconds(10)));
+    // The title comes within the feed, and the text's change after it, with
+    // the pane's lock, which status() waits for.
+    (void)shell.pane->status();
+    for (MuxPane::WatchEvent& event : shell.pane->takeWatchEvents())
+        events.push_back(std::move(event));
+    EXPECT_EQ(count(events, MuxPane::WatchEvent::Kind::Text), 0);
+    ASSERT_EQ(shell.pane->input("go\n"), MuxPane::Input::Written);
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&] {
+            return shows("two");
+        },
+        std::chrono::seconds(10)));
+    EXPECT_GE(count(shell.pane->takeWatchEvents(), MuxPane::WatchEvent::Kind::Text), 1);
+}
+
+// A reset at a primary prompt gives the shell Ctrl+L, so that it draws its
+// prompt again with its marks, as in a window. Nothing goes to a command
+// that runs.
+TEST(MuxPane, AResetAtAPromptAsksTheShellForItAgain)
+{
+    TempDir home;
+    ASSERT_FALSE(home.path.empty());
+    const std::string first = (home.path / "first").string();
+    const std::string second = (home.path / "second").string();
+    ShellPane shell("stty raw -echo; printf '\\033]133;A\\007$ \\033]133;B\\007'; dd bs=1 count=1 2>/dev/null > '"
+                        + first + "'; printf '\\033]133;C\\007'; dd bs=1 count=1 2>/dev/null > '" + second
+                        + "'; exec sleep 60",
+                    {}, home.path.string());
+    ASSERT_TRUE(shell.pane);
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&] {
+            return shell.pane->facts().shell == AfterglowVt::ShellState::Prompt;
+        },
+        std::chrono::seconds(10)));
+    shell.pane->reset();
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&] {
+            return shell.pane->facts().shell == AfterglowVt::ShellState::Running;
+        },
+        std::chrono::seconds(10)));
+    EXPECT_EQ(readFile(first), "\x0c");
+    shell.pane->reset();
+    ASSERT_EQ(shell.pane->input("x"), MuxPane::Input::Written);
+    std::string got;
+    const auto deadline = Clock::now() + std::chrono::seconds(10);
+    while (Clock::now() < deadline && (got = readFile(second)).empty())
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(got, "x");
+}
+
+// A paste at the prompt goes only while the shell waits at a primary prompt
+// with an empty command line, as the check and the write are one step.
+TEST(MuxPane, InputAtThePromptGoesOnlyToAnEmptyPrompt)
+{
+    TempDir home;
+    ASSERT_FALSE(home.path.empty());
+    ShellPane shell(
+        "printf '\\033]133;A\\007$ \\033]133;B\\007'; read line; "
+        "printf '\\033]133;C\\007[%s]' \"$line\"; exec sleep 60",
+        {}, home.path.string());
+    ASSERT_TRUE(shell.pane);
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&] {
+            return shell.pane->facts().shell == AfterglowVt::ShellState::Prompt;
+        },
+        std::chrono::seconds(10)));
+    AfterglowVt::ShellState state = AfterglowVt::ShellState::None;
+    bool decoding = true;
+    const auto written = shell.pane->inputAtPrompt("pasted\n", state, decoding);
+    EXPECT_FALSE(decoding);
+    ASSERT_TRUE(written);
+    EXPECT_EQ(*written, MuxPane::Input::Written);
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&] {
+            return shell.pane->facts().shell == AfterglowVt::ShellState::Running;
+        },
+        std::chrono::seconds(10)));
+    EXPECT_FALSE(shell.pane->inputAtPrompt("more\n", state, decoding));
+    EXPECT_EQ(state, AfterglowVt::ShellState::Running);
+    EXPECT_FALSE(decoding);
 }
