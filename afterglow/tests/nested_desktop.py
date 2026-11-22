@@ -197,8 +197,10 @@ class NestedDesktop:
         # socket and pane ID. `afterglow ctl` and `aglow run` would then call the
         # user's instance instead of the nested one, and default to a pane that
         # the nested one does not have. Without them they find the socket of the
-        # nested display.
-        for name in ("AFTERGLOW_SOCKET", "AFTERGLOW_PANE_ID"):
+        # nested display. An Afterglow from before restoreEnvironment() also
+        # handed its panes its shell integration, which the tests' own startup
+        # sets when it was not given.
+        for name in ("AFTERGLOW_SOCKET", "AFTERGLOW_PANE_ID", "QT_WAYLAND_SHELL_INTEGRATION"):
             self.env.pop(name, None)
         (root / "kwinrc").write_text(KWINRC)
         # A Save dialog of a download opens in the download directory: a
