@@ -16,6 +16,7 @@
 #include "app/Services.h"
 #include "config/Settings.h"
 #include "control/Capture.h"
+#include "desktop/PathLinks.h"
 #include "shaders/ShaderControls.h"
 
 #include <AfterglowRender/GridRenderer.h>
@@ -203,6 +204,12 @@ public:
     {
         const auto motion = m_motion.find(pane);
         return motion != m_motion.end() && motion->second->rect.isAnimating();
+    }
+    /// The target of the link under the pointer: a URL, or a path's
+    /// file:// URL. Empty when no link is highlighted. For the tests.
+    QString hoveredLink() const
+    {
+        return m_hover.url;
     }
 
     /// Every pane, tab by tab.
@@ -1485,6 +1492,15 @@ private:
         QString url;
     };
     static std::vector<UrlSpan> findUrls(const AfterglowRender::PaneSnapshot& snap, int row);
+    /// A path in the text of one row, outside every span of @p urls.
+    struct PathSpan
+    {
+        int colStart = 0;
+        int colEnd = -1; ///< inclusive
+        PathLinks::Location location; ///< as the text has it
+    };
+    static std::vector<PathSpan> findPaths(const AfterglowRender::PaneSnapshot& snap, int row,
+                                           const std::vector<UrlSpan>& urls);
 
     // URL mode: every link on screen gets a label to type.
     struct UrlHint
@@ -1708,25 +1724,50 @@ private:
     {
         QPointer<Pane> pane;
         std::uint32_t link = 0; ///< snapshot link index (OSC 8)
-        int row = -1; ///< a detected URL's cells
+        int row = -1; ///< a detected URL's or path's cells
         int colStart = 0;
         int colEnd = -1;
-        QString url;
+        QString url; ///< for a path, its file:// URL
         /// The version of the snapshot it was found in: output or a scroll
         /// since moves the text under it (refreshLinkHover).
         std::uint64_t version = 0;
+        /// A path's absolute location; its path is empty for a URL.
+        PathLinks::Location file;
+        bool directory = false;
+        QString workingDirectory; ///< the pane's, for Links.openFilesWith
     } m_hover;
     /// Finds the link under the pointer again when @p pane's snapshot is
     /// not the one m_hover was found in. After the pane's refreshSnapshot.
     void refreshLinkHover(Pane* pane);
-    /// The link (OSC 8 or a URL in the text) under @p pos in @p pane, if
-    /// any: only over its cells (overCells()).
+    /// The link under @p pos in @p pane, if any: an OSC 8 link, a URL in the
+    /// text, or a path in the text that a check found, only over its cells
+    /// (overCells()). A path that has no check yet starts one, and the hover
+    /// updates when it ends.
     LinkHover linkAt(Pane* pane, const QPointF& pos) const;
-    /// The link at @p cell of @p pane, if any.
+    /// The link at @p cell of @p pane, if any, as linkAt() finds it.
     LinkHover linkAtCell(Pane* pane, const QPoint& cell) const;
+    /// The path in the text under @p pos in @p pane, resolved and not yet
+    /// checked, with its cells, only over its cells. None when there is none,
+    /// when Links.detectPaths is off, or when the pane's files are on another
+    /// machine (Pane::localPathDirectory).
+    std::optional<LinkHover> pathAt(Pane* pane, const QPointF& pos) const;
+    /// pathAt() of @p cell of @p pane.
+    std::optional<LinkHover> pathAtCell(Pane* pane, const QPoint& cell) const;
+    /// Opens the path under @p pos in @p pane once a check finds it. False
+    /// when there is no path there, or one that is known to be missing.
+    bool openPathWhenFound(Pane* pane, const QPointF& pos);
+    /// Opens @p link: a path with Links.openFilesWith, else as a URL.
+    void openHoveredLink(const LinkHover& link);
+    /// Opens the file or directory @p file (absolute) with Links.openFilesWith,
+    /// or as its file:// URL.
+    void openPath(const PathLinks::Location& file, bool directory, const QString& workingDirectory);
+    /// Runs @p open for @p target when its scheme is in Links.schemes, else
+    /// after the user agrees.
+    void confirmOpen(const QUrl& target, std::function<void()> open);
+    PathLinks::Checker* m_pathChecker = nullptr;
     /// The right-click menu, at @p pos (logical pixels), with @p link, the
     /// link it opens and copies, if any.
-    void openContextMenu(const QPointF& pos, const QString& link);
+    void openContextMenu(const QPointF& pos, const LinkHover& link);
     /// Opens @p url with Links.openWith, or the desktop's handler.
     void openLink(const QString& url);
     /// The link modifier (Links.modifier) is in @p modifiers, or none is
@@ -1736,7 +1777,7 @@ private:
     /// The modifiers after the key of @p e, a key event that this window
     /// handles now, remapped or as it came (modifiersAfter()).
     Qt::KeyboardModifiers modifiersAfterKey(const QKeyEvent* e) const;
-    QString m_menuLink; ///< the link the menu was opened on
+    LinkHover m_menuLink; ///< the link the menu was opened on
     QStringList m_menuCommands; ///< the token of the command that menu id MenuScriptBase + i runs
     /// The pane the context menu was opened on: its items act on it, even
     /// when the focus moved while the menu was open.

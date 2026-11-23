@@ -454,6 +454,20 @@ public:
     /// so this is for a user's action, such as a new tab. Empty for a pane of
     /// a session of another host, whose directories are not on this machine.
     QString workingDirectory() const;
+    /// The directory that file paths in the pane's text start from, found
+    /// without a stat and without a call to the daemon, so that a hung mount
+    /// or daemon cannot block the caller: the reported directory, else for a
+    /// pane of its own the foreground job's from /proc, else empty.
+    /// None while the pane's paths may name another machine's files: its
+    /// shell runs on another host or in a container (OSC 3008, iTerm2
+    /// RemoteHost), its last OSC 7 named another host, it is a pane of a
+    /// session of another host, or a remote client runs in it, one of
+    /// @p remoteClients (Links.remoteClients). A pane of its own compares
+    /// foregroundJob() with them. A session pane's processes are the
+    /// daemon's: it compares the command line that its shell reported, and
+    /// gives none while a command runs that the shell did not report, or
+    /// while no shell integration tells what runs.
+    std::optional<QString> localPathDirectory(const QStringList& remoteClients) const;
     /// workingDirectory without a call to the daemon, for what reads every
     /// pane often (Control::describe, the snapshot of each script event): a
     /// session pane gives only what its shell reported, and a pane of a
@@ -1027,6 +1041,7 @@ private:
     QString m_contextLabel; ///< guarded by m_mutex
     QString m_contextKind; ///< guarded by m_mutex
     QString m_reportedDirectory; ///< local, absolute; guarded by m_mutex
+    bool m_directoryElsewhere = false; ///< the last OSC 7 named another host; guarded by m_mutex
     QHash<QString, QString> m_userVars; ///< guarded by m_mutex
     bool m_userVarsFull = false; ///< the warning about MaxUserVars was given; guarded by m_mutex
     /// Changed user variables that wait for the GUI thread, guarded by m_mutex.

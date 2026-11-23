@@ -251,7 +251,7 @@ If the pager is not installed, or the output cannot be shown, a notification giv
 
 Press Ctrl+Shift+H to run `show_hints`.
 This action labels regular-expression matches in the viewport.
-The default pattern finds file and line references.
+The default pattern finds file paths with the rules of [file path links](#file-paths).
 The default action copies the selected match.
 
 Set `Hints.patterns` to change this behavior:
@@ -271,7 +271,7 @@ Set `Hints.patterns` to change this behavior:
 | Action | Function |
 | --- | --- |
 | `copy` | Copies the matched text |
-| `open` | Opens a local file through the desktop |
+| `open` | Opens a file or directory as a click on a [file path link](#file-paths) does |
 | `command` | Runs an explicit argument list without a shell |
 
 Commands accept `{match}`, `{path}`, `{line}` and `{column}` placeholders.
@@ -304,17 +304,93 @@ They stay until the hold ends, and close then.
 
 ## Links and URL hints
 
-Afterglow opens OSC 8 links and plain-text URLs with a click while you hold the link modifier.
+Afterglow opens OSC 8 links, plain-text URLs and file paths with a click while you hold the link modifier.
 
 | Setting or action | Default | Function |
 | --- | --- | --- |
 | `Links.modifier` | `ctrl` | Key to hold for link highlighting and clicks: `ctrl`, `shift`, `alt` or `super`. `none` opens links with a plain click. |
 | `Links.detectUrls` | `true` | Finds plain-text URLs in addition to OSC 8 links |
+| `Links.detectPaths` | `true` | Finds file paths in the text. A path is a link only when the file or directory exists. |
 | `Links.openWith` | empty | Command that receives the URL as its last argument. Afterglow splits it into words and runs it without a shell. Empty uses the desktop browser. |
+| `Links.openFilesWith` | empty | Program and arguments that open a file path. Empty opens the path as a `file://` URL. |
+| `Links.remoteClients` | `ssh`, `mosh-client`, `et`, `telnet`, `rlogin` | Programs that connect to another host. While one of them runs in a pane, the pane has no path links. |
 | `Links.schemes` | `http`, `https`, `mailto`, `ftp`, `file` | Schemes that open without a prompt. Other schemes ask first. |
 | `Hints.alphabet` | `asdfjklghqweruiopzxcvbnmty` | Letters that label hints and URL hints |
 | `show_urls_open` | Ctrl+Shift+G | Labels the URLs on screen and opens the selected URL |
 | `show_urls_copy` | Ctrl+Shift+Y | Labels the URLs on screen and copies the selected URL |
+
+### File paths
+
+Afterglow finds these paths in the text:
+
+- Absolute paths, and paths that start with `~/`, `./` or `../`.
+- Relative paths that contain a `/`, or that end in a file extension, such as `src/main.cpp` or `README.md`.
+- A file name with a line number, such as `Makefile:12`.
+
+Each path can end in `:LINE` or `:LINE:COLUMN`, as in compiler and grep output.
+Punctuation at the end of a path, such as a full stop or a comma, is not part of the path.
+A path in a URL or in an OSC 8 link is part of that link.
+
+A relative path starts from the working directory of the pane, which the shell reports with OSC 7.
+Without a report, Afterglow uses the directory of the foreground program.
+In a pane of a mux session, a relative path is a link only when the shell reports its directory.
+The program of a session pane runs in the mux daemon, and the window does not wait for the daemon on each pointer move.
+`~/` is your home directory.
+
+A path is a link only when the file or directory exists.
+Afterglow does this check in the background, so a slow network mount does not stop the window.
+The underline and the hand pointer show when the check is complete.
+A click on a path before its check opens the path when the check finds it.
+
+A pane whose shell runs on another host or in a container has no path links.
+Its paths name files on that host.
+Afterglow knows this from these items:
+
+- The shell context (OSC 3008 and the iTerm2 `RemoteHost` sequence).
+- An OSC 7 directory on another host.
+- A pane of a mux session on another host.
+- The foreground program of the pane, when its process name is in `Links.remoteClients`. This includes `afterglow ssh`, which runs as `ssh`.
+
+A pane of a mux session on this computer uses the shell integration in place of the foreground program:
+
+- At a prompt, the pane has path links.
+- While a command runs, the pane has path links when the first word of the command line is not in `Links.remoteClients`. Variable assignments and the directory of the program are not part of this word, and `afterglow ssh` counts as `ssh`.
+- While a command runs that the shell did not report, the pane has no path links.
+- Without shell integration, the pane has no path links.
+
+| Limit | Value | At the limit |
+| --- | --- | --- |
+| Result of a check | 5 seconds | Afterglow checks the path again at the next hover |
+| Kept results | 1,024 paths | Afterglow removes the oldest result |
+| Checks that wait or run | 64 | Afterglow checks no new paths until a check completes |
+| Process name in `Links.remoteClients` | 15 characters | Linux keeps the first 15 characters of a process name. Afterglow compares these characters only. |
+
+Afterglow does not find a remote program that runs inside a local program, such as `sudo ssh host`.
+The foreground program is then `sudo`, and the paths in its output can be links to local files.
+The same applies to the command line of a session pane.
+
+Set `Links.openFilesWith` to open files in an editor at the line.
+The list is the program and its arguments, without a shell.
+Each argument can contain these placeholders:
+
+| Placeholder | Value |
+| --- | --- |
+| `{file}` | The absolute path |
+| `{line}` | The line of a `:LINE` suffix. The value is 1 when the path has no line. |
+| `{column}` | The column of a `:LINE:COLUMN` suffix. The value is 1 when the path has no column. |
+
+```json
+{
+  "Links": {
+    "openFilesWith": ["kate", "--line", "{line}", "--column", "{column}", "{file}"]
+  }
+}
+```
+
+A directory always opens in the file manager.
+With an empty `Links.openFilesWith`, a file opens as a `file://` URL: with `Links.openWith`, or else with the desktop application for the file type.
+When `file` is not in `Links.schemes`, Afterglow asks before it opens a path.
+In the context menu, Copy Link Address copies the absolute path, not a `file://` URL.
 
 ## Mouse
 

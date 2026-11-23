@@ -39,7 +39,7 @@ target_compile_definitions(afterglow_scripting_tests PRIVATE
     AFTERGLOW_GLASSHOUSE_SCRIPTS="${PROJECT_SOURCE_DIR}/examples/glasshouse/scripts")
 gtest_discover_tests(afterglow_scripting_tests PROPERTIES TIMEOUT 60)
 
-qt_add_executable(afterglow_config_tests ConfigTest.cpp DesktopTest.cpp)
+qt_add_executable(afterglow_config_tests ConfigTest.cpp DesktopTest.cpp PathLinksTest.cpp)
 # afterglow_mux_protocol: the bounds of the Mux settings are the daemon's.
 target_link_libraries(afterglow_config_tests PRIVATE afterglow_config afterglow_mux_protocol GTest::gtest_main)
 target_compile_definitions(afterglow_config_tests PRIVATE AFTERGLOW_THEME_DIR="${PROJECT_SOURCE_DIR}/data/themes"

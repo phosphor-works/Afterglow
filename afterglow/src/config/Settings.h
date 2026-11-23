@@ -166,7 +166,15 @@ QString modifierText(Qt::KeyboardModifiers modifiers);
 struct LinkSettings
 {
     bool detectUrls = true; ///< plain-text URLs, besides OSC 8 links
+    bool detectPaths = true; ///< plain-text paths of files and directories that exist on this machine
     QString openWith; ///< command the URL is appended to; empty for the desktop's choice
+    /// Program and arguments that open a file link, with {file}, {line} and
+    /// {column}; empty to open its file:// URL as other links open.
+    QStringList openFilesWith;
+    /// Names of programs that connect to another host. While one runs in a
+    /// pane, paths in the pane are no links (Pane::localPathDirectory).
+    QStringList remoteClients{QStringLiteral("ssh"), QStringLiteral("mosh-client"), QStringLiteral("et"),
+                              QStringLiteral("telnet"), QStringLiteral("rlogin")};
     /// Held to hover and click links; none opens them with a plain click.
     Qt::KeyboardModifiers modifier = Qt::ControlModifier;
     /// Lower-case URL schemes that open without asking; other links ask first.
