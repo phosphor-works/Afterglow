@@ -21,7 +21,7 @@
 --   function script.run_command(command: string, ev: CommandEvent): Effects? ... end
 --   return script
 --
--- Handlers run sandboxed with a short time limit and no direct access to files
+-- Handlers run sandboxed with a short limit of CPU time and no direct access to files
 -- or processes. They return an effect, a list of effects, or nil, and can wait
 -- for an effect's result with afterglow.await. Commands run from the shell
 -- (`aglow run <id> <command>`), from the command palette and the context

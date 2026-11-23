@@ -388,7 +388,7 @@ struct Settings
     int scriptCommandRunLimit = 16; ///< command runs of one script at once
     /// Bytes of UTF-8 standard output and standard error of one command run (the setting is in KiB).
     qint64 scriptCommandOutputLimit = qint64(16384) << 10;
-    int scriptCpuBudget = 250; ///< ms of handler time of one script in each second
+    int scriptCpuBudget = 250; ///< ms of handler CPU time of one script in each second
     QString pager = QStringLiteral("less -R");
     /// Terminal.pagerOutputLimit: bytes of a command's output that the pager
     /// gets (the last output, the first on the screen, the last visited, or

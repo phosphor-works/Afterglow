@@ -52,11 +52,11 @@ let
   # hashes the archive file itself. A pin that changes there changes here too.
   depsArchives = linkFarm "afterglow-deps-archives" [
     {
-      name = "phosphor-libs-e10ed53392159aad48d4cdeaf1761b07355401aa.tar.gz";
+      name = "phosphor-libs-e88cd538be33163ddbfc0e7d0774bcff4ecffbe5.tar.gz";
       path = fetchurl {
-        url = "https://github.com/phosphor-works/phosphor-libs/archive/e10ed53392159aad48d4cdeaf1761b07355401aa.tar.gz";
-        # sha256 967bd546119fa833a8049a7b9495aa782d1ad7d990957ccfd6d077f0d990a143
-        hash = "sha256-lnvVRhGfqDOoBJp7lJWqeC0a19mQlXzP1tB38NmQoUM=";
+        url = "https://github.com/phosphor-works/phosphor-libs/archive/e88cd538be33163ddbfc0e7d0774bcff4ecffbe5.tar.gz";
+        # sha256 705e5a97e83002b0f4bcbb9ad6806d582fadc03f9336ae4838203d359a51e4a5
+        hash = "sha256-cF5al+gwArD0vLua1oBtWC+twD+TNq5IOCA9NZpR5KU=";
       };
     }
     {

@@ -1109,7 +1109,8 @@ PhosphorConfig::Schema buildSchema()
                            "1. A run from a key, a menu or the palette counts only its standard error.")),
         intKey(QStringLiteral("cpuBudget"), d.scriptCpuBudget, 10, 1000,
                QStringLiteral(
-                   "Milliseconds of handler time that one script can use in each second. Past it, Afterglow "
+                   "Milliseconds of CPU time that the handlers of one script can use in each second. Time that "
+                   "the system gives to other programs does not count. Past the budget, Afterglow "
                    "drops the script's events, and delays its results, timers, keys and command runs. Each second "
                    "in which a call of the script waits counts. After 5 such seconds, each less than 3 seconds "
                    "after the one before, Afterglow disables the script. Dropped events do not count.")),

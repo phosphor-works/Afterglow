@@ -141,6 +141,8 @@ public:
         bool remoteReadText = false;
     };
 
+    /// The time limits of a call are in ms of the CPU time of the thread that
+    /// runs it (WatchdogClock::ThreadCpu), not of wall time.
     static constexpr int EventTimeoutMs = 20;
     /// Each part of a command handler, a package's on_load and migrate.
     static constexpr int CommandCallTimeoutMs = 100;
@@ -176,7 +178,7 @@ public:
     /// one would lose a state that no later call tells again. Wheel turns,
     /// drag moves and accessibility presses on docks count.
     static constexpr int MaxCallbacksPerSecond = 64;
-    /// Scripts.cpuBudget: handler time of one script in each second, in ms.
+    /// Scripts.cpuBudget: CPU time of the handlers of one script in each second, in ms.
     static constexpr int DefaultCpuBudgetMs = 250;
     /// Seconds in a row in which a script used its whole CPU budget, before
     /// it is disabled. A second counts when it comes less than
@@ -235,7 +237,7 @@ public:
     {
         return m_limits;
     }
-    /// Scripts.cpuBudget, in ms of handler time in each second.
+    /// Scripts.cpuBudget, in ms of handler CPU time in each second.
     void setCpuBudget(int ms)
     {
         m_cpuBudgetMs = ms;
@@ -311,7 +313,7 @@ private:
     /// event of a script that used its CPU budget is refused. A timer's or a
     /// watcher's call is not: it waits in defer.
     bool admitCallback(Script& script, bool task = false);
-    /// The script's handler time in the last second, in ns.
+    /// The script's handler CPU time in the last second, in ns.
     qint64 cpuUsed(Script& script) const;
     bool cpuRoom(Script& script) const
     {

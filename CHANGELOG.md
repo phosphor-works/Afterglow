@@ -159,8 +159,8 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 ### Scripting and control
 
-- Luau scripts in a sandbox with time and memory limits, which reload when they change.
-- A CPU budget for each script (`Scripts.cpuBudget`, 250 ms in each second by default). Past it, Afterglow drops the events of the script, and delays its results, timers, keys and command runs. Each second in which a call of the script waits counts. After 5 such seconds, each less than 3 seconds after the one before, Afterglow disables the script. Dropped events do not count.
+- Luau scripts in a sandbox with time and memory limits, which reload when they change. The time limits count the CPU time of the script, so a busy computer does not make a script fail.
+- A CPU budget for each script (`Scripts.cpuBudget`, 250 ms of CPU time in each second by default). Past it, Afterglow drops the events of the script, and delays its results, timers, keys and command runs. Each second in which a call of the script waits counts. After 5 such seconds, each less than 3 seconds after the one before, Afterglow disables the script. Dropped events do not count.
 - Script packages with manifests, configuration, assets and saved state with migrations.
 - Script packages that ship their own shader packs, suggest shader settings and name pulse effects.
 - Script effects for panes, tabs, windows, shader parameters and presets, with results and tasks.

@@ -35,11 +35,47 @@
 #include <optional>
 #include <utility>
 
+#include <time.h>
+
 Q_LOGGING_CATEGORY(lcScripts, "afterglow.scripts", QtInfoMsg)
 
 namespace Afterglow {
 
 using PhosphorScripting::LuauEngine;
+
+namespace {
+
+/// Measures a handler call on the CPU time of the thread that runs it, as the
+/// watchdog does with WatchdogClock::ThreadCpu: time that the system gives to
+/// other programs does not count. Wall time when the thread's CPU clock cannot
+/// be read, as the watchdog then uses too.
+class CallTimer
+{
+public:
+    CallTimer()
+        : m_cpuStart(threadCpuNs())
+    {
+        m_wall.start();
+    }
+    qint64 nsecsElapsed() const
+    {
+        const qint64 now = m_cpuStart >= 0 ? threadCpuNs() : -1;
+        return now >= 0 ? now - m_cpuStart : m_wall.nsecsElapsed();
+    }
+
+private:
+    static qint64 threadCpuNs()
+    {
+        timespec ts{};
+        if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0)
+            return -1;
+        return qint64(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+    }
+    qint64 m_cpuStart;
+    QElapsedTimer m_wall;
+};
+
+} // namespace
 
 struct ScriptHost::Script
 {
@@ -93,10 +129,11 @@ struct ScriptHost::Script
     int failures = 0;
     quint64 calls = 0, handlerErrors = 0, effectErrors = 0;
     quint64 droppedCallbacks = 0, droppedEffects = 0, droppedResults = 0, delayedCallbacks = 0;
+    /// CPU time of the calls (CallTimer), for the diagnostics.
     qint64 lastCallNs = 0, maxCallNs = 0, totalCallNs = 0;
     /// The host's clock, for the CPU window.
     const QElapsedTimer* clock = nullptr;
-    /// Handler time in the last second, for Scripts.cpuBudget: when each
+    /// CPU time in the last second, for Scripts.cpuBudget: when each
     /// part of a call ended (ms on the clock), and its ns. Every part counts:
     /// a resume after a wait, and the cleanup of a run that ended, too.
     std::deque<std::pair<qint64, qint64>> cpu;
@@ -135,8 +172,7 @@ struct ScriptHost::Script
         const qint64 flowsBefore = flowCount();
         if (before)
             *before = flowsBefore;
-        QElapsedTimer elapsed;
-        elapsed.start();
+        const CallTimer elapsed;
         auto outcome = engine->callModule(module, function, args, timeoutMs);
         ++calls;
         lastCallNs = elapsed.nsecsElapsed();
@@ -963,6 +999,10 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
     script->source = source;
     script->clock = &m_clock;
     script->engine = std::make_unique<LuauEngine>(m_watchdog, MemoryCapBytes);
+    // The limits count the script's own work: on a loaded machine, the wall
+    // clock runs on while the GUI thread waits for a CPU, and a handler that
+    // does little would time out, and five such calls disable its script.
+    script->engine->setWatchdogClock(PhosphorScripting::WatchdogClock::ThreadCpu);
     QString error;
     const QString chunk = QStringLiteral("@") + QFileInfo(path).fileName();
     if (!script->engine->init(&error) || !script->engine->runPrelude(QStringLiteral("@afterglow"), m_prelude, &error)) {
@@ -1374,7 +1414,7 @@ void ScriptHost::finishRun(const ScriptPtr& script, quint64 handle, int status, 
                            const ScriptPtr script = weak.lock();
                            if (!script)
                                return;
-                           // The cleanup is handler time like any other: past Scripts.cpuBudget
+                           // The cleanup is handler CPU time like any other: past Scripts.cpuBudget
                            // it waits, after the results that came before it, which it drops.
                            defer(script, [this, weak, handle, pane, reason](bool) {
                                const ScriptPtr script = weak.lock();
@@ -1607,7 +1647,7 @@ void ScriptHost::drainDelayed(const ScriptPtr& script)
     }
     if (script->delayed.empty() || script->disabled || script->retiring || script->drainDue)
         return;
-    // Until enough of the last second's handler time has left the window.
+    // Until enough of the last second's handler CPU time has left the window.
     const qint64 now = m_clock.elapsed();
     qint64 excess = script->cpuNs - qint64(m_cpuBudgetMs) * 1000000;
     qint64 wait = 1;
@@ -1792,7 +1832,7 @@ void ScriptHost::call(const ScriptPtr& script, const QString& function, const QV
     if (out.status != LuauEngine::CallStatus::Ok) {
         // The script's own error text can be of any length and hold anything.
         const QString why = out.status == LuauEngine::CallStatus::TimedOut
-            ? QStringLiteral("took longer than %1 ms").arg(timeoutMs)
+            ? QStringLiteral("used more than %1 ms of CPU time").arg(timeoutMs)
             : loggable(ScriptPackage::locate(script->modules, out.message), MaxLogCharacters);
         // Whatever the owner holds must not trap the user, also after a
         // failure that does not count.
