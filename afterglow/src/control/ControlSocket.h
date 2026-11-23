@@ -261,7 +261,8 @@ private:
 /// target, registered while Control.enabled is on. It sends Control's events
 /// to the clients that subscribed, and merges the state events of each pane
 /// that come faster than Control.eventInterval. What waits for a pane goes
-/// out before the pane's next event that is never merged.
+/// out before the pane's next event that is never merged. An event that no
+/// client subscribed to is not merged.
 class ControlSocket : public QObject
 {
     Q_OBJECT

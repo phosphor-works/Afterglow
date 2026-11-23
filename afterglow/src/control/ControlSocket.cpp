@@ -700,6 +700,21 @@ ControlSocket::ControlSocket(Control& control, SettingsStore& settings, Phosphor
     connect(&control, &Control::userVarChanged, this, [this](quint32 p, const QString& name, const QString& value) {
         sendMerged("userVarChanged", p, name, {paneValue(p), name, value});
     });
+    // The last client of an event went away: what waits for it would go to
+    // no one, and would keep the timer running.
+    connect(&router, &PhosphorIpc::IpcRouter::subscribersChanged, this,
+            [this](const QString& target, const QString& signalName) {
+                if (target != QLatin1String(Target) || m_router.hasSubscribers(target, signalName))
+                    return;
+                for (auto it = m_merged.begin(); it != m_merged.end();) {
+                    if (signalName == QLatin1String(it->event)) {
+                        it = m_merged.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+                scheduleDue();
+            });
     connect(&settings, &SettingsStore::changed, this, &ControlSocket::applySettings);
     applySettings();
 }
@@ -774,7 +789,9 @@ void ControlSocket::sendNow(const char* event, quint32 pane, const QJsonArray& a
 
 void ControlSocket::sendMerged(const char* event, quint32 pane, const QString& name, const QJsonArray& args)
 {
-    if (!m_enabled)
+    // An event that no client subscribed to needs no entry and no timer. A
+    // client that subscribes later gets the next one.
+    if (!m_enabled || !m_router.hasSubscribers(QLatin1String(Target), QLatin1String(event)))
         return;
     if (m_settings.settings().control.eventInterval <= 0) {
         // What still waits from before the interval became 0 goes first.

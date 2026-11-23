@@ -1019,6 +1019,39 @@ TEST_F(ControlSocketTest, MergesTheTextChangesOfAPane)
     EXPECT_FALSE(dueTimerActive());
 }
 
+TEST_F(ControlSocketTest, MergesNoEventThatNoClientSubscribedTo)
+{
+    ASSERT_TRUE(start(R"({"Control": {"eventInterval": 5000}})"));
+    QLocalSocket client;
+    ASSERT_TRUE(connect(client));
+    ASSERT_TRUE(subscribe(client, QStringLiteral("bell")));
+    for (int i = 0; i < 10; ++i)
+        Q_EMIT m_control->textChanged(4);
+    EXPECT_FALSE(dueTimerActive());
+
+    // A text change waits behind the first one. The last client goes away,
+    // and the timer stops with what waits.
+    QLocalSocket watcher;
+    ASSERT_TRUE(connect(watcher));
+    ASSERT_TRUE(subscribe(watcher, QStringLiteral("textChanged")));
+    Q_EMIT m_control->textChanged(4);
+    Q_EMIT m_control->textChanged(4);
+    EXPECT_EQ(events(watcher, 1), QStringList{QStringLiteral("textChanged:4")});
+    EXPECT_TRUE(dueTimerActive());
+    watcher.disconnectFromServer();
+    EXPECT_TRUE(waitFor([&] {
+        return !dueTimerActive();
+    }));
+
+    // A new client gets the next change at once, not the one that waited.
+    QLocalSocket next;
+    ASSERT_TRUE(connect(next));
+    ASSERT_TRUE(subscribe(next, QStringLiteral("textChanged")));
+    Q_EMIT m_control->textChanged(5);
+    EXPECT_EQ(events(next, 1), QStringList{QStringLiteral("textChanged:5")});
+    EXPECT_TRUE(events(next, 0, 300).isEmpty());
+}
+
 } // namespace
 
 // The events of a session in the daemon are the window's: `afterglow ctl

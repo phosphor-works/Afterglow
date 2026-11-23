@@ -49,10 +49,10 @@ set(AFTERGLOW_DEPS phosphor-libs zlib-ng xxhash libpng libjpeg-turbo libwebp lcm
 # The phosphor-libs commit (LGPL-2.1-or-later, phosphor-works/phosphor-libs)
 # that the Phosphor libraries are built from (cmake/AfterglowPhosphor.cmake).
 # A commit, not a release, so VERSION is the commit hash.
-set(AFTERGLOW_DEP_phosphor-libs_VERSION "05c411aab54f7771e5f50f1639ac118be6b15876")
-set(AFTERGLOW_DEP_phosphor-libs_URL "https://github.com/phosphor-works/phosphor-libs/archive/05c411aab54f7771e5f50f1639ac118be6b15876.tar.gz")
-set(AFTERGLOW_DEP_phosphor-libs_FILE "phosphor-libs-05c411aab54f7771e5f50f1639ac118be6b15876.tar.gz")
-set(AFTERGLOW_DEP_phosphor-libs_SHA256 "b7c5f99b0b2a22d1e0deb678c82daaa268eb6bd9002bab500fff2fe26b423936")
+set(AFTERGLOW_DEP_phosphor-libs_VERSION "e10ed53392159aad48d4cdeaf1761b07355401aa")
+set(AFTERGLOW_DEP_phosphor-libs_URL "https://github.com/phosphor-works/phosphor-libs/archive/e10ed53392159aad48d4cdeaf1761b07355401aa.tar.gz")
+set(AFTERGLOW_DEP_phosphor-libs_FILE "phosphor-libs-e10ed53392159aad48d4cdeaf1761b07355401aa.tar.gz")
+set(AFTERGLOW_DEP_phosphor-libs_SHA256 "967bd546119fa833a8049a7b9495aa782d1ad7d990957ccfd6d077f0d990a143")
 
 # zlib-ng (Zlib license), in its zlib-compatible build: o=z images, file
 # transfer compression, and the inflate of the bundled libpng. The hash
