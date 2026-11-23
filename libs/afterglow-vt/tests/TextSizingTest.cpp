@@ -3,6 +3,7 @@
 
 #include "TestUtil.h"
 
+#include <AfterglowProto/Base64.h>
 #include <AfterglowVt/Selection.h>
 
 #include <gtest/gtest.h>
@@ -21,8 +22,14 @@ struct Term
         : t(cols, rows, host)
     {
     }
-    void feed(std::string_view s) { t.feed(s); }
-    const Cell& at(int x, int y) const { return t.screen().row(y).at(x); }
+    void feed(std::string_view s)
+    {
+        t.feed(s);
+    }
+    const Cell& at(int x, int y) const
+    {
+        return t.screen().row(y).at(x);
+    }
 };
 } // namespace
 
@@ -109,6 +116,247 @@ TEST(TextSizing, EraseAndEditTakeWholeBlocks)
     EXPECT_FALSE(t.at(0, 1).isMulticell());
 }
 
+TEST(TextSizing, InsertAndDeleteShiftOneRowBlocksWhole)
+{
+    // kitty's spec: ICH and DCH shift a one-row block whole. They erase a
+    // block of more rows, and one that the cells at x and x + n - 1 split.
+    auto block = [](const Term& t, int x) {
+        const Row& r = t.t.screen().row(0);
+        const MulticellParams* p = t.t.screen().multicellParams(r, x);
+        return p && r.at(x).multicellDx() == 0 && p->columns() == 2 && r.at(x).codepoint() == U'x' && r.graphemes
+            && r.graphemes->count(std::uint16_t(x)) && r.graphemes->at(std::uint16_t(x)) == U"y";
+    };
+    Term t(10, 4);
+    t.feed("\x1b[1;4H\x1b]66;w=2;xy\x07"); // one block in columns 3 and 4
+    ASSERT_TRUE(block(t, 3));
+    t.feed("\x1b[1;1H\x1b[2@");
+    EXPECT_TRUE(block(t, 5));
+    EXPECT_FALSE(t.at(3, 0).isMulticell());
+    ASSERT_TRUE(t.t.screen().row(0).multicell);
+    EXPECT_EQ(t.t.screen().row(0).multicell->count(3), 0u);
+    t.feed("\x1b[1;1H\x1b[2P");
+    EXPECT_TRUE(block(t, 3));
+    EXPECT_FALSE(t.at(5, 0).isMulticell());
+    // ICH at the block's second cell splits it.
+    t.feed("\x1b[1;5H\x1b[@");
+    EXPECT_FALSE(t.at(3, 0).isMulticell());
+    EXPECT_FALSE(t.t.screen().row(0).multicell && !t.t.screen().row(0).multicell->empty());
+    // ICH that pushes it past the right edge.
+    t.feed("\x1b[1;8H\x1b]66;w=2;xy\x07\x1b[1;1H\x1b[2@");
+    for (int x = 0; x < 10; ++x)
+        EXPECT_FALSE(t.at(x, 0).isMulticell()) << x;
+    // DCH whose deleted cells take its first cell.
+    t.feed("\x1b[1;4H\x1b]66;w=2;xy\x07\x1b[1;1H\x1b[4P");
+    for (int x = 0; x < 10; ++x)
+        EXPECT_FALSE(t.at(x, 0).isMulticell()) << x;
+    // DCH of the cells right before it moves it onto them.
+    t.feed("\x1b[1;4H\x1b]66;w=2;xy\x07\x1b[1;2H\x1b[2P");
+    EXPECT_TRUE(block(t, 1));
+    // A block of two rows goes, though it would fit.
+    t.feed("\x1b[2J\x1b[1;4H\x1b]66;s=2;a\x07\x1b[1;1H\x1b[@");
+    for (int y = 0; y < 2; ++y)
+        for (int x = 0; x < 10; ++x)
+            EXPECT_FALSE(t.at(x, y).isMulticell()) << x << "," << y;
+    // With left and right margins, a block past the right margin stays, and
+    // one across it goes.
+    t.feed("\x1b[2J\x1b[?69h\x1b[1;6s\x1b[1;8H\x1b]66;w=2;xy\x07\x1b[1;1H\x1b[@");
+    EXPECT_TRUE(block(t, 7));
+    // A block printed across the right margin would wrap: it goes there
+    // before the margins.
+    t.feed("\x1b[2J\x1b[?69l\x1b[1;6H\x1b]66;w=2;xy\x07\x1b[?69h\x1b[1;6s");
+    ASSERT_TRUE(block(t, 5));
+    t.feed("\x1b[1;1H\x1b[@");
+    EXPECT_FALSE(t.at(5, 0).isMulticell());
+    EXPECT_FALSE(t.at(6, 0).isMulticell());
+}
+
+TEST(TextSizing, AScrollWithinMarginsKeepsTheParametersOfTheBlocksItMoves)
+{
+    // A block that needs a row below the region scrolls the region within
+    // the left and right margins. The rows that the scroll leaves held a
+    // copy of the blocks that moved: clearing them took the moved block's
+    // parameters, and text printed on the block then never moved past it.
+    Term t(20, 5);
+    t.feed("\x1b[?69h\x1b[2;6s");
+    t.feed("\x1b[4;4H\x1b]66;s=2;a\x07"); // rows 3-4, columns 3-4
+    t.feed("\x1b[5;2H\x1b]66;s=2;b\x07"); // scrolls a up to rows 2-3
+    const Screen& s = t.t.screen();
+    ASSERT_TRUE(t.at(3, 3).isMulticell());
+    EXPECT_EQ(t.at(3, 3).multicellDy(), 1);
+    EXPECT_NE(s.multicellParams(s.row(2), 3), nullptr);
+    EXPECT_NE(s.multicellParams(s.row(3), 3), nullptr);
+    EXPECT_NE(s.multicellParams(s.row(3), 1), nullptr);
+    // Text on the lower row of a goes past it.
+    t.feed("\x1b[4;5Hx");
+    EXPECT_NE(t.t.text(Terminal::TextScope::Screen).find('x'), std::string::npos)
+        << t.t.text(Terminal::TextScope::Screen);
+}
+
+TEST(TextSizing, AScrollDownWithinMarginsKeepsTheParametersOfTheBlocksItMoves)
+{
+    // A scroll down (SD, and a reverse index at the top margin) leaves the
+    // top row, which held a copy of the block's top row. The reverse index
+    // is within the left and right margins: outside them it scrolls nothing.
+    for (const std::string scroll : {"\x1b[T", "\x1b[1;2H\x1bM"}) {
+        SCOPED_TRACE(scroll);
+        Term t(20, 5);
+        t.feed("\x1b[?69h\x1b[2;6s");
+        t.feed("\x1b[1;3H\x1b]66;s=2;a\x07"); // rows 0-1, columns 2-3
+        t.feed(scroll); // to rows 1-2
+        const Screen& s = t.t.screen();
+        EXPECT_FALSE(t.at(2, 0).isMulticell());
+        ASSERT_TRUE(t.at(2, 1).isMulticell());
+        ASSERT_TRUE(t.at(2, 2).isMulticell());
+        EXPECT_EQ(t.at(2, 1).multicellDy(), 0);
+        EXPECT_EQ(t.at(2, 2).multicellDy(), 1);
+        EXPECT_NE(s.multicellParams(s.row(1), 2), nullptr);
+        EXPECT_NE(s.multicellParams(s.row(2), 2), nullptr);
+        t.feed("\x1b[3;4Hx");
+        EXPECT_NE(t.t.text(Terminal::TextScope::Screen).find('x'), std::string::npos)
+            << t.t.text(Terminal::TextScope::Screen);
+    }
+}
+
+TEST(TextSizing, AScrollOfSeveralRowsWithinMarginsKeepsTheBlocksItMoves)
+{
+    // Two rows up: the block goes from rows 2-4 to rows 0-2. Rows 3 and 4,
+    // which the scroll clears, keep the remnant of its lower rows: erased as
+    // a block, it would reach up into row 2, which holds its bottom row now.
+    Term t(20, 5);
+    t.feed("\x1b[?69h\x1b[2;6s");
+    t.feed("\x1b[3;3H\x1b]66;s=3;a\x07"); // rows 2-4, columns 2-4
+    t.feed("\x1b[2S"); // to rows 0-2
+    const Screen& s = t.t.screen();
+    for (int y = 0; y < 3; ++y) {
+        ASSERT_TRUE(t.at(2, y).isMulticell()) << y;
+        EXPECT_EQ(t.at(2, y).multicellDy(), y);
+        EXPECT_NE(s.multicellParams(s.row(y), 2), nullptr) << y;
+    }
+    EXPECT_FALSE(t.at(2, 3).isMulticell());
+    EXPECT_FALSE(t.at(2, 4).isMulticell());
+    t.feed("\x1b[3;4Hx");
+    EXPECT_NE(t.t.text(Terminal::TextScope::Screen).find('x'), std::string::npos)
+        << t.t.text(Terminal::TextScope::Screen);
+}
+
+// kitty's unscroll drops the last rows of the screen: a block that they cut
+// goes, also its top row that comes back from the history.
+TEST(TextSizing, AnUnscrollThatCutsABlockTakesItsRowsFromTheHistory)
+{
+    Term t(10, 4);
+    t.feed("h\r\n\r\n\r\n\r\n"); // "h" in the history
+    t.feed("\x1b[H\x1b]66;s=4;a\x07"); // rows 0-3
+    t.feed("\x1b[4;1H\n"); // rows -1 to 2
+    ASSERT_EQ(t.t.screen().historySize(), 2u);
+    t.feed("\x1b[2+T"); // rows 1 to 4, past the screen
+    EXPECT_EQ(t.at(0, 0).codepoint(), U'h');
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x)
+            EXPECT_FALSE(t.at(x, y).isMulticell()) << x << "," << y;
+        EXPECT_EQ(t.t.screen().multicellParams(t.t.screen().row(y), 0), nullptr) << y;
+    }
+}
+
+TEST(TextSizing, TextOnABlockThatAMarginScrollMovedGoesOn)
+{
+    // The sequence that a random run found: an image that moves the cursor
+    // down, text that wraps within the margins, then blocks at the bottom.
+    Term t(47, 5);
+    t.t.resize(47, 5, 10, 20);
+    std::string pixels;
+    for (int i = 0; i < 40; ++i)
+        pixels += std::string("\x01\x02\x03\xff", 4);
+    t.feed("\x1b[?69h\x1b[2;6s");
+    t.feed("\x1b_Ga=T,f=32,s=1,v=40,i=1,q=2;" + AfterglowProto::base64Encode(pixels) + "\x1b\\");
+    t.feed("\rhello world \x1b]66;s=2;ab\x1b\\x");
+    EXPECT_NE(t.t.text(Terminal::TextScope::Screen).find('x'), std::string::npos)
+        << t.t.text(Terminal::TextScope::Screen);
+}
+
+TEST(TextSizing, EraseCharactersAndDisplayTakeWholeBlocks)
+{
+    // kitty 0.50.0 fixed erasing multi-cell characters. Each erase that
+    // reaches one cell of a block, from any row or column, erases all of it.
+    Term t(20, 5);
+    auto blockAt = [&](int x) {
+        return t.at(x, 0).isMulticell() || t.at(x, 1).isMulticell();
+    };
+    t.feed("\x1b]66;s=2;ab\x07"); // blocks at columns 0-1 and 2-3, rows 0-1
+    t.feed("\x1b[2;4H\x1b[X"); // ECH on the last cell of the lower row of b
+    EXPECT_TRUE(blockAt(0));
+    EXPECT_TRUE(blockAt(1));
+    for (int y = 0; y < 2; ++y) {
+        EXPECT_FALSE(t.at(2, y).isMulticell()) << y;
+        EXPECT_FALSE(t.at(3, y).isMulticell()) << y;
+    }
+    t.feed("\x1b[2;2H\x1b[1J"); // ED 1 ends in the lower row of a
+    for (int y = 0; y < 2; ++y) {
+        EXPECT_FALSE(t.at(0, y).isMulticell()) << y;
+        EXPECT_FALSE(t.at(1, y).isMulticell()) << y;
+    }
+    t.feed("\x1b[H\x1b]66;s=2;c\x07\x1b[2;2H\x1b[J"); // ED 0 starts in the lower row
+    for (int y = 0; y < 2; ++y) {
+        EXPECT_FALSE(t.at(0, y).isMulticell()) << y;
+        EXPECT_FALSE(t.at(1, y).isMulticell()) << y;
+    }
+    t.feed("\x1b[H\x1b]66;s=2;d\x07\x1b[1;2H\x1b[1K"); // EL 1 ends in the right column
+    for (int y = 0; y < 2; ++y) {
+        EXPECT_FALSE(t.at(0, y).isMulticell()) << y;
+        EXPECT_FALSE(t.at(1, y).isMulticell()) << y;
+    }
+}
+
+TEST(TextSizing, AVariationSelectorKeepsAnExplicitWidth)
+{
+    // kitty 0.49.0: U+FE0E after a cell with an explicit width does not
+    // narrow it, as it narrows an emoji of natural width.
+    Term t(20, 5);
+    t.feed("\x1b]66;w=2;\xe2\x9d\xa4\x07\xef\xb8\x8ex"); // a heart in two cells, U+FE0E, x
+    EXPECT_TRUE(t.at(0, 0).isMulticell());
+    EXPECT_TRUE(t.at(1, 0).isMulticell());
+    const MulticellParams* p = t.t.screen().multicellParams(t.t.screen().row(0), 0);
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p->columns(), 2);
+    EXPECT_EQ(t.at(2, 0).codepoint(), U'x');
+}
+
+TEST(TextSizing, ALongClusterOfNaturalWidthStaysWhole)
+{
+    // kitty 0.49.0 overflowed a buffer with natural-width clusters of more
+    // than four code points. A family emoji is seven.
+    const std::string family =
+        "\xf0\x9f\x91\xa8\xe2\x80\x8d\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x91\xa7"
+        "\xe2\x80\x8d\xf0\x9f\x91\xa6";
+    Term t(20, 5);
+    t.feed("\x1b]66;s=2;" + family + "\x07x");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::Screen), family + "x");
+    EXPECT_EQ(t.t.screen().cursor.x, 5); // two columns at scale 2, then x
+    // Combining marks: one base and twelve marks.
+    std::string marks = "e";
+    for (int i = 0; i < 12; ++i)
+        marks += "\xcc\x81";
+    t.t.reset();
+    t.feed("\x1b]66;s=2;" + marks + "\x07");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::Screen), marks);
+    EXPECT_EQ(t.t.screen().cursor.x, 2);
+}
+
+TEST(TextSizing, ACodeWithNoTextChangesNothing)
+{
+    // As in kitty: no text, whatever the metadata, draws nothing and moves
+    // no cursor. afterglow_vtdiff found that Afterglow drew a space.
+    for (std::string_view code : {"\x1b]66;;\x07", "\x1b]66;w=2;\x07", "\x1b]66;s=2;\x07", "\x1b]66;w=3:s=2;\x1b\\",
+                                  "\x1b]66;w=2;\x01\x02\x07"}) {
+        Term t(20, 5);
+        t.feed("ab");
+        t.feed(code);
+        t.feed("cd");
+        EXPECT_EQ(rowText(t.t, 0), "abcd") << code;
+        EXPECT_EQ(t.t.screen().cursor.x, 4) << code;
+        EXPECT_FALSE(t.at(2, 0).isMulticell()) << code;
+    }
+}
+
 TEST(TextSizing, WrapsAndScrollsToFit)
 {
     Term t(5, 3);
@@ -144,6 +392,19 @@ TEST(TextSizing, ReflowFlattensBlocks)
     t.t.resize(8, 4, 8, 16);
     EXPECT_FALSE(t.at(0, 0).isMulticell());
     EXPECT_EQ(rowText(t.t, 0), "W");
+}
+
+TEST(TextSizing, ACombiningMarkJoinsTheBlockItFollows)
+{
+    // kitty: "If the text is a combining character it is added to the
+    // existing multicell character". Every row of the block keeps its text.
+    Term t(20, 5);
+    t.feed("\x1b]66;s=2;a\x07\xcc\x81"); // a 2x2 'a', then U+0301
+    for (int y = 0; y < 2; ++y) {
+        EXPECT_EQ(t.t.screen().graphemeExtra(t.t.screen().row(y), 0), std::u32string_view(U"\u0301")) << y;
+        EXPECT_FALSE(t.at(1, y).hasGrapheme()) << y;
+    }
+    EXPECT_EQ(t.t.screen().cursor.x, 2);
 }
 
 TEST(TextSizing, PlainSizeIsOrdinaryText)
@@ -196,7 +457,9 @@ TEST(TextSizing, IllFormedBytesBecomeReplacementsAndControlsGo)
     Term t(20, 3);
     // A cut sequence (E2 82) gives one U+FFFD for each byte. An encoded C1
     // control (U+0085) and a DEL are dropped.
-    t.feed("\x1b]66;s=1;a\xe2\x82\xc2\x85\x7f" "b\x07");
+    t.feed(
+        "\x1b]66;s=1;a\xe2\x82\xc2\x85\x7f"
+        "b\x07");
     EXPECT_EQ(t.at(0, 0).codepoint(), U'a');
     EXPECT_EQ(t.at(1, 0).codepoint(), Unicode::ReplacementCharacter);
     EXPECT_EQ(t.at(2, 0).codepoint(), Unicode::ReplacementCharacter);

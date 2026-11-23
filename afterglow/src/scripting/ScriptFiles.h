@@ -14,30 +14,58 @@ namespace Afterglow {
 /// a whole UTF-8 character. A character that ends exactly at the limit stays.
 inline QByteArray utf8Prefix(QByteArray bytes, qsizetype limit)
 {
-    if (limit < 0) limit = 0;
-    if (bytes.size() <= limit) return bytes;
+    if (limit < 0)
+        limit = 0;
+    if (bytes.size() <= limit)
+        return bytes;
     bytes.truncate(limit);
     // The lead byte of the last sequence, at most three continuation bytes back.
     qsizetype lead = bytes.size();
-    while (lead > 0 && bytes.size() - lead < 3 && (static_cast<unsigned char>(bytes[lead - 1]) & 0xC0) == 0x80) --lead;
-    if (lead == 0) return bytes; // continuation bytes only: not text to keep whole
+    while (lead > 0 && bytes.size() - lead < 3 && (static_cast<unsigned char>(bytes[lead - 1]) & 0xC0) == 0x80)
+        --lead;
+    if (lead == 0)
+        return bytes; // continuation bytes only: not text to keep whole
     const auto b = static_cast<unsigned char>(bytes[lead - 1]);
-    const qsizetype length = b < 0x80 ? 1 : (b & 0xE0) == 0xC0 ? 2 : (b & 0xF0) == 0xE0 ? 3 : (b & 0xF8) == 0xF0 ? 4 : 1;
+    const qsizetype length = b < 0x80 ? 1
+        : (b & 0xE0) == 0xC0          ? 2
+        : (b & 0xF0) == 0xE0          ? 3
+        : (b & 0xF8) == 0xF0          ? 4
+                                      : 1;
     // The sequence that the cut runs through goes whole.
-    if (lead - 1 + length > bytes.size()) bytes.truncate(lead - 1);
+    if (lead - 1 + length > bytes.size())
+        bytes.truncate(lead - 1);
     return bytes;
+}
+
+/// What tells one revision of a file from the next: its inode, size and times.
+inline QByteArray fileStamp(const struct stat& info)
+{
+    return QByteArray::number(qulonglong(info.st_dev)) + ':' + QByteArray::number(qulonglong(info.st_ino)) + ':'
+        + QByteArray::number(qlonglong(info.st_size)) + ':' + QByteArray::number(qlonglong(info.st_mtim.tv_sec)) + '.'
+        + QByteArray::number(qlonglong(info.st_mtim.tv_nsec)) + ':' + QByteArray::number(qlonglong(info.st_ctim.tv_sec))
+        + '.' + QByteArray::number(qlonglong(info.st_ctim.tv_nsec));
 }
 
 // Read the descriptor that was validated, with a byte bound even if the file
 // grows. O_NONBLOCK prevents a replaced path from hanging the GUI on a FIFO.
-inline QString readScriptFile(const QString& path, qint64 limit, QByteArray& bytes,
-                              const QString& root = {}, bool noFollow = false)
+// @p stamp gets the file's stamp from before the read: a write during the
+// read makes the stamp of the path differ later.
+inline QString readScriptFile(const QString& path, qint64 limit, QByteArray& bytes, const QString& root = {},
+                              bool noFollow = false, QByteArray* stamp = nullptr)
 {
-    const int fd = ::open(QFile::encodeName(path).constData(),
-        O_RDONLY | O_CLOEXEC | O_NONBLOCK | (noFollow ? O_NOFOLLOW : 0));
-    if (fd < 0) return QStringLiteral("Cannot open file: %1").arg(path);
-    struct Close { int fd; ~Close() { ::close(fd); } } close{fd};
-    struct stat info {};
+    const int fd =
+        ::open(QFile::encodeName(path).constData(), O_RDONLY | O_CLOEXEC | O_NONBLOCK | (noFollow ? O_NOFOLLOW : 0));
+    if (fd < 0)
+        return QStringLiteral("Cannot open file: %1").arg(path);
+    struct Close
+    {
+        int fd;
+        ~Close()
+        {
+            ::close(fd);
+        }
+    } close{fd};
+    struct stat info{};
     if (::fstat(fd, &info) || !S_ISREG(info.st_mode) || info.st_size < 0 || info.st_size > limit)
         return QStringLiteral("File must be regular and within its byte limit: %1").arg(path);
     if (!root.isEmpty()) {
@@ -45,11 +73,16 @@ inline QString readScriptFile(const QString& path, qint64 limit, QByteArray& byt
         if (!opened.startsWith(root + QLatin1Char('/')))
             return QStringLiteral("Package file escapes its root: %1").arg(path);
     }
+    if (stamp)
+        *stamp = fileStamp(info);
     QFile file;
-    if (!file.open(fd, QIODevice::ReadOnly, QFileDevice::DontCloseHandle)) return file.errorString();
+    if (!file.open(fd, QIODevice::ReadOnly, QFileDevice::DontCloseHandle))
+        return file.errorString();
     auto contents = file.read(limit + 1);
-    if (file.error() != QFileDevice::NoError) return file.errorString();
-    if (contents.size() > limit) return QStringLiteral("File exceeds its byte limit: %1").arg(path);
+    if (file.error() != QFileDevice::NoError)
+        return file.errorString();
+    if (contents.size() > limit)
+        return QStringLiteral("File exceeds its byte limit: %1").arg(path);
     bytes = std::move(contents);
     return {};
 }

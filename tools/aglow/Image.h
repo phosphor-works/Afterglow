@@ -8,49 +8,78 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Aglow {
 
-/// A decoded image: one RGBA canvas for each frame (a GIF can have many),
+/// A decoded image: one RGBA canvas for each frame (an animation has many),
 /// with straight (not premultiplied) alpha.
 class Image
 {
 public:
     int width = 0;
     int height = 0;
-    int frameCount() const { return int(m_frames.size()); }
-    /// Milliseconds that frame @p index shows, for an animation.
-    int delay(int index) const { return m_delays[std::size_t(index)]; }
+    int frameCount() const
+    {
+        return int(m_frames.size());
+    }
+    /// Milliseconds that frame @p index shows, for an animation. 0 for a
+    /// frame that shows with the next one, with no time of its own.
+    int delay(int index) const
+    {
+        return m_delays[std::size_t(index)];
+    }
     /// Frame @p index, as RGBA bytes.
-    const std::string& frame(int index) const { return m_frames[std::size_t(index)]; }
+    const std::string& frame(int index) const
+    {
+        return m_frames[std::size_t(index)];
+    }
+    /// Frame @p index moved out of the image, which keeps an empty one: a
+    /// frame that is sent once is not copied.
+    std::string takeFrame(int index)
+    {
+        return std::exchange(m_frames[std::size_t(index)], {});
+    }
     /// Why an animation has fewer frames than its file: empty when it has all of them.
-    const std::string& warning() const { return m_warning; }
+    const std::string& warning() const
+    {
+        return m_warning;
+    }
 
 private:
-    friend std::optional<Image> decodeImage(std::string_view, std::size_t, std::string&);
+    friend std::optional<Image> decodeImage(std::string_view, std::size_t, std::string&, std::size_t);
     std::vector<std::string> m_frames;
     std::vector<int> m_delays;
     std::string m_warning;
 };
 
-/// The size of an encoded image without decoding it, turned as its EXIF
+/// The size of an encoded image without decoding it, turned as its
 /// orientation says. False when aglow cannot read it.
 bool imageSize(std::string_view bytes, int& width, int& height);
 /// The same, with @p error set to the reason when it is false.
 bool imageSize(std::string_view bytes, int& width, int& height, std::string& error);
-/// Whether @p bytes are a PNG file that a terminal can decode itself: a valid
-/// IHDR first, and not Apple's CgBI variant, which only aglow reads.
+/// Whether @p bytes are a PNG file that a terminal can decode and show
+/// itself: a valid IHDR first (not Apple's CgBI variant), image data, IEND,
+/// every chunk whole with its checksum, and no EXIF orientation that turns it.
 bool isPng(std::string_view bytes);
-/// Decodes PNG, JPEG, GIF (with every frame), BMP, PSD (RGB), TGA, HDR, PIC
-/// and binary PGM and PPM, when the decoded pixels fit in @p budget bytes and
-/// each side in AfterglowProto::GraphicsMaxSide. A JPEG is turned as its EXIF
-/// orientation says. A GIF whose frames do not all fit in @p budget, or that
-/// has more than AfterglowProto::GraphicsMaxFrames, gives its first frame.
-/// The decoder runs in a child process with limits on its memory and CPU
-/// time, so that a corrupt file cannot harm aglow. nullopt with @p error set
-/// otherwise.
-std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std::string& error);
+/// Decodes PNG and APNG, JPEG, GIF and WebP (an animation with every frame),
+/// BMP, TIFF and netPBM (AfterglowImage), when the decoded pixels fit in
+/// @p budget bytes and each side in AfterglowProto::GraphicsMaxSide. A JPEG,
+/// a PNG, a WebP and a TIFF are turned as their orientation says. At most
+/// @p maxFrames frames are decoded, with no warning. An animation whose
+/// frames do not all fit in @p budget, or that has more than
+/// AfterglowProto::GraphicsMaxFrames, gives its first frame, with a warning.
+/// The decoder runs in a child process with limits on its memory, its CPU
+/// time and its system calls, so that a corrupt file cannot harm aglow.
+/// nullopt with @p error set otherwise. @p error is cleared first: a reason
+/// that it held before is gone, also on success.
+std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std::string& error,
+                                 std::size_t maxFrames = SIZE_MAX);
+
+/// A PNG of @p rgba, @p width by @p height pixels of 8-bit RGBA with
+/// straight alpha. Empty when there is no memory for it.
+std::string encodePng(std::string_view rgba, int width, int height);
 
 /// Scales RGBA frames of one size to another. The filter weights are worked
 /// out once, for all the frames of an animation.
@@ -59,7 +88,10 @@ class Resizer
 public:
     Resizer(int width, int height, int newWidth, int newHeight);
     /// Whether the sizes are the same: then a frame needs no scaling.
-    bool identity() const { return m_width == m_newWidth && m_height == m_newHeight; }
+    bool identity() const
+    {
+        return m_width == m_newWidth && m_height == m_newHeight;
+    }
     std::string operator()(const std::string& rgba) const;
 
 private:
@@ -86,7 +118,7 @@ void mirrorFrame(std::string& rgba, int width, int height, bool horizontal, bool
 /// Draws the frame over an opaque colour, so that it has no transparency left.
 void flattenFrame(std::string& rgba, std::uint8_t red, std::uint8_t green, std::uint8_t blue);
 bool frameOpaque(const std::string& rgba);
-/// The RGB bytes of an RGBA frame (a copy).
-std::string dropAlpha(const std::string& rgba);
+/// Turns an RGBA frame into its RGB bytes, in place.
+void dropAlpha(std::string& rgba);
 
 } // namespace Aglow

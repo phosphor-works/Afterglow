@@ -27,7 +27,15 @@ int hexValue(char c)
     return -1;
 }
 
-bool asciiAlnum(unsigned char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+bool asciiAlnum(unsigned char c)
+{
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+char asciiLower(char c)
+{
+    return c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c;
+}
 
 DndUri fileUri(std::string_view rest)
 {
@@ -39,8 +47,13 @@ DndUri fileUri(std::string_view rest)
         if (slash == std::string_view::npos) {
             return uri;
         }
+        // Host names have no case: "LOCALHOST" names this computer too.
         const auto host = rest.substr(2, slash - 2);
-        if (!host.empty() && host != "localhost") {
+        constexpr std::string_view Localhost = "localhost";
+        if (!host.empty()
+            && !std::equal(host.begin(), host.end(), Localhost.begin(), Localhost.end(), [](char a, char b) {
+                   return asciiLower(a) == b;
+               })) {
             return uri;
         }
         path = rest.substr(slash);

@@ -235,8 +235,9 @@ TEST(Clipboard, ChunksSplitAnywhereAssembleTheSameData)
             ClipboardAssembler a;
             ClipboardRequest out;
             std::string reply;
-            feedPending(a, {"type=write:id=s", prefix + encoded.substr(0, cut), prefix + encoded.substr(cut, second - cut),
-                            prefix + encoded.substr(second)});
+            feedPending(a,
+                        {"type=write:id=s", prefix + encoded.substr(0, cut), prefix + encoded.substr(cut, second - cut),
+                         prefix + encoded.substr(second)});
             const auto result = a.feed("type=wdata", out, reply);
             EXPECT_EQ(result, ClipboardAssembler::Result::Ready) << cut << " " << second << ": " << reply;
             EXPECT_EQ(out.data.size(), 1u) << cut << " " << second;

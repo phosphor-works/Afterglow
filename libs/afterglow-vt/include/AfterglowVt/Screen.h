@@ -18,7 +18,12 @@ namespace AfterglowVt {
 
 /// Character sets for G0-G3. British replaces # with the pound sign; Latin-1
 /// Supplemental is the 96-character upper half of ISO 8859-1, in GL.
-enum class Charset : std::uint8_t { Ascii, DecSpecialGraphics, British, Latin1Supplemental };
+enum class Charset : std::uint8_t {
+    Ascii,
+    DecSpecialGraphics,
+    British,
+    Latin1Supplemental
+};
 
 struct Cursor
 {
@@ -59,6 +64,16 @@ struct Region
 class AFTERGLOWVT_EXPORT Screen
 {
 public:
+    /// The largest grid: a size is clamped to at most MaxColumns columns
+    /// and MaxCells cells.
+    static constexpr int MaxColumns = 4096;
+    static constexpr std::size_t MaxCells = 1048576;
+    /// Extra codepoints that a cell's grapheme cluster keeps. The text of a
+    /// sizing block (OSC 66) can be longer: up to this many for each column
+    /// of the row where it was written. A resize that flattens the block
+    /// keeps that text on one cell.
+    static constexpr std::size_t MaxGraphemeExtra = 32;
+
     /// @param maxScrollback rows of history to keep; 0 disables history (alternate screen).
     Screen(int cols, int rows, std::size_t maxScrollback);
     ~Screen();
@@ -66,19 +81,46 @@ public:
     Screen(const Screen&) = delete;
     Screen& operator=(const Screen&) = delete;
 
-    int cols() const noexcept { return m_cols; }
-    int rows() const noexcept { return m_rowCount; }
+    int cols() const noexcept
+    {
+        return m_cols;
+    }
+    int rows() const noexcept
+    {
+        return m_rowCount;
+    }
 
-    std::size_t historySize() const noexcept { return m_rows.size() - std::size_t(m_rowCount); }
-    std::size_t totalRows() const noexcept { return m_rows.size(); }
+    std::size_t historySize() const noexcept
+    {
+        return m_rows.size() - std::size_t(m_rowCount);
+    }
+    std::size_t totalRows() const noexcept
+    {
+        return m_rows.size();
+    }
 
-    Row& row(int y) noexcept { return m_rows[historySize() + std::size_t(y)]; }
-    const Row& row(int y) const noexcept { return m_rows[historySize() + std::size_t(y)]; }
+    Row& row(int y) noexcept
+    {
+        return m_rows[historySize() + std::size_t(y)];
+    }
+    const Row& row(int y) const noexcept
+    {
+        return m_rows[historySize() + std::size_t(y)];
+    }
     /// Row by absolute index: 0 is the oldest history row.
-    const Row& absoluteRow(std::size_t index) const noexcept { return m_rows[index]; }
+    const Row& absoluteRow(std::size_t index) const noexcept
+    {
+        return m_rows[index];
+    }
 
-    StyleTable& styles() noexcept { return m_styles; }
-    const StyleTable& styles() const noexcept { return m_styles; }
+    StyleTable& styles() noexcept
+    {
+        return m_styles;
+    }
+    const StyleTable& styles() const noexcept
+    {
+        return m_styles;
+    }
 
     Cursor cursor;
     SavedCursor savedCursor;
@@ -151,11 +193,25 @@ public:
     // Viewport -------------------------------------------------------------
 
     /// Rows scrolled back from the live bottom. 0 shows the active area.
-    std::size_t viewportOffset() const noexcept { return m_viewportOffset; }
+    std::size_t viewportOffset() const noexcept
+    {
+        return m_viewportOffset;
+    }
     void scrollViewport(long delta) noexcept;
-    void resetViewport() noexcept { m_viewportOffset = 0; }
+    void resetViewport() noexcept
+    {
+        m_viewportOffset = 0;
+    }
+    /// kitty's unscroll: the last @p n rows of the history, at most a
+    /// screen, come back to the top of the screen, and the screen's last
+    /// rows go. Every row that stays keeps its stable id. Returns how many
+    /// rows came back.
+    int unscroll(int n);
     /// Absolute index of the first row shown in the viewport.
-    std::size_t viewportTop() const noexcept { return historySize() - m_viewportOffset; }
+    std::size_t viewportTop() const noexcept
+    {
+        return historySize() - m_viewportOffset;
+    }
     /// Cells stored for history rows (trailing blanks are not).
     std::size_t historyCells() const noexcept;
 
@@ -164,11 +220,32 @@ public:
     /// Rows dropped off the top of history so far. A row's stable id is
     /// rowsDropped() + its absolute index; it survives scrolling and history
     /// trimming (resize reflow starts a new numbering, see layoutEpoch()).
-    std::uint64_t rowsDropped() const noexcept { return m_rowsDropped; }
+    std::uint64_t rowsDropped() const noexcept
+    {
+        return m_rowsDropped;
+    }
     /// Changes whenever a resize changes the width (and reflow rebuilds the
     /// rows); stable ids from an older epoch no longer refer to the same
     /// content. A change of height keeps the epoch.
-    std::uint64_t layoutEpoch() const noexcept { return m_layoutEpoch; }
+    std::uint64_t layoutEpoch() const noexcept
+    {
+        return m_layoutEpoch;
+    }
+    /// Grows each time history rows return to the screen (unscroll(), a
+    /// taller screen without reflow): the first visible row's id goes back,
+    /// and the ids after it name new rows from then on. Every id that
+    /// stays names the same row.
+    std::uint64_t historyRewinds() const noexcept
+    {
+        return m_historyRewinds;
+    }
+    /// Grows with each call that writes cells, erases them, moves rows,
+    /// changes the history or the size: what the text of the screen reads
+    /// may differ after it. A write of the same text counts too.
+    std::uint64_t contentSerial() const noexcept
+    {
+        return m_contentSerial;
+    }
     /// Absolute index for a stable id, or -1 if that row is gone.
     long long absoluteIndexOf(std::uint64_t stableId) const noexcept
     {
@@ -179,6 +256,15 @@ public:
     }
 
 private:
+    /// Clears @p left to @p right of a row that a scroll within the margins
+    /// left: its blocks moved with the rows, and what is left of them here is
+    /// a copy, or the remnant of a block that left whose other rows the copy
+    /// overwrote. No erase of a block may follow either into the rows that
+    /// hold a block now.
+    void clearVacatedSpan(Row& row, int left, int right, std::uint32_t fillStyleId);
+    // The mux reader installs rows and history rows in a replica (StateSync.h).
+    friend class StateReader;
+
     /// Turns blocks into plain text at their top-left cell (before reflow).
     void flattenMulticells();
     void releaseRow(Row& row) noexcept;
@@ -198,13 +284,20 @@ private:
     void eraseMulticellAt(Row& row, int x);
     /// Erases only @p row's part of the block at @p x.
     void eraseMulticellInRow(Row& row, int x);
+    /// Before ICH (@p shift > 0) or DCH (< 0) shifts columns x..right of
+    /// @p row: erases the blocks that cannot move whole, and returns the left
+    /// columns of those that move.
+    std::vector<std::uint16_t> settleMulticellsForShift(Row& row, int x, int right, int shift);
+    /// After the shift: moves the map entries of @p moved by @p shift columns.
+    static void shiftMulticellKeys(Row& row, const std::vector<std::uint16_t>& moved, int shift);
     /// Erases blocks in rows top..bottom that also reach outside the region,
     /// or that have rows on both sides of row @p split.
     void eraseMulticellsCrossing(int top, int bottom, int left, int right, int split);
     void trimHistory();
     void truncateRow(Row& row, int cols);
     void resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracked, std::vector<int>* trackedColumns);
-    void resizeReflow(int cols, int rows, std::optional<std::size_t> promptStart, std::vector<std::size_t>* tracked, std::vector<int>* trackedColumns);
+    void resizeReflow(int cols, int rows, std::optional<std::size_t> promptStart, std::vector<std::size_t>* tracked,
+                      std::vector<int>* trackedColumns);
 
     std::deque<Row> m_rows;
     int m_cols;
@@ -213,6 +306,8 @@ private:
     std::size_t m_viewportOffset = 0;
     std::uint64_t m_rowsDropped = 0;
     std::uint64_t m_layoutEpoch = 0;
+    std::uint64_t m_historyRewinds = 0;
+    std::uint64_t m_contentSerial = 0;
     StyleTable m_styles;
 };
 

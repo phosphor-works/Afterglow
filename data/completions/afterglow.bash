@@ -4,20 +4,25 @@
 # Bash completion for afterglow. Script IDs and their commands come from the
 # running Afterglow, through the aglow that afterglow runs (aglow run
 # --complete). It works best with the bash-completion package, which
-# completes the commands of -e, ssh and ctl ... -- CMD. afterglow run,
+# completes the commands of -e, ssh, ctl ... -- CMD and mux new -- CMD, and
+# the hosts of mux --ssh. afterglow run,
 # transfer, dnd, icat and clipboard complete as aglow does: bash-completion
 # loads the completion of aglow when it is first needed. Without
 # bash-completion, source aglow.bash as well.
 
-_afterglow_ctl_commands="ls send-text get-text split move-pane detach-tab new-tab new-window focus close set-title
-signal notify scripts open-directory projects save-project open-project action watch overlay"
+_afterglow_ctl_commands="ls send-text paste get-text split move-pane detach-tab new-tab new-window focus close set-title
+set-tab-title resize send-key scroll signal notify scripts open-directory projects save-project open-project action
+watch overlay screenshot colors set-colors set-font-size set-opacity set-user-var signal-program window"
+# Key names that ctl send-key takes, of many more.
+_afterglow_keys="enter escape tab backspace space up down left right home end page_up page_down insert delete f1 f2 f3
+f4 f5 f6 f7 f8 f9 f10 f11 f12 ctrl+c ctrl+d ctrl+l ctrl+z"
 # The keybind actions that ctl action runs (afterglow/src/config/Keybinds.cpp).
 _afterglow_actions="swap_left swap_right swap_up swap_down rotate_panes_clockwise rotate_panes_counterclockwise
 pane_overview use_package_shaders move_pane_to_tab move_pane_to_window detach_tab save_project switch_project
 end_script_key_mode cancel_overlay split_right split_down split_left split_up rename_pane close_pane new_window
 new_tab close_tab rename_tab move_tab_left move_tab_right goto_tab_1 goto_tab_2 goto_tab_3 goto_tab_4 goto_tab_5
 goto_tab_6 goto_tab_7 goto_tab_8 goto_tab_9 close_window toggle_fullscreen next_tab previous_tab show_hints
-show_last_output copy_mode copy paste select_all clear_screen reset notify_on_finish focus_left focus_right focus_up
+show_last_output show_first_output_on_screen show_last_visited_output copy_mode copy paste select_all clear_screen reset notify_on_finish focus_left focus_right focus_up
 focus_down equalize_splits toggle_pane_zoom resize_left resize_right resize_up resize_down font_bigger font_smaller
 font_reset scroll_page_up scroll_page_down scroll_top scroll_bottom jump_prompt_up jump_prompt_down search
 command_palette reload_config open_config show_urls_open show_urls_copy unicode_input"
@@ -84,7 +89,8 @@ _afterglow_unused()
         given=""
         for option in ${group//|/ }; do
             for ((j = start; j < cword; j++)); do
-                [[ ${words[j]} == "$option" ]] && given=1
+                # --title=x gives --title as well.
+                [[ ${words[j]%%=*} == "$option" ]] && given=1
             done
         done
         [[ $given ]] || _afterglow_matching ${group//|/ }
@@ -93,10 +99,21 @@ _afterglow_unused()
 
 _afterglow_ctl()
 {
-    local command=${words[2]} start=3 i j positional=0 text=""
-    if ((cword == 2)); then
+    # --session NAME comes before the command. afterglow mux ls lists the
+    # names, but a completion runs no program but aglow run --complete, so
+    # none is offered. With the cursor on the word --session itself, that
+    # word is the one being completed.
+    # In a pane of a session, the commands act on it as with --session.
+    local first=2 session=${AFTERGLOW_SESSION:+1}
+    if [[ ${words[2]} == --session ]] && ((cword > 2)); then
+        ((cword == 3)) && return
+        first=4 session=1
+    fi
+    local command=${words[first]} start=$((first + 1)) i j positional=0 text=""
+    if ((cword == first)); then
         if [[ $cur == -* ]]; then
-            _afterglow_matching -h --help
+            # The usage only comes first: after --session NAME a command follows.
+            ((first == 2)) && _afterglow_matching -h --help --session
         else
             # shellcheck disable=SC2086 # the list splits into its words
             _afterglow_matching $_afterglow_ctl_commands
@@ -112,22 +129,45 @@ _afterglow_ctl()
             # Text follows, or the command takes nothing after it.
             return
             ;;
-        --pane | --cwd | --layout)
+        --pane | --cwd | --layout | --direction | --cells | --pages | --prompt | --env | --var | --stdin-text | --size)
             ((i++))
             ;;
         --capture | --title | -w | --width | -h | --height | --position)
-            # The options of overlay. Elsewhere they are no option of ctl.
-            [[ $command == overlay ]] && ((i++))
+            # The options of overlay. Elsewhere they are no option of ctl,
+            # and -w and -h are words, as -x.png is.
+            if [[ $command == overlay ]]; then
+                ((i++))
+            elif [[ ${words[i]} == -[wh] ]]; then
+                ((positional++))
+                text=1
+            fi
             ;;
-        -*) ;;
-        *)
+        # A lone - is a word for every command: the standard output of
+        # screenshot, text for send-text.
+        - | [!-]* | '')
             ((positional++))
             text=1
             ;;
+        -[!-]*)
+            # -x.png is a word too, except where overlay takes -n, -w and -h.
+            if [[ $command != overlay ]]; then
+                ((positional++))
+                text=1
+            fi
+            ;;
+        -*) ;;
         esac
     done
     case $prev in
-    --pane | --layout) return ;;
+    --pane | --layout | --cells | --pages | --prompt | --env | --var | --size) return ;;
+    --stdin-text)
+        _afterglow_matching screen scrollback selection last-output first-output-on-screen last-visited-output
+        return
+        ;;
+    --direction)
+        _afterglow_matching left right up down
+        return
+        ;;
     --cwd)
         _afterglow_files -d
         return
@@ -156,12 +196,25 @@ _afterglow_ctl()
             _afterglow_files -d
             return
             ;;
+        screenshot:0)
+            _afterglow_files
+            return
+            ;;
         move-pane:1)
             _afterglow_matching left right up down new-tab new-window
             return
             ;;
         signal:0)
             _afterglow_matching 0 1 2 3 4 5 6 7
+            return
+            ;;
+        signal-program:0)
+            _afterglow_matching INT TERM HUP KILL QUIT USR1 USR2 STOP CONT TSTP WINCH
+            return
+            ;;
+        send-key:*)
+            # shellcheck disable=SC2086 # the list splits into its words
+            _afterglow_matching $_afterglow_keys
             return
             ;;
         action:0)
@@ -190,7 +243,7 @@ _afterglow_ctl()
     fi
     case $command in
     ls) _afterglow_unused --json ;;
-    send-text)
+    send-text | paste)
         # --stdin takes no text, and the text takes no --stdin.
         if _afterglow_given --stdin; then
             _afterglow_unused $pane
@@ -200,16 +253,147 @@ _afterglow_ctl()
             _afterglow_unused $pane --raw --stdin
         fi
         ;;
-    get-text) _afterglow_unused $pane "--screen|--scrollback|--selection|--last-output" ;;
-    split) _afterglow_unused $pane "--left|--right|--up|--down" ;;
-    new-tab | new-window) _afterglow_unused $pane --cwd ;;
-    overlay) _afterglow_unused $pane --capture --cwd --title "-n|--no-stdin" "-w|--width" "-h|--height" --position "--border|--no-border" ;;
+    get-text)
+        _afterglow_unused $pane "--screen|--scrollback|--selection|--last-output|--first-output-on-screen|--last-visited-output" \
+            --ansi --cursor --wrap-markers
+        ;;
+    screenshot) _afterglow_unused $pane "--tab|--window" ;;
+    split)
+        # --env and --var can come again. A pane of a mux session takes
+        # only --env: its daemon starts the program.
+        if [[ $session ]]; then
+            _afterglow_unused $pane "--left|--right|--up|--down"
+            _afterglow_matching --env
+        else
+            _afterglow_unused $pane "--left|--right|--up|--down" --hold --no-focus --stdin-text --stdin-ansi
+            _afterglow_matching --env --var
+        fi
+        ;;
+    focus) _afterglow_unused $pane --direction ;;
+    colors) _afterglow_unused $pane --json ;;
+    # --all sets every pane: no --pane with it.
+    set-colors) _afterglow_unused "${pane:+$pane|}--all" --reset ;;
+    window) _afterglow_unused $pane "--fullscreen|--maximized|--normal" --size ;;
+    resize) _afterglow_unused $pane --direction --cells ;;
+    scroll)
+        # LINES or one of the options.
+        if ((positional)); then
+            _afterglow_unused $pane
+        else
+            _afterglow_unused $pane "--pages|--prompt|--top|--bottom"
+        fi
+        ;;
+    new-tab)
+        if [[ $session ]]; then
+            _afterglow_unused $pane --cwd
+            _afterglow_matching --env
+        else
+            _afterglow_unused $pane --cwd --hold --no-focus --stdin-text --stdin-ansi
+            _afterglow_matching --env --var
+        fi
+        ;;
+    new-window)
+        _afterglow_unused --cwd --hold
+        _afterglow_matching --env --var
+        ;;
+    overlay) _afterglow_unused $pane --capture --cwd --title "-n|--no-stdin" "-w|--width" "-h|--height" --position "--border|--no-border" \
+        --stdin-text --stdin-ansi ;;
     open-directory) _afterglow_unused --layout ;;
     save-project) _afterglow_unused $pane --overwrite ;;
-    open-project) _afterglow_unused --new ;;
-    watch | scripts | projects) ;;
+    open-project) _afterglow_unused --new "--into-session|--no-session" ;;
+    watch) _afterglow_unused --text-changes ;;
+    scripts | projects) ;;
     *) _afterglow_unused $pane ;;
     esac
+}
+
+# The ssh destinations that bash-completion knows, when it is loaded.
+_afterglow_hosts()
+{
+    if declare -F _comp_compgen_known_hosts >/dev/null; then
+        _comp_compgen_known_hosts -- "$cur"
+    elif declare -F _known_hosts_real >/dev/null; then
+        _known_hosts_real -- "$cur"
+    fi
+}
+
+# afterglow mux COMMAND ...: the commands, their options, the hosts of
+# --ssh, the directory of new --cwd, and after new -- the program and its
+# arguments.
+_afterglow_mux()
+{
+    if ((cword == 2)); then
+        if [[ $cur == -* ]]; then
+            _afterglow_matching -h --help
+        else
+            _afterglow_matching server new attach detach ls kill
+        fi
+        return
+    fi
+    local i start=3
+    case ${words[2]} in
+    new)
+        for ((i = 3; i < cword; i++)); do
+            case ${words[i]} in
+            --)
+                _afterglow_offset $((i + 1))
+                return
+                ;;
+            --name | --cwd | --ssh) ((i++)) ;;
+            esac
+        done
+        case $prev in
+        --ssh)
+            _afterglow_hosts
+            return
+            ;;
+        --cwd)
+            # With --ssh, also after the cursor, it is a directory of that host.
+            for ((i = 3; i < ${#words[@]}; i++)); do
+                [[ ${words[i]} == -- ]] && break
+                [[ ${words[i]} == --ssh ]] && return
+            done
+            _afterglow_files -d
+            return
+            ;;
+        --name) return ;;
+        esac
+        _afterglow_unused --name --cwd --detach --agent --ssh
+        ;;
+    kill | attach | detach | ls)
+        if [[ $prev == --ssh ]]; then
+            _afterglow_hosts
+            return
+        fi
+        if [[ $cur == -* ]]; then
+            case ${words[2]} in
+            kill) _afterglow_unused --force --ssh ;;
+            attach) _afterglow_unused --no-takeover --ssh ;;
+            *) _afterglow_unused --ssh ;;
+            esac
+        fi
+        ;;
+    esac
+}
+
+# afterglow mcp [--session NAME] [--adopt] [--cwd DIR]: its options, and the
+# directory of --cwd. No session name is offered for --session: a completion
+# runs no program but aglow run --complete.
+_afterglow_mcp()
+{
+    case $prev in
+    --cwd)
+        _afterglow_files -d
+        return
+        ;;
+    --session) return ;;
+    esac
+    local start=2
+    if ((cword == 2)) && [[ $cur == -* ]]; then
+        _afterglow_matching -h --help
+    fi
+    # The usage is the whole command line.
+    _afterglow_given -h || _afterglow_given --help || _afterglow_unused --session --adopt --cwd
 }
 
 # Whether the option $1 is on the command line before the cursor.
@@ -257,6 +441,14 @@ _afterglow()
             ;;
         ctl)
             _afterglow_ctl
+            return
+            ;;
+        mux)
+            _afterglow_mux
+            return
+            ;;
+        mcp)
+            _afterglow_mcp
             return
             ;;
         run | transfer | dnd | icat | clipboard)
@@ -316,7 +508,7 @@ _afterglow()
     --title | -o | --override | --class) return ;;
     esac
     if ((cword == 1)) && [[ $cur != -* ]]; then
-        _afterglow_matching ctl run ssh transfer dnd icat clipboard
+        _afterglow_matching ctl mux mcp run ssh transfer dnd icat clipboard
         return
     fi
     local start=1

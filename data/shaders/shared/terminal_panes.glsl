@@ -38,9 +38,10 @@
 // place, while it closes: read it with closingPaneTexel(). The progress of
 // both is linear over Animation.paneEffectDuration; shaders ease it.
 // A pane whose shell moves to another host, user or container (OSC 3008,
-// such as afterglow ssh) changes context; the shader also runs on frames drawn
-// while any pane is away from here, so it can mark those panes. Scripts play
-// effects over a pane with afterglow.pulse(), read through panePulse().
+// such as afterglow ssh) changes context, linearly over
+// Animation.contextDuration; the shader also runs on frames drawn while any
+// pane is away from here, so it can mark those panes. Scripts play effects
+// over a pane with afterglow.pulse(), read through panePulse().
 
 #ifndef AFTERGLOW_TERMINAL_PANES_GLSL
 #define AFTERGLOW_TERMINAL_PANES_GLSL
@@ -55,7 +56,8 @@ layout(std140, binding = 19) uniform TerminalPanes {
                            //                 when it wraps around (take it modulo paneCount()), .z seconds since the overview
                            //                 opened or closed, .w seconds since the highlight moved
                            //                 (both 1e6 if never)
-    ivec4 uTabState;       // offset 32    .x tabs with cards, .y the current tab's index
+    ivec4 uTabState;       // offset 32    .x tabs with cards, .y the current tab's index, .z the card
+                           //              that the overview's highlight last left (-1 for none)
     vec4 uTabTransition;   // offset 48    .x progress: 0 the tab being left, 1 the new tab (a spring
                            //                 can overshoot), .y direction: 1 toward a tab on the
                            //                 right, -1 toward one on the left, .z seconds since it
@@ -142,6 +144,13 @@ float overviewAmount() {
 
 float highlightPosition() {
     return uOverview.y;
+}
+
+// The card that the highlight last left, or -1 when it has not moved since
+// the overview opened. A pack whose highlight does not pass over the cards
+// between two panes fades from this card to highlightedPane().
+int highlightOrigin() {
+    return uTabState.z;
 }
 
 bool tabTransitionActive() {

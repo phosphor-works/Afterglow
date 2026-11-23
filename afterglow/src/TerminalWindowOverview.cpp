@@ -10,6 +10,7 @@
 #include <QLoggingCategory>
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <utility>
 
 Q_DECLARE_LOGGING_CATEGORY(lcWindow)
@@ -18,13 +19,43 @@ namespace Afterglow {
 
 namespace {
 
+/// The direction of an arrow key of the overview, or of h, j, k and l.
+std::optional<SplitTree::Neighbor> overviewDirection(int key)
+{
+    switch (key) {
+    case Qt::Key_Left:
+    case Qt::Key_H:
+        return SplitTree::Neighbor::Left;
+    case Qt::Key_Right:
+    case Qt::Key_L:
+        return SplitTree::Neighbor::Right;
+    case Qt::Key_Up:
+    case Qt::Key_K:
+        return SplitTree::Neighbor::Up;
+    case Qt::Key_Down:
+    case Qt::Key_J:
+        return SplitTree::Neighbor::Down;
+    default:
+        return std::nullopt;
+    }
+}
+
+/// How far an effect of @p durationMs that started at @p at has run, 0 to 1.
+float progressSince(std::chrono::steady_clock::time_point at, int durationMs)
+{
+    const float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - at).count();
+    return std::clamp(seconds * 1000.0f / float(std::max(1, durationMs)), 0.0f, 1.0f);
+}
+
 /// Where the deck heads for card @p index of @p count from @p now, the short
 /// way round: the position counts on past the last card.
 qreal shortWay(qreal now, int index, int count)
 {
     qreal delta = std::fmod(qreal(index) - now, qreal(count));
-    if (delta > count / 2.0) delta -= count;
-    if (delta < -count / 2.0) delta += count;
+    if (delta > count / 2.0)
+        delta -= count;
+    if (delta < -count / 2.0)
+        delta += count;
     return now + delta;
 }
 
@@ -32,14 +63,16 @@ qreal shortWay(qreal now, int index, int count)
 /// the card it shows keeps its place when zooms add or take away cards.
 qreal rebased(qreal now, const std::vector<Pane*>& before, const std::vector<Pane*>& after)
 {
-    if (before == after || before.empty() || after.empty()) return now;
+    if (before == after || before.empty() || after.empty())
+        return now;
     const int count = int(before.size());
     const qreal whole = std::round(now);
     const int shown = (int(std::fmod(whole, qreal(count))) + count) % count;
     // The shown card, or the nearest one before it that is still a card.
     for (int back = 0; back < count; ++back) {
         const auto it = std::find(after.begin(), after.end(), before[std::size_t((shown - back + count) % count)]);
-        if (it != after.end()) return qreal(it - after.begin()) + back + (now - whole);
+        if (it != after.end())
+            return qreal(it - after.begin()) + back + (now - whole);
     }
     return now - whole;
 }
@@ -51,6 +84,23 @@ bool TerminalWindow::overviewShowing() const
     return m_overview.open || m_overview.amount.isAnimating() || std::abs(m_overview.amount.value()) > 1e-3;
 }
 
+std::vector<OverviewCard> TerminalWindow::overviewLayout() const
+{
+    // The panes of overviewPanes(), in its order.
+    std::vector<OverviewCard> cards;
+    const bool allTabs = overviewShowing();
+    for (std::size_t tab = 0; tab < m_tabs.size(); ++tab) {
+        const SplitTree* tree = m_tabs[tab]->splits.get();
+        if (!tree || (!allTabs && int(tab) != m_currentTab))
+            continue;
+        tree->forEachPane([&](Pane*, const QRect& rect) {
+            if (!rect.isEmpty() && cards.size() < std::size_t(AfterglowRender::MaxShaderPanes))
+                cards.push_back({rect, int(tab)});
+        });
+    }
+    return cards;
+}
+
 std::vector<Pane*> TerminalWindow::overviewPanes() const
 {
     // While the overview shows, every tab's panes; otherwise the current tab's.
@@ -58,9 +108,11 @@ std::vector<Pane*> TerminalWindow::overviewPanes() const
     const bool allTabs = overviewShowing();
     for (std::size_t tab = 0; tab < m_tabs.size(); ++tab) {
         const SplitTree* tree = m_tabs[tab]->splits.get();
-        if (!tree || (!allTabs && int(tab) != m_currentTab)) continue;
+        if (!tree || (!allTabs && int(tab) != m_currentTab))
+            continue;
         tree->forEachPane([&](Pane* pane, const QRect& rect) {
-            if (!rect.isEmpty() && panes.size() < std::size_t(AfterglowRender::MaxShaderPanes)) panes.push_back(pane);
+            if (!rect.isEmpty() && panes.size() < std::size_t(AfterglowRender::MaxShaderPanes))
+                panes.push_back(pane);
         });
     }
     return panes;
@@ -72,7 +124,8 @@ void TerminalWindow::layoutOtherTabs()
     // shows them at the window's current size.
     const int dividerWidth = dividerPixels();
     for (std::size_t tab = 0; tab < m_tabs.size(); ++tab) {
-        if (int(tab) == m_currentTab || !m_tabs[tab]->splits) continue;
+        if (int(tab) == m_currentTab || !m_tabs[tab]->splits)
+            continue;
         m_tabs[tab]->splits->layout(paneArea(), dividerWidth);
         // The cards show the panes' docks: a pane that a zoom hid shows
         // again in the overview, with its docks.
@@ -81,16 +134,18 @@ void TerminalWindow::layoutOtherTabs()
 }
 
 PhosphorAnimation::MotionSpec<qreal> TerminalWindow::motionSpec(const QString& curve, int durationMs, CurveCache& cache,
-                                                                 const char* setting, const QString& fallback)
+                                                                const char* setting, const QString& fallback)
 {
     if (!cache.curve || curve != cache.spec) {
         cache.spec = curve;
         cache.curve = m_shaders.curves().tryCreate(curve);
         if (!cache.curve) {
             qCWarning(lcWindow).noquote() << setting << curve << "is not a curve; using the default" << fallback;
-            if (!fallback.isEmpty()) cache.curve = m_shaders.curves().tryCreate(fallback);
+            if (!fallback.isEmpty())
+                cache.curve = m_shaders.curves().tryCreate(fallback);
             // Only for a caller that names no default.
-            if (!cache.curve) cache.curve = std::make_shared<PhosphorAnimation::Spring>(12.0, 1.0);
+            if (!cache.curve)
+                cache.curve = std::make_shared<PhosphorAnimation::Spring>(12.0, 1.0);
         }
     }
     PhosphorAnimation::MotionSpec<qreal> spec;
@@ -109,20 +164,24 @@ PhosphorAnimation::MotionSpec<qreal> TerminalWindow::overviewSpec()
 }
 
 AfterglowRender::WindowRenderer::OverviewTab TerminalWindow::prepareOtherTab(int tab, const std::vector<Pane*>* only,
-    std::uint8_t backgroundAlpha, bool& holding, bool& animating)
+                                                                             std::uint8_t backgroundAlpha,
+                                                                             bool& holding, bool& animating)
 {
     AfterglowRender::WindowRenderer::OverviewTab other{tab, {}, {}};
-    if (tab < 0 || tab >= int(m_tabs.size()) || !m_tabs[std::size_t(tab)]->splits) return other;
+    if (tab < 0 || tab >= int(m_tabs.size()) || !m_tabs[std::size_t(tab)]->splits)
+        return other;
     const Tab& owner = *m_tabs[std::size_t(tab)];
     const bool multiple = owner.splits->paneCount() > 1;
     owner.splits->forEachPane([&](Pane* p, const QRect& r) {
-        if (r.isEmpty() || (only && std::find(only->begin(), only->end(), p) == only->end())) return;
+        if (r.isEmpty() || (only && std::find(only->begin(), only->end(), p) == only->end()))
+            return;
         AfterglowRender::WindowRenderer::Pane wp;
         preparePane(p, r, wp.params, holding, animating);
         wp.snapshot = &p->snapshot();
         addPaneDocks(p, wp.params.rect, wp.docks);
         wp.params.focused = false;
         wp.params.highlighted = overviewShowing() && p == m_overview.highlighted;
+        wp.params.highlightOrigin = overviewShowing() && p == m_overview.movedFrom;
         applyPaneEffectState(p, wp.params, animating);
         wp.params.cursorBlinkOn = m_blinkOn;
         wp.params.textBlinkOn = m_textBlinkOn;
@@ -137,7 +196,8 @@ AfterglowRender::WindowRenderer::OverviewTab TerminalWindow::prepareOtherTab(int
     return other;
 }
 
-void TerminalWindow::applyPaneEffectState(Pane* pane, AfterglowRender::FrameBuilder::PaneParams& params, bool& animating)
+void TerminalWindow::applyPaneEffectState(Pane* pane, AfterglowRender::FrameBuilder::PaneParams& params,
+                                          bool& animating)
 {
     if (const auto pulse = m_panePulse.constFind(pane); pulse != m_panePulse.constEnd()) {
         const float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - pulse->at).count();
@@ -146,13 +206,23 @@ void TerminalWindow::applyPaneEffectState(Pane* pane, AfterglowRender::FrameBuil
         params.pulseColor = pulse->color;
         animating |= params.pulseProgress < 1.0f;
     }
-    // A change of host, user or container animates; the first sighting does not.
+    // A change of host, user or container animates; the first sighting does
+    // not. A session pane's first sighting is that of its first frame: the
+    // blank replica before it is in no context of the program's.
+    if (!pane->sessionSynced()) {
+        params.context = params.previousContext = 0;
+        params.contextProgress = 1.0f;
+        return;
+    }
     const QString kind = pane->contextKind();
-    const int context = kind == QLatin1String("remote") ? 1 : kind == QLatin1String("elevated") ? 2
-        : kind == QLatin1String("container") ? 3 : 0;
+    const int context = kind == QLatin1String("remote") ? 1
+        : kind == QLatin1String("elevated")             ? 2
+        : kind == QLatin1String("container")            ? 3
+                                                        : 0;
     auto known = m_paneContext.find(pane);
     if (known == m_paneContext.end()) {
-        known = m_paneContext.insert(pane, {context, std::chrono::steady_clock::now() - std::chrono::hours(1), context});
+        known =
+            m_paneContext.insert(pane, {context, std::chrono::steady_clock::now() - std::chrono::hours(1), context});
     } else if (known->kind != context && paneEffectsAllowed()) {
         // The pack eases from the old context's mark to the new one's.
         *known = {context, std::chrono::steady_clock::now(), known->kind};
@@ -161,7 +231,7 @@ void TerminalWindow::applyPaneEffectState(Pane* pane, AfterglowRender::FrameBuil
     }
     params.context = context;
     params.previousContext = known->previous;
-    params.contextProgress = paneEffectProgress(known->at);
+    params.contextProgress = contextChangeProgress(known->at);
     m_anyPaneAway |= context != 0;
     animating |= params.contextProgress < 1.0f;
 }
@@ -194,8 +264,10 @@ void TerminalWindow::updateAudioCapture()
     m_audioCapturing = m_audioUse.alwaysOn || (m_audioUse.overview && overviewShowing())
         || (m_audioUse.tabTransition && m_tabTransition.progress.isAnimating())
         || (m_audioUse.paneEffects && m_paneEffectsShowing)
-        || (m_audioUse.overlayTransition && std::any_of(m_overlayFades.begin(), m_overlayFades.end(),
-                                                         [](const auto& fade) { return fade.second.progress.isAnimating(); }));
+        || (m_audioUse.overlayTransition
+            && std::any_of(m_overlayFades.begin(), m_overlayFades.end(), [](const auto& fade) {
+                   return fade.second.progress.isAnimating();
+               }));
     m_audio.setActive(this, m_audioCapturing && isExposed() && visibility() != QWindow::Minimized);
 }
 
@@ -207,7 +279,8 @@ QVariantMap TerminalWindow::applyScriptOverrides(Pane* pane, AfterglowRender::Fr
     params.cursorBlinkOverride = blink != overrides.constEnd() ? int(blink->toBool()) : -1;
     const auto opacity = overrides.constFind(QStringLiteral("backgroundOpacity"));
     params.backgroundAlpha = opacity != overrides.constEnd()
-        ? std::uint8_t(std::lround(std::clamp(opacity->toDouble(), 0.0, 1.0) * 255)) : backgroundAlpha;
+        ? std::uint8_t(std::lround(std::clamp(opacity->toDouble(), 0.0, 1.0) * 255))
+        : backgroundAlpha;
     return overrides;
 }
 
@@ -219,8 +292,9 @@ void TerminalWindow::startTabTransition(int from, int to)
     const AnimationSettings& anim = m_settings.settings().animation;
     m_tabTransition.from = m_tabs[std::size_t(from)]->id;
     m_tabTransition.direction = to > from ? 1.0f : -1.0f;
-    m_tabTransition.progress.start(0.0, 1.0, motionSpec(anim.tabCurve, anim.tabDuration, m_tabCurve, "Animation.tabCurve",
-                                                        AnimationSettings{}.tabCurve));
+    m_tabTransition.progress.start(
+        0.0, 1.0,
+        motionSpec(anim.tabCurve, anim.tabDuration, m_tabCurve, "Animation.tabCurve", AnimationSettings{}.tabCurve));
     m_tabTransition.startedAt = std::chrono::steady_clock::now();
 }
 
@@ -232,8 +306,12 @@ bool TerminalWindow::paneEffectsAllowed() const
 
 float TerminalWindow::paneEffectProgress(std::chrono::steady_clock::time_point at) const
 {
-    const float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - at).count();
-    return std::clamp(seconds * 1000.0f / float(std::max(1, m_settings.settings().animation.paneEffectDuration)), 0.0f, 1.0f);
+    return progressSince(at, m_settings.settings().animation.paneEffectDuration);
+}
+
+float TerminalWindow::contextChangeProgress(std::chrono::steady_clock::time_point at) const
+{
+    return progressSince(at, m_settings.settings().animation.contextDuration);
 }
 
 void TerminalWindow::advancePaneEffects(bool& animating)
@@ -246,8 +324,12 @@ void TerminalWindow::advancePaneEffects(bool& animating)
         m_closingPane.reset();
     }
     for (auto it = m_paneOpening.begin(); it != m_paneOpening.end();) {
-        if (paneEffectProgress(it->at) >= 1.0f) it = m_paneOpening.erase(it);
-        else { effects.active = effects.moving = true; ++it; }
+        if (paneEffectProgress(it->at) >= 1.0f)
+            it = m_paneOpening.erase(it);
+        else {
+            effects.active = effects.moving = true;
+            ++it;
+        }
     }
     // The ghost belongs to the tab it closed in: a switch away ends it.
     if (m_closingPane
@@ -257,11 +339,13 @@ void TerminalWindow::advancePaneEffects(bool& animating)
     }
     // Context changes animate, and panes away from here keep their mark.
     for (const auto& context : std::as_const(m_paneContext)) {
-        if (paneEffectProgress(context.at) < 1.0f) effects.active = effects.moving = true;
+        if (contextChangeProgress(context.at) < 1.0f)
+            effects.active = effects.moving = true;
     }
     // The frame that marks a pane away is part of the effects that
     // Animation.splits=false turns off.
-    if (m_anyPaneAway && m_paneEffectsAvailable && m_settings.settings().animation.splits) effects.active = true;
+    if (m_anyPaneAway && m_paneEffectsAvailable && m_settings.settings().animation.splits)
+        effects.active = true;
     const bool overview = overviewShowing();
     for (auto it = m_panePulse.begin(); it != m_panePulse.end();) {
         const float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - it->at).count();
@@ -272,7 +356,8 @@ void TerminalWindow::advancePaneEffects(bool& animating)
         // A pulse moves only while its pane is drawn: in another tab, or hidden
         // by a zoom, it waits out its time without asking for frames.
         const bool drawn = overview || (tabOf(it.key()) == m_currentTab && m_splits && m_splits->isVisible(it.key()));
-        if (drawn) effects.active = effects.moving = true;
+        if (drawn)
+            effects.active = effects.moving = true;
         ++it;
     }
     if (m_closingPane) {
@@ -280,7 +365,8 @@ void TerminalWindow::advancePaneEffects(bool& animating)
         ghost.snapshot = m_closingPane->snapshot.get();
         ghost.params.rect = m_closingPane->rect;
         ghost.params.contentOrigin = m_closingPane->contentOrigin;
-        for (const auto& [snapshot, rect] : m_closingPane->docks) ghost.docks.push_back({snapshot.get(), rect});
+        for (const auto& [snapshot, rect] : m_closingPane->docks)
+            ghost.docks.push_back({snapshot.get(), rect});
         ghost.params.focused = false;
         ghost.params.backgroundAlpha = m_closingPane->backgroundAlpha;
         effects.closing = ghost;
@@ -295,38 +381,54 @@ void TerminalWindow::advancePaneEffects(bool& animating)
 void TerminalWindow::advanceTabTransition(std::uint8_t backgroundAlpha, bool& holding, bool& animating)
 {
     AfterglowRender::WindowRenderer::TabTransition transition;
+    const bool wasAnimating = m_tabTransition.progress.isAnimating();
     if (m_tabTransition.progress.isAnimating()) {
         m_tabTransition.progress.advance();
-        const auto from = std::find_if(m_tabs.begin(), m_tabs.end(), [&](const auto& tab) { return tab->id == m_tabTransition.from; });
+        const auto from = std::find_if(m_tabs.begin(), m_tabs.end(), [&](const auto& tab) {
+            return tab->id == m_tabTransition.from;
+        });
         // A tab closed during its own switch has nothing left to show.
         if (from == m_tabs.end() || int(from - m_tabs.begin()) == m_currentTab) {
             m_tabTransition.progress.cancel();
         } else if (m_tabTransition.progress.isAnimating()) {
             // Only the tab being left is drawn: lay out that one at the window's size.
-            if ((*from)->splits) (*from)->splits->layout(paneArea(), dividerPixels());
-            transition = {true, float(m_tabTransition.progress.value()), m_tabTransition.direction, m_tabTransition.startedAt,
+            if ((*from)->splits)
+                (*from)->splits->layout(paneArea(), dividerPixels());
+            transition = {true, float(m_tabTransition.progress.value()), m_tabTransition.direction,
+                          m_tabTransition.startedAt,
                           prepareOtherTab(int(from - m_tabs.begin()), nullptr, backgroundAlpha, holding, animating)};
             animating = true;
         }
+    }
+    // The tab that the switch left is no longer drawn: nobody sees its panes
+    // now. Queued: this runs within a frame.
+    if (wasAnimating && !m_tabTransition.progress.isAnimating()) {
+        QMetaObject::invokeMethod(this, &TerminalWindow::updatePaneVisibility, Qt::QueuedConnection);
     }
     m_renderer->setTabTransition(std::move(transition));
 }
 
 bool TerminalWindow::overviewOpensOn(const Pane* pane) const
 {
-    if (!m_overviewAvailable || !m_splits || !pane) return false;
+    if (!m_overviewAvailable || !m_splits || !pane)
+        return false;
     // The overview takes the keyboard: not while a dialog or the chrome has it.
-    if (m_scriptDialog || m_controller->wantsKeyboard()) return false;
+    if (m_scriptDialog || m_controller->wantsKeyboard())
+        return false;
     // Refused before the unzoom in openOverview, which would snap the panes:
     // the pane is no card past the card limit or with no room to draw.
-    if (paneArea().isEmpty()) return false;
+    if (paneArea().isEmpty())
+        return false;
     std::size_t ahead = 0;
     bool found = false;
     for (std::size_t tab = 0; tab < m_tabs.size() && !found; ++tab) {
-        if (!m_tabs[tab]->splits) continue;
+        if (!m_tabs[tab]->splits)
+            continue;
         m_tabs[tab]->splits->forEachPane([&](Pane* p, const QRect&) {
-            if (p == pane) found = true;
-            else if (!found) ++ahead;
+            if (p == pane)
+                found = true;
+            else if (!found)
+                ++ahead;
         });
     }
     return found && ahead < std::size_t(AfterglowRender::MaxShaderPanes);
@@ -334,7 +436,8 @@ bool TerminalWindow::overviewOpensOn(const Pane* pane) const
 
 bool TerminalWindow::openOverview()
 {
-    if (m_overview.open || !overviewOpensOn(m_focused)) return false;
+    if (m_overview.open || !overviewOpensOn(m_focused))
+        return false;
     const bool fresh = !overviewShowing();
     const auto before = overviewPanes();
     // Every tab shows all of its panes; closing zooms them again.
@@ -342,16 +445,18 @@ bool TerminalWindow::openOverview()
     for (std::size_t tab = 0; tab < m_tabs.size(); ++tab) {
         SplitTree* tree = m_tabs[tab]->splits.get();
         Pane* zoomed = tree ? tree->zoomedPane() : nullptr;
-        if (!zoomed) continue;
+        if (!zoomed)
+            continue;
         m_overview.zoomed.emplace_back(zoomed);
-        if (int(tab) == m_currentTab) setPaneZoom(nullptr);
-        else tree->setZoomedPane(nullptr);
+        if (int(tab) == m_currentTab)
+            setPaneZoom(nullptr);
+        else
+            tree->setZoomedPane(nullptr);
     }
     m_overview.open = true;
     // Not laid out since a new tab, a split or the unzoom above: the current
     // tab's cards would have no rectangles, and the focused one none to find.
-    if (m_docksMoved) finishDockMoves();
-    else if (m_layoutSize.isEmpty()) relayout();
+    ensureLayout();
     layoutOtherTabs();
     const auto panes = overviewPanes();
     const auto focused = std::find(panes.begin(), panes.end(), m_focused.data());
@@ -377,12 +482,17 @@ bool TerminalWindow::openOverview()
         // Hidden tabs were laid out again at the window's size: their cards
         // start there, not from where they were when last shown.
         for (std::size_t tab = 0; tab < m_tabs.size(); ++tab) {
-            if (int(tab) == m_currentTab || !m_tabs[tab]->splits) continue;
-            m_tabs[tab]->splits->forEachPane([this](Pane* p, const QRect&) { motion(p).rectKnown = false; });
+            if (int(tab) == m_currentTab || !m_tabs[tab]->splits)
+                continue;
+            m_tabs[tab]->splits->forEachPane([this](Pane* p, const QRect&) {
+                motion(p).rectKnown = false;
+            });
         }
     }
     m_overview.original = m_focused;
     m_overview.highlighted = m_focused;
+    // The highlight has not moved yet: it fades from no pane.
+    m_overview.movedFrom = nullptr;
     const auto spec = overviewSpec();
     // Reopening while it closes continues from where it is.
     m_overview.amount.start(m_overview.amount.value(), 1.0, spec);
@@ -411,7 +521,8 @@ void TerminalWindow::restoreOverviewZooms(Pane* target)
     const int targetTab = target ? tabOf(target) : -1;
     for (const QPointer<Pane>& zoomed : std::exchange(m_overview.zoomed, {})) {
         const int tab = zoomed ? tabOf(zoomed) : -1;
-        if (tab < 0) continue;
+        if (tab < 0)
+            continue;
         Pane* pane = tab == targetTab ? target : zoomed.data();
         if (tab == m_currentTab) {
             setPaneZoom(pane);
@@ -419,16 +530,19 @@ void TerminalWindow::restoreOverviewZooms(Pane* target)
             // The panes that the zoom hides again hide their docks too.
             m_tabs[std::size_t(tab)]->splits->setZoomedPane(pane);
             placeTabDocks(tab);
+            scheduleSessionLayout();
         }
     }
 }
 
 void TerminalWindow::closeOverview(Pane* chosen)
 {
-    if (!m_overview.open) return;
+    if (!m_overview.open)
+        return;
     const auto before = overviewPanes();
     m_overview.open = false;
-    Pane* target = chosen && std::find(before.begin(), before.end(), chosen) != before.end() ? chosen : m_overview.original.data();
+    Pane* target =
+        chosen && std::find(before.begin(), before.end(), chosen) != before.end() ? chosen : m_overview.original.data();
     restoreOverviewZooms(target);
     if (target) {
         const int tab = tabOf(target);
@@ -442,7 +556,8 @@ void TerminalWindow::closeOverview(Pane* chosen)
             setFocusedPane(target);
             if (!isExposed()) {
                 if (m_quick) {
-                    if (!m_quickShown) toggleQuick();
+                    if (!m_quickShown)
+                        toggleQuick();
                 } else {
                     show();
                 }
@@ -470,7 +585,8 @@ void TerminalWindow::closeOverview(Pane* chosen)
     m_overview.original = nullptr;
     // A script key mode that drove the overview goes with it, so its next
     // key reaches the shell (a click closes the overview without the script).
-    if (m_scriptKeyMode && m_scriptKeyMode->withOverview) m_scriptKeyMode.reset();
+    if (m_scriptKeyMode && m_scriptKeyMode->withOverview)
+        m_scriptKeyMode.reset();
     updateKeyMode();
     updatePaneVisibility();
     applyPointerShape();
@@ -480,16 +596,20 @@ void TerminalWindow::closeOverview(Pane* chosen)
 void TerminalWindow::moveOverview(int index, int direction)
 {
     const auto panes = overviewPanes();
-    if (!m_overview.open || panes.empty()) return;
+    if (!m_overview.open || panes.empty())
+        return;
     const int count = int(panes.size());
     index = ((index % count) + count) % count;
-    if (panes[std::size_t(index)] == m_overview.highlighted) return;
+    if (panes[std::size_t(index)] == m_overview.highlighted)
+        return;
     const auto at = std::find(panes.begin(), panes.end(), m_overview.highlighted.data());
     const int current = at == panes.end() ? 0 : int(at - panes.begin());
     // The position keeps counting, so wrapping round carries the deck on.
     int delta = ((index - current) % count + count) % count;
-    if (direction < 0 || (direction == 0 && delta * 2 > count)) delta -= count;
+    if (direction < 0 || (direction == 0 && delta * 2 > count))
+        delta -= count;
     m_overview.positionTarget += delta;
+    m_overview.movedFrom = m_overview.highlighted;
     m_overview.highlighted = panes[std::size_t(index)];
     m_overview.movedAt = std::chrono::steady_clock::now();
     scheduleRender();
@@ -497,17 +617,21 @@ void TerminalWindow::moveOverview(int index, int direction)
 
 void TerminalWindow::rebaseOverview(const std::vector<Pane*>& before)
 {
-    if (!overviewShowing()) return;
+    if (!overviewShowing())
+        return;
     const auto after = overviewPanes();
     const qreal value = m_overview.position.value();
     const qreal now = rebased(value, before, after);
-    if (now == value) return;
+    if (now == value)
+        return;
     // The motion goes on toward the highlighted card, the short way round
     // from where the deck is now: also while the overview closes, when no
     // frame aims it again (advanceOverview).
     const auto at = std::find(after.begin(), after.end(), m_overview.highlighted.data());
-    if (at != after.end()) m_overview.positionTarget = shortWay(now, int(at - after.begin()), int(after.size()));
-    else m_overview.positionTarget += now - value;
+    if (at != after.end())
+        m_overview.positionTarget = shortWay(now, int(at - after.begin()), int(after.size()));
+    else
+        m_overview.positionTarget += now - value;
     m_overview.position.start(now, m_overview.positionTarget, overviewSpec());
 }
 
@@ -521,9 +645,19 @@ void TerminalWindow::overviewKey(QKeyEvent* e)
         closeOverview(nullptr);
     } else if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter || e->key() == Qt::Key_Space) {
         closeOverview(m_overview.highlighted);
-    } else if (e->key() == Qt::Key_Left || e->key() == Qt::Key_Backtab || e->key() == Qt::Key_H) {
+    } else if (e->key() == Qt::Key_Backtab) {
         moveOverview(current - 1, -1);
-    } else if (e->key() == Qt::Key_Right || e->key() == Qt::Key_Tab || e->key() == Qt::Key_L) {
+    } else if (e->key() == Qt::Key_Tab) {
+        moveOverview(current + 1, 1);
+    } else if (const auto direction = overviewDirection(e->key()); direction && m_overviewByDirection) {
+        // The pack draws the panes where they are in their tabs: an arrow
+        // goes to the pane that shows in its direction, and stays when there
+        // is none. The highlight takes the short way there in the count.
+        if (const int index = overviewNeighbor(overviewLayout(), current, *direction, paneArea().size()); index >= 0)
+            moveOverview(index);
+    } else if (e->key() == Qt::Key_Left || e->key() == Qt::Key_H) {
+        moveOverview(current - 1, -1);
+    } else if (e->key() == Qt::Key_Right || e->key() == Qt::Key_L) {
         moveOverview(current + 1, 1);
     } else if ((e->key() == Qt::Key_Up || e->key() == Qt::Key_K || e->key() == Qt::Key_Down || e->key() == Qt::Key_J)
                && !panes.empty()) {
@@ -534,11 +668,15 @@ void TerminalWindow::overviewKey(QKeyEvent* e)
         int index = current;
         for (int step = 1; step <= count; ++step) {
             const int candidate = ((current + (down ? step : -step)) % count + count) % count;
-            if (tabOf(panes[std::size_t(candidate)]) != here) { index = candidate; break; }
+            if (tabOf(panes[std::size_t(candidate)]) != here) {
+                index = candidate;
+                break;
+            }
         }
         // Up lands on the first pane of that tab, as Down does.
         const int tab = tabOf(panes[std::size_t(index)]);
-        while (index > 0 && tabOf(panes[std::size_t(index - 1)]) == tab) --index;
+        while (index > 0 && tabOf(panes[std::size_t(index - 1)]) == tab)
+            --index;
         moveOverview(index, down ? 1 : -1);
     } else if (e->key() == Qt::Key_Home) {
         moveOverview(0);
@@ -551,12 +689,14 @@ void TerminalWindow::overviewKey(QKeyEvent* e)
 
 void TerminalWindow::advanceOverview(bool& animating)
 {
-    if (overviewShowing()) layoutOtherTabs();
+    if (overviewShowing())
+        layoutOtherTabs();
     const auto panes = overviewPanes();
     if (m_overview.open) {
         // A tab switch or a closed pane can take the overview's panes away.
-        if (panes.empty() || (std::find(panes.begin(), panes.end(), m_overview.highlighted.data()) == panes.end()
-                              && std::find(panes.begin(), panes.end(), m_overview.original.data()) == panes.end())) {
+        if (panes.empty()
+            || (std::find(panes.begin(), panes.end(), m_overview.highlighted.data()) == panes.end()
+                && std::find(panes.begin(), panes.end(), m_overview.original.data()) == panes.end())) {
             closeOverview(nullptr);
         } else if (std::find(panes.begin(), panes.end(), m_overview.highlighted.data()) == panes.end()) {
             m_overview.highlighted = m_overview.original;
@@ -568,16 +708,20 @@ void TerminalWindow::advanceOverview(bool& animating)
         const int count = int(panes.size());
         const auto at = std::find(panes.begin(), panes.end(), m_overview.highlighted.data());
         const int index = int(at - panes.begin());
-        const int heading = int(std::lround(std::fmod(std::fmod(m_overview.positionTarget, count) + count, count))) % count;
+        const int heading =
+            int(std::lround(std::fmod(std::fmod(m_overview.positionTarget, count) + count, count))) % count;
         if (heading != index) {
             int delta = ((index - heading) % count + count) % count;
-            if (delta * 2 > count) delta -= count;
+            if (delta * 2 > count)
+                delta -= count;
             m_overview.positionTarget += delta;
         }
         const qreal target = m_overview.positionTarget;
         if (target != m_overview.position.to() || !m_overview.position.isAnimating()) {
-            if (m_overview.position.isAnimating()) m_overview.position.retarget(target);
-            else if (m_overview.position.value() != target) m_overview.position.start(m_overview.position.value(), target, overviewSpec());
+            if (m_overview.position.isAnimating())
+                m_overview.position.retarget(target);
+            else if (m_overview.position.value() != target)
+                m_overview.position.start(m_overview.position.value(), target, overviewSpec());
         }
     }
     m_overview.amount.advance();
@@ -587,9 +731,15 @@ void TerminalWindow::advanceOverview(bool& animating)
     if (m_overview.wasShowing && !showing) {
         // The close has finished: other tabs' cards are hidden again. Not
         // inside this frame, which has started on the current tab's layout.
-        QMetaObject::invokeMethod(this, [this] { updatePaneVisibility(); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(
+            this,
+            [this] {
+                updatePaneVisibility();
+            },
+            Qt::QueuedConnection);
     }
-    if (!showing) m_overview.highlighted = nullptr;
+    if (!showing)
+        m_overview.highlighted = nullptr;
     m_overview.wasShowing = showing;
 }
 

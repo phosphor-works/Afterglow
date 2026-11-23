@@ -1,0 +1,706 @@
+// SPDX-FileCopyrightText: 2026 fuddlesworth
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// A pane of the daemon: while its program's image decodes, the daemon's one
+// thread does not wait for the decode. And what the pane keeps of its shell
+// for `afterglow ctl ls` and `afterglow ctl watch`.
+
+#include "ImageDecoder.h"
+#include "ImageFiles.h"
+#include "MuxPane.h"
+#include "TestDaemon.h"
+
+#include <AfterglowProto/Base64.h>
+#include <AfterglowProto/DndUri.h>
+#include <AfterglowPty/Pty.h>
+#include <AfterglowVt/StateSync.h>
+#include <AfterglowVt/Terminal.h>
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <memory>
+#include <optional>
+#include <set>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include <signal.h>
+#include <unistd.h>
+
+using AfterglowMux::ImageDecoder;
+using AfterglowMux::MuxPane;
+using AfterglowMux::PaneSize;
+using Clock = std::chrono::steady_clock;
+using MuxTest::readFile;
+using MuxTest::TempDir;
+
+namespace {
+
+struct NullHost : AfterglowVt::ITerminalHost
+{
+    void writeToPty(std::string_view) override
+    {
+    }
+};
+
+/// The servers of decoders: the children of this process that name
+/// themselves afterglow-image once they run.
+std::set<pid_t> imageServers()
+{
+    std::set<pid_t> found;
+#if defined(__FreeBSD__)
+    // No comm to change there: the server sets its title (setproctitle).
+    for (const pid_t pid : MuxTest::processesOf(::getpid())) {
+        if (MuxTest::argumentsOf(pid) == std::string("afterglow-image", sizeof "afterglow-image"))
+            found.insert(pid);
+    }
+#else
+    std::error_code ignored;
+    for (const auto& task : std::filesystem::directory_iterator("/proc/self/task", ignored)) {
+        std::ifstream list(task.path() / "children");
+        for (pid_t pid = 0; list >> pid;) {
+            if (readFile("/proc/" + std::to_string(pid) + "/comm") == "afterglow-image\n")
+                found.insert(pid);
+        }
+    }
+#endif
+    return found;
+}
+
+/// The server that started after @p before: 0 when none does in a few
+/// seconds, or the kernel lists no children.
+pid_t newImageServer(const std::set<pid_t>& before)
+{
+    const auto deadline = Clock::now() + std::chrono::seconds(5);
+    do {
+        for (const pid_t pid : imageServers()) {
+            if (!before.contains(pid))
+                return pid;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    } while (Clock::now() < deadline && MuxTest::childrenListed());
+    return 0;
+}
+
+/// A pane whose program prints a PNG with kitty graphics and then runs
+/// @p then (by default, it waits). The decoder's server is stopped
+/// (SIGSTOP): it takes the request and answers when the test lets it go on
+/// (release()), or never, and then the decode lasts until the decoder's
+/// wait ends. @p before runs before the PNG. The program runs in an
+/// environment of its own, with nothing of the user's session.
+struct StuckDecode
+{
+    TempDir dir;
+    std::unique_ptr<ImageDecoder> decoder;
+    std::unique_ptr<MuxPane> pane;
+    AfterglowVt::StateWriter writer;
+    std::atomic<int> wakes = 0;
+    pid_t server = 0;
+
+    /// @p after follows the image in the same write, which the pane reads at once.
+    explicit StuckDecode(int waitMs, const std::string& then = "exec sleep 60", const std::string& before = {},
+                         const std::string& after = {})
+    {
+        if (dir.path.empty())
+            return;
+        const std::string image = (dir.path / "image").string();
+        std::ofstream(image) << "\x1b_Ga=T,f=100,i=1,q=2;"
+                             << AfterglowProto::base64Encode(AfterglowImage::TestFiles::Png) << "\x1b\\" << after;
+        // Other tests of this program may have a server running.
+        const std::set<pid_t> running = imageServers();
+        decoder = std::make_unique<ImageDecoder>(AFTERGLOW_MUX, waitMs);
+        server = newImageServer(running);
+        if (server <= 0 || ::kill(server, SIGSTOP) != 0)
+            return;
+        pane = std::make_unique<MuxPane>(1, AfterglowVt::TerminalOptions{}, PaneSize{80, 24, 10, 20}, std::string(),
+                                         *decoder, [this] {
+                                             ++wakes;
+                                         });
+        AfterglowPty::SpawnOptions spawn;
+        spawn.argv = {"/bin/sh", "-c", before + "cat '" + image + "'; " + then};
+        spawn.inheritEnvironment = false;
+        spawn.environment = {{"PATH", MuxTest::testPath()}, {"HOME", dir.path.string()}, {"TERM", "xterm-256color"}};
+        std::string error;
+        if (!pane->start(std::move(spawn), std::string(), &error))
+            pane.reset();
+    }
+    ~StuckDecode()
+    {
+        // The pane ends before its decoder, and a stopped server ends too.
+        pane.reset();
+        release();
+    }
+
+    /// The server goes on: the decode that waits for it ends.
+    void release() const
+    {
+        if (server > 0)
+            ::kill(server, SIGCONT);
+    }
+    /// The server stops again: the next decode waits.
+    void hold() const
+    {
+        if (server > 0)
+            ::kill(server, SIGSTOP);
+    }
+
+    /// Waits until a frame waits for the decode: the program's image is in
+    /// the decoder. False when it never is.
+    bool decoding()
+    {
+        const auto deadline = Clock::now() + std::chrono::seconds(10);
+        while (Clock::now() < deadline) {
+            if (!pane->frame(writer, std::size_t(1) << 20))
+                return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return false;
+    }
+
+    /// Waits until the pane woke the daemon more than @p before times.
+    bool wokeAfter(int before) const
+    {
+        const auto deadline = Clock::now() + std::chrono::seconds(10);
+        while (wakes <= before && Clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        return wakes > before;
+    }
+};
+
+// Only a kernel that lists no children skips: a server that does not start
+// or does not name itself is a failure.
+#define SKIP_WITHOUT_SERVER(stuck)                                                                                     \
+    do {                                                                                                               \
+        if (!MuxTest::childrenListed())                                                                                \
+            GTEST_SKIP() << "the kernel lists no children of a process (CONFIG_PROC_CHILDREN)";                        \
+        ASSERT_FALSE((stuck).dir.path.empty());                                                                        \
+        ASSERT_GT((stuck).server, 0) << "the decoder's server did not start, or did not name itself afterglow-image";  \
+    } while (false)
+
+/// A pane whose program is `/bin/sh -c SCRIPT sh ARGS...` in @p directory,
+/// in an environment of its own, with nothing of the user's session. Its
+/// decoder runs and decodes nothing.
+struct ShellPane
+{
+    // Before the pane: it goes after it.
+    std::unique_ptr<ImageDecoder> decoder;
+    std::unique_ptr<MuxPane> pane;
+
+    /// @p watched: the daemon watches the pane from its start, and with
+    /// @p text the changes of its text too.
+    ShellPane(const std::string& script, const std::vector<std::string>& args, const std::string& directory,
+              bool watched = false, bool text = false)
+    {
+        decoder = std::make_unique<ImageDecoder>(AFTERGLOW_MUX);
+        pane = std::make_unique<MuxPane>(1, AfterglowVt::TerminalOptions{}, PaneSize{80, 24, 10, 20}, std::string(),
+                                         *decoder, [] { });
+        pane->setWatched(watched, text);
+        AfterglowPty::SpawnOptions spawn;
+        spawn.argv = {"/bin/sh", "-c", script, "sh"};
+        spawn.argv.insert(spawn.argv.end(), args.begin(), args.end());
+        spawn.workingDirectory = directory;
+        spawn.inheritEnvironment = false;
+        spawn.environment = {{"PATH", MuxTest::testPath()}, {"HOME", directory}, {"TERM", "xterm-256color"}};
+        std::string error;
+        if (!pane->start(std::move(spawn), std::string(), &error)) {
+            ADD_FAILURE() << "the pane did not start: " << error;
+            pane.reset();
+        }
+    }
+};
+
+} // namespace
+
+TEST(MuxPane, TheDaemonDoesNotWaitForADecodeAndItsChangesComeAfter)
+{
+    StuckDecode stuck(30000);
+    SKIP_WITHOUT_SERVER(stuck);
+    ASSERT_TRUE(stuck.pane);
+    ASSERT_TRUE(stuck.decoding());
+    // The calls of the daemon's thread return at once, and the frame keeps
+    // waiting for the decode, also after a change.
+    const auto start = Clock::now();
+    stuck.pane->resize(PaneSize{100, 30, 10, 20});
+    stuck.pane->clear();
+    EXPECT_LT(Clock::now() - start, std::chrono::milliseconds(500));
+    EXPECT_FALSE(stuck.pane->frame(stuck.writer, std::size_t(1) << 20));
+
+    // The decode ends: the feed makes the changes, and wakes the daemon,
+    // whose next frame carries them. Without the wake the daemon would not
+    // look again: the flag of a change is set already.
+    const int before = stuck.wakes;
+    stuck.release();
+    ASSERT_TRUE(stuck.wokeAfter(before));
+    AfterglowVt::StateWriter fresh;
+    const std::optional<std::string> frame = stuck.pane->frame(fresh, std::size_t(1) << 20);
+    ASSERT_TRUE(frame);
+    NullHost host;
+    AfterglowVt::Terminal replica(80, 24, host);
+    AfterglowVt::StateReader reader;
+    std::string error;
+    ASSERT_TRUE(reader.apply(replica, *frame, &error)) << error;
+    EXPECT_EQ(replica.cols(), 100);
+    EXPECT_EQ(replica.rows(), 30);
+}
+
+TEST(MuxPane, VisibilityWaitsForADecode)
+{
+    // The program asks for reports of its visibility (mode 2033) before
+    // its image, and rings the bell after it, in the same read. The pane's
+    // window shows it while the image decodes: the report comes after the
+    // decode, in its order with the program's output, so after the bell.
+    StuckDecode stuck(30000, "exec sleep 60", "printf '\\033[?2033h'; ", "\a");
+    SKIP_WITHOUT_SERVER(stuck);
+    ASSERT_TRUE(stuck.pane);
+    stuck.pane->setWindow(1, std::size_t(1) << 20);
+    ASSERT_TRUE(stuck.decoding());
+    stuck.pane->setVisible(true, 1);
+    // As the daemon does, a frame before the calls.
+    std::vector<std::string> calls;
+    const auto take = [&stuck, &calls] {
+        (void)stuck.pane->frame(stuck.writer, std::size_t(1) << 20);
+        for (std::string& call : stuck.pane->takeHostCalls(1, std::size_t(1) << 20))
+            calls.push_back(std::move(call));
+    };
+    // The bell by its whole call, and the report in the bytes of its call.
+    const auto at = [&calls](const std::string& wanted, bool whole) {
+        for (std::size_t i = 0; i < calls.size(); ++i) {
+            if (whole ? calls[i] == wanted : calls[i].find(wanted) != std::string::npos)
+                return std::ptrdiff_t(i);
+        }
+        return std::ptrdiff_t(-1);
+    };
+    const std::string report = "\x1b[?999;1n";
+    const std::string bell = AfterglowMux::Host::encode(AfterglowMux::Host::make(AfterglowMux::Host::Kind::Bell));
+    take();
+    EXPECT_EQ(at(report, false), -1);
+    stuck.release();
+    const auto deadline = Clock::now() + std::chrono::seconds(10);
+    while ((at(report, false) < 0 || at(bell, true) < 0) && Clock::now() < deadline) {
+        take();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_GE(at(report, false), 0);
+    ASSERT_GE(at(bell, true), 0);
+    EXPECT_LT(at(bell, true), at(report, false));
+}
+
+// A download right after an image, in the same read, while a bell waits for
+// the window: the daemon's frame waited for the decode, so the download's
+// question goes only with the next frame, and the pane wakes the daemon for
+// it before it waits for the answer. The change that waited for the decode
+// comes first, and those of the wait after it.
+TEST(MuxPane, ADownloadAfterADecodeWakesTheDaemonAndKeepsTheOrder)
+{
+    StuckDecode stuck(30000, "printf do''ne; exec sleep 60", "read -r _; printf '\\a'; ",
+                      "\x1b]1337;File=name=eA==;size=1:eA==\a");
+    SKIP_WITHOUT_SERVER(stuck);
+    ASSERT_TRUE(stuck.pane);
+    stuck.pane->setWindow(1, std::size_t(1) << 20);
+    ASSERT_EQ(stuck.pane->input("\n"), MuxPane::Input::Written);
+    ASSERT_TRUE(stuck.decoding());
+    stuck.pane->resize(PaneSize{100, 30, 10, 20});
+    const int before = stuck.wakes;
+    stuck.release();
+    ASSERT_TRUE(stuck.wokeAfter(before));
+    // As the daemon does, a frame before the calls: the bell, then the
+    // question.
+    std::vector<std::string> calls;
+    const auto deadline = Clock::now() + std::chrono::seconds(10);
+    const auto asked = [&calls] {
+        return std::any_of(calls.begin(), calls.end(), [](const std::string& call) {
+            return !call.empty()
+                && AfterglowMux::Host::Kind(std::uint8_t(call.front())) == AfterglowMux::Host::Kind::DownloadBegin;
+        });
+    };
+    while (!asked() && Clock::now() < deadline) {
+        (void)stuck.pane->frame(stuck.writer, std::size_t(1) << 20);
+        for (std::string& call : stuck.pane->takeHostCalls(1, std::size_t(1) << 20))
+            calls.push_back(std::move(call));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(asked());
+    // The resize of the wait comes after the one that waited for the decode.
+    stuck.pane->resize(PaneSize{90, 25, 10, 20});
+    // Another window's answer counts for nothing, and a refusal lets the
+    // program go on with no data.
+    stuck.pane->answerDownload(AfterglowMux::Attach::DownloadReply::Accept, 2);
+    stuck.pane->answerDownload(AfterglowMux::Attach::DownloadReply::Refuse, 1);
+    // The feed that the answer let go ends once the text after it shows.
+    const auto end = Clock::now() + std::chrono::seconds(10);
+    const auto shown = [&stuck] {
+        const auto text = stuck.pane->text(AfterglowVt::Terminal::TextScope::Screen);
+        return text && text->text.find("done") != std::string::npos;
+    };
+    while (Clock::now() < end && !shown())
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    ASSERT_TRUE(shown());
+    EXPECT_EQ(stuck.pane->facts().size.cols, 90);
+    EXPECT_EQ(stuck.pane->facts().size.rows, 25);
+    (void)stuck.pane->frame(stuck.writer, std::size_t(1) << 20);
+    for (const std::string& call : stuck.pane->takeHostCalls(1, std::size_t(1) << 20)) {
+        EXPECT_NE(AfterglowMux::Host::Kind(std::uint8_t(call.front())), AfterglowMux::Host::Kind::DownloadData);
+    }
+}
+
+TEST(MuxPane, InputWaitsInThePaneBehindAChangeThatWaitsForADecode)
+{
+    // The program marks a prompt, prints its image, reads a line, then
+    // writes the size of its terminal and the line.
+    TempDir out;
+    ASSERT_FALSE(out.path.empty());
+    const std::string size = (out.path / "size").string();
+    const std::string line = (out.path / "line").string();
+    StuckDecode stuck(
+        30000, "IFS= read -r line; stty size > '" + size + "'; printf '%s' \"$line\" > '" + line + "'; exec sleep 60",
+        "printf '\\033]133;A\\007'; ");
+    SKIP_WITHOUT_SERVER(stuck);
+    ASSERT_TRUE(stuck.pane);
+    ASSERT_TRUE(stuck.decoding());
+    // The pane takes the input behind the resize and the clear, and the
+    // window's other panes go on. Past half of the PTY's queue, the window
+    // holds it: here by the input alone, with nothing waiting before it.
+    stuck.pane->resize(PaneSize{100, 30, 10, 20});
+    stuck.pane->clear();
+    EXPECT_EQ(stuck.pane->input(std::string(AfterglowPty::Pty::MaxPendingInput / 2 + 1, 'a')), MuxPane::Input::Full);
+    EXPECT_EQ(stuck.pane->input("x\n"), MuxPane::Input::Written);
+    // The decode ends: the changes go first, then the line, and the daemon
+    // is woken for the input that it holds. The clear at a prompt writes a
+    // form feed for the shell, which the line follows: the PTY's queue has
+    // it first (written at once, the line would be first).
+    const int before = stuck.wakes;
+    stuck.release();
+    EXPECT_TRUE(stuck.wokeAfter(before));
+    std::string got;
+    const auto deadline = Clock::now() + std::chrono::seconds(10);
+    while (Clock::now() < deadline && (got = readFile(line)).empty())
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(got, "\x0cx");
+    EXPECT_EQ(readFile(size), "30 100\n");
+}
+
+TEST(MuxPane, TheBoundOfWaitingInputCountsThePtyQueueAndWhatWent)
+{
+    // The program reads nothing: what the pane writes stays in the PTY's
+    // queue. It prints its image again once the test says so.
+    TempDir out;
+    ASSERT_FALSE(out.path.empty());
+    const std::string next = (out.path / "next").string();
+    const std::string image = (out.path / "image").string();
+    std::ofstream(image) << "\x1b_Ga=T,f=100,i=2,q=2;" << AfterglowProto::base64Encode(AfterglowImage::TestFiles::Png)
+                         << "\x1b\\";
+    // Raw and without echo: a terminal in canonical mode takes, and drops,
+    // the input past a full line, and its queue would not hold what went.
+    StuckDecode stuck(30000,
+                      "stty raw -echo; while [ ! -e '" + next + "' ]; do sleep 0.02; done; cat '" + image
+                          + "'; exec sleep 60");
+    SKIP_WITHOUT_SERVER(stuck);
+    ASSERT_TRUE(stuck.pane);
+    ASSERT_TRUE(stuck.decoding());
+    const std::size_t half = AfterglowPty::Pty::MaxPendingInput / 2;
+    // Input that waits behind a change, a little less than half of the
+    // queue: it goes to the PTY when the decode ends.
+    stuck.pane->resize(PaneSize{100, 30, 10, 20});
+    EXPECT_EQ(stuck.pane->input(std::string(half - 4096, 'a')), MuxPane::Input::Written);
+    const int before = stuck.wakes;
+    stuck.release();
+    ASSERT_TRUE(stuck.wokeAfter(before));
+    // The second image waits too. What went counts no more as waiting, so
+    // a small input waits behind a change again. Beside the PTY's queue,
+    // which still holds what went less what the kernel took (some 64 KiB),
+    // a mebibyte more does not fit.
+    stuck.hold();
+    std::ofstream(next) << "";
+    ASSERT_TRUE(stuck.decoding());
+    stuck.pane->resize(PaneSize{80, 24, 10, 20});
+    EXPECT_EQ(stuck.pane->input("x"), MuxPane::Input::Written);
+    EXPECT_EQ(stuck.pane->input(std::string(std::size_t(1) << 20, 'b')), MuxPane::Input::Full);
+}
+
+TEST(MuxPane, APaneThatClosesDoesNotWaitForItsDecode)
+{
+    StuckDecode stuck(30000);
+    SKIP_WITHOUT_SERVER(stuck);
+    ASSERT_TRUE(stuck.pane);
+    ASSERT_TRUE(stuck.decoding());
+    const auto start = Clock::now();
+    stuck.pane.reset();
+    EXPECT_LT(Clock::now() - start, std::chrono::seconds(5));
+}
+
+// What `afterglow ctl ls` says of a pane's directory: the one that its shell
+// reported when it is a directory of this host, else the directory of its
+// program.
+TEST(MuxPane, FactsGiveTheCheckedDirectoryOfTheShell)
+{
+    if (!MuxTest::processDirectoriesShown())
+        GTEST_SKIP() << "the kernel tells no directory of another process (security.bsd.unprivileged_proc_debug=0)";
+    TempDir home;
+    TempDir reported;
+    TempDir other;
+    ASSERT_FALSE(home.path.empty());
+    ASSERT_FALSE(reported.path.empty());
+    ASSERT_FALSE(other.path.empty());
+    const std::string here = std::filesystem::canonical(home.path).string();
+    // The shell reports $1, a URL of this host. Each step waits for its
+    // file in $3: then it reports a directory that does not exist, $1
+    // again, and last, from a context on another host, the plain path $2,
+    // and a title after it.
+    const std::string script =
+        "flags=$3\n"
+        "step() { i=0; while [ ! -e \"$flags/$1\" ] && [ $i -lt 1000 ]; do sleep 0.02; i=$((i+1)); done; }\n"
+        "printf '\\033]7;%s\\007' \"$1\"\n"
+        "step one\n"
+        "printf '\\033]7;file://localhost/no/such/directory/here\\007'\n"
+        "step two\n"
+        "printf '\\033]7;%s\\007' \"$1\"\n"
+        "step three\n"
+        "printf '\\033]3008;start=elsewhere;type=remote;targethost=aglow-test.invalid\\033\\\\'\n"
+        "printf '\\033]7;%s\\007' \"$2\"\n"
+        "printf '\\033]2;done\\007'\n"
+        "exec sleep 60\n";
+    const std::string url = "file://localhost" + AfterglowProto::dndPercentEncode(reported.path.string());
+    ShellPane shell(script, {url, other.path.string(), home.path.string()}, home.path.string());
+    ASSERT_TRUE(shell.pane);
+    const auto directoryIs = [&shell](const std::string& wanted) {
+        return MuxTest::waitFor(
+            [&] {
+                return shell.pane->facts().directory == wanted;
+            },
+            std::chrono::seconds(10));
+    };
+    const auto next = [&home](const char* step) {
+        std::ofstream(home.path / step) << "";
+    };
+    ASSERT_TRUE(directoryIs(reported.path.string())) << shell.pane->facts().directory;
+    // No such directory here: the directory of the program.
+    next("one");
+    ASSERT_TRUE(directoryIs(here)) << shell.pane->facts().directory;
+    next("two");
+    ASSERT_TRUE(directoryIs(reported.path.string())) << shell.pane->facts().directory;
+    // A plain path names a directory of the other host: the directory of
+    // the program again, not the path, though this host has it.
+    // The title comes after the path: the terminal read both. The context
+    // alone already gives the directory of the program.
+    next("three");
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&] {
+            return shell.pane->facts().title == "done";
+        },
+        std::chrono::seconds(10)))
+        << shell.pane->facts().title;
+    EXPECT_EQ(shell.pane->facts().directory, here);
+}
+
+// Whether the shell is at its prompt follows the daemon's own changes too:
+// a reset leaves the prompt, with no output after it. The exit code and the
+// typed text go with it, and the watch hears the state.
+TEST(MuxPane, AResetLeavesThePrompt)
+{
+    TempDir home;
+    ASSERT_FALSE(home.path.empty());
+    ShellPane shell(
+        "printf '\\033]133;A\\007$ \\033]133;B\\007\\033]133;C\\007\\033]133;D;3\\007"
+        "\\033]133;A\\007$ \\033]133;B\\007typed'; exec sleep 60",
+        {}, home.path.string(), true);
+    ASSERT_TRUE(shell.pane);
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&] {
+            const MuxPane::Facts facts = shell.pane->facts();
+            return facts.shell == AfterglowVt::ShellState::Prompt && facts.lastExit == 3 && facts.input;
+        },
+        std::chrono::seconds(10)));
+    (void)shell.pane->takeWatchEvents();
+    shell.pane->reset();
+    const MuxPane::Facts facts = shell.pane->facts();
+    EXPECT_EQ(facts.shell, AfterglowVt::ShellState::None);
+    EXPECT_FALSE(facts.lastExit);
+    EXPECT_FALSE(facts.input);
+    const std::vector<MuxPane::WatchEvent> events = shell.pane->takeWatchEvents();
+    const auto shellEvent = std::find_if(events.rbegin(), events.rend(), [](const MuxPane::WatchEvent& e) {
+        return e.kind == MuxPane::WatchEvent::Kind::Shell;
+    });
+    ASSERT_NE(shellEvent, events.rend());
+    EXPECT_EQ(shellEvent->name, "none");
+}
+
+// Past the limit of a watch's events, the newest title still takes the
+// place of the last one: `afterglow ctl watch` hears where it ended.
+TEST(MuxPane, AWatchPastItsLimitKeepsTheNewestTitle)
+{
+    static_assert(MuxPane::MaxWatchEvents < 1100);
+    TempDir home;
+    ASSERT_FALSE(home.path.empty());
+    ShellPane shell("i=0; while [ $i -lt 1100 ]; do printf '\\033]2;t%d\\007' $i; i=$((i+1)); done; exec sleep 60", {},
+                    home.path.string(), true);
+    ASSERT_TRUE(shell.pane);
+    // The title and its event change under one lock.
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&shell] {
+            return shell.pane->title() == "t1099";
+        },
+        std::chrono::seconds(20)))
+        << shell.pane->title();
+    const std::vector<MuxPane::WatchEvent> events = shell.pane->takeWatchEvents();
+    EXPECT_EQ(events.size(), MuxPane::MaxWatchEvents);
+    ASSERT_FALSE(events.empty());
+    EXPECT_TRUE(events.back().kind == MuxPane::WatchEvent::Kind::Title);
+    EXPECT_EQ(events.back().text, "t1099");
+    EXPECT_EQ(events.front().text, "t0");
+}
+
+// Past the limit of a watch's events, the last change of the text still
+// comes, after the events before it: a watcher that waits for the end of a
+// burst hears it. One change stands for all of them.
+TEST(MuxPane, AWatchPastItsLimitKeepsTheLastChangeOfTheText)
+{
+    TempDir home;
+    ASSERT_FALSE(home.path.empty());
+    ShellPane shell(
+        "i=0; while [ $i -lt 1100 ]; do printf '\\033]2;t%d\\007' $i; i=$((i+1)); done; "
+        "echo do''ne; exec sleep 60",
+        {}, home.path.string(), true, true);
+    ASSERT_TRUE(shell.pane);
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&shell] {
+            const auto text = shell.pane->text(AfterglowVt::Terminal::TextScope::Screen);
+            return text && text->text.find("done") != std::string::npos;
+        },
+        std::chrono::seconds(20)));
+    const std::vector<MuxPane::WatchEvent> events = shell.pane->takeWatchEvents();
+    ASSERT_FALSE(events.empty());
+    EXPECT_LE(events.size(), MuxPane::MaxWatchEvents + 1);
+    EXPECT_TRUE(events.back().kind == MuxPane::WatchEvent::Kind::Text);
+    EXPECT_EQ(std::count_if(events.begin(), events.end(),
+                            [](const MuxPane::WatchEvent& e) {
+                                return e.kind == MuxPane::WatchEvent::Kind::Text;
+                            }),
+              1);
+}
+
+// The changes of the text wait for the daemon only while a watcher wants
+// them, and count from then on: the text that came before is no change, also
+// at the next feed, here of a title alone.
+TEST(MuxPane, TheChangesOfTheTextCountOnlyForAWatcherOfThemFromItsStart)
+{
+    TempDir home;
+    ASSERT_FALSE(home.path.empty());
+    // Without echo: the typed line changes no text.
+    ShellPane shell(
+        "stty -echo; echo o''ne; read line; printf '\\033]2;t''t\\007'; read line; echo t''wo; exec sleep 60", {},
+        home.path.string(), true);
+    ASSERT_TRUE(shell.pane);
+    const auto shows = [&shell](const std::string& part) {
+        const auto text = shell.pane->text(AfterglowVt::Terminal::TextScope::Screen);
+        return text && text->text.find(part) != std::string::npos;
+    };
+    const auto count = [](const std::vector<MuxPane::WatchEvent>& events, MuxPane::WatchEvent::Kind kind) {
+        return std::count_if(events.begin(), events.end(), [kind](const MuxPane::WatchEvent& e) {
+            return e.kind == kind;
+        });
+    };
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&] {
+            return shows("one");
+        },
+        std::chrono::seconds(10)));
+    EXPECT_EQ(count(shell.pane->takeWatchEvents(), MuxPane::WatchEvent::Kind::Text), 0);
+    shell.pane->setWatched(true, true);
+    EXPECT_EQ(count(shell.pane->takeWatchEvents(), MuxPane::WatchEvent::Kind::Text), 0);
+    ASSERT_EQ(shell.pane->input("go\n"), MuxPane::Input::Written);
+    std::vector<MuxPane::WatchEvent> events;
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&] {
+            for (MuxPane::WatchEvent& event : shell.pane->takeWatchEvents())
+                events.push_back(std::move(event));
+            return count(events, MuxPane::WatchEvent::Kind::Title) > 0;
+        },
+        std::chrono::seconds(10)));
+    // The title comes within the feed, and the text's change after it, with
+    // the pane's lock, which status() waits for.
+    (void)shell.pane->status();
+    for (MuxPane::WatchEvent& event : shell.pane->takeWatchEvents())
+        events.push_back(std::move(event));
+    EXPECT_EQ(count(events, MuxPane::WatchEvent::Kind::Text), 0);
+    ASSERT_EQ(shell.pane->input("go\n"), MuxPane::Input::Written);
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&] {
+            return shows("two");
+        },
+        std::chrono::seconds(10)));
+    EXPECT_GE(count(shell.pane->takeWatchEvents(), MuxPane::WatchEvent::Kind::Text), 1);
+}
+
+// A reset at a primary prompt gives the shell Ctrl+L, so that it draws its
+// prompt again with its marks, as in a window. Nothing goes to a command
+// that runs.
+TEST(MuxPane, AResetAtAPromptAsksTheShellForItAgain)
+{
+    TempDir home;
+    ASSERT_FALSE(home.path.empty());
+    const std::string first = (home.path / "first").string();
+    const std::string second = (home.path / "second").string();
+    ShellPane shell("stty raw -echo; printf '\\033]133;A\\007$ \\033]133;B\\007'; dd bs=1 count=1 2>/dev/null > '"
+                        + first + "'; printf '\\033]133;C\\007'; dd bs=1 count=1 2>/dev/null > '" + second
+                        + "'; exec sleep 60",
+                    {}, home.path.string());
+    ASSERT_TRUE(shell.pane);
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&] {
+            return shell.pane->facts().shell == AfterglowVt::ShellState::Prompt;
+        },
+        std::chrono::seconds(10)));
+    shell.pane->reset();
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&] {
+            return shell.pane->facts().shell == AfterglowVt::ShellState::Running;
+        },
+        std::chrono::seconds(10)));
+    EXPECT_EQ(readFile(first), "\x0c");
+    shell.pane->reset();
+    ASSERT_EQ(shell.pane->input("x"), MuxPane::Input::Written);
+    std::string got;
+    const auto deadline = Clock::now() + std::chrono::seconds(10);
+    while (Clock::now() < deadline && (got = readFile(second)).empty())
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(got, "x");
+}
+
+// A paste at the prompt goes only while the shell waits at a primary prompt
+// with an empty command line, as the check and the write are one step.
+TEST(MuxPane, InputAtThePromptGoesOnlyToAnEmptyPrompt)
+{
+    TempDir home;
+    ASSERT_FALSE(home.path.empty());
+    ShellPane shell(
+        "printf '\\033]133;A\\007$ \\033]133;B\\007'; read line; "
+        "printf '\\033]133;C\\007[%s]' \"$line\"; exec sleep 60",
+        {}, home.path.string());
+    ASSERT_TRUE(shell.pane);
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&] {
+            return shell.pane->facts().shell == AfterglowVt::ShellState::Prompt;
+        },
+        std::chrono::seconds(10)));
+    AfterglowVt::ShellState state = AfterglowVt::ShellState::None;
+    bool decoding = true;
+    const auto written = shell.pane->inputAtPrompt("pasted\n", state, decoding);
+    EXPECT_FALSE(decoding);
+    ASSERT_TRUE(written);
+    EXPECT_EQ(*written, MuxPane::Input::Written);
+    ASSERT_TRUE(MuxTest::waitFor(
+        [&] {
+            return shell.pane->facts().shell == AfterglowVt::ShellState::Running;
+        },
+        std::chrono::seconds(10)));
+    EXPECT_FALSE(shell.pane->inputAtPrompt("more\n", state, decoding));
+    EXPECT_EQ(state, AfterglowVt::ShellState::Running);
+    EXPECT_FALSE(decoding);
+}

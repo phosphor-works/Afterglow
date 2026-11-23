@@ -55,7 +55,10 @@ class SignatureBuilder
 {
 public:
     explicit SignatureBuilder(std::uint64_t fileSize);
-    std::uint32_t blockSize() const { return m_blockSize; }
+    std::uint32_t blockSize() const
+    {
+        return m_blockSize;
+    }
     std::string header() const;
     /// The record of the next block. Each block but the last is blockSize() long.
     std::string record(std::string_view block);
@@ -90,7 +93,10 @@ public:
     {
     }
     bool read(std::string& out, std::size_t max) override;
-    bool atEnd() const override { return m_bytes.empty(); }
+    bool atEnd() const override
+    {
+        return m_bytes.empty();
+    }
 
 private:
     std::string_view m_bytes;
@@ -123,7 +129,10 @@ public:
     /// length, whether it matches or not. One call can go past @p step by
     /// one block.
     bool produce(ByteSource& file, std::string& out, std::size_t want, std::size_t step);
-    bool done() const { return m_done; }
+    bool done() const
+    {
+        return m_done;
+    }
 
 private:
     struct Record
@@ -197,9 +206,15 @@ public:
     std::optional<std::size_t> apply(std::string_view pending, DeltaTarget& target, std::size_t step = SIZE_MAX);
     /// The last apply() stopped at its step with work left: call it again
     /// with the bytes that it did not take, with or without more data.
-    bool hasWork() const { return m_hasWork; }
+    bool hasWork() const
+    {
+        return m_hasWork;
+    }
     /// The file hash arrived and matched.
-    bool finished() const { return m_finished; }
+    bool finished() const
+    {
+        return m_finished;
+    }
 
 private:
     bool output(DeltaTarget& target, std::string_view bytes, std::size_t& written);

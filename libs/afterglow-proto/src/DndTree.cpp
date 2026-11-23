@@ -12,7 +12,7 @@ namespace AfterglowProto {
 
 DndMeta dndRemoteEntry(std::int64_t root, std::int64_t parent, std::int64_t child, std::int64_t kind)
 {
-    DndMeta meta { { "t", "k" }, { "x", std::to_string(root) }, { "X", std::to_string(kind) } };
+    DndMeta meta{{"t", "k"}, {"x", std::to_string(root)}, {"X", std::to_string(kind)}};
     if (parent != 0) {
         meta["Y"] = std::to_string(parent);
         meta["y"] = std::to_string(child);
@@ -23,13 +23,13 @@ DndMeta dndRemoteEntry(std::int64_t root, std::int64_t parent, std::int64_t chil
 DndMeta dndReadEntry(std::int64_t mime, std::int64_t parent, std::int64_t child)
 {
     if (parent != 0) {
-        DndMeta meta { { "t", "r" }, { "Y", std::to_string(parent) } };
+        DndMeta meta{{"t", "r"}, {"Y", std::to_string(parent)}};
         if (child != 0) {
             meta["x"] = std::to_string(child);
         }
         return meta;
     }
-    return { { "t", "r" }, { "x", std::to_string(mime) }, { "y", std::to_string(child) } };
+    return {{"t", "r"}, {"x", std::to_string(mime)}, {"y", std::to_string(child)}};
 }
 
 std::vector<std::string> dndDataPackets(const DndMeta& meta, std::string_view bytes)
@@ -66,8 +66,7 @@ bool dndValidName(std::string_view name)
     }
     std::size_t i = 0;
     char32_t cp = 0;
-    while (i < name.size() && nextUtf8(name, i, cp)) {
-    }
+    while (i < name.size() && nextUtf8(name, i, cp)) { }
     return i == name.size();
 }
 

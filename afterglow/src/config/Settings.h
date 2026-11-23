@@ -5,6 +5,8 @@
 
 #include "Keybinds.h"
 #include "KeyModes.h"
+#include "ModifierRemap.h"
+#include "NotificationFilter.h"
 #include "Theme.h"
 #include "../audio/AudioSettings.h"
 #include "../shaders/ShaderRefs.h"
@@ -20,7 +22,11 @@
 #include <QString>
 #include <QStringList>
 
+#include <cstdint>
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace PhosphorConfig {
 class JsonBackend;
@@ -35,13 +41,21 @@ struct WindowSettings
     int padding = 6; ///< logical pixels around each pane's grid
     int initialColumns = 100;
     int initialRows = 30;
-    static constexpr AfterglowVt::Rgb DefaultDivider{0x3a, 0x3a, 0x42};
-    std::uint32_t dividerColor = AfterglowRender::packRgba(DefaultDivider); ///< RGBA8 in memory order
+    /// Unset, a fifth of the way from the background to the text in use:
+    /// here the defaults, so that a light background without a theme does
+    /// not get a dark divider.
+    static inline const std::uint32_t DefaultDividerColor = [] {
+        const AfterglowVt::TerminalOptions defaults;
+        return AfterglowRender::packRgba(
+            Themes::derivedDivider(defaults.defaultBackground, defaults.defaultForeground));
+    }();
+    std::uint32_t dividerColor = DefaultDividerColor; ///< RGBA8 in memory order
     /// Unset, halfway from the background to the text in use: here the
     /// defaults.
     static inline const std::uint32_t DefaultPopupBorderColor = [] {
         const AfterglowVt::TerminalOptions defaults;
-        return AfterglowRender::packRgba(Themes::derivedPopupBorder(defaults.defaultBackground, defaults.defaultForeground));
+        return AfterglowRender::packRgba(
+            Themes::derivedPopupBorder(defaults.defaultBackground, defaults.defaultForeground));
     }();
     std::uint32_t popupBorderColor = DefaultPopupBorderColor; ///< RGBA8 in memory order
     double unfocusedDim = 0.19;
@@ -49,22 +63,43 @@ struct WindowSettings
     double backgroundOpacity = 1.0; ///< of the default background
     bool blur = false; ///< blur what shows through a translucent background (KWin)
     bool paneTitles = false; ///< label each split with its title
-    enum class PopupCorners { Rounded, Square };
+    int resizeStepCells = 2; ///< cells that the resize actions move a split edge by
+    /// The largest Window.resizeStepCells: as many cells as afterglow ctl
+    /// resize takes (Control::MaxResizeCells).
+    static constexpr int MaxResizeStepCells = 10000;
+    enum class PopupCorners {
+        Rounded,
+        Square
+    };
     PopupCorners popupCorners = PopupCorners::Rounded; ///< of a popup overlay's border
     /// Where new tabs, splits and windows start: "inherit" (the focused
     /// pane's directory, or the launcher's), "home", or a path.
     QString workingDirectory = QStringLiteral("inherit");
-    enum class StartMode { Normal, Maximized, Fullscreen };
+    enum class StartMode {
+        Normal,
+        Maximized,
+        Fullscreen
+    };
     StartMode startMode = StartMode::Normal;
     bool decorations = true; ///< the compositor's title bar and borders
     bool balancePadding = false; ///< share the space a grid leaves over between opposite edges
     /// The tab bar: shown while there are several tabs, always, or never.
-    enum class TabBar { Auto, Always, Never };
+    enum class TabBar {
+        Auto,
+        Always,
+        Never
+    };
     TabBar tabBar = TabBar::Auto;
+    int tabBarHeight = 30; ///< logical pixels
     /// The history scrollbar: shown while scrolling or hovered, always, or never.
-    enum class Scrollbar { Auto, Always, Never };
+    enum class Scrollbar {
+        Auto,
+        Always,
+        Never
+    };
     Scrollbar scrollbar = Scrollbar::Auto;
     int scrollbarHideDelay = 1200; ///< milliseconds before an auto scrollbar fades
+    int scrollbarWidth = 12; ///< the history scrollbar's width, logical pixels
     bool operator==(const WindowSettings&) const = default;
 };
 
@@ -72,16 +107,61 @@ struct MouseSettings
 {
     /// Right-click: the context menu, paste, copy a selection (or paste
     /// without one), or extend the selection to the click.
-    enum class RightClick { Menu, Paste, CopyOrPaste, Extend };
+    enum class RightClick {
+        Menu,
+        Paste,
+        CopyOrPaste,
+        Extend
+    };
     RightClick rightClick = RightClick::Menu;
     /// Middle-click pastes the primary selection, the clipboard, or nothing.
-    enum class MiddleClick { Primary, Clipboard, None };
+    enum class MiddleClick {
+        Primary,
+        Clipboard,
+        None
+    };
     MiddleClick middleClick = MiddleClick::Primary;
     /// Milliseconds between the rows a selection scrolls while it is
-    /// dragged past the top or bottom of its pane.
+    /// extended past the top or bottom of its pane.
     int autoScrollInterval = 50;
+    /// The part of a finger scroll's speed that its coast keeps every 8 ms
+    /// after the last finger lifts, on a touchpad or a touchscreen: 0.96, as
+    /// in Kitty (momentum_scroll). 0 turns the coast off, and 1 never slows it.
+    double momentumScroll = 0.96;
+    /// Multiplies the distance of a finger scroll on a touchpad or a
+    /// touchscreen: 1, as in Kitty (touch_scroll_multiplier). A negative value
+    /// scrolls the other way. A program that reads the mouse gets the sign only.
+    double touchScrollMultiplier = 1.0;
+    /// Milliseconds that a finger holds still on a touchscreen before a move
+    /// selects instead of scrolling: 400, as in Kitty.
+    int touchSelectHold = 400;
+    /// A single press inside the selection and a move drag its text out, to
+    /// another pane or another application. A click there without a move
+    /// clears the selection. Off, as in Kitty: a press inside the selection
+    /// selects as it does elsewhere.
+    bool dragSelection = false;
+    /// A click on the command line of a shell that marks its prompt
+    /// (OSC 133) moves the shell's cursor there. On, as in Kitty.
+    bool clickMovesCursor = true;
+    /// A right-click with commandOutputModifier on a command that shell
+    /// integration marks (OSC 133): its output in Terminal.pager, as in
+    /// Kitty (mouse_show_command_output), its output selected
+    /// (mouse_select_command_output), or a plain right-click.
+    enum class CommandOutputClick {
+        Pager,
+        Select,
+        None
+    };
+    CommandOutputClick commandOutputClick = CommandOutputClick::Pager;
+    /// The modifiers held, and no others, for commandOutputClick: Ctrl+Shift,
+    /// as in Kitty.
+    Qt::KeyboardModifiers commandOutputModifier = Qt::ControlModifier | Qt::ShiftModifier;
     bool operator==(const MouseSettings&) const = default;
 };
+
+/// @p modifiers as people read them: "Ctrl+Shift", in the order ctrl,
+/// shift, alt, super. Empty for none.
+QString modifierText(Qt::KeyboardModifiers modifiers);
 
 struct LinkSettings
 {
@@ -98,8 +178,8 @@ struct LinkSettings
     /// Held to hover and click links; none opens them with a plain click.
     Qt::KeyboardModifiers modifier = Qt::ControlModifier;
     /// Lower-case URL schemes that open without asking; other links ask first.
-    QStringList schemes{QStringLiteral("http"), QStringLiteral("https"), QStringLiteral("mailto"), QStringLiteral("ftp"),
-                        QStringLiteral("file")};
+    QStringList schemes{QStringLiteral("http"), QStringLiteral("https"), QStringLiteral("mailto"),
+                        QStringLiteral("ftp"), QStringLiteral("file")};
     bool operator==(const LinkSettings&) const = default;
 };
 
@@ -111,19 +191,127 @@ struct QuickTerminalSettings
     QString curve = QStringLiteral("spring:22,1"); ///< the slide, as AnimationSettings::splitCurve
     int duration = 150; ///< milliseconds of the slide for curves other than springs
     /// The screen edge it slides from.
-    enum class Position { Top, Bottom };
+    enum class Position {
+        Top,
+        Bottom
+    };
     Position position = Position::Top;
     QString screen; ///< output name (QScreen::name); empty for the primary screen
     bool operator==(const QuickTerminalSettings&) const = default;
 };
 
+struct MuxSettings
+{
+    /// What closing the window that shows a mux session, or its last tab or
+    /// pane, does. Closing another tab or pane ends only its programs.
+    enum class Close {
+        Kill,
+        Detach
+    };
+    /// Kill ends the session and its programs, as a window that is not in a
+    /// session ends its programs. Detach keeps the session running. A quit
+    /// of Afterglow always detaches, and so does the window of a project
+    /// that opened into the session (TerminalWindow::keepSessionForProject).
+    Close onClose = Close::Kill;
+    /// The bytes of host calls (MuxHost.h) that wait for a slow window: the
+    /// daemon keeps a queue of this size for the session and one for each
+    /// pane. In MiB in the configuration. The default equals
+    /// AfterglowMux::DefaultEventQueue, which ConfigTest checks.
+    std::size_t eventQueue = std::size_t(4) << 20;
+    /// The variables that a session of this computer takes from the
+    /// Afterglow that shows it, as tmux's update-environment: set to
+    /// Afterglow's value, or removed when Afterglow has none. A window sends
+    /// them when it shows the session and at each change of the settings. A
+    /// name that leaves the list keeps its value in the session. The panes
+    /// that start later get them. At most AfterglowMux::MaxUpdatedVariables
+    /// names. The default is tmux 3.8's without MSYSTEM, WINDOWID and the
+    /// XDG_ desktop names.
+    QStringList updateEnvironment{QStringLiteral("DISPLAY"),       QStringLiteral("WAYLAND_DISPLAY"),
+                                  QStringLiteral("XAUTHORITY"),    QStringLiteral("SSH_AUTH_SOCK"),
+                                  QStringLiteral("SSH_AGENT_PID"), QStringLiteral("SSH_CONNECTION"),
+                                  QStringLiteral("SSH_ASKPASS"),   QStringLiteral("KRB5CCNAME")};
+    /// The command line that ssh gives the login shell of another host for
+    /// its sessions (`<remoteCommand> proxy`): a name that the shell finds,
+    /// or a path there, which the shell can expand. Never empty: the read
+    /// gives the default for an empty value.
+    QString remoteCommand = QStringLiteral("aglow-mux");
+    /// Seconds that the afterglow mux commands wait for the first answer
+    /// through a proxy of the daemon of another host: ssh may ask for a
+    /// password or a passphrase first. A window waits
+    /// AfterglowMux::CallTimeoutMs, with ssh in BatchMode, which asks for
+    /// nothing.
+    int signInTimeout = 120;
+    /// The most notifications that each pane of a session keeps while no
+    /// window shows the session, for the next window. The default equals
+    /// AfterglowMux::DefaultKeptNotifications, which ConfigTest checks.
+    int keptNotifications = 8;
+    /// The text of the badge at the start of the tab bar of a window that
+    /// shows an agent session, and of the title's prefix: trimmed, without
+    /// control characters, at most MaxAgentLabel UTF-16 units. Empty: no
+    /// marker.
+    QString agentLabel = QStringLiteral("agent");
+    static constexpr qsizetype MaxAgentLabel = 32;
+    /// The badge's color; none: the palette's bright magenta (color13) of
+    /// the theme or of Colors.palette.
+    std::optional<AfterglowVt::Rgb> agentColor;
+    bool operator==(const MuxSettings&) const = default;
+};
+
+/// What `afterglow mcp` reads once at its start, from the default config
+/// file: a change applies to the next server.
+struct McpSettings
+{
+    /// The bounds of the times in ms: a day at most.
+    static constexpr int MinTimeout = 1000;
+    static constexpr int MaxTimeout = 86400000;
+    /// getText of a window and of the daemon cuts a text at 1 MiB
+    /// (Pane::MaxText and MuxPane::MaxText): a result never holds more.
+    static constexpr int MinOutputLimit = 1024;
+    static constexpr int MaxOutputLimit = 1 << 20;
+    /// The bounds of tailLines, and of the tail_lines of a call.
+    static constexpr int MaxTailLines = 1000000;
+    /// The bounds of screenshotMaxSize in pixels.
+    static constexpr int MinScreenshotSize = 64;
+    static constexpr int MaxScreenshotSize = 16384;
+    /// The time in ms that run, wait and run_script_command wait when the
+    /// call gives none. read() caps it at maxWaitTimeout.
+    int waitTimeout = 120000;
+    /// The longest time in ms that a call of run, wait or
+    /// run_script_command can ask for.
+    int maxWaitTimeout = 3600000;
+    /// The most bytes of UTF-8 text that one result of run, wait, read or
+    /// run_script_command carries.
+    int outputLimit = 65536;
+    /// The lines of output of run and wait when the call gives no tail_lines.
+    int tailLines = 200;
+    /// The longest side of a screenshot in pixels: a larger one is scaled down.
+    int screenshotMaxSize = 2048;
+    /// Bind the session to the server, so that the daemon ends it when the
+    /// last bound connection closes. Never an adopted session.
+    bool endSessionOnExit = true;
+    bool operator==(const McpSettings&) const = default;
+};
+
 struct ControlSettings
 {
     /// The "control" target on the process's socket (afterglow ctl) and,
-    /// with Scripts.enabled, the "commands" target (aglow run, afterglow run).
+    /// with Scripts.enabled, the "commands" target (aglow run, afterglow run)
+    /// and the remote sockets that afterglow ssh forwards
+    /// (Terminal.sshRemoteCommands). The mux daemon follows this, and
+    /// allowReadText, eventInterval and allowAdopt, of the window that showed
+    /// a session last (sessionSettings in MuxSessions.cpp): a change reaches
+    /// a session only through a window that shows it.
     bool enabled = true;
-    bool allowReadText = false; ///< let it read pane contents
+    /// Let clients read pane contents. A pane of an agent session has read
+    /// access whatever this says, for the calls that its daemon passes on.
+    bool allowReadText = false;
+    /// Let a script command that runs from a remote host read pane text,
+    /// and let other handlers write to such a run.
+    bool allowRemoteReadText = false;
     int eventInterval = 100; ///< ms between two events of one kind for one pane, 0 sends every event
+    /// Let `afterglow mcp --adopt` make an agent session of a session that
+    /// the user started. A guard against a mistake, not a boundary.
+    bool allowAdopt = false;
     bool operator==(const ControlSettings&) const = default;
 };
 
@@ -144,6 +332,7 @@ struct AnimationSettings
     QString tabCurve = QStringLiteral("spring:13,0.9");
     int tabDuration = 400;
     int paneEffectDuration = 420; ///< panes opening and closing (Shaders.paneEffects)
+    int contextDuration = 1000; ///< a pane's change to another host, user or container (Shaders.paneEffects)
     /// An overlay's fade in and out over its pane (Shaders.overlayTransition),
     /// as splitCurve. The fade stops the first time it reaches its target, so
     /// a curve that overshoots never bounces back.
@@ -178,8 +367,6 @@ QVariantList defaultHintPatterns();
 /// The Hints.patterns entries that Afterglow uses, and the arguments of a command action.
 inline constexpr qsizetype MaxHintPatterns = 16;
 inline constexpr qsizetype MaxHintCommandArguments = 32;
-/// The time in which one pane can show Notifications.rateLimit notifications.
-inline constexpr qint64 NotificationRateWindowMs = 10000;
 /// The highest Scripts.commandStdinLimit, in KiB. CommandSocket sizes its
 /// cap on waiting stdin from it.
 inline constexpr int MaxScriptCommandStdinLimitKiB = 4096;
@@ -194,6 +381,8 @@ struct Settings
     AudioSettings audio;
     QuickTerminalSettings quickTerminal;
     ControlSettings control;
+    MuxSettings mux;
+    McpSettings mcp;
     MouseSettings mouse;
     LinkSettings links;
     HighlightColors colors;
@@ -207,27 +396,56 @@ struct Settings
     int scriptCommandRunLimit = 16; ///< command runs of one script at once
     /// Bytes of UTF-8 standard output and standard error of one command run (the setting is in KiB).
     qint64 scriptCommandOutputLimit = qint64(16384) << 10;
+    int scriptCpuBudget = 250; ///< ms of handler CPU time of one script in each second
     QString pager = QStringLiteral("less -R");
-    std::size_t lastOutputLimit = std::size_t(1024) << 10; ///< bytes of the last output that show_last_output hands the pager
-    bool shellIntegration = true;
+    /// Terminal.pagerOutputLimit: bytes of a command's output that the pager
+    /// gets (the last output, the first on the screen, the last visited, or
+    /// a clicked command's).
+    std::size_t pagerOutputLimit = std::size_t(1024) << 10;
+    /// Terminal.shellIntegration: "enabled" or "disabled", or the switches
+    /// that turn parts off, as Kitty's shell_integration ("no-title no-sudo"):
+    /// read() leaves it in lowercase, each switch once, apart by one space.
+    QString shellIntegration = QStringLiteral("enabled");
     bool sshIntegration = true; ///< integrated shells run ssh through `afterglow ssh`
-    QString sshTerminfo = QStringLiteral("install"); ///< TERM=afterglow on a host without its entry: install or fallback
+    QString sshTerminfo =
+        QStringLiteral("install"); ///< TERM=afterglow on a host without its entry: install or fallback
+    bool sshRemoteCommands = false; ///< `afterglow ssh` forwards a socket for the commands marked remote
+    /// Seconds of ControlPersist of Afterglow's own ssh master for the mux
+    /// sessions of another host (Ssh::sharedCommand): `afterglow mux --ssh`
+    /// and the windows of those sessions. `afterglow ssh` makes another
+    /// master, which this does not change.
+    int sshControlPersist = 10;
     QString shell; ///< empty: the user's login shell
     QString term = QStringLiteral("xterm-256color");
     /// Where a finished selection is copied: nowhere, the primary selection
     /// (middle-click paste), or the clipboard too (Ctrl+V anywhere).
-    enum class CopyOnSelect { Off, Primary, Clipboard };
+    enum class CopyOnSelect {
+        Off,
+        Primary,
+        Clipboard
+    };
     CopyOnSelect copyOnSelect = CopyOnSelect::Primary;
-    enum class Bell { None, Attention, Visual, Both };
+    enum class Bell {
+        None,
+        Attention,
+        Visual,
+        Both
+    };
     Bell bell = Bell::Attention;
-    bool notifications = true; ///< OSC 9, 99 and 777 notifications, and OSC 7501 status notifications
-    /// Notifications one pane may show in NotificationRateWindowMs; 0 for no
-    /// limit. Afterglow's own notices do not count, except the notices of
-    /// script commands (NotificationCenter::showLimitedNotice).
+    /// OSC 9, 99 and 777 notifications, and OSC 7501 status notifications
+    /// (Notifications.enabled).
+    bool notifications = true;
+    /// Notifications one pane may show in notificationRateWindow; 0 for no
+    /// limit. Afterglow's own notices do not count (ctl notify and the notify
+    /// effect of scripts among them), except the notice at the end of a
+    /// script command run without a client (NotificationCenter::showLimitedNotice).
     int notificationRateLimit = 20;
+    int notificationRateWindow = 10; ///< seconds that notificationRateLimit counts over
     /// Milliseconds between two program status notifications of one pane.
     int statusNotificationInterval = 3000;
-    bool confirmUnsafePaste = true; ///< ask before pasting lines a shell would run
+    /// Notifications.filters: a notification that one of these matches is not shown.
+    std::vector<NotificationFilter> notificationFilters;
+    bool confirmUnsafePaste = true; ///< ask before pasting or dropping lines a shell would run
     bool confirmClose = true; ///< ask before closing where a program is running
     bool hideMouseWhileTyping = false;
     int scrollLines = 3; ///< lines per mouse wheel notch
@@ -242,8 +460,8 @@ struct Settings
     /// Variables added to the shell's environment.
     std::vector<std::pair<std::string, std::string>> environment;
     QString fileTransferPassword;
-    /// Bytes that a delta upload without a declared size can write (kitten
-    /// transfer declares none). 0 sets no limit.
+    /// Bytes that a delta or compressed upload without a declared size can
+    /// write (kitten transfer declares none). 0 sets no limit.
     qint64 fileTransferDeltaLimit = qint64(64) << 30;
     /// Milliseconds that a drag over a pane waits for the answer of a program
     /// that uses Kitty drag and drop, when the drag shows it new types.
@@ -251,7 +469,11 @@ struct Settings
     /// Minutes that the files of a remote drag remain after its drop, for a
     /// drop target that copies them later.
     int dragTreeLifetime = 10;
-    enum class Permission { Allow, Ask, Deny };
+    enum class Permission {
+        Allow,
+        Ask,
+        Deny
+    };
     /// Programs reading the clipboard (OSC 52, OSC 5522).
     Permission clipboardRead = Permission::Ask;
     /// Seconds after a paste in which its password lets a program read the
@@ -259,42 +481,64 @@ struct Settings
     int pasteReadTimeout = 10;
     /// Programs writing the clipboard (OSC 52, OSC 5522).
     Permission clipboardWrite = Permission::Allow;
-    /// Kitty graphics read from a file, a temporary file or shared memory
-    /// (t=f, t=t, t=s): Allow or Deny.
-    Permission graphicsFileTransfer = Permission::Allow;
-    /// DECRQCRA checksum replies, which let any program read the screen back.
-    bool allowScreenReadback = false;
-    std::size_t graphicsQuota = AfterglowVt::GraphicsStore::DefaultQuota; ///< bytes of images (kitty, sixel, iTerm2) that each screen keeps
+    /// Files that programs send with iTerm2's protocol (OSC 1337, it2dl).
+    Permission downloads = Permission::Ask;
+    /// Where downloads go: an absolute path (the ~ or ~/... of the config
+    /// expanded to the home directory), or empty for the desktop's download
+    /// directory.
+    QString downloadDirectory;
+    /// Files that programs ask for with iTerm2's protocol (OSC 1337
+    /// RequestUpload, it2ul): Ask asks first, then opens a picker for files
+    /// or a folder. Deny refuses.
+    Permission uploads = Permission::Ask;
+    /// The largest upload, in bytes of compressed archive (the setting is in
+    /// MiB): its answer goes to the program's input in one piece.
+    std::size_t uploadLimit = std::size_t(16) << 20;
+    /// The largest Terminal.uploadLimit, in MiB: the answer of an archive
+    /// that size, in base64 with its line ends, fits in the input queue of
+    /// a PTY (Pty::MaxPendingInput). UploadArchiveTest checks it against
+    /// UploadArchive::answerSize.
+    static const int MaxUploadLimit;
+    // Terminal.graphicsFileTransfer, Terminal.allowScreenReadback and
+    // Graphics.quota live in terminal, which enforces them.
     /// Each a map of pattern, action and command, checked when read.
     QVariantList hintPatterns = defaultHintPatterns();
     /// Keys that label hints and URL hints, home row first. Unique, at least two.
     QString hintAlphabet = QStringLiteral("asdfjklghqweruiopzxcvbnmty");
     KeyModes keyModes;
     Keybinds keybinds = Keybinds::defaults();
-    /// Shader references for each chain, applied in order: pack ids, or
-    /// "<package>.<pack>" for package packs.
-    ShaderRefs shaders{.overview = QStringLiteral("pane-deck"),
-                       .tabTransition = QStringLiteral("tab-switch"),
-                       .paneEffects = QStringLiteral("pane-effects"),
+    /// Keybinds.remapModifiers: none by default, as in kitty.
+    ModifierRemap modifierRemap;
+    /// Shader references for each chain, applied in order: a pack's directory
+    /// name (normally its id), or "<package>.<pack>" for package packs.
+    ShaderRefs shaders{.overview = QStringLiteral("phosphor-overview"),
+                       .tabTransition = QStringLiteral("phosphor-tabs"),
+                       .paneEffects = QStringLiteral("phosphor-panes"),
                        .overlayTransition = QStringLiteral("overlay-fade")};
     /// Reference -> { parameter: value }.
     QVariantMap shaderParams;
     bool operator==(const Settings&) const = default;
 };
 
-/// The config file (~/.config/afterglow/config.json) on phosphor-config,
+/// The config file (~/.config/phosphor-works/afterglow/config.json) on phosphor-config,
 /// with live reload when the file changes. The file holds only the values
 /// that differ from the defaults; a missing file means every default, and so
 /// does an empty one that held no settings (an empty file that held settings
 /// is a save in progress and keeps them), and
 /// the first write() or ensureFile() creates it, readable by the owner only.
+/// A file that cannot be read at the start gives every default, but with
+/// Scripts.enabled and Control.enabled off until it can be read: the file may
+/// have turned them off. An empty file that follows it keeps them off too, as
+/// it may be a save in progress. A -o override of either with a boolean
+/// still wins. A link whose target is gone counts as such a file:
+/// PhosphorConfig cannot open it.
 class SettingsStore : public QObject
 {
     Q_OBJECT
 
 public:
     explicit SettingsStore(QObject* parent = nullptr);
-    SettingsStore(const QString& path, QObject* parent = nullptr);
+    explicit SettingsStore(const QString& path, QObject* parent = nullptr);
     /// @p overrides ({ "Font": { "size": 14 } }) win over the file, which
     /// is still watched (afterglow -o Font.size=14).
     SettingsStore(const QString& path, const QJsonObject& overrides, QObject* parent = nullptr);
@@ -307,26 +551,45 @@ public:
     static QString defaultPath();
     /// Machine-readable reference generated from the runtime Phosphor schema.
     static QJsonObject reference();
-    /// Every group, key, default and validator.
+    /// Every group, key, default and validator. The store builds its own;
+    /// this one is for the tests that check the schema against the structs.
     static PhosphorConfig::Schema schema();
 
-    const Settings& settings() const noexcept { return m_settings; }
-    QString path() const { return m_path; }
+    const Settings& settings() const noexcept
+    {
+        return m_settings;
+    }
+    QString path() const
+    {
+        return m_path;
+    }
     /// Creates the config file if it does not exist, holding {} and readable
     /// by the owner only, so that an editor can open it. False if it cannot.
     bool ensureFile();
     /// The files whose change reloads: the config file, every place its
     /// theme could come from and, for a plasma theme, the kdeglobals files.
-    QStringList watchedPaths() const { return m_files.paths(); }
+    /// The set follows each that is a symbolic link itself, so a link target
+    /// is not in this list. Only the tests read it: the store watches them
+    /// itself.
+    QStringList watchedPaths() const
+    {
+        return m_files.paths();
+    }
     /// What the last read could not use: a file that does not parse, unknown
     /// keys, bad values, missing themes. Each is logged when it appears.
-    QStringList problems() const { return m_fileProblems + m_readProblems; }
+    QStringList problems() const
+    {
+        return m_fileProblems + m_readProblems;
+    }
 
     /// Re-reads the file. A file that cannot be read, does not parse or does
-    /// not hold a JSON object keeps the current settings; a deleted file, or
-    /// one that is empty or only white space and held no settings, means
-    /// every default. A file that held settings and is empty now keeps them,
-    /// as an editor that saves in place empties it first.
+    /// not hold a JSON object keeps the current settings, also after an
+    /// empty file kept them; a deleted file, or one that is empty or only
+    /// white space and held no settings, means every default. A file that
+    /// held settings and is empty now keeps them, as an editor that saves in
+    /// place empties it first. Until the file is read once, an empty file
+    /// keeps Scripts.enabled and Control.enabled off, as the unreadable
+    /// file did.
     void reload();
     /// Writes one key to the config file and reloads. A value equal to the
     /// default removes the key. Command-line overrides keep winning over the
@@ -338,7 +601,12 @@ public:
     /// command-line overrides. A write built on a current value (a shader
     /// chain that gains a pack) starts from this, so that an override never
     /// reaches the file, and an edit that is not reloaded yet is not lost.
-    /// An invalid QVariant for an undeclared key.
+    /// It reads the value as read() does: a value of another JSON type is
+    /// the default, and a number of an integer key loses its fraction. A
+    /// list keeps its entries as the file holds them; the caller skips those
+    /// that read() skips. Scripts.enabled and Control.enabled are false for a
+    /// value that is no boolean and for a group that is no object, as read()
+    /// keeps them off. An invalid QVariant for an undeclared key.
     QVariant persisted(const QString& group, const QString& key) const;
 
     /// "Group.key=value" as an override; the value is JSON when it parses
@@ -370,6 +638,8 @@ private:
     void publishProblems();
     /// The desktop prefers dark colours (for "light:a,dark:b" themes).
     bool darkScheme() const;
+    /// The directory of the config file, where its themes directory is.
+    QString configDirectory() const;
 
     QString m_path;
     QJsonObject m_overrides;
@@ -387,10 +657,16 @@ private:
     bool m_desktopFont = false;
     /// An apply() for the desktop events is posted and has not run yet.
     bool m_applyQueued = false;
+    /// No read of the file has worked since the start: read() keeps
+    /// Scripts.enabled and Control.enabled off, which the file may set,
+    /// unless an override sets them to true or false.
+    bool m_neverRead = true;
     QStringList m_fileProblems;
     QStringList m_readProblems;
     QStringList m_publishedProblems;
-    PhosphorFsLoader::WatchedFileSet m_files; ///< the config file, its theme and kdeglobals
+    /// The config file, every place its theme could come from, and
+    /// kdeglobals (watchedPaths()). It follows the links among them itself.
+    PhosphorFsLoader::WatchedFileSet m_files;
 };
 
 } // namespace Afterglow

@@ -5,16 +5,20 @@
 #include "desktop/DragDrop.h"
 #include "desktop/TerminalText.h"
 
+#include <AfterglowProto/Fd.h>
 #include <AfterglowPty/Pty.h>
 #include <AfterglowRender/GridRenderer.h>
 #include <AfterglowRender/Snapshot.h>
 #include <AfterglowVt/Search.h>
 #include <AfterglowVt/Selection.h>
+#include <AfterglowVt/StateSync.h>
 #include <AfterglowVt/Terminal.h>
 
+#include <QDeadlineTimer>
 #include <QElapsedTimer>
 #include <QHash>
 #include <QList>
+#include <QMap>
 #include <QObject>
 #include <AfterglowVt/TextSearch.h>
 #include <QTimer>
@@ -23,6 +27,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <limits>
@@ -32,7 +37,19 @@
 #include <utility>
 #include <vector>
 
+class QDialog;
+
+namespace AfterglowMux::Host {
+struct Call;
+}
+
 namespace Afterglow {
+
+class MuxClient;
+/// Why a window no longer shows a mux session (MuxClient.h).
+enum class MuxLoss : std::uint8_t;
+/// What a session pane that closes ends (MuxClient.h).
+enum class MuxRelease : std::uint8_t;
 
 /// A program status record (OSC 7501) as the GUI uses it.
 struct PaneStatusRecord
@@ -48,16 +65,14 @@ struct PaneStatusRecord
 };
 
 class FileTransfer;
+class DownloadFile;
 class DockArea;
 class PaneOverlay;
 
-/// Applies a launch's own variables to @p options (`env` of a script or a
-/// control call): a string sets the name, false unsets it. The launch wins
-/// over what @p options had, and each name is set or unset once.
-void applyLaunchEnvironment(AfterglowPty::SpawnOptions& options, const QVariantMap& environment);
-
-/// One terminal: the emulator state, the child process on its pty, and the
-/// snapshot the window renders from. The pty thread feeds the terminal under
+/// One terminal: the emulator state, the child process on its pty (or, for a
+/// pane of a mux session, a replica of the session's terminal and the daemon
+/// in place of the pty: showSession), and the snapshot the window renders
+/// from. The pty thread feeds the terminal under
 /// m_mutex, and a captured standard output (an overlay's) under
 /// m_outputMutex; everything else runs on the GUI thread.
 class Pane : public QObject, private AfterglowVt::ITerminalHost, private AfterglowPty::IPtyListener
@@ -73,10 +88,164 @@ public:
     /// pty: its standard input can be large.
     bool start(AfterglowPty::SpawnOptions options, const QString& term, int cols, int rows, int cellWidth,
                int cellHeight, QString* error);
-    /// Applies changed config to the running terminal.
+    /// Applies changed config to the running terminal. A session pane takes
+    /// only the options of its view: the session's terminal takes the rest
+    /// from the daemon, and its frames carry them.
     void setOptions(const AfterglowVt::TerminalOptions& options);
 
+    /// A size that the terminal has already changes nothing: a relayout
+    /// sizes every pane of the tab again. Never waits for an image that the
+    /// reader thread decodes: the terminal and the PTY take the size at the
+    /// end of that feed, and cols() and rows() say the old size until then.
     void resize(int cols, int rows, int cellWidth, int cellHeight);
+    /// Whether the user can see this pane: the terminal reports a change to
+    /// the program (mode 2033). Never waits for an image that the reader
+    /// thread decodes: the terminal takes the state at the end of that feed.
+    /// GUI thread. A session pane takes setSessionVisible() instead.
+    void setVisible(bool visible);
+
+    /// Shows pane @p id of a mux session in place of a program of its own:
+    /// the terminal becomes a replica of the session's, and input goes to the
+    /// daemon. Closing the pane ends its program in the daemon, unless the
+    /// window says otherwise (setSessionRelease). @p launched: its program
+    /// started for this pane, by the window (MuxClient::newPane or
+    /// newPaneLater) or by the daemon for a split or a tab of a control
+    /// client (`afterglow ctl`, `afterglow mcp`), so its first prompt and
+    /// text are news, as for a program of its own. Else the program ran before the window showed it (the layout of
+    /// an attach, a pane that moved in), and its first frame tells nothing.
+    void showSession(std::shared_ptr<MuxClient> session, std::uint32_t id, bool launched = false);
+    bool isSessionPane() const
+    {
+        return m_session != nullptr;
+    }
+    /// The link to the session of a session pane, else null.
+    const MuxClient* session() const
+    {
+        return m_session.get();
+    }
+    /// The pane's ID in the daemon, 0 for a pane that is no session pane.
+    std::uint32_t sessionPaneId() const
+    {
+        return m_sessionPane;
+    }
+    /// The pane shows mux session @p name of @p host (empty: this computer),
+    /// and has not lost it.
+    bool showsSession(const QString& name, const QString& host = {}) const;
+    /// What closing the session pane ends: the window sets it as it closes
+    /// the pane, by what the close is (the pane alone, or the window), or as
+    /// the pane moves to a session of its own (MuxRelease::Nothing).
+    void setSessionRelease(MuxRelease release)
+    {
+        m_sessionRelease = release;
+    }
+    /// Closing the pane ends its program: always for a program of its own,
+    /// and for a session pane unless its release ends nothing.
+    bool closeEndsProgram() const;
+    /// Clears the screen and the history: the action of Action::ClearScreen.
+    /// At a shell prompt the shell redraws its prompt. A session pane's
+    /// daemon does it, and the next frame shows it.
+    void clearScreen();
+    /// Resets the terminal: the action of Action::ResetTerminal.
+    void resetTerminal();
+    /// A state frame of the session (MuxClient, GUI thread). False when it
+    /// does not apply: the replica no longer matches the daemon's terminal.
+    bool applySessionFrame(std::string_view frame);
+    /// Whether the user can see this session pane: the daemon's terminal
+    /// reports a change to the program (mode 2033). The daemon holds the
+    /// screens of a pane that the user cannot see. True when the state
+    /// changed, and so went to the daemon: the same state again sends
+    /// nothing.
+    bool setSessionVisible(bool visible);
+    /// The daemon may hold the screens of this session pane: it was not
+    /// visible at some time since the answer to a Refresh that it asked
+    /// after its last change of sight (sessionRefreshed()). GUI thread.
+    bool sessionScreensHeld() const
+    {
+        return m_session && !m_sessionGone && m_sessionHeld;
+    }
+    /// Asks for the screens and the history that the daemon may hold of this
+    /// session pane (MuxClient::askRefresh), and waits for nothing: the
+    /// window does so when the pane shows again, and it shows the older
+    /// screens until they come, one round trip. A pane that shows uses the
+    /// Refresh that it asked since it showed: from its answer on, the
+    /// daemon sends the screens as they change. The ticket to wait for
+    /// (MuxClient::waitRefreshed), 0 for none. GUI thread.
+    std::uint64_t askSessionRefresh() const;
+    /// For a read of the text: askSessionRefresh(), and the pane waits for
+    /// the answer, for up to MuxClient::RefreshWaitMs. Each read of the
+    /// pane's text, of its selection and of its command outputs calls it
+    /// once, and so do the moves that look at its rows (search,
+    /// jumpToPrompt, selectOutput). GUI thread, without m_mutex.
+    void refreshSession() const;
+    /// While one lives, refreshSession() waits for one answer at most: a
+    /// call that checks the first frame (Control::notSynced) and then reads
+    /// takes one round trip. Nothing applies frames between the two, as only
+    /// the wait reads them. GUI thread.
+    class RefreshOnce
+    {
+    public:
+        explicit RefreshOnce(const Pane& pane)
+            : m_pane(pane)
+        {
+            if (m_pane.m_refreshScopes++ == 0)
+                m_pane.m_refreshedInScope = false;
+        }
+        ~RefreshOnce()
+        {
+            --m_pane.m_refreshScopes;
+        }
+        RefreshOnce(const RefreshOnce&) = delete;
+        RefreshOnce& operator=(const RefreshOnce&) = delete;
+
+    private:
+        const Pane& m_pane;
+    };
+    /// MuxClient: the answer to Refresh @p ticket of this pane came, and the
+    /// frames that it names applied. When it answers the Refresh that the
+    /// pane waits for, or a later one, a pane that the user can see keeps
+    /// its screens up to date from now on.
+    void sessionRefreshed(std::uint64_t ticket) const;
+    /// Whether the window draws the pane where the user can see it, as
+    /// TerminalWindow::paneSeen decides, or as the tab that a switch leaves.
+    /// A pane that nobody sees asks for no frames of its animated images.
+    /// When it shows again, they move on from where their clocks are.
+    void setSeen(bool seen);
+    /// False for a session pane until its first frame applied: until then
+    /// its replica is a blank terminal, whose cursor, context and status
+    /// are none of the program's. GUI thread.
+    bool sessionSynced() const
+    {
+        return !m_session || m_sessionSynced;
+    }
+    /// sessionSynced for the snapshot (snapshot()): a frame that the window
+    /// holds (a synchronized update, a prompt redraw) leaves the blank one.
+    bool snapshotSynced() const
+    {
+        return !m_session || m_snapshotSynced;
+    }
+    /// The serial of the newest status record that a session pane's first
+    /// frame brought, 0 for none and for other panes: the window showed those
+    /// records before (or none did), so they are no news to tell the user.
+    quint64 statusBaseline() const
+    {
+        return m_statusBaseline;
+    }
+    /// A call of the session's terminal to its host (MuxHost.h, MuxClient,
+    /// GUI thread): the pane answers it as it answers its own terminal.
+    void applySessionHostCall(const AfterglowMux::Host::Call& call);
+    /// The program of the session pane exited, with @p status as waitpid gives it.
+    void sessionPaneExited(int status);
+    /// The window no longer shows the session (@p loss says why): the pane
+    /// closes, with sessionLeft(), not closed(). Once. With @p notice, it
+    /// says why when the user did not ask for it: one pane of the window
+    /// does. False when the pane had left the session already (its program
+    /// exited), and said nothing.
+    bool sessionLost(MuxLoss loss, bool notice);
+    /// sessionLost() closed the pane: not its program's exit.
+    bool leftSession() const
+    {
+        return m_leftSession;
+    }
     int cols() const;
     int rows() const;
 
@@ -91,47 +260,120 @@ public:
     /// Creates the protocol handlers on first use.
     FileTransfer* fileTransfers();
     DragDrop* dragDrop();
-    bool hasFileTransfers() const noexcept { return m_fileTransfers != nullptr; }
-    bool hasDragDrop() const noexcept { return m_dragDrop != nullptr; }
+    bool hasFileTransfers() const noexcept
+    {
+        return m_fileTransfers != nullptr;
+    }
+    bool hasDragDrop() const noexcept
+    {
+        return m_dragDrop != nullptr;
+    }
     /// Terminal.dragAnswerWait, for the drag and drop handler now and later.
     void setDragAnswerWait(int ms);
+    /// Notifications.enabled: without it, OSC 99's query gets no answer, as
+    /// from a terminal without the protocol, so that a program does not
+    /// count on notifications that the window will not show.
+    void setNotificationsEnabled(bool on)
+    {
+        m_notificationsEnabled = on;
+    }
+    /// The window's answer to downloadRequested() @p serial (0: the one that
+    /// waits): the file to save the download as, which it streams to
+    /// ("name.part", or "name.N.part" when that is taken, until it is
+    /// whole), or empty to refuse it. Its program goes on then. An answer to
+    /// a question that ended (downloadCancelled) does nothing. With
+    /// @p replace (the user confirmed it) the download replaces a file at
+    /// @p path, else it takes a free name beside it (DownloadFile), which
+    /// downloadFinished() names.
+    void answerDownload(const QString& path, quint64 serial = 0, bool replace = false);
+    /// The window's answer to uploadAsked() that a person gave: @p answer
+    /// goes to the program as input (UploadArchive::answer), and nullopt,
+    /// the person's cancel, sends Ctrl+C, as iTerm2 does. False when the
+    /// answer did not go: the program's input is full (it gets Ctrl+C), or
+    /// the command that asked ended before the answer (it gets nothing:
+    /// the input would go to the shell), or the program exited. The command
+    /// also ended when another process group has the terminal than at the
+    /// request: without shell integration, nothing else tells. A reset ends
+    /// nothing: the command still waits.
+    bool answerUpload(const std::optional<std::string>& answer);
+    /// The window refuses uploadAsked() without asking a person
+    /// (Downloads.uploads is deny): nothing goes to the program, which
+    /// waits until its user interrupts it. Ctrl+C from a setting would
+    /// signal whatever runs in the foreground then.
+    void refuseUpload();
     /// GUI thread: delivers the program's protocol commands that wait for the
     /// GUI thread, and no other events. With @p waitMs above 0 and nothing to
-    /// deliver, first waits up to that long for the next one. Runs no event loop.
+    /// deliver, first waits up to that long for the next one. Runs no event
+    /// loop. A session pane's commands come on the session's stream, which
+    /// the wait reads (MuxClient::waitForHostCalls).
     void deliverProtocolCommands(int waitMs = 0);
     /// The program that runs over this pane (an overlay), or null. It
     /// takes the pane's place on screen and its input while it runs. The
     /// overlay sets and clears it.
-    PaneOverlay* overlay() const noexcept { return m_overlay; }
-    void setOverlay(PaneOverlay* overlay) noexcept { m_overlay = overlay; }
+    PaneOverlay* overlay() const noexcept
+    {
+        return m_overlay;
+    }
+    void setOverlay(PaneOverlay* overlay) noexcept
+    {
+        m_overlay = overlay;
+    }
     /// For an overlay's own pane: the pane it runs over. It is no pane of
     /// its own for scripts and afterglow ctl, and its program gets the
     /// host's AFTERGLOW_PANE_ID. Set before start().
-    Pane* overlayHost() const noexcept { return m_overlayHost; }
-    void setOverlayHost(Pane* host) noexcept { m_overlayHost = host; }
+    Pane* overlayHost() const noexcept
+    {
+        return m_overlayHost;
+    }
+    void setOverlayHost(Pane* host) noexcept
+    {
+        m_overlayHost = host;
+    }
     /// Keeps at most @p limit bytes of what the program writes to a
     /// captured standard output (SpawnOptions::captureOutput). Set before start().
-    void setOutputLimit(std::size_t limit) { m_outputLimit = limit; }
+    void setOutputLimit(std::size_t limit)
+    {
+        m_outputLimit = limit;
+    }
     /// What the program wrote to its captured standard output, and whether
     /// it wrote more than the limit. Complete once closed() came.
     std::string takeOutput(bool* truncated);
     /// The program's exit status once closed() came: its exit code, 128
     /// plus the signal that ended it, or -1 when it is unknown.
-    int exitCode() const noexcept { return m_exitCode.load(); }
+    int exitCode() const noexcept
+    {
+        return m_exitCode.load();
+    }
     /// The areas that scripts dock at the pane's edges. The window lays them
     /// out and draws them. They go where the pane goes, and close with it.
-    std::vector<std::unique_ptr<DockArea>>& docks() noexcept { return m_docks; }
-    const std::vector<std::unique_ptr<DockArea>>& docks() const noexcept { return m_docks; }
+    std::vector<std::unique_ptr<DockArea>>& docks() noexcept
+    {
+        return m_docks;
+    }
+    const std::vector<std::unique_ptr<DockArea>>& docks() const noexcept
+    {
+        return m_docks;
+    }
     /// Changes when what assistive technology reads changes: the terminal's
-    /// generation and the selection serial.
+    /// text generation (textGeneration) and the selection serial.
     std::pair<std::uint64_t, std::uint64_t> accessibleSerial() const;
 
-    /// Runs @p fn with the terminal locked.
+    /// Runs @p fn, which changes the terminal, with the terminal locked,
+    /// after an image that the reader thread decodes (lockTerminal).
     template<typename Fn>
     auto withTerminal(Fn&& fn)
     {
-        std::lock_guard lock(m_mutex);
+        const auto lock = lockTerminal();
         return fn(m_terminal);
+    }
+    /// Runs @p fn, which only reads the terminal, with m_mutex alone: it
+    /// goes on while the reader thread decodes an image, which can take
+    /// seconds that a frame or a key would otherwise wait.
+    template<typename Fn>
+    auto readTerminal(Fn&& fn) const
+    {
+        std::lock_guard lock(m_mutex);
+        return fn(std::as_const(m_terminal));
     }
 
     /// Refreshes the snapshot if the terminal changed. Returns false while the
@@ -139,21 +381,78 @@ public:
     /// prompt the shell has not repainted yet.
     /// @p extraRows below the viewport are captured for fractional scrolling.
     bool refreshSnapshot(int extraRows = 0);
-    const AfterglowRender::PaneSnapshot& snapshot() const noexcept { return m_snapshot; }
+    /// While refreshSnapshot holds the previous frame: the milliseconds until
+    /// that hold times out, when a frame must be drawn whatever the program
+    /// does. 0 when the last refresh held nothing.
+    qint64 holdRemaining() const;
+    const AfterglowRender::PaneSnapshot& snapshot() const noexcept
+    {
+        return m_snapshot;
+    }
     /// Hands the snapshot out with its identity, for the last frame of a
     /// pane that draws no more (an overlay that ended, fading out). The next
     /// refresh captures a new one.
     AfterglowRender::PaneSnapshot takeSnapshot();
 
     /// Unique for the life of the process; scripts and afterglow ctl use it.
-    quint32 id() const noexcept { return m_id; }
+    quint32 id() const noexcept
+    {
+        return m_id;
+    }
     /// The program's title, or the one set through the control interface.
     QString title() const;
     /// Overrides the title; empty returns to the program's.
     void setUserTitle(const QString& title);
     QString userTitle() const;
+    /// The process of the program, which leads the terminal session of the
+    /// pane. 0 or less for a session pane, and once the program exited.
+    pid_t programPid() const;
+    /// The leader of the foreground process group of the program: the
+    /// shell at its prompt. None for a session pane, whose program runs in
+    /// the mux daemon, and once the program exited. Without @p withCmdline,
+    /// no arguments (AfterglowPty::Pty::foreground).
+    std::optional<AfterglowPty::ForegroundProcess> foreground(bool withCmdline = true) const;
+    /// The values that the program set with OSC 1337 SetUserVar.
+    QMap<QString, QString> userVars() const;
+    /// Sets a user variable as the program would (`afterglow ctl split
+    /// --var`): scripts and control clients hear of it. False when the pane
+    /// has ITerminalHost::MaxUserVars others, and ignores a new name.
+    bool setUserVar(const QString& name, const QString& value);
+    /// The colours of the terminal by name (Terminal::namedColors): "#rrggbb",
+    /// or null for one that follows another.
+    QVariantMap colors() const;
+    /// Applies the colour OSCs @p payloads as the program's own
+    /// (Terminal::applyColorOsc), and draws again when one applied. False
+    /// for a payload that is no colour, which goes with the ones after it.
+    bool applyColors(const std::vector<std::string>& payloads);
+    /// Sends @p signal to the foreground process group of the program. False
+    /// for a session pane, whose program runs in the daemon, and when the
+    /// signal cannot go. On false, errno is kill(2)'s when it failed, else 0.
+    bool signalProgram(int signal);
+    /// Terminal::shellState, shellInput and lastExitCode, under one lock.
+    /// A session pane that the user cannot see has the marks of its held
+    /// frames but not their rows (sessionScreensHeld): its input says what
+    /// the command line held when the pane showed last.
+    struct ShellFacts
+    {
+        AfterglowVt::ShellState state = AfterglowVt::ShellState::None;
+        bool input = false;
+        std::optional<int> lastExit;
+    };
+    ShellFacts shellFacts() const;
+    /// Terminal::textMark(), of a session pane once its screens came
+    /// (refreshSession).
+    AfterglowVt::TextMark textMark() const;
+    /// The semantic regions whose id is larger than @p after, oldest first,
+    /// as semanticRegions() has them: a region whose rows are on their way
+    /// from the daemon is not available.
+    std::vector<AfterglowVt::SemanticRegion> semanticRegionsAfter(std::uint64_t after) const;
     /// The directory the shell reported last (OSC 7, 9;9, 633, 1337) when it
     /// is local and exists, else the foreground job's directory from /proc.
+    /// A session pane's program runs under the daemon, which reads that
+    /// directory: the GUI thread waits for its answer (MuxClient::directory),
+    /// so this is for a user's action, such as a new tab. Empty for a pane of
+    /// a session of another host, whose directories are not on this machine.
     QString workingDirectory() const;
     /// The directory that file paths in the pane's text start from, found
     /// without a stat, so that a hung mount cannot block the caller: the
@@ -163,36 +462,122 @@ public:
     /// its last OSC 7 named another host, or its foreground job is one of
     /// @p remoteCommands (Links.remoteCommands), as foregroundJob() names it.
     std::optional<QString> localPathDirectory(const QStringList& remoteCommands) const;
-    QString text(AfterglowVt::Terminal::TextScope scope);
+    /// workingDirectory without a call to the daemon, for what reads every
+    /// pane often (Control::describe, the snapshot of each script event): a
+    /// session pane gives only what its shell reported, and a pane of a
+    /// session of another host gives nothing.
+    QString knownDirectory() const;
+    /// At most MaxText bytes of UTF-8, as the terminal reads by default.
+    /// @p arriving, when given, says that a session pane's rows of the
+    /// scope are still on their way from the daemon: the text has blank
+    /// lines in their place. @p truncated, when given: the text stopped at
+    /// MaxText.
+    QString text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::TextFormat& format = {},
+                 bool* arriving = nullptr, bool* truncated = nullptr);
+    /// Terminal::textSince(), at most MaxText bytes, with @p stale as the
+    /// terminal gives it, and @p arriving, when given, as text() has it for
+    /// the rows from @p from to the cursor.
+    QString textSince(const AfterglowVt::TextMark& from, const AfterglowVt::TextFormat& format, bool* truncated,
+                      bool* trimmed, bool* stale, bool* arriving);
+    static constexpr std::size_t MaxText = 1024 * 1024;
+    /// The events of one budget that wait for the GUI thread (queueEvent()).
+    static constexpr std::size_t MaxQueuedEvents = 256;
+    /// The text of output region @p id in @p format, at most MaxText bytes,
+    /// as text(). Empty when it left the history, and while a session
+    /// pane's rows of it are on their way (regionArriving).
+    QString regionText(std::uint64_t id, const AfterglowVt::TextFormat& format = {}) const;
+    /// The output regions that a read names by where they are: kitty's
+    /// first_cmd_output_on_screen and last_visited_cmd_output.
+    enum class OutputRegion : std::uint8_t {
+        FirstOnScreen,
+        LastVisited
+    };
+    /// readRegion() of the output region @p which, with one look at the
+    /// session and one lock: not available when there is none. @p format as
+    /// for regionText(). @p arriving: not available because the session
+    /// pane still gets the region's rows, not because there is none.
+    QVariantMap readOutputRegion(OutputRegion which, std::size_t limit, const AfterglowVt::TextFormat& format = {},
+                                 bool* arriving = nullptr) const;
     /// At most `limit` bytes of text. The caller bounds the limit: scripts
-    /// to their max_bytes range, show_last_output to Terminal.lastOutputLimit.
+    /// to their max_bytes range, show_last_output to Terminal.pagerOutputLimit.
+    /// Not available while a session pane's rows of the scope (its last
+    /// output, or its history for the scrollback) are on their way.
     QVariantMap readText(AfterglowVt::Terminal::TextScope scope, std::size_t limit);
+    /// A session pane's last output spans history rows that are still on
+    /// their way from the daemon: readText gives it as not available.
+    bool lastOutputArriving() const;
     /// The command running now (OSC 133), empty at the prompt.
     QString runningCommand() const;
     /// The program closing the pane would end: the shell's foreground job, or
     /// the program the pane was opened for. Empty while a shell sits idle.
+    /// For a session pane, the job of its program in the daemon, which the
+    /// daemon names: the GUI thread waits for its answer.
     QString foregroundJob() const;
-    /// Names the program the pane was opened to run (afterglow -e), instead of a shell.
-    const QStringList& launchCommand() const { return m_launchCommand; }
-    const QString& launchDirectory() const { return m_launchDirectory; }
-    void setLaunch(const QString& cwd, const QStringList& command) { m_launchDirectory = cwd; m_launchCommand = command; }
-    void setLaunchedProgram(const QString& name) { m_launchedProgram = name; }
+    /// The daemon's id of this pane while foregroundJob() would ask the
+    /// daemon, else nullopt: a window asks for the jobs of all its session
+    /// panes with one MuxClient::paneJobs call.
+    std::optional<std::uint32_t> sessionJobPane() const;
+    /// The command that a project saves for the pane and runs again when it
+    /// opens: the program the pane was opened for (afterglow -e, a script,
+    /// afterglow ctl, a project), even when a fallback shell runs in its
+    /// place. Empty for a shell, and for a tab whose program does not
+    /// outlive it (show_last_output).
+    const QStringList& launchCommand() const
+    {
+        return m_launchCommand;
+    }
+    const QString& launchDirectory() const
+    {
+        return m_launchDirectory;
+    }
+    void setLaunch(const QString& cwd, const QStringList& command)
+    {
+        m_launchDirectory = cwd;
+        m_launchCommand = command;
+    }
+    /// The command that a project saves, for a session pane that another
+    /// window or the daemon started.
+    void setLaunchCommand(const QStringList& command)
+    {
+        m_launchCommand = command;
+    }
+    void setLaunchedProgram(const QString& name)
+    {
+        m_launchedProgram = name;
+    }
     /// Keeps the pane open after an unsuccessful exit, until a key is
     /// pressed (the fallback panes of a restored project).
-    void setHoldOnFailure(bool hold) { m_holdOnFailure = hold; }
+    void setHoldOnFailure(bool hold)
+    {
+        m_holdOnFailure = hold;
+    }
     /// Keeps the pane open whenever its program exits, until a key is
     /// pressed (afterglow --hold).
-    void setHold(bool hold) { m_hold = hold; }
+    void setHold(bool hold)
+    {
+        m_hold = hold;
+    }
     /// No process could start: shows a notice and holds the pane open until
     /// a key is pressed.
     void holdStartFailure();
-    bool isHeld() const { return m_held.load(); }
+    bool isHeld() const
+    {
+        return m_held.load();
+    }
     /// Whether output and input jump a scrolled-back pane to the bottom.
     void setScrollPolicy(bool onOutput, bool onInput)
     {
         m_scrollOnOutput.store(onOutput);
         m_scrollOnInput = onInput;
     }
+
+    /// What the pane answers to `aglow run`'s query for the socket of its
+    /// ssh session (OSC 24569). RemoteSockets sets it, and the pane passes
+    /// it on to its overlay's program, or @p overlay when an ssh session
+    /// runs in the overlay itself. GUI thread.
+    void setRemoteSocket(const AfterglowProto::Remote::Answer& answer,
+                         const std::optional<AfterglowProto::Remote::Answer>& overlay = std::nullopt);
+    AfterglowProto::Remote::Answer remoteSocketAnswer() const;
 
     /// Where the pane's shell runs when that is not here as you (OSC 3008,
     /// iTerm2 RemoteHost): "root", "deploy@prod-1", a container's name.
@@ -207,7 +592,10 @@ public:
     static constexpr int SignalCount = int(std::tuple_size_v<Signals>);
     void setSignal(int channel, float value);
     void setSignals(const QList<QPair<int, float>>& values, std::chrono::steady_clock::time_point time);
-    const Signals& shaderSignals() const noexcept { return m_signals; }
+    const Signals& shaderSignals() const noexcept
+    {
+        return m_signals;
+    }
 
     // Search (GUI thread).
     /// Runs or steps a search and scrolls the match into view. A new query
@@ -216,7 +604,7 @@ public:
     void search(const QString& query, int direction, bool regex = false);
     void clearSearch();
     /// Colours of search matches, the current match and the text in a match,
-    /// packed RGBA (Colors.searchMatch and its neighbours).
+    /// packed RGBA (Colors.searchMatch and its neighbors).
     void setSearchColors(std::uint32_t match, std::uint32_t current, std::uint32_t text);
 
     /// Text being composed by an input method, drawn over the grid at the
@@ -227,11 +615,29 @@ public:
     QList<PaneStatusRecord> status() const;
 
     /// Scrolls to the previous (@p direction < 0) or next shell prompt.
-    /// Returns false when there is none that way.
+    /// Returns false when there is none that way. The output of the
+    /// command there becomes the last visited output.
     bool jumpToPrompt(int direction);
 
-    // Selection (GUI thread). Points are absolute rows (history included);
-    // selectionPointAt turns a cell of the current viewport into one.
+    // Command outputs (GUI thread): ids of OSC 133 output regions of the
+    // primary screen, which readRegion() reads. The lookups by the viewport
+    // find none on the alternate screen; the last visited output stays.
+    /// The output of the command at row @p row of the viewport.
+    std::optional<std::uint64_t> commandOutputAtRow(int row) const;
+    /// The first output that shows in the viewport (kitty's
+    /// first_cmd_output_on_screen).
+    std::optional<std::uint64_t> firstOutputOnScreen() const;
+    /// The output of the last command that a prompt jump or a click on its
+    /// output went to (kitty's last_visited_cmd_output), while it lasts.
+    std::optional<std::uint64_t> lastVisitedOutput() const;
+    void setLastVisitedOutput(std::uint64_t id);
+    /// Selects the text of output region @p id. False when it is gone or
+    /// empty.
+    bool selectOutput(std::uint64_t id);
+
+    // Selection (GUI thread). Points are stable row ids (Screen::rowsDropped()
+    // plus the row's index in history and screen); selectionPointAt turns a
+    // cell of the current viewport into one.
     AfterglowVt::SelectionPoint selectionPointAt(int col, int row) const;
     void startSelection(AfterglowVt::SelectionPoint anchor, AfterglowVt::SelectionMode mode, bool activeNow);
     void extendSelection(AfterglowVt::SelectionPoint head);
@@ -244,36 +650,100 @@ public:
     void endCopyMode();
     QVariantMap historyPosition() const;
     void scrollHistory(double fraction);
+    /// Moves the viewport @p rows up into the history (down when negative).
+    /// A move of the view, as each move of the viewport here, takes m_mutex
+    /// alone: it goes on while the reader thread decodes an image.
+    void scrollViewport(long rows);
+    /// Shows the viewport @p rowsBack rows up from the live screen, as far
+    /// as the history goes. The offset that applies.
+    std::size_t setViewportOffset(std::size_t rowsBack);
     bool hasSelection() const;
+    /// Whether the cell at @p col, @p row of the viewport (as selectionPointAt()
+    /// takes it) is in the selection, with its words and lines expanded as
+    /// they are drawn. The copy cursor of copy mode is not a selection here.
+    bool selectionContains(int col, int row) const;
     QString selectedText() const;
     QVariantMap readSelection(std::size_t limit) const;
+    /// A region is not available while a session pane's rows of it are on
+    /// their way (regionArriving), as when it left the history.
     QVariantMap semanticRegions() const;
     QVariantMap readRegion(std::uint64_t id, std::size_t limit) const;
+    /// A session pane's rows of output region @p id are on their way from
+    /// the daemon: a read gives it as not available.
+    bool regionArriving(std::uint64_t id) const;
     TerminalText accessibleText(bool cursorRow = false) const;
 
 Q_SIGNALS:
-    /// The terminal changed. Emitted on the GUI thread, coalesced.
+    /// keepDialogOverPane put @p dialog over this pane's window, and the
+    /// dialog is about to show there: when it opens, and when it moves to
+    /// the window that the pane went to. Emitted on the pane in the tab, also
+    /// for an overlay's dialog. The window can change how the dialog shows
+    /// (the quick terminal does).
+    void dialogOpened(QDialog* dialog);
+    /// A program wants to save a file (an iTerm2 download, OSC 1337): its
+    /// output waits for answerDownload() with @p serial. @p name is clean
+    /// to show and to keep (cleanDownloadName); @p size is as declared, or
+    /// -1.
+    void downloadRequested(const QString& name, qint64 size, quint64 serial);
+    /// The program asks for files (iTerm2's RequestUpload, it2ul): the
+    /// window asks the user, then answers with answerUpload(). One at a time.
+    void uploadAsked();
+    /// The command that asked for files ended before the answer (its end,
+    /// or the program's exit; a reset is neither): the window closes its
+    /// question, and answerUpload() sends nothing.
+    void uploadCancelled();
+    /// The download that the window asks about ended before the answer.
+    void downloadCancelled();
+    /// The download to @p path ended: saved, or not, for @p error.
+    void downloadFinished(const QString& path, bool ok, const QString& error);
+    /// The terminal changed. Emitted on the GUI thread: coalesced for the
+    /// output of the pane's own program (the output that a download's
+    /// answer lets go too), once for each frame that a session pane applies
+    /// (applySessionFrame), for each frame of an animated image
+    /// (tickAnimations), for colours that applyColors() set, and for a
+    /// search result, a snap of the view to the bottom and a change of the
+    /// hold.
     void contentChanged();
+    /// The program's drag offer (OSC 72) starts as a drag of the desktop.
+    void programDragStarting();
     void searchStatusChanged(const QString& status);
     void titleUpdated(const QString& title);
+    /// The title that the user gave the pane changed (setUserTitle).
+    void userTitleChanged();
     void contextUpdated();
     void userVarUpdated(const QString& name, const QString& value);
     void shaderSignalsChanged();
     void bellRang();
     void clipboardWriteRequested(const QString& text, bool primarySelection);
-    void notificationRequested(const QString& title, const QString& body);
+    /// OSC 9 and OSC 777. @p missed: a session pane's program sent it while
+    /// no window showed the session (AfterglowMux::Host::Call::missed).
+    void notificationRequested(const QString& title, const QString& body, bool missed);
     void inputRejected();
     void pointerShapeRequested(const QString& shape);
     /// Program status records changed; read them with status().
     void statusChanged();
     /// OSC 555: flash the pane.
     void flashRequested();
-    /// Shell integration (OSC 133).
+    /// Shell integration (OSC 133). Like the notifications and clipboard
+    /// requests below, emitted on the GUI thread (queueEvent).
     void commandBegan(const QString& command);
     void commandEnded(const QString& command, int exitCode, qint64 durationMs);
-    /// An OSC 99 desktop notification request (queued to the GUI thread).
-    void desktopNotificationRequested(const AfterglowVt::NotificationRequest& request);
-    /// An OSC 5522 clipboard read or write (queued to the GUI thread).
+    /// What the shell does changed (Terminal::shellState), or the shell
+    /// drew a new prompt. Emitted on the GUI thread after the output, the
+    /// session frames or the action of the user that changed it, and after
+    /// the commandBegan and commandEnded that they queued before it.
+    void shellStateChanged(AfterglowVt::ShellState state);
+    /// What text() and the screen show could differ
+    /// (Terminal::contentGeneration): cells written, the cursor moved, the
+    /// view scrolled, the text reflowed. Titles, bells, colours, replies
+    /// and shell marks alone do not count. Emitted as shellStateChanged
+    /// is, before it. Not for a session pane's first frame, which only
+    /// shows what the session had.
+    void textChanged();
+    /// An OSC 99 desktop notification request. @p missed as for
+    /// notificationRequested.
+    void desktopNotificationRequested(const AfterglowVt::NotificationRequest& request, bool missed);
+    /// An OSC 5522 or OSC 52 clipboard read, or an OSC 5522 write.
     void clipboardRequested(const AfterglowVt::ClipboardRequest& request);
     /// An OSC 72 or OSC 5113 command, or a terminal reset (code 0).
     void terminalProtocolRequested(int code, const QByteArray& payload);
@@ -281,17 +751,103 @@ Q_SIGNALS:
     /// handled. @p lost tells what the dropped commands held for drag and drop.
     /// @p reset: they held a terminal reset, which ended every file transfer.
     void terminalProtocolLost(DragDrop::Lost lost, bool reset);
-    /// @p paths holds at most the first 100 of @p total paths.
-    void fileTransferPermissionRequested(const QString& token, bool writing, const QStringList& paths, int total);
+    /// @p paths holds at most the first 100 of @p total paths: see FileTransfer::permissionRequested.
+    void fileTransferPermissionRequested(const QString& token, bool writing, const QStringList& paths, int total,
+                                         bool othersRefused);
     void closed();
+    /// The window lost the session of this session pane (sessionLost): the
+    /// pane closes, as do the others that lost it in the same pass.
+    void sessionLeft();
 
 private:
-    // ITerminalHost (pty thread, m_mutex held)
+    // ITerminalHost: m_mutex held, on the pty thread, or on the GUI thread:
+    // for any pane when the window resizes, resets or feeds its terminal
+    // (resize, resetTerminal, withTerminal), sets its colours (applyColors)
+    // or a user variable (setUserVar, userVarChanged), and for a session
+    // pane in applySessionHostCall and the replica's callbacks in
+    // applySessionFrame. Except the image decodes (decodePng,
+    // decodeImageFrames): in a feed of the reader thread they let m_mutex
+    // go while the image decodes (decodeOutsideLock), and take it again
+    // before they return.
     void writeToPty(std::string_view bytes) override;
     void reportInputFailure();
-    std::atomic_bool m_inputFailureQueued{false};
-    /// Queues @p deliver to the GUI thread unless one is already queued.
+    /// An inputRejected is queued or was emitted, and no input got through since.
+    std::atomic_bool m_inputFailureReported{false};
+    /// m_mutex held, on the pty thread or on the GUI thread (a reset through
+    /// withTerminal, a session pane's host call or frame): queues @p deliver for the GUI thread unless one of its
+    /// kind (@p queued) waits already. It waits in the queue of queueEvent,
+    /// behind the events queued before it. A delivery that waits already
+    /// keeps its place: what it delivers then is the latest state, which
+    /// can be newer than events queued after it.
     void queueOnce(std::atomic_bool& queued, std::function<void()> deliver);
+    /// What the events of one kind that wait in m_events hold, guarded by
+    /// m_mutex. Each kind has its own: a flood of notifications or a large
+    /// clipboard write must not drop the command events of shell
+    /// integration, which the window and the scripts pair up.
+    struct EventBudget
+    {
+        std::size_t events = 0;
+        std::size_t bytes = 0;
+        std::size_t dropped = 0;
+    };
+    /// m_mutex held: queues @p event, which emits one signal, for
+    /// the GUI thread, where the pane emits it to the receivers it has then
+    /// (a moved pane's new window). @p bytes is about what the event holds:
+    /// the memory of its fields that a program sizes (text, data), not of
+    /// the small fixed ones. False, and nothing queued, when MaxQueuedEvents
+    /// of @p budget wait already, or when they would hold more than
+    /// MaxQueuedEventBytes with it: a program that writes them faster than
+    /// the window takes them loses the rest. One event alone is never
+    /// refused for its size.
+    /// With @p paired, @p event ends one that was queued (a command's end
+    /// after its start) and is never refused: a start must not wait for an
+    /// end that never comes.
+    bool queueEvent(std::function<void()> event, std::size_t bytes, EventBudget& budget, bool paired = false);
+    /// notify() and desktopNotification(), and the same calls of a session
+    /// pane with their missed flag. m_mutex held.
+    void queueNotification(std::string_view title, std::string_view body, bool missed);
+    void queueDesktopNotification(const AfterglowVt::NotificationRequest& request, bool missed);
+    /// Posts one deliverEvents() unless one is posted already.
+    void postEvents();
+    /// GUI thread: emits the queued events in order. With @p checkShell,
+    /// then textChanged and shellStateChanged as the terminal was when the
+    /// events were taken: the start or end of a command comes before the
+    /// state that it left.
+    void deliverEvents(bool checkShell = false);
+    /// As much as one clipboard write may carry.
+    static constexpr std::size_t MaxQueuedEventBytes = AfterglowVt::ClipboardAssembler::MaxWrite;
+    std::deque<std::function<void()>> m_events; ///< guarded by m_mutex
+    EventBudget m_requestBudget; ///< notifications and clipboard requests
+    EventBudget m_commandBudget; ///< command starts and ends (OSC 133)
+    std::atomic_bool m_eventsPosted{false};
+    /// setNotificationsEnabled(); read on the PTY reader thread.
+    std::atomic_bool m_notificationsEnabled{true};
+    /// m_mutex held: queues @p emit, a signal of one request that the window
+    /// answers (a download, an upload), in the order of the other events
+    /// of the program. Never refused: each comes one at a time.
+    void queueRequest(std::function<void()> emit);
+    /// The download that streams to its file (answerDownload()), guarded by
+    /// m_mutex.
+    std::unique_ptr<DownloadFile> m_download;
+    /// Downloads that finished and whose writers rename or remove their
+    /// files, guarded by m_mutex. The GUI thread drops each once it ended
+    /// (reapDownload). A pane that closes first releases them
+    /// (DownloadFile::release).
+    std::vector<std::pair<quint64, std::unique_ptr<DownloadFile>>> m_endingDownloads;
+    /// GUI thread: drops the download of question @p serial, whose writer ended.
+    void reapDownload(quint64 serial);
+    /// A file for the download of question @p serial, or null with @p error.
+    std::unique_ptr<DownloadFile> createDownload(const QString& path, quint64 serial, bool replace, QString& error);
+    /// The window asks about a download: answerDownload() takes it. Guarded
+    /// by m_mutex.
+    bool m_downloadAsked = false;
+    /// The question of the download that m_downloadAsked waits for, guarded
+    /// by m_mutex: an answer to an older one does nothing.
+    quint64 m_downloadSerial = 0;
+    /// The output paused for a download (its question, or its data that
+    /// waits for the disk) goes on: the reader feeds what the terminal
+    /// held. m_mutex held.
+    void resumeOutputLocked();
     /// GUI thread: titleUpdated when the title to show changed.
     void announceTitle();
     std::atomic_bool m_bellQueued{false};
@@ -301,7 +857,8 @@ private:
     std::atomic_bool m_clipboardQueued{false};
     std::atomic_bool m_pointerShapeQueued{false};
     // Status and context also change on the GUI thread (a reset through
-    // withTerminal): queued, so no receiver reads them under m_mutex.
+    // withTerminal, a session pane's frame): queued, so no receiver reads
+    // them under m_mutex.
     std::atomic_bool m_statusQueued{false};
     std::atomic_bool m_contextQueued{false};
     std::optional<QString> m_pendingClipboard; ///< guarded by m_mutex
@@ -331,6 +888,11 @@ private:
     /// Posts @p command to m_protocolCommands and wakes deliverProtocolCommands.
     /// The caller holds m_mutex.
     void postProtocolCommand(std::function<void()> command);
+    /// m_mutex held: protocol commands that the pane could not hold (or, for
+    /// a session pane, the daemon) are gone. @p lost is what they held for
+    /// drag and drop, @p reset whether one was a terminal reset. The commands
+    /// that come until the GUI thread hears of the gap join it.
+    void loseProtocolCommands(DragDrop::Lost lost, bool reset);
     /// GUI thread: writes reports that waited, and frees their budget.
     void writeReports(const std::string& reports);
     /// GUI thread: the file transfer worker wrote the replies of one command.
@@ -364,14 +926,32 @@ private:
     void flash() override;
     void commandStarted(std::string_view command) override;
     void commandFinished(int exitCode) override;
+    /// The end of the running command, which ran @p ms milliseconds.
+    void finishCommand(int exitCode, qint64 ms);
     void contextChanged() override;
     void regionScrolled(const AfterglowVt::RegionScroll& scroll) override;
     void userVarChanged(std::string_view name, std::string_view value) override;
-    void downloadFile(std::string_view name, std::string_view data) override;
-    bool decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height,
-                     std::vector<std::uint8_t>& rgba) override;
+    /// userVarChanged(), m_mutex held: false when MaxUserVars refuses a new
+    /// name.
+    bool keepUserVar(std::string_view name, std::string_view value);
+    bool uploadRequested() override;
+    /// m_mutex held: the command that asked for files ended (its OSC 133
+    /// end, or the program's exit). Once for each request: uploadCancelled().
+    void orphanUploadLocked();
+    /// The foreground process group of the PTY (the tpgid of its child), or
+    /// -1: none for a session pane, whose PTY is the daemon's.
+    pid_t ptyForegroundGroup() const;
+    bool downloadBegin(std::string_view name, std::int64_t size) override;
+    bool downloadData(std::string_view bytes) override;
+    void downloadEnd(bool complete) override;
+    bool decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<AfterglowVt::ImageFrame>& frames,
+                           std::vector<std::uint32_t>& delays) override;
     void desktopNotification(const AfterglowVt::NotificationRequest& request) override;
     std::string notificationCapabilities() override;
+    std::optional<AfterglowProto::Remote::Answer> remoteSocket() override
+    {
+        return m_remoteSocket;
+    }
     bool clipboardRequest(const AfterglowVt::ClipboardRequest& request) override;
     bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,
                    std::vector<std::uint8_t>& rgba) override;
@@ -396,6 +976,44 @@ private:
     std::size_t m_outputLimit = 0;
 
     mutable std::mutex m_mutex;
+    /// m_mutex, once the reader thread does not decode an image without it
+    /// (decodeOutsideLock): for what changes the terminal on the GUI thread.
+    /// A read, or a move of the view (m_decoding), takes m_mutex alone, and
+    /// goes on while the image decodes.
+    std::unique_lock<std::mutex> lockTerminal() const;
+    /// Reader thread, in a feed of ptyData() or ptyClosed(): the lock that
+    /// it holds, which decodeOutsideLock() lets go. Null otherwise.
+    std::unique_lock<std::mutex>* m_feedLock = nullptr;
+    /// The reader thread decodes an image without m_mutex, in the middle of
+    /// its feed: the terminal is the reader's. Reads may look at it, and so
+    /// may what changes only the view (the viewport, the selection, copy
+    /// mode), which leaves the parser's state alone: they take m_mutex
+    /// alone. Guarded by m_mutex.
+    bool m_decoding = false;
+    /// lockTerminal() waits on it for the end of a decode.
+    mutable std::condition_variable m_decodeDone;
+    struct PendingSize
+    {
+        int cols = 0;
+        int rows = 0;
+        int cellWidth = 0;
+        int cellHeight = 0;
+        bool operator==(const PendingSize&) const = default;
+    };
+    /// What resize() and setVisible() gave during a decode, which the reader
+    /// thread applies at the end of its feed. Guarded by m_mutex.
+    std::optional<PendingSize> m_pendingSize;
+    std::optional<bool> m_pendingVisible;
+    /// m_mutex held, the terminal not the reader's to decode in: gives the
+    /// terminal, and the PTY, the pending size and visibility.
+    void applyPendingLocked();
+    /// Runs @p decode, a decode of the reader thread in its feed, without
+    /// m_mutex: an image can take seconds, which the window would wait to
+    /// draw. Elsewhere (a feed of the GUI thread) with m_mutex held.
+    bool decodeOutsideLock(const std::function<bool()>& decode);
+    /// Reader thread: runs @p feed, which feeds the terminal, with @p lock
+    /// (m_mutex) held, which a decode may let go meanwhile.
+    void feedLocked(std::unique_lock<std::mutex>& lock, const std::function<void()>& feed);
     const quint32 m_id;
     QString m_userTitle;
     QString m_launchedProgram;
@@ -403,21 +1021,42 @@ private:
     QString m_launchDirectory;
     std::atomic<bool> m_scrollOnOutput{false}; ///< read on the pty thread
     std::atomic<bool> m_hold{false};
+    /// An upload request waits for the window's answer: another is refused.
+    std::atomic<bool> m_uploadAsked{false};
+    /// The command that asked for the upload ended (its end, or the
+    /// program's exit) before the answer: the answer would go to the
+    /// shell, so none goes.
+    std::atomic<bool> m_uploadOrphaned{false};
+    /// ptyForegroundGroup() at the upload request, -1 when unknown.
+    std::atomic<pid_t> m_uploadGroup{-1};
     std::atomic<bool> m_holdOnFailure{false};
     std::atomic<bool> m_held{false}; ///< exited and held open
     bool m_scrollOnInput = true;
-    QString m_contextLabel;
-    QString m_contextKind;
+    QString m_contextLabel; ///< guarded by m_mutex
+    QString m_contextKind; ///< guarded by m_mutex
     QString m_reportedDirectory; ///< local, absolute; guarded by m_mutex
     bool m_directoryElsewhere = false; ///< the last OSC 7 named another host; guarded by m_mutex
-    QHash<QString, QString> m_userVars;
+    QHash<QString, QString> m_userVars; ///< guarded by m_mutex
+    bool m_userVarsFull = false; ///< the warning about MaxUserVars was given; guarded by m_mutex
     /// Changed user variables that wait for the GUI thread, guarded by m_mutex.
     std::vector<std::pair<QString, QString>> m_pendingUserVars;
     Signals m_signals{};
     QString m_command; ///< guarded by m_mutex
+    /// What became of the start of m_command: its end goes the same way.
+    /// The window, the scripts and afterglow ctl pair the two. Guarded by
+    /// m_mutex.
+    enum class CommandStart : std::uint8_t {
+        None,
+        Queued,
+        Dropped
+    };
+    CommandStart m_commandStartEvent = CommandStart::None;
+    AfterglowProto::Remote::Answer m_remoteSocket; ///< guarded by m_mutex
     std::chrono::steady_clock::time_point m_commandStart;
     AfterglowVt::Terminal m_terminal;
-    QString m_title;
+    /// Readable once the pane closes: an image decode that runs ends at once.
+    AfterglowProto::UniqueFd m_stopDecode;
+    QString m_title; ///< guarded by m_mutex
     QString m_shownTitle; ///< the title to show, guarded by m_mutex
     QString m_announcedTitle; ///< the last titleUpdated, GUI thread
 
@@ -426,13 +1065,24 @@ private:
     AfterglowVt::SelectionPoint m_copyCursor;
     AfterglowVt::Selection m_selection;
     bool m_selectionOnAltScreen = false;
+    /// The selection is drawn: active, made on the screen shown, and valid
+    /// for its rows. m_mutex held.
+    bool selectionShown() const;
+    /// selectionPointAt() with m_mutex held.
+    AfterglowVt::SelectionPoint pointAt(int col, int row) const;
+    /// startSelection() and extendSelection() with m_mutex held.
+    void startSelectionLocked(AfterglowVt::SelectionPoint anchor, AfterglowVt::SelectionMode mode, bool activeNow);
+    void extendSelectionLocked(AfterglowVt::SelectionPoint head);
     std::uint64_t m_selectionSerial = 0;
+    std::optional<std::uint64_t> m_lastVisitedOutput; ///< under m_mutex
 
-    struct SearchJob {
+    struct SearchJob
+    {
         AfterglowVt::TextSnapshot text;
         std::atomic<bool> cancelled{false};
         std::uint64_t epoch = 0, nextRow = 0, lastRow = 0;
         bool alt = false;
+        bool partial = false; ///< history of the session was still on its way
     };
     std::shared_ptr<SearchJob> m_searchJob;
     void captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string query, bool regex);
@@ -445,14 +1095,18 @@ private:
     /// The last search lost matches to moved text: the next search with the
     /// same query starts again. GUI thread.
     bool m_searchStale = false;
+    /// The last search started while history of the session was on its way:
+    /// once all of it came, the next search starts again. GUI thread.
+    bool m_searchPartial = false;
     bool m_searchAlt = false;
     QString m_searchNotice;
     std::vector<AfterglowVt::SearchMatch> m_searchMatches;
     std::u32string m_searchQuery;
     int m_searchCurrent = -1;
     bool m_searchActive = false;
-    /// Set by the window from the Colors.search* settings when it creates
-    /// the pane (setSearchColors), so the defaults live in one place.
+    /// Set by the window from the Colors.search* settings (setSearchColors),
+    /// when it creates the pane and when the settings change, so the
+    /// defaults live in one place.
     struct SearchColors
     {
         std::uint32_t match = 0;
@@ -470,12 +1124,94 @@ private:
     int m_snapshotExtraRows = 0;
     QElapsedTimer m_syncTimer;
     std::uint64_t m_syncSerial = 0; ///< the synchronized update m_syncTimer times
+    QElapsedTimer m_syncHoldTimer; ///< since synchronized updates began to hold the frames
     QElapsedTimer m_promptTimer;
+    QDeadlineTimer m_holdDeadline; ///< when the frame refreshSnapshot holds is drawn anyway
 
     std::atomic<bool> m_notifyPending{false};
+    /// What shellStateChanged and textChanged read of the terminal.
+    struct ShellReading
+    {
+        AfterglowVt::ShellState state = AfterglowVt::ShellState::None;
+        std::uint64_t prompt = 0; ///< Terminal::lastPromptId
+        std::uint64_t content = 0; ///< Terminal::contentGeneration
+    };
+    ShellReading readShellLocked() const; ///< m_mutex held
+    /// The reading that shellStateChanged and textChanged told last. GUI
+    /// thread only.
+    ShellReading m_shellTold;
+    /// GUI thread: emits textChanged when the content of @p now is another
+    /// than m_shellTold's, and shellStateChanged when its state is another
+    /// or the shell drew a new prompt.
+    void tellShellState(const ShellReading& now);
+    /// GUI thread: one deliverEvents(true) for the changes that come with no
+    /// output (a resize, a view move, a reset), after the events of the
+    /// output that came meanwhile.
+    void queueShellCheck();
+    bool m_shellCheckQueued = false; ///< GUI thread: queueShellCheck
+    /// The terminal's rows from @p first to @p last (stable row ids) are on
+    /// their way from the daemon (StateReader::received): blank places, or
+    /// older rows that did not come yet. False for other panes. m_mutex held.
+    bool rowsArrivingLocked(std::uint64_t first, std::uint64_t last) const;
     QTimer m_animationTimer;
+    bool m_seen = true; ///< setSeen()
+    /// The state that setVisible() gave the terminal last, which only it
+    /// changes: the terminal starts visible. GUI thread.
+    bool m_visible = true;
+    /// A tick of the animations waits for the frames of a session that came
+    /// in one read: once for all of them.
+    bool m_sessionTickQueued = false;
+    // A session pane (showSession): no PTY of its own.
+    std::shared_ptr<MuxClient> m_session;
+    std::uint32_t m_sessionPane = 0;
+    MuxRelease m_sessionRelease{}; ///< MuxRelease::Pane (Pane.cpp checks)
+    std::atomic<bool> m_sessionGone{false};
+    bool m_leftSession = false; ///< GUI thread: leftSession()
+    bool lastOutputArrivingLocked() const; ///< m_mutex held
+    /// A session pane's rows of output region @p id are on their way from
+    /// the daemon. m_mutex held.
+    bool regionArrivingLocked(std::uint64_t id) const;
+    bool regionArrivingLocked(const AfterglowVt::SemanticRegion& region) const;
+    /// readRegion() of @p id, m_mutex held: the text, not yet converted.
+    struct RegionRead
+    {
+        std::optional<std::string> text;
+        bool truncated = false;
+        bool arriving = false; ///< no text: the session pane still gets its rows
+    };
+    RegionRead readRegionLocked(std::uint64_t id, std::size_t limit, const AfterglowVt::TextFormat& format) const;
+    /// readRegion()'s answer, converted after the lock.
+    static QVariantMap regionResult(RegionRead read);
+    /// A session pane's primary screen misses history rows that are on their
+    /// way from the daemon. m_mutex held.
+    bool historyArrivingLocked() const;
+    int m_sessionVisible = -1; ///< the last state given to the daemon (setSessionVisible), -1 for none yet
+    /// GUI thread: sessionScreensHeld(). A read refreshes the replica, so
+    /// the reads that are const change it.
+    mutable bool m_sessionHeld = false;
+    /// GUI thread: the ticket of the Refresh that brings the screens that
+    /// the daemon held, asked since the last change of setSessionVisible().
+    /// 0 for none.
+    mutable std::uint64_t m_sessionRefresh = 0;
+    /// GUI thread: the RefreshOnce objects that live, and whether a refresh
+    /// waited since the first of them.
+    mutable int m_refreshScopes = 0;
+    mutable bool m_refreshedInScope = false;
+    bool m_sessionSynced = false; ///< GUI thread: a frame of the session applied (sessionSynced)
+    bool m_sessionLaunched = false; ///< GUI thread: showSession's launched
+    bool m_snapshotSynced = false; ///< GUI thread: m_snapshot is of a frame of the session
+    /// GUI thread: the last reported directory that knownDirectory checked,
+    /// and whether it was a directory then.
+    mutable QString m_checkedDirectory;
+    mutable bool m_checkedDirectoryExists = false;
+    quint64 m_statusBaseline = 0; ///< GUI thread: statusBaseline
+    AfterglowVt::StateReader m_stateReader;
     // Declared last so it is destroyed first: its thread calls into the terminal.
     std::unique_ptr<AfterglowPty::Pty> m_pty;
+
+    bool hasProgram() const;
+    /// The program's input: its PTY, or the daemon of a session pane.
+    bool writeProgram(std::string_view bytes);
 };
 
 } // namespace Afterglow

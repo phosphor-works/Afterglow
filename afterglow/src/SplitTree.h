@@ -23,8 +23,18 @@ class Pane;
 class SplitTree
 {
 public:
-    enum class Direction { Right, Down, Left, Up };
-    enum class Neighbour { Left, Right, Up, Down };
+    enum class Direction {
+        Right,
+        Down,
+        Left,
+        Up
+    };
+    enum class Neighbor {
+        Left,
+        Right,
+        Up,
+        Down
+    };
 
     struct Divider
     {
@@ -42,6 +52,13 @@ public:
     /// last layout rectangle.
     void split(Pane* target, Pane* added, Direction direction, double fraction = 0.5, int dividerWidth = 0,
                const QSize& minimum = {});
+    /// Whether split() of @p target in @p direction leaves both sides at
+    /// least @p minimum: in the target's last layout rectangle, which a zoom
+    /// does not change. With @p leaving, after that pane left the tree: as
+    /// the target's sibling, the target takes their parent's rectangle. A
+    /// tree that was never laid out has no room to measure, and passes.
+    bool canSplit(const Pane* target, Direction direction, int dividerWidth, const QSize& minimum,
+                  const Pane* leaving = nullptr) const;
     /// Removes @p pane; its sibling takes the freed space. Returns false if
     /// the pane was the last one.
     bool remove(Pane* pane);
@@ -51,8 +68,29 @@ public:
     /// shape and ratios stay. Returns false with fewer than two panes.
     bool rotate(bool clockwise);
     QJsonObject snapshot(const std::function<QJsonObject(Pane*)>& pane) const;
-    /// Input must first pass ProjectStore::validate; factory must return a pane.
+    /// A tree of the panes that @p factory gives for the leaves of a
+    /// snapshot. A leaf for which it gives none goes: the other side of its
+    /// split takes the split's place, and a tree with no pane is empty
+    /// (paneCount() 0). Ratios keep the bounds of split(). The input must
+    /// first pass ProjectStore::validate.
     static std::unique_ptr<SplitTree> restore(const QJsonObject&, const std::function<Pane*(const QJsonObject&)>&);
+
+    /// A node of the tree in preorder: a split comes before its first side,
+    /// then its second, each a pane or a split. A mux session's layout keeps
+    /// its trees so (AfterglowMux::LayoutTab).
+    struct PreorderNode
+    {
+        Pane* pane = nullptr; ///< null for a split
+        bool vertical = false; ///< a split: the second side is below the first
+        double ratio = 0.5; ///< a split: the share of the first side
+    };
+    /// The tree in preorder. The other walks of the tree recurse as deep as
+    /// it goes, which AfterglowMux::MaxSessionPanes bounds for a session's.
+    std::vector<PreorderNode> preorder() const;
+    /// The tree that @p nodes give in preorder, else null: when they are no
+    /// single whole tree, or a split's ratio is not above 0 and below 1. A
+    /// ratio keeps the bounds of split().
+    static std::unique_ptr<SplitTree> fromPreorder(const std::vector<PreorderNode>& nodes);
 
     /// Lays the tree out in @p area with dividers @p dividerWidth wide.
     void layout(const QRect& area, int dividerWidth);
@@ -60,17 +98,26 @@ public:
     bool contains(const Pane* pane) const;
     QRect rectOf(const Pane* pane) const;
     Pane* paneAt(const QPoint& pos) const;
-    Pane* neighbour(const Pane* from, Neighbour direction) const;
+    Pane* neighbor(const Pane* from, Neighbor direction) const;
     void forEachPane(const std::function<void(Pane*, const QRect&)>& fn) const;
-    const std::vector<Divider>& dividers() const noexcept { return m_dividers; }
+    const std::vector<Divider>& dividers() const noexcept
+    {
+        return m_dividers;
+    }
     int paneCount() const;
     void equalize();
     /// Zoom changes presentation only; the split topology and ratios survive.
     void setZoomedPane(Pane* pane);
-    Pane* zoomedPane() const { return m_zoomed; }
-    bool isVisible(const Pane* pane) const { return !m_zoomed || pane == m_zoomed; }
+    Pane* zoomedPane() const
+    {
+        return m_zoomed;
+    }
+    bool isVisible(const Pane* pane) const
+    {
+        return !m_zoomed || pane == m_zoomed;
+    }
     /// Move the nearest appropriate divider by pixels in the given direction.
-    bool resizePane(Pane* pane, Neighbour direction, int pixels, int dividerWidth, const QSize& minimum);
+    bool resizePane(Pane* pane, Neighbor direction, int pixels, int dividerWidth, const QSize& minimum);
 
     /// The divider within @p tolerance pixels of @p pos, if any.
     std::optional<Divider> dividerAt(const QPoint& pos, int tolerance) const;

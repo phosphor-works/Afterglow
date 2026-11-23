@@ -13,6 +13,7 @@ dbus-run-session, so that KWin and the tests use a private session bus.
 import argparse
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -27,11 +28,20 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--binary', default='build/afterglow/afterglow_native_tests')
 parser.add_argument('--filter', default='NativeWindow.*:KeyMapping.*', help='--gtest_filter pattern')
 parser.add_argument('--icd', help='Vulkan ICD manifest (for example a lavapipe lvp.json)')
-parser.add_argument('--timeout', type=int, default=400, help='seconds for the whole test binary')
+parser.add_argument('--timeout', type=int, default=1800, help='seconds for the whole test binary')
 parser.add_argument('--size', default='1100x750', help='virtual output size')
+parser.add_argument('--outputs', type=int, default=1, help='virtual outputs (2 runs the tests that move between screens)')
 parser.add_argument('--validation', action='store_true', help='enable the Vulkan validation layer')
+parser.add_argument('--platform-theme', default='generic',
+                    help='QT_QPA_PLATFORMTHEME of the tests (kde runs the native KDE file dialogs, gtk3 the GTK one)')
 parser.add_argument('--private-bus', action='store_true', help=argparse.SUPPRESS)
 args = parser.parse_args()
+if not re.fullmatch(r'[1-9][0-9]*x[1-9][0-9]*', args.size):
+    parser.error(f'--size takes WIDTHxHEIGHT, such as 1100x750, not {args.size}')
+if args.timeout < 1 or args.outputs < 1:
+    parser.error('--timeout and --outputs take 1 or more')
+if not os.path.isabs(os.environ.get('XDG_RUNTIME_DIR', '')):
+    sys.exit('XDG_RUNTIME_DIR is not an absolute path: KWin makes its socket there')
 
 binary = Path(args.binary).resolve()
 if not binary.exists():
@@ -50,20 +60,29 @@ with tempfile.TemporaryDirectory(prefix='afterglow-headless-') as temporary:
     config.mkdir()
     # The user's KWin plugins (PlasmaZones) must not load into the test compositor
     (config / 'kwinrc').write_text(KWINRC)
+    # A Save dialog of a download opens in the download directory: a private one, so that a test
+    # that saves never writes to the user's.
+    (root / 'downloads').mkdir()
+    (config / 'user-dirs.dirs').write_text(f'XDG_DOWNLOAD_DIR="{root / "downloads"}"\n')
     socket = f'afterglow-headless-{os.getpid()}'
     env = dict(
         os.environ,
         XDG_CONFIG_HOME=str(config),
-        # Scripts, packs and state under the user's own data directory must not reach the tests.
+        # Scripts, packs and state under the user's own directories must not reach the tests: script
+        # state and the KDE file dialog's afterglowstaterc (XDG_STATE_HOME), and caches (XDG_CACHE_HOME).
         XDG_DATA_HOME=str(root / 'data'),
+        XDG_STATE_HOME=str(root / 'state'),
+        XDG_CACHE_HOME=str(root / 'cache'),
         QT_FORCE_STDERR_LOGGING='1',
         QT_QPA_PLATFORM='offscreen',
         WAYLAND_DISPLAY='',
         QT_QUICK_CONTROLS_STYLE='Basic',
-        QT_QPA_PLATFORMTHEME='generic',
+        QT_QPA_PLATFORMTHEME=args.platform_theme,
     )
-    # A run from an Afterglow pane must not hand the tests that pane's socket.
-    for name in ('AFTERGLOW_SOCKET', 'AFTERGLOW_PANE_ID'):
+    # A run from an Afterglow pane, a mux session or tmux must not hand the tests the user's sockets.
+    # An Afterglow from before restoreEnvironment() also handed its panes its shell integration, which
+    # the tests' own startup sets when it was not given.
+    for name in ('AFTERGLOW_SOCKET', 'AFTERGLOW_PANE_ID', 'AFTERGLOW_SESSION', 'TMUX', 'QT_WAYLAND_SHELL_INTEGRATION'):
         env.pop(name, None)
     if args.icd:
         env.update(
@@ -77,8 +96,9 @@ with tempfile.TemporaryDirectory(prefix='afterglow-headless-') as temporary:
     with log_path.open('w') as log:
         compositor = subprocess.Popen(
             ['kwin_wayland', '--virtual', '--socket', socket, '--width', width, '--height', height,
-             '--no-lockscreen', '--no-global-shortcuts', '--no-kactivities'],
+             '--output-count', str(args.outputs), '--no-lockscreen', '--no-global-shortcuts', '--no-kactivities'],
             env=env, stdout=log, stderr=subprocess.STDOUT)
+        tests = None
         try:
             deadline = time.monotonic() + 10
             while not (Path(env['XDG_RUNTIME_DIR']) / socket).exists():
@@ -91,14 +111,20 @@ with tempfile.TemporaryDirectory(prefix='afterglow-headless-') as temporary:
             env.update(QT_QPA_PLATFORM='wayland', WAYLAND_DISPLAY=socket, AFTERGLOW_NATIVE_ISOLATED='1')
             if args.validation:
                 env.update(AFTERGLOW_VULKAN_VALIDATION='1', QT_LOGGING_RULES='qt.vulkan=true;afterglow.gpu=true')
-            result = subprocess.run(
-                ['dbus-run-session', '--', str(binary), f'--gtest_filter={args.filter}'],
-                env=env, cwd=root, timeout=args.timeout + 10)
-            code = result.returncode
-        except subprocess.TimeoutExpired:
-            print(f'Timed out after {args.timeout} s', file=sys.stderr)
-            code = 124
+            # A group of its own: at the timeout, the test binary and its bus stop with the
+            # dbus-run-session that runs them.
+            tests = subprocess.Popen(['dbus-run-session', '--', str(binary), f'--gtest_filter={args.filter}'],
+                                     env=env, cwd=root, start_new_session=True)
+            try:
+                code = tests.wait(timeout=args.timeout + 10)
+            except subprocess.TimeoutExpired:
+                print(f'Timed out after {args.timeout} s', file=sys.stderr)
+                code = 124
         finally:
+            # At the timeout, and on SIGTERM or Ctrl-C: the group is no longer the runner's.
+            if tests is not None and tests.poll() is None:
+                os.killpg(tests.pid, signal.SIGKILL)
+                tests.wait()
             compositor.terminate()
             try:
                 compositor.wait(timeout=5)

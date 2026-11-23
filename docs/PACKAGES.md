@@ -53,6 +53,9 @@ Its other fields, such as `commands`, `config`, `assets` and `shaders`, have no 
 Imports use local files. Afterglow does not download dependencies.
 Dependencies share the caller's sandbox and state namespace.
 Cycles and undeclared imports cause an error.
+When two packages of one tree include the same dependency, each gets its own copy.
+Its modules then load two times, and the two copies do not share module variables.
+A module cannot wait while it loads. A `require` in a handler loads the module in a coroutine of its own, so `afterglow.await` in the module's code causes an error.
 
 | Source limit | Value |
 | --- | --- |
@@ -79,9 +82,16 @@ A package declares its commands only in `package.json`. `metadata.commands` in a
 "commands": {
   "open": {"summary": "Open a project directory", "usage": "DIR [LAYOUT]", "palette": "Open project…"},
   "list": {"summary": "Print the saved projects"},
-  "import": {"summary": "Add projects from a list on stdin", "stdin": true}
+  "import": {"summary": "Add projects from a list on stdin", "stdin": true},
+  "notice": {"summary": "Show a notification from a remote job", "usage": "MESSAGE", "remote": true}
 }
 ```
+
+A command with `"remote": true` can also run from a remote host, with `aglow run` in an `afterglow ssh` session.
+It can also run with `aglow run` in a pane of a mux session of another host (see [MUX.md](MUX.md#script-commands-in-a-session-pane)).
+Remote commands are off until you set `Terminal.sshRemoteCommands`. [Remote commands](CONTROL.md#remote-commands) gives the other requirements.
+The handler gets `ev.source` `"remote"`, and `ev.cwd` is a directory on the remote host.
+Any process of the remote user can run the command. Check its arguments and stdin before you use them (see [Run a command](SCRIPTING.md#run-a-command)).
 
 The entry module must export `run_command(command, ev)`.
 `aglow run <id> --help` lists the package's commands. `aglow run <id> <command>` runs one.
@@ -109,6 +119,9 @@ Afterglow does not check the stages and includes that a shader pack reads.
 Afterglow monitors source files, dependency manifests and configuration together.
 A change replaces the complete instance. This includes a change to `shaders`, `pulses` or `commands`.
 Compilation, initialization or migration errors keep the previous working instance.
+When a file changes while Afterglow reads the package, Afterglow does not use what it read, and reads the package again.
+So a checkout that changes many files does not load, or migrate state with, a mix of old and new files.
+When the package directory is a symlink and you point it to another directory, Afterglow monitors the new directory.
 
 ## Saved state
 
@@ -153,7 +166,7 @@ Increase `state_version` when the stored structure changes.
 Export `migrate(value, oldVersion, newVersion)` to return the new object.
 Afterglow calls `migrate` once, from the stored version to the current `state_version`.
 Handle every older version in that one call.
-Migration and `on_load` each use the 100 ms command deadline.
+Migration and `on_load` each use the 100 ms command limit, in CPU time (see [execution limits](SCRIPTING.md#execution-limits)).
 
 Afterglow validates migration output before activation.
 It writes the new state only after the replacement compiles and initializes.
@@ -207,7 +220,7 @@ It writes the one you select to the configuration file. A chain key gains the pa
 A package names at most 32 pulses.
 A pulse name has 1 to 64 letters, digits, `_` and `-`. It cannot be only digits.
 The names `portal`, `flash` and `shake` are reserved.
-The [scripted overview](../data/examples/packages/scripted-overview/README.md) ships a key script and its own overview shader.
+The [scripted overview](../examples/packages/scripted-overview/README.md) ships a key script and its own overview shader.
 
 ## Reload and removal
 
@@ -231,14 +244,14 @@ The stored data remains available for a later installation.
 
 | Package | Function |
 | --- | --- |
-| [Project navigator](../data/examples/packages/project-navigator/README.md) | Finds directories and opens project layouts |
-| [Project autosave](../data/examples/packages/project-autosave/README.md) | Saves selected layouts periodically and supplies a restore selector |
-| [Tab line](../data/examples/packages/tab-line/README.md) | Draws the tab bar as a tab line with Git, directory, command and exit information |
-| [Scene controls](../data/examples/packages/scene-controls/README.md) | Selects, changes and saves shader parameters |
-| [Contextual scene](../data/examples/packages/contextual-scene/README.md) | Changes scene intensity from audio and history data |
-| [Scripted overview](../data/examples/packages/scripted-overview/README.md) | Drives the pane overview from its own keys, with its own overview shader |
-| [fzf picker](../data/examples/packages/fzf-picker/README.md) | Picks a saved project or a file with fzf in a popup overlay, or with the select dialog without fzf |
+| [Project navigator](../examples/packages/project-navigator/README.md) | Finds directories and opens project layouts |
+| [Project autosave](../examples/packages/project-autosave/README.md) | Saves selected layouts periodically and supplies a restore selector |
+| [Tab line](../examples/packages/tab-line/README.md) | Draws the tab bar as a tab line with Git, directory, command and exit information |
+| [Scene controls](../examples/packages/scene-controls/README.md) | Selects, changes and saves shader parameters |
+| [Contextual scene](../examples/packages/contextual-scene/README.md) | Changes scene intensity from audio and history data |
+| [Scripted overview](../examples/packages/scripted-overview/README.md) | Drives the pane overview from its own keys, with its own overview shader |
+| [fzf picker](../examples/packages/fzf-picker/README.md) | Picks a saved project or a file with fzf in a popup overlay, or with the select dialog without fzf |
 
-Copy a complete package directory into `~/.config/afterglow/scripts/` to install it.
-A package in a system data directory, such as `/usr/share/afterglow/scripts`, also loads.
+Copy a complete package directory into `~/.config/phosphor-works/afterglow/scripts/` to install it.
+A package in a system data directory, such as `/usr/share/phosphor-works/afterglow/scripts`, also loads.
 Use the package instructions for configuration and commands.

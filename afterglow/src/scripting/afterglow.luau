@@ -58,6 +58,32 @@ local current = nil -- the handler coroutine running now
 -- The run of each run_command coroutine. Weak: a handler that fails leaves its
 -- coroutine dead, and nothing else refers to it.
 local commandRuns = setmetatable({}, { __mode = "k" })
+-- The handler coroutines, which only the runtime resumes. A script can keep
+-- one (coroutine.running), and its resume would return a result that the
+-- script made up from afterglow.await. Weak, as commandRuns.
+local handlers = setmetatable({}, { __mode = "k" })
+local rawResume, rawClose = coroutine.resume, coroutine.close
+
+local function newHandler(f)
+    local co = coroutine.create(f)
+    handlers[co] = true
+    return co
+end
+
+-- The library that scripts get, frozen after this prelude: a handler's
+-- coroutine is refused, any other one resumes and closes as usual.
+coroutine.resume = function(co, ...)
+    if handlers[co] then
+        return false, "a handler resumes only with the results of afterglow.await"
+    end
+    return rawResume(co, ...)
+end
+coroutine.close = function(co)
+    if handlers[co] then
+        return false, "afterglow ends a handler itself"
+    end
+    return rawClose(co)
+end
 
 -- A run_command handler that returned: its effects, with the run that ended,
 -- so afterglow ends the run once it has applied them.
@@ -91,7 +117,7 @@ end
 local function resumeIn(co, ...)
     local previous = current
     current = co
-    local results = table.pack(coroutine.resume(co, ...))
+    local results = table.pack(rawResume(co, ...))
     current = previous
     return results
 end
@@ -154,8 +180,9 @@ local function resume(ev)
     index = tonumber(index)
     -- An index that the flow does not have, or has a result for already, is
     -- not its result. Afterglow refuses a request ID with the prefix that
-    -- the runtime did not give in the same call, and only afterglow holds the
-    -- module whose __resume calls this, so a script cannot forge a result.
+    -- the runtime did not give in the same call, only afterglow holds the
+    -- module whose __resume calls this, and coroutine.resume refuses a
+    -- handler's coroutine, so a script cannot forge a result.
     if not flow or index < 1 or index > flow.count or flow.results[index] ~= nil then
         return nil
     end
@@ -236,13 +263,14 @@ local function runCommand(module, run, name, ev)
     if type(handler) ~= "function" then
         error("run_command is not a function", 0)
     end
-    local co = coroutine.create(handler)
+    local co = newHandler(handler)
     commandRuns[co] = run
     return drive(co, name, ev)
 end
 
--- Handlers that must return at once: a migration returns state, and effects
--- returned while unloading are ignored.
+-- Handlers that must return at once: a migration returns state, and
+-- on_unload returns its last state writes and logs, after which nothing of
+-- the instance waits.
 local direct = { migrate = true, on_unload = true }
 
 -- Afterglow loads every script through this, once: the module's functions run
@@ -286,7 +314,7 @@ local function wrap(module)
             end
             local entry = cache[key]
             if entry == nil or entry.handler ~= value then
-                entry = { handler = value, call = function(...) return drive(coroutine.create(value), ...) end }
+                entry = { handler = value, call = function(...) return drive(newHandler(value), ...) end }
                 cache[key] = entry
             end
             return entry.call

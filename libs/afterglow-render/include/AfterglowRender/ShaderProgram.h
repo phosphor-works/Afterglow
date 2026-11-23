@@ -51,7 +51,8 @@ struct alignas(16) TerminalUniformsTail
     float uScrollback[4];
     float uSignal[8][4];
     float uPalette[256][4];
-    float uOverlayTransition[4]; ///< progress, unused, unused, 1 in every pass of the overlay transition pack, its buffer passes too
+    float uOverlayTransition[4]; ///< progress, unused, unused, 1 in every pass of the overlay transition pack, its
+                                 ///< buffer passes too
 };
 
 /// Uniform block of terminal shaders (std140, binding 0): Phosphor's base
@@ -75,10 +76,18 @@ static_assert(sizeof(TerminalUniforms) == 5200);
 
 inline constexpr int MaxShaderBuffers = PhosphorShaders::kMaxBufferPasses;
 inline constexpr int MaxShaderImages = PhosphorShaders::kMaxImageSlots;
-enum class ShaderWrap { Clamp, Repeat, Mirror };
+enum class ShaderWrap {
+    Clamp,
+    Repeat,
+    Mirror
+};
 /// The event ages a program reads (ShaderProgram::eventAges()): bit i is
 /// kind i of PostChain's newest event times.
-enum EventAge : unsigned { CursorAge = 1u << 0, FocusAge = 1u << 1, SignalAge = 1u << 2 };
+enum EventAge : unsigned {
+    CursorAge = 1u << 0,
+    FocusAge = 1u << 1,
+    SignalAge = 1u << 2
+};
 inline constexpr int EventAgeKinds = 3;
 /// The slot of PostChain's newest event times that holds this kind.
 inline constexpr std::size_t eventAgeIndex(EventAge kind)
@@ -87,7 +96,8 @@ inline constexpr std::size_t eventAgeIndex(EventAge kind)
 }
 static_assert(eventAgeIndex(SignalAge) + 1 == std::size_t(EventAgeKinds), "EventAgeKinds counts every EventAge bit");
 /// Triangle geometry. Empty vertices select procedural generation with gl_VertexIndex.
-struct ShaderMeshVertex {
+struct ShaderMeshVertex
+{
     float position[3];
     float normal[3];
     float uv[2];
@@ -95,16 +105,21 @@ struct ShaderMeshVertex {
 inline constexpr int MaxSceneObjects = 64;
 /// One transform component of a scene object: a constant, or the value of a
 /// scalar pack parameter, so scripts and transitions can move objects.
-struct ShaderSceneValue {
+struct ShaderSceneValue
+{
     float value = 0.0f;
     int slot = -1; ///< customParams lane (0..31), or -1 for the constant
-    float resolve(const std::array<float, 32>& params) const { return slot >= 0 ? params[std::size_t(slot)] : value; }
+    float resolve(const std::array<float, 32>& params) const
+    {
+        return slot >= 0 ? params[std::size_t(slot)] : value;
+    }
 };
 /// A node of a mesh pass's object hierarchy. Its world transform is its
 /// parent's world transform, then translate, rotate (degrees about X, then Y,
 /// then Z, plus spin degrees per second) and scale. Objects without vertices
 /// are pivots: they carry a transform for their children but draw nothing.
-struct ShaderSceneObject {
+struct ShaderSceneObject
+{
     int parent = -1; ///< an earlier object, or -1 for a root
     int firstVertex = 0; ///< into the pass's vertices
     int vertexCount = 0;
@@ -114,27 +129,33 @@ struct ShaderSceneObject {
     std::array<ShaderSceneValue, 3> spin{};
 };
 /// The scene block (std140, binding 18): mirrors terminal_scene.glsl.
-struct alignas(16) TerminalSceneUniforms {
+struct alignas(16) TerminalSceneUniforms
+{
     float uObjectMatrix[MaxSceneObjects][16];
     float uObjectNormalMatrix[MaxSceneObjects][16];
 };
 static_assert(sizeof(TerminalSceneUniforms) == 8192);
 inline constexpr int MaxShaderPanes = 32;
 /// The pane block (std140, binding 19): mirrors terminal_panes.glsl.
-struct alignas(16) TerminalPaneUniforms {
+struct alignas(16) TerminalPaneUniforms
+{
     /// Panes, focused, highlighted (the card the overview closes onto while
     /// it closes), overview open.
-    std::int32_t uPaneState[4] {0, -1, -1, 0};
-    float uOverview[4] {0.0f, 0.0f, 1e6f, 1e6f}; ///< open amount, highlight position, ages since open/close and highlight move
-    std::int32_t uTabState[4] {0, 0, 0, 0}; ///< tabs with cards, the current tab
-    float uTabTransition[4] {1.0f, 1.0f, 1e6f, 0.0f}; ///< progress, direction, age, running
-    float uPaneRect[MaxShaderPanes][4] {};
-    float uPaneSource[MaxShaderPanes][4] {}; ///< uv rectangle in the card's source
-    std::int32_t uPaneTab[MaxShaderPanes][4] {}; ///< tab, source (0 input, 1 tab, 2 atlas), index in tab
-    float uPaneLife[MaxShaderPanes][4] {}; ///< opening progress, the edge it opened from, context progress, context
-    float uClosedRect[4] {};
-    float uClosed[4] {1.0f, 0.0f, 0.0f, 0.0f}; ///< closing progress, showing
-    float uPanePulse[MaxShaderPanes][4] {}; ///< pulse progress, effect, palette colour; the context before the last change
+    std::int32_t uPaneState[4]{0, -1, -1, 0};
+    float uOverview[4]{0.0f, 0.0f, 1e6f,
+                       1e6f}; ///< open amount, highlight position, ages since open/close and highlight move
+    /// Tabs with cards, the current tab, the card that the highlight last
+    /// left (-1 for none).
+    std::int32_t uTabState[4]{0, 0, -1, 0};
+    float uTabTransition[4]{1.0f, 1.0f, 1e6f, 0.0f}; ///< progress, direction, age, running
+    float uPaneRect[MaxShaderPanes][4]{};
+    float uPaneSource[MaxShaderPanes][4]{}; ///< uv rectangle in the card's source
+    std::int32_t uPaneTab[MaxShaderPanes][4]{}; ///< tab, source (0 input, 1 tab, 2 atlas), index in tab
+    float uPaneLife[MaxShaderPanes][4]{}; ///< opening progress, the edge it opened from, context progress, context
+    float uClosedRect[4]{};
+    float uClosed[4]{1.0f, 0.0f, 0.0f, 0.0f}; ///< closing progress, showing
+    float uPanePulse[MaxShaderPanes]
+                    [4]{}; ///< pulse progress, effect, palette colour; the context before the last change
 };
 static_assert(sizeof(TerminalPaneUniforms) == 2656);
 // The std140 offsets of terminal_panes.glsl: a reorder that keeps the size fails here.
@@ -148,7 +169,8 @@ static_assert(offsetof(TerminalPaneUniforms, uPaneLife) == 1600);
 static_assert(offsetof(TerminalPaneUniforms, uClosedRect) == 2112);
 static_assert(offsetof(TerminalPaneUniforms, uClosed) == 2128);
 static_assert(offsetof(TerminalPaneUniforms, uPanePulse) == 2144);
-struct ShaderGeometry {
+struct ShaderGeometry
+{
     QByteArray vertexCode; ///< defines `vec4 pMesh()`, the Vulkan clip position, or its own main()
     QString directory; ///< resolves the vertex code's quoted includes
     std::vector<ShaderMeshVertex> vertices;
@@ -159,7 +181,8 @@ struct ShaderGeometry {
     /// gl_InstanceIndex is its index; `instances` must be 1.
     std::vector<ShaderSceneObject> objects;
 };
-struct ShaderBufferSource {
+struct ShaderBufferSource
+{
     QByteArray code; ///< defines `vec4 pTerminal(vec2 uv)` or its own main()
     QString directory; ///< resolves the code's quoted includes
     bool feedback = false;
@@ -188,6 +211,8 @@ struct ShaderProgramSource
     bool highDynamicRange = false; ///< metadata `highDynamicRange`: keep values above 1 between passes
     bool windowBackground = false; ///< metadata `windowBackground`: one background for the whole window
     float settleSeconds = 2.0f; ///< metadata `settleSeconds`: see ShaderProgram::settleSeconds()
+    /// Metadata `overviewNavigation` "direction": see ShaderProgram::overviewByDirection().
+    bool overviewByDirection = false;
     QByteArray parameterPreamble; ///< `#define p_<id> customParams[...]` lines
     std::array<float, 32> params{};
     std::array<float, 64> colors{};
@@ -209,12 +234,17 @@ struct ShaderParameterValues
     void merge(const ShaderParameterValues& other)
     {
         for (int i = 0; i < 32; ++i)
-            if (other.paramMask & (std::uint32_t(1) << i)) params[i] = other.params[i];
+            if (other.paramMask & (std::uint32_t(1) << i))
+                params[i] = other.params[i];
         for (int i = 0; i < 16; ++i)
             if (other.colorMask & (1u << i))
-                for (int c = 0; c < 4; ++c) colors[i * 4 + c] = other.colors[i * 4 + c];
+                for (int c = 0; c < 4; ++c)
+                    colors[i * 4 + c] = other.colors[i * 4 + c];
         for (int i = 0; i < MaxShaderImages; ++i)
-            if (other.imageMask & (1u << i)) { images[i] = other.images[i]; imagePaths[i] = other.imagePaths[i]; }
+            if (other.imageMask & (1u << i)) {
+                images[i] = other.images[i];
+                imagePaths[i] = other.imagePaths[i];
+            }
         imageMask |= other.imageMask;
         paramMask |= other.paramMask;
         colorMask |= other.colorMask;
@@ -222,10 +252,12 @@ struct ShaderParameterValues
     void apply(PhosphorShaders::BaseUniforms& u) const
     {
         for (int i = 0; i < 32; ++i)
-            if (paramMask & (std::uint32_t(1) << i)) u.customParams[i / 4][i % 4] = params[i];
+            if (paramMask & (std::uint32_t(1) << i))
+                u.customParams[i / 4][i % 4] = params[i];
         for (int i = 0; i < 16; ++i)
             if (colorMask & (1u << i))
-                for (int c = 0; c < 4; ++c) u.customColors[i][c] = colors[i * 4 + c];
+                for (int c = 0; c < 4; ++c)
+                    u.customColors[i][c] = colors[i * 4 + c];
     }
 };
 using ShaderParameterMap = QHash<QString, ShaderParameterValues>;
@@ -251,20 +283,67 @@ public:
     static void sceneMatrices(const std::vector<ShaderSceneObject>& objects, const std::array<float, 32>& params,
                               double time, TerminalSceneUniforms& out);
 
-    const auto& buffers() const noexcept { return m_buffers; }
+    const auto& buffers() const noexcept
+    {
+        return m_buffers;
+    }
     /// A buffer pass's settings (scale, format, filter, wrap, feedback). Its
     /// code and geometry live in buffers()[i] and are not kept here.
-    const ShaderBufferSource& bufferSettings(std::size_t i) const { return m_bufferSettings.at(i); }
-    const auto& images() const noexcept { return m_images; }
-    const auto& imagePaths() const noexcept { return m_imagePaths; }
-    const QShader& vertexShader() const noexcept { return m_vertexShader; }
-    bool depthOutput() const noexcept { return m_depthOutput; }
-    const ShaderGeometry& geometry() const noexcept { return m_geometry; }
-    bool meshPass() const noexcept { return !m_geometry.vertexCode.isEmpty(); }
-    int vertexCount() const noexcept { return meshPass() ? m_geometry.vertexCount : m_vertexShader.isValid() ? 6 : 3; }
-    const QShader& shader() const noexcept { return m_shader; }
-    const QString& id() const noexcept { return m_id; }
-    const QString& instanceId() const noexcept { return m_instanceId; }
+    const ShaderBufferSource& bufferSettings(std::size_t i) const
+    {
+        return m_bufferSettings.at(i);
+    }
+    const auto& images() const noexcept
+    {
+        return m_images;
+    }
+    const auto& imagePaths() const noexcept
+    {
+        return m_imagePaths;
+    }
+    const QShader& vertexShader() const noexcept
+    {
+        return m_vertexShader;
+    }
+    bool depthOutput() const noexcept
+    {
+        return m_depthOutput;
+    }
+    const ShaderGeometry& geometry() const noexcept
+    {
+        return m_geometry;
+    }
+    bool meshPass() const noexcept
+    {
+        return !m_geometry.vertexCode.isEmpty();
+    }
+    int vertexCount() const noexcept
+    {
+        return meshPass() ? m_geometry.vertexCount : m_vertexShader.isValid() ? 6 : 3;
+    }
+    const QShader& shader() const noexcept
+    {
+        return m_shader;
+    }
+    /// The pack's pointer map (pPointerMap) as its own stage, which writes
+    /// the map's result for each position of the canvas. Invalid when the
+    /// pack defines none. See PointerMaps.
+    const QShader& pointerShader() const noexcept
+    {
+        return m_pointerShader;
+    }
+    bool hasPointerMap() const noexcept
+    {
+        return m_pointerShader.isValid();
+    }
+    const QString& id() const noexcept
+    {
+        return m_id;
+    }
+    const QString& instanceId() const noexcept
+    {
+        return m_instanceId;
+    }
     std::shared_ptr<const ShaderProgram> instance(const QString& id) const
     {
         auto copy = std::make_shared<ShaderProgram>(*this);
@@ -295,39 +374,82 @@ public:
     /// timeCycle and timeSeconds; including terminal_history.glsl; a buffer
     /// with bufferFeedback; a scene object that spins. Event ages are not:
     /// see eventAges().
-    bool animated() const noexcept { return m_animated; }
+    bool animated() const noexcept
+    {
+        return m_animated;
+    }
     /// The event ages the author's code reads (EventAge bits): cursorAge or
     /// uEventAges, focusAge or uEventAges, signalAge or uSignal. A program
     /// that is not animated() but reads ages renders every frame only while
     /// the youngest of those ages is below settleSeconds(), so the window
     /// goes idle once the effect has played out. signalValue() alone reads no
     /// age: a signal change asks for one frame.
-    unsigned eventAges() const noexcept { return m_eventAges; }
+    unsigned eventAges() const noexcept
+    {
+        return m_eventAges;
+    }
     /// Metadata `settleSeconds` (2 by default): how long after an event an
     /// age-only program still moves.
-    float settleSeconds() const noexcept { return m_settleSeconds; }
-    bool readsScrollback() const noexcept { return m_readsScrollback; }
+    float settleSeconds() const noexcept
+    {
+        return m_settleSeconds;
+    }
+    bool readsScrollback() const noexcept
+    {
+        return m_readsScrollback;
+    }
     /// Reads the pointer (iMouse or uWindowMouse): the window renders when it moves.
-    bool readsMouse() const noexcept { return m_readsMouse; }
+    bool readsMouse() const noexcept
+    {
+        return m_readsMouse;
+    }
     /// Includes terminal_history.glsl.
-    bool readsPreviousText() const noexcept { return m_readsPreviousText; }
+    bool readsPreviousText() const noexcept
+    {
+        return m_readsPreviousText;
+    }
     /// Metadata `highDynamicRange`: retain highlights above 1 between passes.
-    bool requiresHdr() const noexcept { return m_requiresHdr; }
+    bool requiresHdr() const noexcept
+    {
+        return m_requiresHdr;
+    }
     /// Includes terminal_audio.glsl: capture system playback while visible.
-    bool requiresAudio() const noexcept { return m_requiresAudio; }
+    bool requiresAudio() const noexcept
+    {
+        return m_requiresAudio;
+    }
     /// Render a background once for the window, then clip it to the visible panes.
-    bool windowBackground() const noexcept { return m_windowBackground; }
-    const std::array<float, 32>& params() const noexcept { return m_params; }
-    const std::array<float, 64>& colors() const noexcept { return m_colors; }
+    bool windowBackground() const noexcept
+    {
+        return m_windowBackground;
+    }
+    /// An overview pack that draws each tab as a picture of its layout, the
+    /// tabs in a grid (flat_overview.glsl): the arrow keys of the overview
+    /// then go to the pane in their direction. Without it they step through
+    /// the cards in order, as round a ring.
+    bool overviewByDirection() const noexcept
+    {
+        return m_overviewByDirection;
+    }
+    const std::array<float, 32>& params() const noexcept
+    {
+        return m_params;
+    }
+    const std::array<float, 64>& colors() const noexcept
+    {
+        return m_colors;
+    }
 
 private:
-    static std::shared_ptr<ShaderProgram> compileStage(const ShaderProgramSource& source, QString* error, bool bufferPass);
+    static std::shared_ptr<ShaderProgram> compileStage(const ShaderProgramSource& source, QString* error,
+                                                       bool bufferPass);
 
     std::vector<std::shared_ptr<ShaderProgram>> m_buffers;
     std::vector<ShaderBufferSource> m_bufferSettings;
     std::array<QImage, MaxShaderImages> m_images;
     std::array<QString, MaxShaderImages> m_imagePaths;
     QShader m_shader;
+    QShader m_pointerShader;
     QShader m_vertexShader;
     bool m_depthOutput = false;
     ShaderGeometry m_geometry;
@@ -342,6 +464,7 @@ private:
     bool m_requiresHdr = false;
     bool m_requiresAudio = false;
     bool m_windowBackground = false;
+    bool m_overviewByDirection = false;
     std::array<float, 32> m_params{};
     std::array<float, 64> m_colors{};
 };

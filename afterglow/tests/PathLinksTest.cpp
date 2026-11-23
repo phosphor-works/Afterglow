@@ -26,7 +26,8 @@ namespace {
 std::vector<std::pair<QString, Location>> found(const QString& text)
 {
     std::vector<std::pair<QString, Location>> out;
-    for (const PathLinks::Candidate& c : PathLinks::find(text)) out.emplace_back(text.mid(c.start, c.length), c.location);
+    for (const PathLinks::Candidate& c : PathLinks::find(text))
+        out.emplace_back(text.mid(c.start, c.length), c.location);
     return out;
 }
 
@@ -34,7 +35,8 @@ std::vector<std::pair<QString, Location>> found(const QString& text)
 std::optional<QString> only(const QString& text)
 {
     const auto all = found(text);
-    if (all.size() != 1) return std::nullopt;
+    if (all.size() != 1)
+        return std::nullopt;
     return all.front().first;
 }
 
@@ -99,11 +101,15 @@ TEST(PathLinks, WordsAreNoPaths)
 TEST(PathLinks, ResolvesFromTheDirectoryAndHome)
 {
     const QString home = QStringLiteral("/home/someone");
-    EXPECT_EQ(PathLinks::resolve(QStringLiteral("src/a.c"), QStringLiteral("/work"), home), QStringLiteral("/work/src/a.c"));
+    EXPECT_EQ(PathLinks::resolve(QStringLiteral("src/a.c"), QStringLiteral("/work"), home),
+              QStringLiteral("/work/src/a.c"));
     EXPECT_EQ(PathLinks::resolve(QStringLiteral("./a.c"), QStringLiteral("/work"), home), QStringLiteral("/work/a.c"));
-    EXPECT_EQ(PathLinks::resolve(QStringLiteral("../a.c"), QStringLiteral("/work/sub"), home), QStringLiteral("/work/a.c"));
-    EXPECT_EQ(PathLinks::resolve(QStringLiteral("~/a.c"), QStringLiteral("/work"), home), QStringLiteral("/home/someone/a.c"));
-    EXPECT_EQ(PathLinks::resolve(QStringLiteral("/etc//hosts"), QStringLiteral("/work"), home), QStringLiteral("/etc/hosts"));
+    EXPECT_EQ(PathLinks::resolve(QStringLiteral("../a.c"), QStringLiteral("/work/sub"), home),
+              QStringLiteral("/work/a.c"));
+    EXPECT_EQ(PathLinks::resolve(QStringLiteral("~/a.c"), QStringLiteral("/work"), home),
+              QStringLiteral("/home/someone/a.c"));
+    EXPECT_EQ(PathLinks::resolve(QStringLiteral("/etc//hosts"), QStringLiteral("/work"), home),
+              QStringLiteral("/etc/hosts"));
     EXPECT_EQ(PathLinks::resolve(QStringLiteral("/etc/hosts"), QString(), home), QStringLiteral("/etc/hosts"));
     EXPECT_TRUE(PathLinks::resolve(QStringLiteral("a.c"), QString(), home).isEmpty()) << "no directory to start from";
     EXPECT_TRUE(PathLinks::resolve(QStringLiteral("a.c"), QStringLiteral("work"), home).isEmpty());
@@ -114,16 +120,18 @@ TEST(PathLinks, OpensWithTheCommandOrTheFileUrl)
     const QStringList command{QStringLiteral("editor"), QStringLiteral("+{line}"), QStringLiteral("--column={column}"),
                               QStringLiteral("{file}"), QStringLiteral("{other}")};
     const auto withLine = PathLinks::openAction(command, {QStringLiteral("/w/a.c"), 12, 5}, false);
-    EXPECT_EQ(withLine.command, (QStringList{QStringLiteral("editor"), QStringLiteral("+12"), QStringLiteral("--column=5"),
-                                             QStringLiteral("/w/a.c"), QStringLiteral("{other}")}));
+    EXPECT_EQ(withLine.command,
+              (QStringList{QStringLiteral("editor"), QStringLiteral("+12"), QStringLiteral("--column=5"),
+                           QStringLiteral("/w/a.c"), QStringLiteral("{other}")}));
     EXPECT_TRUE(withLine.url.isEmpty());
     // No line or column in the text: each is 1.
     const auto withoutLine = PathLinks::openAction(command, {QStringLiteral("/w/a.c"), 0, 0}, false);
-    EXPECT_EQ(withoutLine.command, (QStringList{QStringLiteral("editor"), QStringLiteral("+1"), QStringLiteral("--column=1"),
-                                                QStringLiteral("/w/a.c"), QStringLiteral("{other}")}));
-    const auto lineOnly = PathLinks::openAction({QStringLiteral("code"), QStringLiteral("--goto"),
-                                                 QStringLiteral("{file}:{line}:{column}")},
-                                                {QStringLiteral("/w/a.c"), 7, 0}, false);
+    EXPECT_EQ(withoutLine.command,
+              (QStringList{QStringLiteral("editor"), QStringLiteral("+1"), QStringLiteral("--column=1"),
+                           QStringLiteral("/w/a.c"), QStringLiteral("{other}")}));
+    const auto lineOnly = PathLinks::openAction(
+        {QStringLiteral("code"), QStringLiteral("--goto"), QStringLiteral("{file}:{line}:{column}")},
+        {QStringLiteral("/w/a.c"), 7, 0}, false);
     EXPECT_EQ(lineOnly.command.last(), QStringLiteral("/w/a.c:7:1"));
     // A placeholder that a path brings in stays text.
     const auto braces = PathLinks::openAction({QStringLiteral("e"), QStringLiteral("{file}")},
@@ -149,17 +157,20 @@ TEST(PathLinks, TheDefaultHintPatternIsThePathPattern)
     AfterglowVt::TextSnapshot text;
     AfterglowVt::TextLine line;
     line.text = U"at src/main.cpp:12:5.";
-    for (std::size_t i = 0; i < line.text.size(); ++i) line.cells.push_back({0, std::int32_t(i), std::int32_t(i)});
+    for (std::size_t i = 0; i < line.text.size(); ++i)
+        line.cells.push_back({0, std::int32_t(i), std::int32_t(i)});
     text.characters = line.text.size();
     text.lines.push_back(line);
-    const auto result = AfterglowVt::searchText(text, PathLinks::pattern().toStdU32String(), true, std::atomic<bool>{false});
+    const auto result =
+        AfterglowVt::searchText(text, PathLinks::pattern().toStdU32String(), true, std::atomic<bool>{false});
     ASSERT_TRUE(result.error.empty()) << result.error;
     ASSERT_EQ(result.matches.size(), 1u);
     EXPECT_EQ(result.matches[0].start.col, 3);
     EXPECT_EQ(result.matches[0].end.col, 19);
 }
 
-class PathChecker : public ::testing::Test {
+class PathChecker : public ::testing::Test
+{
 protected:
     void SetUp() override
     {
@@ -168,7 +179,8 @@ protected:
         static int argc = 1;
         static char name[] = "path-links-test";
         static char* argv[] = {name, nullptr};
-        if (!QCoreApplication::instance()) new QCoreApplication(argc, argv);
+        if (!QCoreApplication::instance())
+            new QCoreApplication(argc, argv);
         ASSERT_TRUE(directory.isValid());
         QFile file(directory.filePath(QStringLiteral("a.txt")));
         ASSERT_TRUE(file.open(QIODevice::WriteOnly));
@@ -179,7 +191,9 @@ protected:
     {
         std::optional<Kind> kind;
         QObject context;
-        checker.check(path, &context, [&](Kind k) { kind = k; });
+        checker.check(path, &context, [&](Kind k) {
+            kind = k;
+        });
         QElapsedTimer timer;
         timer.start();
         while (!kind && timer.elapsed() < 5000) {
@@ -204,14 +218,17 @@ TEST_F(PathChecker, LookupStartsACheckAndKeepsItsAnswer)
     PathLinks::Checker checker;
     const QString path = directory.filePath(QStringLiteral("a.txt"));
     QStringList checked;
-    QObject::connect(&checker, &PathLinks::Checker::checked, [&](const QString& p) { checked << p; });
+    QObject::connect(&checker, &PathLinks::Checker::checked, [&](const QString& p) {
+        checked << p;
+    });
     // Never an answer on the calling thread: a stat could hang there.
     EXPECT_EQ(checker.lookup(path), Kind::Unknown);
     EXPECT_EQ(checker.lookup(path), Kind::Unknown);
     EXPECT_EQ(checker.pending(), 1) << "one check for each path";
     QElapsedTimer timer;
     timer.start();
-    while (checked.isEmpty() && timer.elapsed() < 5000) QCoreApplication::processEvents();
+    while (checked.isEmpty() && timer.elapsed() < 5000)
+        QCoreApplication::processEvents();
     EXPECT_EQ(checked, QStringList{path});
     EXPECT_EQ(checker.lookup(path), Kind::File);
     EXPECT_EQ(checker.pending(), 0);
@@ -229,7 +246,8 @@ TEST_F(PathChecker, AnswersExpireAndTheCacheIsBounded)
     EXPECT_EQ(brief.pending(), 1);
     QElapsedTimer timer;
     timer.start();
-    while (brief.pending() > 0 && timer.elapsed() < 5000) QCoreApplication::processEvents();
+    while (brief.pending() > 0 && timer.elapsed() < 5000)
+        QCoreApplication::processEvents();
 
     PathLinks::Checker small(nullptr, std::chrono::seconds(60), 2);
     const QString a = directory.filePath(QStringLiteral("a.txt"));
@@ -248,11 +266,14 @@ TEST_F(PathChecker, ACallWhoseContextIsGoneIsNotMade)
     bool called = false;
     {
         QObject context;
-        checker.check(directory.filePath(QStringLiteral("a.txt")), &context, [&](Kind) { called = true; });
+        checker.check(directory.filePath(QStringLiteral("a.txt")), &context, [&](Kind) {
+            called = true;
+        });
     }
     QElapsedTimer timer;
     timer.start();
-    while (checker.pending() > 0 && timer.elapsed() < 5000) QCoreApplication::processEvents();
+    while (checker.pending() > 0 && timer.elapsed() < 5000)
+        QCoreApplication::processEvents();
     EXPECT_EQ(checker.pending(), 0);
     EXPECT_FALSE(called);
 }

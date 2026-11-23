@@ -51,10 +51,51 @@ enum class Key : std::uint8_t {
     Delete,
     PageUp,
     PageDown,
-    F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
-    F13, F14, F15, F16, F17, F18, F19, F20, F21, F22, F23, F24,
-    F25, F26, F27, F28, F29, F30, F31, F32, F33, F34, F35,
-    Keypad0, Keypad1, Keypad2, Keypad3, Keypad4, Keypad5, Keypad6, Keypad7, Keypad8, Keypad9,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
+    F13,
+    F14,
+    F15,
+    F16,
+    F17,
+    F18,
+    F19,
+    F20,
+    F21,
+    F22,
+    F23,
+    F24,
+    F25,
+    F26,
+    F27,
+    F28,
+    F29,
+    F30,
+    F31,
+    F32,
+    F33,
+    F34,
+    F35,
+    Keypad0,
+    Keypad1,
+    Keypad2,
+    Keypad3,
+    Keypad4,
+    Keypad5,
+    Keypad6,
+    Keypad7,
+    Keypad8,
+    Keypad9,
     KeypadDecimal,
     KeypadDivide,
     KeypadMultiply,
@@ -91,9 +132,37 @@ enum class Key : std::uint8_t {
     KeypadInsert,
     KeypadDelete,
     KeypadBegin,
+    // AltGr and the key of the fifth level, where the layout has them:
+    // modifier keys that set no modifier bit.
+    IsoLevel3Shift,
+    IsoLevel5Shift,
+    // Hyper and Meta keys, where the layout has them: modifier keys that
+    // only the kitty protocol reports, by their own codes.
+    LeftHyper,
+    LeftMeta,
+    RightHyper,
+    RightMeta,
+    // Media and volume keys: only the kitty protocol reports them.
+    MediaPlay,
+    MediaPause,
+    MediaPlayPause,
+    MediaReverse,
+    MediaStop,
+    MediaFastForward,
+    MediaRewind,
+    MediaTrackNext,
+    MediaTrackPrevious,
+    MediaRecord,
+    LowerVolume,
+    RaiseVolume,
+    MuteVolume,
 };
 
-enum class KeyAction : std::uint8_t { Press, Repeat, Release };
+enum class KeyAction : std::uint8_t {
+    Press,
+    Repeat,
+    Release
+};
 
 struct KeyEvent
 {
@@ -106,6 +175,13 @@ struct KeyEvent
     char32_t unshifted = 0;
     /// The character with Shift applied, when Shift is held (kitty alternate keys).
     char32_t shifted = 0;
+    /// When unshifted and shifted come from a Latin layout instead of the
+    /// active one (Ctrl on a Cyrillic layout gives ^C): the active layout's
+    /// own characters, which kitty's alternate key reports send.
+    char32_t layoutUnshifted = 0;
+    char32_t layoutShifted = 0;
+    /// The key's character in the PC-101 US layout: kitty's base layout key.
+    char32_t base = 0;
 };
 
 /// Encodes a key event: the kitty keyboard protocol when the application
@@ -113,8 +189,24 @@ struct KeyEvent
 /// Returns an empty string for events the active protocol does not report.
 AFTERGLOWVT_EXPORT std::string encodeKey(const KeyEvent& event, const Modes& modes);
 
-enum class MouseButton : std::uint8_t { Left, Middle, Right, None, WheelUp, WheelDown, WheelLeft, WheelRight };
-enum class MouseAction : std::uint8_t { Press, Release, Motion };
+enum class MouseButton : std::uint8_t {
+    Left,
+    Middle,
+    Right,
+    None,
+    WheelUp,
+    WheelDown,
+    WheelLeft,
+    WheelRight
+};
+/// Leave: the pointer left the pane (kitty's extension of the SGR pixel
+/// format; no other format reports it).
+enum class MouseAction : std::uint8_t {
+    Press,
+    Release,
+    Motion,
+    Leave
+};
 
 struct MouseEvent
 {

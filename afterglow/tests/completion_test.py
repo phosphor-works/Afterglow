@@ -8,9 +8,12 @@ afterglow or aglow runs. The test fails when a completion calls afterglow, or ca
 run completes through the aglow that afterglow runs, the one next to its executable. Bash runs twice: with the
 bash-completion package when it is installed, and without it. A shell that is not installed is skipped. With no shell
 at all, the test exits 77, which CTest reports as skipped. The completions of aglow are checked on their own and
-through afterglow, against the option tables in tools/aglow (the names, and which options take a value), the options
-of aglow run against libs/afterglow-proto/src/Run.cpp, and the keybind actions of ctl action against
-afterglow/src/config/Keybinds.cpp.
+through afterglow, against the option tables in tools/aglow (the names, which options take a value, and the choices
+of icat --engine), the options of aglow run against libs/afterglow-proto/src/Run.cpp, the commands and options of
+afterglow ctl against runCtl in afterglow/src/control/Ctl.cpp, the keybind actions of ctl action against
+afterglow/src/config/Keybinds.cpp, the signals of ctl signal-program against libs/afterglow-pty/src/Pty.cpp, the keys
+of ctl send-key against libs/afterglow-vt/src/KeyNames.cpp, the commands and options of afterglow mux against
+afterglow/src/control/Mux.cpp, and the options of afterglow mcp against afterglow/src/mcp/Mcp.cpp.
 """
 import os
 import pty
@@ -27,7 +30,11 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 COMPLETIONS = ROOT / 'data/completions'
 CTL = ROOT / 'afterglow/src/control/Ctl.cpp'
+MUX = ROOT / 'afterglow/src/control/Mux.cpp'
+MCP = ROOT / 'afterglow/src/mcp/Mcp.cpp'
 KEYBINDS = ROOT / 'afterglow/src/config/Keybinds.cpp'
+PTY = ROOT / 'libs/afterglow-pty/src/Pty.cpp'
+KEY_NAMES = ROOT / 'libs/afterglow-vt/src/KeyNames.cpp'
 AGLOW = ROOT / 'tools/aglow'
 RUN = ROOT / 'libs/afterglow-proto/src/Run.cpp'
 AGLOW_COMMANDS = {'transfer': 'Transfer.cpp', 'dnd': 'Dnd.cpp', 'icat': 'Icat.cpp', 'clipboard': 'Clipboard.cpp'}
@@ -101,12 +108,126 @@ def string_list(source, name):
     return re.findall(r'QStringLiteral\("([^"]+)"\)', match.group(1))
 
 
-def ctl_options(source, command):
-    """The options that the COMMAND branch of runCtl in Ctl.cpp takes, besides --pane."""
-    match = re.search(r'command == QLatin1String\("%s"\)\) \{\n(.*?)\n    \}' % re.escape(command), source, re.S)
+def take_calls(text):
+    """The options of the takeValue, takeValues and takeFlag calls in TEXT, a part of runCtl."""
+    return set(re.findall(r'take(?:Value|Values|Flag)\(QStringLiteral\("(-[^"]+)"\)\)', text))
+
+
+def ctl_launch(source):
+    """(all, focus, reads, window_only): the options of a launch as takeLaunch in runCtl reads them, those that it
+    takes only with focuses and with reads, and those that a pane of a mux session does not take."""
+    match = re.search(r'auto takeLaunch = \[&\]\(bool reads, bool focuses.*?\n    \};', source, re.S)
     if not match:
+        raise SystemExit(f'FAIL: no takeLaunch in {CTL}')
+    body = match.group(0)
+    reads = re.search(r'\n        if \(reads\) \{\n(.*?)\n        \}\n', body, re.S)
+    focus = set(re.findall(r'focuses && takeFlag\(QStringLiteral\("(-[^"]+)"\)\)', body))
+    window_only = set(re.findall(r'windowOnly = QStringLiteral\("(-[^"]+)"\)', body))
+    if not reads or not focus or not window_only:
+        raise SystemExit(f'FAIL: takeLaunch in {CTL} has no reads, focuses or windowOnly part')
+    return take_calls(body), focus, take_calls(reads.group(1)), window_only
+
+
+def ctl_branches(source, command):
+    """The bodies of the branches of runCtl in Ctl.cpp whose condition names COMMAND. The first such branch is the one
+    of the options that take a value, which takes none."""
+    branches = [body for condition, body in
+                re.findall(r'^    (?:\} else )?if \((.*?)\) \{\n(.*?)(?=^    \})', source, re.M | re.S)
+                if f'QLatin1String("{command}")' in condition]
+    if not branches:
         raise SystemExit(f'FAIL: no {command} branch in {CTL}')
-    return set(re.findall(r'take(?:Value|Flag)\(QStringLiteral\("(-[^"]+)"\)\)', match.group(1)))
+    return branches
+
+
+def ctl_groups(source, command):
+    """The groups of options of COMMAND of which runCtl takes one at most (takeOneOf)."""
+    return [set(re.findall(r'"(-[^"]+)"', group)) for body in ctl_branches(source, command)
+            for group in re.findall(r'takeOneOf\(\{(.*?)\}', body, re.S)]
+
+
+def ctl_options(source, command, nonempty=True):
+    """The options that the COMMAND branches of runCtl in Ctl.cpp take, besides --pane: those of the take calls, of
+    takeOneOf, and of takeLaunch with its arguments."""
+    launch, focus, reads, _ = ctl_launch(source)
+    found = set()
+    for body in ctl_branches(source, command):
+        found |= take_calls(body)
+        for group in ctl_groups(source, command):
+            found |= group
+        for takes_reads, takes_focus in re.findall(r'takeLaunch\((true|false),\s*(true|false),', body):
+            found |= launch - focus - reads
+            found |= focus if takes_focus == 'true' else set()
+            found |= reads if takes_reads == 'true' else set()
+    if nonempty and not found:
+        raise SystemExit(f'FAIL: no options in the {command} branch of {CTL}')
+    return found - {'--pane'}
+
+
+def signal_names():
+    """The signal names that signalNumber in Pty.cpp takes."""
+    match = re.search(r'Names\[\] = \{(.*?)\};', PTY.read_text(), re.S)
+    if not match:
+        raise SystemExit(f'FAIL: no signal names in {PTY}')
+    return set(re.findall(r'\{\s*"([A-Z0-9]+)",\s*SIG', match.group(1)))
+
+
+def key_name_parses(name):
+    """Whether parseKeyName in KeyNames.cpp takes NAME: modifiers, then a key of its table, F1 to F35 or one
+    character (also named in words, as space), each word in lower case without '_' and '-'."""
+    source = KEY_NAMES.read_text()
+    named = re.search(r'modifierNamed\(.*?^\}', source, re.M | re.S)
+    if not named:
+        raise SystemExit(f'FAIL: no modifierNamed in {KEY_NAMES}')
+    modifiers = set(re.findall(r'name == "([a-z]+)"', named.group(0)))
+    # The keys of the table, and the characters named in words (characterNamed).
+    keys = set(re.findall(r'\{\s*"([^"]+)",\s*Key::', source))
+    keys |= set(re.findall(r'name == "([a-z]+)"\)\s*return U', source))
+    if not modifiers or not keys:
+        raise SystemExit(f'FAIL: no modifiers or keys in {KEY_NAMES}')
+    *mods, key = [re.sub(r'[_-]', '', word) for word in name.lower().split('+')]
+    function = re.fullmatch(r'f([1-9][0-9]?)', key)
+    return all(m in modifiers for m in mods) and (key in keys or len(key) == 1 or bool(function and int(function.group(1)) <= 35))
+
+
+def ctl_first_options(source):
+    """The options that runCtl in Ctl.cpp reads before the command: the usage and --session."""
+    found = set(re.findall(r'args\[0\] == QLatin1String\("(-[^"]+)"\)', source))
+    if '--session' not in found:
+        raise SystemExit(f'FAIL: no --session in runCtl in {CTL}')
+    return found
+
+
+def mux_commands():
+    """(commands, COMMAND -> options) of afterglow mux, as runMux and the command functions in Mux.cpp read them."""
+    source = MUX.read_text()
+    run = re.search(r'^int runMux\(.*?^\}', source, re.M | re.S)
+    if not run:
+        raise SystemExit(f'FAIL: no runMux in {MUX}')
+    commands = {c: f for c, f in re.findall(r'command == "([a-z]+)"\)\s*return (\w+)\(', run.group(0)) if f != 'fail'}
+    if not commands:
+        raise SystemExit(f'FAIL: no commands in runMux in {MUX}')
+    options = {}
+    for command, function in commands.items():
+        body = re.search(r'^int %s\(int argc.*?^\}' % function, source, re.M | re.S)
+        if not body:
+            raise SystemExit(f'FAIL: no {function} in {MUX}')
+        found = set(re.findall(r'\barg == "(--[a-z-]+)"', body.group(0)))
+        # --ssh DESTINATION, which takeSsh takes.
+        if 'takeSsh(' in body.group(0):
+            found.add('--ssh')
+        options[command] = found
+    return list(commands), options
+
+
+def mcp_options():
+    """The options of afterglow mcp, as runMcp in Mcp.cpp reads them, without its usage."""
+    run = re.search(r'^int runMcp\(.*?^\}', MCP.read_text(), re.M | re.S)
+    if not run:
+        raise SystemExit(f'FAIL: no runMcp in {MCP}')
+    found = set(re.findall(r'\barg == QLatin1String\("(--[a-z-]+)"\)', run.group(0))) - {'--help'}
+    if not found:
+        raise SystemExit(f'FAIL: no options in runMcp in {MCP}')
+    return found
 
 
 def keybind_actions():
@@ -114,16 +235,26 @@ def keybind_actions():
     match = re.search(r'const ActionInfo Actions\[\] = \{(.*?)\n\};', KEYBINDS.read_text(), re.S)
     if not match:
         raise SystemExit(f'FAIL: no Actions table in {KEYBINDS}')
-    return re.findall(r'\{Action::\w+, "([a-z0-9_]+)"', match.group(1))
+    return re.findall(r'\{\s*Action::\w+,\s*"([a-z0-9_]+)"', match.group(1))
 
 
 def aglow_option_table(command):
     """(names, kind) of each entry in the option table of tools/aglow/COMMAND.cpp."""
     path = AGLOW / AGLOW_COMMANDS[command]
-    entries = re.findall(r'^\s*\{ "(-[^"]+)", Cli::Option::Kind::(\w+)', path.read_text(), re.M)
+    entries = re.findall(r'\{\s*"(-[^"]+)",\s*Cli::Option::Kind::(\w+)', path.read_text())
     if not entries:
         raise SystemExit(f'FAIL: no options in {path}')
     return entries
+
+
+def aglow_choices(command, option):
+    """The choices of OPTION in the option table of tools/aglow/COMMAND.cpp."""
+    path = AGLOW / AGLOW_COMMANDS[command]
+    match = re.search(r'\{\s*"%s",\s*Cli::Option::Kind::Choice,\s*"[^"]*",\s*\{([^}]*)\}' % re.escape(option),
+                      path.read_text())
+    if not match:
+        raise SystemExit(f'FAIL: no choices of {option} in {path}')
+    return set(re.findall(r'"([^"]+)"', match.group(1)))
 
 
 def aglow_options():
@@ -270,12 +401,29 @@ class Shells:
         (bash_dir / 'ssh').write_text('_stub_ssh() { COMPREPLY=(ssh-marker); }\ncomplete -F _stub_ssh ssh\n')
         (self.fish_dir / 'ssh.fish').write_text('complete -c ssh -f -a ssh-marker\n')
         (self.zsh_functions / '_ssh').write_text('#compdef ssh\ncompadd ssh-marker\n')
-        self.env = dict(os.environ, PATH=f'{self.bin}:{os.environ.get("PATH", "/usr/bin:/bin")}',
+        # The stubs, then every program of the user's PATH but an afterglow, aglow or aglow-mux, as links in a
+        # directory of the test: one of the user's would run by mistake, and a completion that falls back on one
+        # would pass. The others stay for the shells and the programs that the completions run (readlink), which
+        # a system need not keep in /usr/bin or /bin (NixOS), where an installed afterglow can be too.
+        tools = tmp / 'tools'
+        tools.mkdir()
+        for directory in os.environ.get('PATH', '/usr/bin:/bin').split(':'):
+            if not directory or not os.path.isdir(directory):
+                continue
+            for entry in os.scandir(directory):
+                target = tools / entry.name
+                if entry.name in ('afterglow', 'aglow', 'aglow-mux') or os.path.lexists(target):
+                    continue
+                if os.access(entry.path, os.X_OK) and not entry.is_dir():
+                    target.symlink_to(entry.path)
+        path = f'{self.bin}:{tools}'
+        self.env = dict(os.environ, PATH=path,
                         STUB_LOG=str(self.log), STUB_IDS='nav\nscene', HOME=str(tmp),
                         XDG_CONFIG_HOME=str(tmp / '.config'), XDG_DATA_HOME=str(tmp / '.local/share'),
                         XDG_CACHE_HOME=str(tmp / '.cache'), XDG_STATE_HOME=str(tmp / '.local/state'),
                         XDG_RUNTIME_DIR=str(self.runtime))
-        for name in ('AFTERGLOW_SOCKET', 'AFTERGLOW_PANE_ID', 'WAYLAND_DISPLAY', 'BASH_ENV', 'ENV',
+        # AFTERGLOW_SESSION: the completions of a session pane offer less.
+        for name in ('AFTERGLOW_SOCKET', 'AFTERGLOW_PANE_ID', 'AFTERGLOW_SESSION', 'TMUX', 'TMUX_PANE', 'WAYLAND_DISPLAY', 'BASH_ENV', 'ENV',
                      'BASH_COMPLETION_USER_DIR', 'BASH_COMPLETION_USER_FILE', 'BASH_COMPLETION_COMPAT_DIR'):
             self.env.pop(name, None)
         self.aglow_env = dict(self.env, PATH=f'{self.aglow_bin}:{self.env["PATH"]}')
@@ -392,7 +540,7 @@ def command_cases(program, options):
     yield f'{program} dnd --confirm-drop-t', {'--confirm-drop-timeout'}
     yield f'{program} dnd --drop-dest ', {'adir'}
     yield f'{program} icat --no-trailing', {'--no-trailing-newline'}
-    yield f'{program} icat --engine ', {'auto', 'builtin'}
+    yield f'{program} icat --engine ', aglow_choices('icat', '--engine')
     # A file named like a command is a file: its options are not those of transfer.
     yield f'{program} icat transfer --dir', set()
     yield f'{program} clipboard -', has('--help')
@@ -462,10 +610,71 @@ def aglow_cases(options, run):
     yield from command_cases('aglow', options)
 
 
-def cases(ctl_commands, paneless, actions, options, run, overlay):
+def mux_cases(commands, options):
+    """(line, expected) pairs for afterglow mux. COMMANDS and OPTIONS are those of Mux.cpp."""
+    yield 'afterglow mux ', set(commands)
+    yield 'afterglow mux -', {'-h', '--help'}
+    yield 'afterglow mux new -', options['new']
+    yield 'afterglow mux new --detach -', options['new'] - {'--detach'}
+    yield 'afterglow mux new --cwd ', {'adir'}
+    # The word after --name is the name: nothing to offer.
+    yield 'afterglow mux new --name ', set()
+    # As after the options of ctl, the options that are left.
+    yield 'afterglow mux new --name x ', options['new'] - {'--name'}
+    yield 'afterglow mux kill -', options['kill']
+    yield 'afterglow mux kill --force -', options['kill'] - {'--force'}
+    yield 'afterglow mux attach -', options['attach']
+    yield 'afterglow mux attach --no-takeover -', options['attach'] - {'--no-takeover'}
+    # The session names are the daemon's: nothing to offer, not files.
+    yield 'afterglow mux attach ', lambda got: 'adir' not in got
+    yield 'afterglow mux detach -', options['detach']
+    # ls takes no word: zsh offers its option there too.
+    yield 'afterglow mux ls ', lambda got: got <= {'--ssh'}
+    yield 'afterglow mux ls -', options['ls']
+    yield 'afterglow mux ls --ssh far -', set()
+    yield 'afterglow mux kill --ssh far -', options['kill'] - {'--ssh'}
+    yield 'afterglow mux new --ssh far -', options['new'] - {'--ssh'}
+    # A directory of the host is the host's: none of this computer's.
+    yield 'afterglow mux new --ssh far --cwd ', set()
+    # The destination: hosts that the shell knows, never files.
+    yield 'afterglow mux ls --ssh ', lacks('adir', 'afile')
+    yield 'afterglow mux server ', set()
+    yield 'afterglow mux server --ssh ', set()
+
+
+def mcp_cases(options):
+    """(line, expected) pairs for afterglow mcp. OPTIONS are those of Mcp.cpp."""
+    yield 'afterglow mcp -', options | {'-h', '--help'}
+    yield 'afterglow mcp --adopt -', lambda got: options - {'--adopt'} <= got and '--adopt' not in got
+    yield 'afterglow mcp --session x -', lambda got: options - {'--session'} <= got and '--session' not in got
+    # No program lists the sessions.
+    yield 'afterglow mcp --session ', set()
+    yield 'afterglow mcp --cwd ', {'adir'}
+    # The usage is the whole command line.
+    yield 'afterglow mcp --help -', lambda got: not got & options
+
+
+def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mux, open_project, ctl_first, source):
     """(line, expected) pairs. A set is the exact result, a callable checks the result."""
     files = FILES
-    yield 'afterglow ', {'ctl', 'run', 'ssh', 'transfer', 'dnd', 'icat', 'clipboard'}
+
+    def ctl(command):
+        """The options of ctl COMMAND, with --pane where it takes one."""
+        return ctl_options(source, command) | (set() if command in paneless else {'--pane'})
+
+    def group(command):
+        """The options of COMMAND of which it takes one at most: there is one such group."""
+        groups = ctl_groups(source, command)
+        if len(groups) != 1:
+            raise SystemExit(f'FAIL: {command} has {len(groups)} groups of options of which it takes one in {CTL}')
+        return groups[0]
+
+    # A pane of a mux session takes no option of a launch that only a pane of a window takes.
+    # --stdin-ansi goes with --stdin-text.
+    _, _, reads, window_only = ctl_launch(source)
+    window_only |= reads if reads & window_only else set()
+    scopes = {option[2:] for option in group('get-text')}
+    yield 'afterglow ', {'ctl', 'mux', 'mcp', 'run', 'ssh', 'transfer', 'dnd', 'icat', 'clipboard'}
     # The word at the cursor is the subcommand itself.
     yield 'afterglow ss', {'ssh'}
     # A subcommand only comes first.
@@ -476,40 +685,102 @@ def cases(ctl_commands, paneless, actions, options, run, overlay):
     # --quick-terminal takes no -e, -d, --title or --hold.
     yield 'afterglow --quick-terminal -', lambda got: '--config' in got and not {'-e', '-d', '--title', '--hold'} & got
     yield 'afterglow --title x -', lambda got: '--hold' in got and '--quick-terminal' not in got
+    yield 'afterglow --title=x -', lambda got: '--hold' in got and '--title' not in got
     yield 'afterglow -o A.b=1 -', has('-o', '--override')
     yield 'afterglow --config-reference ', set()
     yield 'afterglow -d ', {'adir'}
     yield 'afterglow --config ', files
     yield from run_cases('afterglow', run)
+    yield from mux_cases(*mux)
+    yield from mcp_cases(mcp_options())
     yield 'afterglow ctl ', set(ctl_commands)
-    yield 'afterglow ctl -', {'-h', '--help'}
-    yield 'afterglow ctl ls ', {'--json'}
+    yield 'afterglow ctl -', ctl_first
+    # The word --session itself, at the cursor.
+    yield 'afterglow ctl --session', {'--session'}
+    # The name of a session, which nothing lists, then the command: the
+    # usage comes only first.
+    yield 'afterglow ctl --session ', set()
+    yield 'afterglow ctl --session work ', set(ctl_commands)
+    yield 'afterglow ctl --session work -', set()
+    yield 'afterglow ctl --session work ls ', ctl('ls')
+    yield 'afterglow ctl --session work focus ', ctl('focus')
+    yield 'afterglow ctl --session work split --left -', ctl('split') - group('split') - window_only
+    yield 'afterglow ctl --session work new-tab -', ctl('new-tab') - window_only
+    yield 'afterglow ctl ls ', ctl('ls')
     yield 'afterglow ctl ls --json ', set()
     for command in ctl_commands:
         if command in paneless:
             yield f'afterglow ctl {command} -', lacks('--pane')
         else:
             yield f'afterglow ctl {command} -', has('--pane')
-    yield 'afterglow ctl focus ', {'--pane'}
+    yield 'afterglow ctl focus ', ctl('focus')
+    yield 'afterglow ctl focus --direction ', {'left', 'right', 'up', 'down'}
+    yield 'afterglow ctl focus --direction up -', {'--pane'}
+    yield 'afterglow ctl resize -', ctl('resize')
+    yield 'afterglow ctl resize --direction ', {'left', 'right', 'up', 'down'}
+    yield 'afterglow ctl resize --cells ', set()
+    yield 'afterglow ctl resize --cells 4 -', ctl('resize') - {'--cells'}
+    # LINES, or one of the options.
+    yield 'afterglow ctl scroll -', ctl('scroll')
+    yield 'afterglow ctl scroll --top -', {'--pane'}
+    yield 'afterglow ctl scroll --prompt ', set()
+    yield 'afterglow ctl scroll --prompt -2 -', {'--pane'}
+    yield 'afterglow ctl scroll -5 -', {'--pane'}
+    yield 'afterglow ctl send-key ', lambda got: {'ctrl+c', 'enter', 'page_up', 'f5'} <= got and all(map(key_name_parses, got))
+    yield 'afterglow ctl send-key ctrl+c ', lambda got: {'ctrl+c', 'enter'} <= got and all(map(key_name_parses, got))
+    yield 'afterglow ctl set-tab-title -', {'--pane'}
+    yield 'afterglow ctl colors -', ctl('colors')
+    yield 'afterglow ctl set-colors -', ctl('set-colors')
+    # --all sets every pane: it takes no --pane.
+    yield 'afterglow ctl set-colors --all -', ctl('set-colors') - {'--pane', '--all'}
+    yield 'afterglow ctl set-colors --pane 3 -', ctl('set-colors') - {'--pane', '--all'}
+    yield 'afterglow ctl signal-program ', lambda got: {'INT', 'TERM', 'KILL'} <= got <= signal_names()
+    yield 'afterglow ctl window -', ctl('window')
+    yield 'afterglow ctl window --normal -', ctl('window') - group('window')
+    yield 'afterglow ctl window --size ', set()
     yield 'afterglow ctl focus --pane ', set()
-    yield 'afterglow ctl get-text --screen ', {'--pane'}
-    yield 'afterglow ctl split --left -', {'--pane'}
-    yield 'afterglow ctl send-text -', {'--pane', '--raw', '--stdin'}
+    yield 'afterglow ctl get-text --screen ', ctl('get-text') - group('get-text')
+    yield 'afterglow ctl get-text --ansi -', ctl('get-text') - {'--ansi'}
+    yield 'afterglow ctl screenshot -', {'--pane', *screenshot}
+    yield 'afterglow ctl screenshot --window -', {'--pane'}
+    yield 'afterglow ctl screenshot --tab -', {'--pane'}
+    # FILE: a path, after the scope or before it. After FILE (also -, for
+    # standard output), only the options.
+    yield 'afterglow ctl screenshot ', files
+    yield 'afterglow ctl screenshot --tab ', files
+    yield 'afterglow ctl screenshot shot.png ', {'--pane', *screenshot}
+    yield 'afterglow ctl screenshot - ', {'--pane', *screenshot}
+    yield 'afterglow ctl screenshot -x.png ', {'--pane', *screenshot}
+    yield 'afterglow ctl screenshot -w ', {'--pane', *screenshot}
+    yield 'afterglow ctl split --left -', ctl('split') - group('split')
+    yield 'afterglow ctl split --stdin-text ', scopes
+    yield 'afterglow ctl split --env ', set()
+    # --env and --var can come again; --hold once.
+    yield 'afterglow ctl split --env A=1 --hold -', lambda got: {'--env', '--var', '--no-focus'} <= got and '--hold' not in got
+    yield 'afterglow ctl new-window -', ctl('new-window')
+    yield 'afterglow ctl overlay --stdin-text ', scopes
+    yield 'afterglow ctl send-text -', ctl('send-text')
     yield 'afterglow ctl send-text --stdin -', {'--pane'}
     yield 'afterglow ctl send-text --raw -', {'--pane'}
     yield 'afterglow ctl send-text hello -', {'--pane', '--raw'}
     yield 'afterglow ctl send-text -- -', set()
     yield 'afterglow ctl move-pane 2 ', {'left', 'right', 'up', 'down', 'new-tab', 'new-window'}
     yield 'afterglow ctl new-window --cwd ', {'adir'}
-    yield 'afterglow ctl new-tab --cwd adir ', {'--pane'}
+    yield 'afterglow ctl new-tab --cwd adir ', ctl('new-tab') - {'--cwd'}
     yield 'afterglow ctl open-directory ', {'adir'}
     yield 'afterglow ctl open-directory adir ', {'--layout'}
+    # --into-session and --no-session exclude each other.
+    yield 'afterglow ctl open-project -', open_project
+    yield 'afterglow ctl open-project --into-session -', open_project - {'--into-session', '--no-session'}
+    yield 'afterglow ctl open-project --no-session -', open_project - {'--into-session', '--no-session'}
+    yield 'afterglow ctl --session work open-project -', open_project
     yield 'afterglow ctl action ', set(actions) | {'script:nav.open', 'script:nav.list'}
     yield 'afterglow ctl action split_', {'split_right', 'split_down', 'split_left', 'split_up'}
     # Bash replaces only the part after the colon.
     yield 'afterglow ctl action script:', last_part(':', {'nav.open', 'nav.list'})
     yield 'afterglow ctl signal ', {str(n) for n in range(8)}
-    yield 'afterglow ctl watch ', set()
+    yield 'afterglow ctl watch ', ctl('watch')
+    yield 'afterglow ctl watch --text-changes ', set()
     yield 'afterglow ctl overlay -', has('--pane', *overlay)
     yield 'afterglow ctl overlay --capture ', {'stdout', 'file', 'none'}
     yield 'afterglow ctl overlay --cwd ', {'adir'}
@@ -540,7 +811,9 @@ FULL_CASES = (('afterglow -e ech', 'echo'), ('afterglow --title x -e ech', 'echo
               ('afterglow --title=x -e ech', 'echo'), ('afterglow -d adir -e ech', 'echo'),
               ('afterglow -o A.b=1 -e ech', 'echo'), ('afterglow ctl split -- ech', 'echo'),
               ('afterglow ctl new-window --cwd adir -- ech', 'echo'),
-              ('afterglow ctl overlay --capture none -- ech', 'echo'), ('afterglow -e ssh --help ', 'ssh-marker'),
+              ('afterglow ctl overlay --capture none -- ech', 'echo'), ('afterglow mux new --detach -- ech', 'echo'),
+              ('afterglow mux new -- ech', 'echo'),
+              ('afterglow -e ssh --help ', 'ssh-marker'),
               ('afterglow ssh ', 'ssh-marker'))
 
 
@@ -579,7 +852,8 @@ def check_value_options():
 def main():
     source = CTL.read_text()
     sources = (string_list(source, 'Commands'), set(string_list(source, 'Paneless')), keybind_actions(),
-               aglow_options(), run_options(), ctl_options(source, 'overlay'))
+               aglow_options(), run_options(), ctl_options(source, 'overlay'), ctl_options(source, 'screenshot'),
+               mux_commands(), ctl_options(source, 'open-project'), ctl_first_options(source), source)
     check_value_options()
     with tempfile.TemporaryDirectory(prefix='afterglow-completion-') as tmp:
         shells = Shells(Path(tmp))
@@ -647,7 +921,8 @@ def main():
             print('SKIP: zsh is not installed')
         if not tested:
             print('SKIP: no shell to test')
-            return 77
+            # check_value_options() needs no shell: its failures still count.
+            return 1 if failures else 77
 
         # The afterglow or aglow that the line names, not the one on PATH: for afterglow, the aglow next to it. The
         # directory with a space in its name is quoted.

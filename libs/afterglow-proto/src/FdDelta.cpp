@@ -63,7 +63,8 @@ bool FdDeltaTarget::readBlock(std::uint64_t index, std::string& out)
     // pread can return short before the end of the file: read until the
     // block is whole or the file ends.
     while (have < m_blockSize) {
-        const ssize_t n = ::pread(m_basis, out.data() + old + have, m_blockSize - have, off_t(index * m_blockSize + have));
+        const ssize_t n =
+            ::pread(m_basis, out.data() + old + have, m_blockSize - have, off_t(index * m_blockSize + have));
         if (n < 0 && errno == EINTR) {
             continue;
         }

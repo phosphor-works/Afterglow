@@ -19,6 +19,11 @@
 "\x1b("
 "\xff"
 
+# A state frame record (op 11 with bit 4, a 21 by 9 replica), then the codec
+# version and a reset section of the primary screen
+"\xff\x1b\x14\x08\x01"
+"\x01\x04"
+
 # CSI parameters
 ";"
 ":"
@@ -31,6 +36,9 @@
 "*y"
 "#P"
 "#Q"
+"+T"
+"221m"
+"222m"
 
 # Kitty graphics (APC G)
 "G"
@@ -41,6 +49,9 @@
 "a=f"
 "a=a"
 "a=q"
+"a=c"
+"f=8"
+"f=16"
 "f=24"
 "f=32"
 "f=100"
@@ -73,6 +84,13 @@
 "133;B"
 "133;C"
 "133;D;0"
+"133;C;cmdline="
+"133;C;cmdline_url="
+";click_events=1"
+";click_events=2"
+";special_key=1"
+";k=s"
+";redraw=0"
 "633;E;"
 "1337;File="
 "1337;MultipartFile="
@@ -82,8 +100,26 @@
 "3008;start="
 "5522;type="
 "7501;"
+"24569;q=remote"
+"24569;path=/"
+"24569;error=off"
+"24569;error=forward"
 
 # DCS bodies
 "q#0;2;100;0;0"
 "+q544E"
 "$qm"
+
+# Colour values (OSC 4, 10-12, 17, 19 and 21)
+"oklch(0.7 0.1 200)"
+"lab(50 60 40)"
+"oklch("
+"lab("
+"rgb:"
+"rgbi:"
+"none"
+"deg"
+"grad"
+"rad"
+"turn"
+" / "

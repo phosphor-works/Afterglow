@@ -223,7 +223,7 @@ _aglow() {
                 '--place=[where to show the image]:WIDTHxHEIGHT@LEFTxTOP:' \
                 '--scale-up[scale small images up]' \
                 '--fit=[how to fit the screen]:fit:(width height both none)' \
-                '--background=[background colour]:colour:' \
+                '--background=[background color]:color:' \
                 '--mirror=[mirror the image]:mirror:(none horizontal vertical both)' \
                 '--clear[remove the images on the screen]' \
                 '--clear-all[remove every image]' \
@@ -239,7 +239,7 @@ _aglow() {
                 '--unicode-placeholder[show images through placeholder characters]' \
                 '--passthrough=[pass through tmux]:passthrough:(detect tmux none)' \
                 '--image-id=[graphics protocol id]:id:' \
-                '--engine=[engine that decodes images]:engine:(auto builtin)' \
+                '--engine=[engine that decodes images]:engine:(auto builtin magick)' \
                 '--silent[not used, for compatibility]' \
                 '(-n --no-trailing-newline)'{-n,--no-trailing-newline}'[leave the cursor after the image]' \
                 $help \

@@ -5,6 +5,7 @@
 
 #include <AfterglowVt/afterglowvt_export.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -22,7 +23,15 @@ struct NotificationRequest
         Close, ///< close the one with this id
         Alive, ///< report which ids are still open
     };
-    enum class Occasion : std::uint8_t { Always, Unfocused, Invisible };
+    enum class Occasion : std::uint8_t {
+        Always,
+        Unfocused,
+        Invisible
+    };
+    /// The most icon names, and the most types, that a request keeps.
+    static constexpr std::size_t MaxNames = 16;
+    /// The most bytes of title, body and buttons together.
+    static constexpr std::size_t MaxText = 64 * 1024;
 
     Kind kind = Kind::Show;
     std::string id; ///< [A-Za-z0-9_+.-] only; empty when the program gave none
@@ -41,13 +50,25 @@ struct NotificationRequest
     Occasion occasion = Occasion::Always;
     int urgency = 1; ///< 0 low, 1 normal, 2 critical
     int expireMs = -1; ///< -1 system default, 0 never, otherwise milliseconds
+
+    /// The answer to an Alive query: @p open lists the ids that are still
+    /// open, joined by commas.
+    std::string aliveReply(std::string_view open = {}) const
+    {
+        return "\x1b]99;i=" + (id.empty() ? std::string("0") : id) + ":p=alive;" + std::string(open) + "\x1b\\";
+    }
 };
 
 /// Assembles OSC 99 sequences into notification requests.
 class AFTERGLOWVT_EXPORT NotificationAssembler
 {
 public:
-    enum class Result : std::uint8_t { Pending, Ready, Query, Ignored };
+    enum class Result : std::uint8_t {
+        Pending,
+        Ready,
+        Query,
+        Ignored
+    };
 
     /// Feeds the OSC payload after "99;". On Ready, @p out holds the request;
     /// on Query, @p out.id holds the id to answer with.
@@ -59,7 +80,12 @@ public:
     static std::string queryReply(std::string_view id, std::string_view capabilities);
 
 private:
-    enum class Payload : std::uint8_t { Title, Body, Buttons, Icon };
+    enum class Payload : std::uint8_t {
+        Title,
+        Body,
+        Buttons,
+        Icon
+    };
     struct Pending
     {
         NotificationRequest request;

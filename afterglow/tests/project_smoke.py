@@ -9,21 +9,23 @@ import argparse
 import json
 from pathlib import Path
 import re
-import subprocess
 import sys
 import tempfile
-from nested_desktop import NestedDesktop, Session, check
+from nested_desktop import NestedDesktop, Session, check, exit_on_sigterm, run_on_private_bus
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("binary", type=Path)
+parser.add_argument("--timeout", type=float, default=300, help="Seconds for the whole run (default: 300)")
 parser.add_argument("--private-bus", action="store_true", help=argparse.SUPPRESS)
 options = parser.parse_args()
 binary = str(options.binary.resolve())
 if not options.private_bus:
-    sys.exit(subprocess.call(["dbus-run-session", "--", sys.executable, __file__, binary, "--private-bus"]))
+    # At the time limit, the whole run stops: KWin and Afterglow too (run_on_private_bus).
+    sys.exit(run_on_private_bus([sys.executable, __file__, binary, "--private-bus"], options.timeout))
+exit_on_sigterm()
 with tempfile.TemporaryDirectory(prefix='afterglow-t3-') as tmp:
     root = Path(tmp); (root / '.bashrc').write_text("PS1='T3> '\n")
-    conf = root / 'afterglow'; (conf / 'scripts').mkdir(parents=True)
+    conf = root / 'phosphor-works/afterglow'; (conf / 'scripts').mkdir(parents=True)
     (conf / 'scripts/probe.luau').write_text('return {on_pane_moved=function(ev) return afterglow.log("MOVED|"..ev.pane.id.."|"..ev.pane.tab_id.."|"..ev.pane.window) end}')
     (conf / 'config.json').write_text(json.dumps({
         'Terminal': {'shell': '/bin/bash', 'env': {'HOME': tmp}, 'confirmClose': False},

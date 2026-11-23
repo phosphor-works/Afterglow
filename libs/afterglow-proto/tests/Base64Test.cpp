@@ -28,7 +28,9 @@ TEST(Base64, EncodesWithAndWithoutPadding)
 // (QByteArray::fromBase64Encoding with AbortOnBase64DecodingErrors).
 TEST(Base64, StrictOrUnpaddedMatchesTheTransferRules)
 {
-    const auto decode = [](std::string_view in) { return base64Decode(in, Base64Check::StrictOrUnpadded); };
+    const auto decode = [](std::string_view in) {
+        return base64Decode(in, Base64Check::StrictOrUnpadded);
+    };
     EXPECT_EQ(decode(""), "");
     EXPECT_EQ(decode("QQ"), "A");
     EXPECT_EQ(decode("QQ=="), "A");
@@ -38,14 +40,17 @@ TEST(Base64, StrictOrUnpaddedMatchesTheTransferRules)
     EXPECT_EQ(decode("QUJDR"), "ABC"); // a last character that cannot end a byte is dropped
     EXPECT_EQ(decode("A"), "");
     EXPECT_EQ(decode("QR=="), "A");
-    for (std::string_view bad : {"QQ=", "QQ===", "QUJD=", "QUJDRA=", "QQ==QQ==", "Q=Q=", "QU JD", "QUJD\n", "QQ=a", "=", "=="}) {
+    for (std::string_view bad :
+         {"QQ=", "QQ===", "QUJD=", "QUJDRA=", "QQ==QQ==", "Q=Q=", "QU JD", "QUJD\n", "QQ=a", "=", "=="}) {
         EXPECT_FALSE(decode(bad)) << bad;
     }
 }
 
 TEST(Base64, StrictIsRfc4648)
 {
-    const auto decode = [](std::string_view in) { return base64Decode(in, Base64Check::Strict); };
+    const auto decode = [](std::string_view in) {
+        return base64Decode(in, Base64Check::Strict);
+    };
     EXPECT_EQ(decode(""), "");
     EXPECT_EQ(decode("QQ=="), "A");
     EXPECT_EQ(decode("QUI="), "AB");
@@ -57,7 +62,9 @@ TEST(Base64, StrictIsRfc4648)
 
 TEST(Base64, PaddingOptionalIgnoresTrailingPadding)
 {
-    const auto decode = [](std::string_view in) { return base64Decode(in, Base64Check::PaddingOptional); };
+    const auto decode = [](std::string_view in) {
+        return base64Decode(in, Base64Check::PaddingOptional);
+    };
     EXPECT_EQ(decode("QQ"), "A");
     EXPECT_EQ(decode("QQ=="), "A");
     EXPECT_EQ(decode("QQ="), "A");

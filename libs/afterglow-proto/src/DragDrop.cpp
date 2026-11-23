@@ -2,13 +2,12 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include <AfterglowProto/DragDrop.h>
+#include <AfterglowProto/MachineId.h>
 #include <AfterglowProto/Sha256.h>
 
 #include "Fields.h"
 
 #include <algorithm>
-#include <fstream>
-#include <iterator>
 #include <limits>
 
 namespace AfterglowProto {
@@ -218,7 +217,9 @@ std::string dndQueryReply(std::string_view command)
 bool dndValidMime(std::string_view mime)
 {
     return !mime.empty() && mime.find('/') != std::string_view::npos && mime.size() <= 255
-        && std::all_of(mime.begin(), mime.end(), [](unsigned char c) { return c > 32 && c < 127; });
+        && std::all_of(mime.begin(), mime.end(), [](unsigned char c) {
+               return c > 32 && c < 127;
+           });
 }
 
 std::string dndMachineId(std::string_view machineIdContents)
@@ -233,12 +234,7 @@ std::string dndMachineId(std::string_view machineIdContents)
 
 std::string dndMachineId()
 {
-    std::ifstream file("/etc/machine-id", std::ios::binary);
-    if (!file) {
-        return {};
-    }
-    const std::string contents{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
-    return dndMachineId(contents);
+    return dndMachineId(machineIdContents());
 }
 
 DndAssembler::DndAssembler(std::size_t maxData, std::size_t maxControl)

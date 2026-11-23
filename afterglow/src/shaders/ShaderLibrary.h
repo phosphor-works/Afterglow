@@ -33,8 +33,10 @@ namespace Afterglow {
 
 /// Terminal shader packs by id: Phosphor shader packs (a directory with
 /// metadata.json and its stages) written against the terminal contract in
-/// data/shaders/shared. Packs come from ~/.config/afterglow/shaders, the system
-/// data directories and the bundled packs, and from loaded script packages'
+/// data/shaders/shared. Packs come from the user's directory (the shaders
+/// directory beside the config file, ~/.config/phosphor-works/afterglow/shaders),
+/// phosphor-works/shaders/terminal in the system data directories and the
+/// bundled packs, and from loaded script packages'
 /// shaders/ directories as "<package>.<pack>". When two packs answer to one
 /// name, the user's wins over the system's, and the system's over the bundled
 /// (a build-tree binary puts the checkout's packs above the system's). A
@@ -52,7 +54,13 @@ public:
     /// one window, may hold at once.
     static constexpr qint64 MaxDecodedImageBytes = 256LL * 1024 * 1024;
 
+    /// The user's packs and presets in ~/.config/phosphor-works/afterglow.
     explicit ShaderLibrary(QObject* parent = nullptr);
+    /// The user's packs in @p configDirectory/shaders and the saved presets in
+    /// @p configDirectory/shader-presets, beside the config file:
+    /// afterglow --config DIR/config.json takes them from DIR, as it takes its
+    /// scripts and themes.
+    explicit ShaderLibrary(const QString& configDirectory, QObject* parent = nullptr);
     ~ShaderLibrary() override;
 
     using Refs = ShaderRefs;
@@ -73,16 +81,25 @@ public:
     QString validateParameters(const QString& ref, const QVariantMap& values,
                                AfterglowRender::ShaderParameterValues& packed) const;
     /// Curves for parameter transitions.
-    const PhosphorAnimation::CurveRegistry& curves() const { return *m_curves; }
+    const PhosphorAnimation::CurveRegistry& curves() const
+    {
+        return *m_curves;
+    }
     /// What the last build() could not use, one line each: Shaders.params
     /// entries that apply nowhere (no such shader, parameter or acceptable
     /// value), and configured packs that do not draw
     /// (no such pack, a compile error, an image, the image budget). Each is
     /// also logged, with the full compile log.
-    QStringList problems() const { return m_problems; }
+    QStringList problems() const
+    {
+        return m_problems;
+    }
     /// The files whose change rebuilds: the configured packs' stages,
     /// includes and images, found or not yet created.
-    QStringList watchedPaths() const { return m_files.paths(); }
+    QStringList watchedPaths() const
+    {
+        return m_files.paths();
+    }
 
 Q_SIGNALS:
     /// A configured pack or one of its files changed on disk, or script
@@ -101,9 +118,9 @@ private:
     {
         AfterglowRender::ShaderProgramPtr program; ///< null when it failed
         QString error;
-        QStringList watched;   ///< resolved and missing candidate paths of its files
-        QByteArray signature;  ///< their state when it compiled
-        QString packDir;       ///< the pack its reference named
+        QStringList watched; ///< resolved and missing candidate paths of its files
+        QByteArray signature; ///< their state when it compiled
+        QString packDir; ///< the pack its reference named
         /// Why a default image did not load, by slot. The program has no
         /// image there, and only a configured image for that slot can use it.
         std::array<QString, AfterglowRender::MaxShaderImages> imageErrors;
@@ -124,6 +141,7 @@ private:
 
     void seedPresets();
     void refreshWatches();
+    QString m_userDirectory; ///< the user's own packs beside the config file, the last of m_baseDirectories
     std::unique_ptr<PhosphorShaders::ShaderRegistry> m_registry;
     /// Bundled, system and user packs, lowest priority first. A build-tree
     /// binary puts the checkout's packs above the system ones.

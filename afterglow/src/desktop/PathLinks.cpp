@@ -44,12 +44,11 @@ const QString& pattern()
     // No form ends on a full stop, and none takes other sentence punctuation
     // (, ; : ! ? quotes, brackets): the same characters that URLs drop from
     // their end. Upper-case letters would make hint searches match case.
-    static const QString p = QStringLiteral(
-        R"((?:(?:~|\.{1,2})?/(?:[\w.@+-]+/)*[\w.@+-]*[\w@+-]/?)"
-        R"(|(?:[\w.@+-]+/)+(?:[\w.@+-]*[\w@+-]/?)?)"
-        R"(|[\w.@+-]*\.(?=[\w+-]*[^\W\d])[\w+-]+)"
-        R"(|(?=[\w.@+-]*[^\W\d_])[\w.@+-]*[\w@+-](?=:\d)))"
-        R"((?::\d+){0,2})");
+    static const QString p = QStringLiteral(R"((?:(?:~|\.{1,2})?/(?:[\w.@+-]+/)*[\w.@+-]*[\w@+-]/?)"
+                                            R"(|(?:[\w.@+-]+/)+(?:[\w.@+-]*[\w@+-]/?)?)"
+                                            R"(|[\w.@+-]*\.(?=[\w+-]*[^\W\d])[\w+-]+)"
+                                            R"(|(?=[\w.@+-]*[^\W\d_])[\w.@+-]*[\w@+-](?=:\d)))"
+                                            R"((?::\d+){0,2})");
     return p;
 }
 
@@ -57,7 +56,8 @@ Location parseLocation(const QString& text)
 {
     static const QRegularExpression location(QStringLiteral(R"(^(.+?):(\d+)(?::(\d+))?$)"));
     const QRegularExpressionMatch match = location.match(text);
-    if (!match.hasMatch()) return {text, 0, 0};
+    if (!match.hasMatch())
+        return {text, 0, 0};
     bool lineOk = false, columnOk = false;
     const int line = match.captured(2).toInt(&lineOk);
     const int column = match.captured(3).toInt(&columnOk);
@@ -70,7 +70,8 @@ std::vector<Candidate> find(const QString& text)
     std::vector<Candidate> found;
     for (auto it = expression.globalMatch(text); it.hasNext();) {
         const QRegularExpressionMatch match = it.next();
-        if (match.capturedLength() > MaxPathLength) continue;
+        if (match.capturedLength() > MaxPathLength)
+            continue;
         found.push_back({match.capturedStart(), match.capturedLength(), parseLocation(match.captured())});
     }
     return found;
@@ -78,10 +79,12 @@ std::vector<Candidate> find(const QString& text)
 
 QString resolve(const QString& path, const QString& directory, const QString& home)
 {
-    if (path.isEmpty() || path.size() > MaxPathLength || path.contains(QChar(0))) return {};
+    if (path.isEmpty() || path.size() > MaxPathLength || path.contains(QChar(0)))
+        return {};
     QString absolute;
     if (path == QLatin1String("~") || path.startsWith(QLatin1String("~/"))) {
-        if (!QDir::isAbsolutePath(home)) return {};
+        if (!QDir::isAbsolutePath(home))
+            return {};
         absolute = home + path.mid(1);
     } else if (QDir::isAbsolutePath(path)) {
         absolute = path;
@@ -104,7 +107,8 @@ QStringList substitute(const QStringList& arguments, const QHash<QString, QStrin
         for (auto it = placeholder.globalMatch(argument); it.hasNext();) {
             const QRegularExpressionMatch match = it.next();
             const auto value = values.constFind(match.captured(1));
-            if (value == values.cend()) continue;
+            if (value == values.cend())
+                continue;
             text += argument.mid(last, match.capturedStart() - last) + *value;
             last = match.capturedEnd();
         }
@@ -115,10 +119,12 @@ QStringList substitute(const QStringList& arguments, const QHash<QString, QStrin
 
 OpenAction openAction(const QStringList& openFilesWith, const Location& file, bool directory)
 {
-    if (directory || openFilesWith.isEmpty()) return {{}, QUrl::fromLocalFile(file.path)};
-    return {substitute(openFilesWith, {{QStringLiteral("file"), file.path},
-                                       {QStringLiteral("line"), QString::number(file.line > 0 ? file.line : 1)},
-                                       {QStringLiteral("column"), QString::number(file.column > 0 ? file.column : 1)}}),
+    if (directory || openFilesWith.isEmpty())
+        return {{}, QUrl::fromLocalFile(file.path)};
+    return {substitute(openFilesWith,
+                       {{QStringLiteral("file"), file.path},
+                        {QStringLiteral("line"), QString::number(file.line > 0 ? file.line : 1)},
+                        {QStringLiteral("column"), QString::number(file.column > 0 ? file.column : 1)}}),
             {}};
 }
 
@@ -155,8 +161,10 @@ void Checker::check(const QString& path, QObject* context, std::function<void(Ki
 
 bool Checker::start(const QString& path)
 {
-    if (m_waiting.contains(path)) return true;
-    if (path.isEmpty() || m_waiting.size() >= MaxRunning) return false;
+    if (m_waiting.contains(path))
+        return true;
+    if (path.isEmpty() || m_waiting.size() >= MaxRunning)
+        return false;
     m_waiting.insert(path, {});
     statPool()->start([self = QPointer<Checker>(this), path] {
         const QFileInfo info(path);
@@ -164,9 +172,13 @@ bool Checker::start(const QString& path)
         // The application outlives every window and its checker. The guard
         // is read on the GUI thread, where the checker is deleted.
         if (auto* app = QCoreApplication::instance()) {
-            QMetaObject::invokeMethod(app, [self, path, kind] {
-                if (self) self->finish(path, kind);
-            }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(
+                app,
+                [self, path, kind] {
+                    if (self)
+                        self->finish(path, kind);
+                },
+                Qt::QueuedConnection);
         }
     });
     return true;
@@ -174,7 +186,8 @@ bool Checker::start(const QString& path)
 
 void Checker::finish(const QString& path, Kind kind)
 {
-    if (!m_cache.contains(path)) m_order.push_back(path);
+    if (!m_cache.contains(path))
+        m_order.push_back(path);
     m_cache.insert(path, {kind, std::chrono::steady_clock::now()});
     while (qsizetype(m_order.size()) > m_capacity) {
         m_cache.remove(m_order.front());
@@ -183,7 +196,8 @@ void Checker::finish(const QString& path, Kind kind)
     const std::vector<Waiter> waiters = m_waiting.take(path);
     Q_EMIT checked(path, kind);
     for (const Waiter& waiter : waiters) {
-        if (waiter.context) waiter.done(kind);
+        if (waiter.context)
+            waiter.done(kind);
     }
 }
 

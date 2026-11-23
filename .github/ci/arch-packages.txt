@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The Arch packages CI installs to configure, build and test Afterglow and the
+# phosphor-libs tree it builds. One package per line. A comment after `#` is
+# ignored. docs/BUILD.md lists what each one is for.
+#
+# base-devel brings GCC, pkgconf, and the libc.a and libstdc++.a of the
+# static aglow.
+base-devel
+git
+ccache
+cmake
+ninja
+# The SIMD code of libjpeg-turbo.
+nasm
+qt6-base
+qt6-declarative
+qt6-shadertools
+qt6-svg
+qt6-wayland
+# QRhi declares its Vulkan backend only with the Vulkan headers present.
+vulkan-headers
+kwindowsystem
+wayland
+libxkbcommon
+freetype2
+harfbuzz
+fribidi
+fontconfig
+pcre2
+gtest
+# The Python tests in CTest.
+python
+# rsvg-convert renders the PNG icon sizes, which the install step checks.
+librsvg
+# The fonts of the renderer tests, for a run that has a Vulkan device.
+ttf-dejavu

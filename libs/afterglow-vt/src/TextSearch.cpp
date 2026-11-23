@@ -23,7 +23,6 @@ using Clock = std::chrono::steady_clock;
 using Code = std::unique_ptr<pcre2_code, decltype(&pcre2_code_free)>;
 using MatchData = std::unique_ptr<pcre2_match_data, decltype(&pcre2_match_data_free)>;
 
-constexpr std::size_t MaxPattern = 4096;
 constexpr auto TimeBudget = std::chrono::milliseconds(500);
 // The callout runs at every pattern item at every start position.
 constexpr unsigned CalloutsPerClockRead = 1024;
@@ -73,8 +72,9 @@ bool isCaseName(std::u32string_view name)
             return false;
         }
     }
-    static constexpr std::string_view Names[] = {"lu",        "ll",        "lt",    "uppercaseletter", "lowercaseletter",
-                                                 "titlecaseletter", "uppercase", "lowercase", "upper", "lower"};
+    static constexpr std::string_view Names[] = {
+        "lu",        "ll",    "lt",   "uppercaseletter", "lowercaseletter", "titlecaseletter", "uppercase",
+        "lowercase", "upper", "lower"};
     return std::find(std::begin(Names), std::end(Names), folded) != std::end(Names);
 }
 
@@ -179,7 +179,8 @@ bool hasUpperCase(std::u32string_view text)
     }
     const MatchData data(pcre2_match_data_create_from_pattern(code.get(), nullptr), pcre2_match_data_free);
     return data
-        && pcre2_match(code.get(), reinterpret_cast<PCRE2_SPTR>(text.data()), text.size(), 0, 0, data.get(), nullptr) >= 0;
+        && pcre2_match(code.get(), reinterpret_cast<PCRE2_SPTR>(text.data()), text.size(), 0, 0, data.get(), nullptr)
+        >= 0;
 }
 
 void fail(TextSearchResult& result, SearchError kind, std::size_t position = 0)
@@ -191,7 +192,7 @@ void fail(TextSearchResult& result, SearchError kind, std::size_t position = 0)
         result.error.clear();
         break;
     case SearchError::PatternTooLong:
-        result.error = "Pattern exceeds 4096 characters";
+        result.error = "Pattern exceeds " + std::to_string(MaxSearchPattern) + " characters";
         break;
     case SearchError::NoMemory:
         result.error = "Cannot allocate search context";
@@ -236,7 +237,8 @@ bool appendTextRow(TextSnapshot& out, const Screen& screen, std::size_t index, s
     }
     for (int x = 0; x < columns; ++x) {
         const Cell& cell = row.at(x);
-        if (cell.isTail() || cell.isSpacerHead() || (cell.isMulticell() && (cell.multicellDx() || cell.multicellDy()))) {
+        if (cell.isTail() || cell.isSpacerHead()
+            || (cell.isMulticell() && (cell.multicellDx() || cell.multicellDy()))) {
             continue;
         }
         const auto extra = screen.graphemeExtra(row, x);
@@ -277,7 +279,7 @@ TextSearchResult searchText(const TextSnapshot& text, std::u32string_view patter
     if (pattern.empty()) {
         return result;
     }
-    if (pattern.size() > MaxPattern) {
+    if (pattern.size() > MaxSearchPattern) {
         fail(result, SearchError::PatternTooLong);
         return result;
     }
@@ -341,7 +343,8 @@ TextSearchResult searchText(const TextSnapshot& text, std::u32string_view patter
                 fail(result, SearchError::TimeLimit);
                 return result;
             }
-            const int rc = pcre2_match(code.get(), subject, line.text.size(), start, options, data.get(), context.get());
+            const int rc =
+                pcre2_match(code.get(), subject, line.text.size(), start, options, data.get(), context.get());
             options = PCRE2_NO_UTF_CHECK;
             if (rc == PCRE2_ERROR_NOMATCH) {
                 break;

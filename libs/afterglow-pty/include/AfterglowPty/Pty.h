@@ -29,6 +29,10 @@ struct SpawnOptions
     /// value of a name wins.
     std::vector<std::pair<std::string, std::string>> environment;
     std::vector<std::string> unsetEnvironment;
+    /// False: the child gets only the variables of environment, none of the
+    /// parent's. The mux daemon runs a session's programs in the session's
+    /// environment, which the client sent, not in its own.
+    bool inheritEnvironment = true;
     /// Delay callbacks until the owner has published the returned object.
     bool deferStart = false;
     int cols = 80;
@@ -44,6 +48,63 @@ struct SpawnOptions
     /// /dev/tty: a list on stdin, the interface on /dev/tty, the answer on
     /// stdout.
     bool captureOutput = false;
+    /// The file mode creation mask of the child: -1 keeps the parent's,
+    /// else the child sets it before exec. The mux daemon's own mask is not
+    /// the one of the user who started the session.
+    int umask = -1;
+    /// The soft RLIMIT_NOFILE of the child: -1 keeps the parent's, else the
+    /// child sets its soft limit to this (at most the hard limit, which
+    /// stays) before exec. The mux daemon raises its own soft limit, which
+    /// programs that use select() must not get.
+    long fileLimit = -1;
+};
+
+/// Sets @p name to @p value for the child, replacing every earlier set or unset of it.
+AFTERGLOWPTY_EXPORT void setVariable(SpawnOptions& options, std::string name, std::string value);
+/// Removes @p name from the child's environment, replacing every earlier set or unset of it.
+AFTERGLOWPTY_EXPORT void unsetVariable(SpawnOptions& options, std::string name);
+
+/// The fields of /proc/PID/stat after the command name that a terminal asks about.
+struct ProcessStat
+{
+    char state = 0;
+    long long parent = 0;
+    long long group = 0;
+    long long session = 0;
+    long long terminal = 0;
+    long long foregroundGroup = 0; ///< tpgid: the foreground process group of the controlling terminal
+};
+
+/// Parses the text of /proc/PID/stat. The command name, between the first
+/// '(' and the last ')', can hold any byte, ')' and new lines included.
+/// Empty when the text does not have the fields.
+AFTERGLOWPTY_EXPORT std::optional<ProcessStat> parseProcessStat(std::string_view stat);
+/// Reads the whole of /proc/@p pid/stat and parses it (on FreeBSD, the
+/// kernel's process table through sysctl). Empty when the process is gone
+/// or the file does not parse.
+AFTERGLOWPTY_EXPORT std::optional<ProcessStat> processStat(pid_t pid);
+
+/// The number of signal @p name: "INT", "SIGINT", "sigint", "2", or a
+/// real-time signal as kill -l names it ("RTMIN+2", "RTMAX"). The numbers
+/// are 1 to 31 and SIGRTMIN to SIGRTMAX: glibc keeps the ones between for
+/// its threads. Nothing for another name or number.
+AFTERGLOWPTY_EXPORT std::optional<int> signalNumber(std::string_view name);
+
+/// The leader of the foreground process group of a terminal, as `afterglow
+/// ctl ls` and kitty's `ls` show it.
+struct ForegroundProcess
+{
+    /// The bytes of the arguments that are read: past them, the last
+    /// argument is cut and the others are left out.
+    static constexpr std::size_t MaxCmdlineBytes = 4096;
+    pid_t pid = 0;
+    /// Its arguments, from /proc: empty for a process with none (a kernel
+    /// thread), one that /proc does not show, or when they were not asked
+    /// for. The NULs that pad rewritten arguments are dropped, and with them
+    /// empty arguments at the end.
+    std::vector<std::string> cmdline;
+    /// Its working directory, empty when it was removed or /proc does not show it.
+    std::string cwd;
 };
 
 /// Receives pty events on the pty's I/O thread.
@@ -56,11 +117,21 @@ public:
     /// SpawnOptions::captureOutput. What the child wrote before it exited
     /// arrives before ptyClosed. A background job that keeps the pipe after
     /// the child exits is not waited for.
-    virtual void ptyOutput(std::string_view bytes) { (void)bytes; }
+    virtual void ptyOutput(std::string_view bytes)
+    {
+        (void)bytes;
+    }
     /// The child exited, or the terminal can no longer be read. @p status is
     /// the waitpid() status, or -1 when it is unknown: the child was reaped
     /// elsewhere, or still ran when the terminal failed.
     virtual void ptyClosed(int status) = 0;
+    /// Pty::write() refused bytes because its queue was full, and the queue
+    /// has room again (at most half of Pty::MaxPendingInput waits), or
+    /// write() refuses for good now (Pty::accepting()). On the I/O thread,
+    /// without a lock of the Pty.
+    virtual void ptyWritable()
+    {
+    }
 };
 
 /// A child process on a pseudo-terminal, with a dedicated I/O thread that
@@ -71,8 +142,9 @@ class AFTERGLOWPTY_EXPORT Pty
 {
 public:
     /// The shell the child gets: SHELL as the child's environment will have
-    /// it (@p options' overrides and unsets first), then the account's login
-    /// shell, falling back to /bin/sh.
+    /// it (@p options' overrides and unsets first, then the parent's unless
+    /// the child does not inherit it), then the account's login shell,
+    /// falling back to /bin/sh.
     static std::string defaultShell(const SpawnOptions& options = {});
     /// Takes @p options by value: move them in, and a large
     /// SpawnOptions::input is not copied.
@@ -85,26 +157,69 @@ public:
     Pty(const Pty&) = delete;
     Pty& operator=(const Pty&) = delete;
 
+    /// The most input that waits for the child, in bytes.
+    static constexpr std::size_t MaxPendingInput = std::size_t(32) << 20;
+
     /// Queues bytes for the child. Thread-safe; never blocks on the child.
-    /// Entire writes are accepted atomically, up to 32 MiB pending.
+    /// Entire writes are accepted atomically, up to MaxPendingInput pending.
+    /// After a refusal for a full queue, the listener's ptyWritable() says
+    /// when there is room again.
     [[nodiscard]] bool write(std::string_view bytes);
     /// Lifecycle operations belong to the owner thread. Cannot restart after stop.
     [[nodiscard]] bool start(std::string* error = nullptr);
     void stop();
     void resize(int cols, int rows, int pixelWidth, int pixelHeight);
 
-    pid_t pid() const noexcept { return m_pid.load(); }
+    pid_t pid() const noexcept
+    {
+        return m_pid.load();
+    }
     /// Bytes queued for the child and not yet written. Thread-safe.
     std::size_t pendingInput() const;
+    /// write() can still take bytes: false once the terminal's child side is
+    /// gone or the Pty stopped, although the child may still run. Thread-safe.
+    bool accepting() const noexcept
+    {
+        return m_accepting.load();
+    }
     /// The foreground job's working directory, else the child's, read from
-    /// /proc. Empty when neither is a directory that exists.
+    /// /proc. Empty when neither has one that was not removed. It reads no
+    /// file system but /proc, so a mount that does not answer cannot block it;
+    /// a caller that starts a program there checks that the path exists.
     std::string currentWorkingDirectory() const;
     /// The name of the job in the foreground when it is not the child itself
     /// (a program the shell is running); empty while the shell has the terminal.
     std::string foregroundProcess() const;
+    /// The leader of the foreground process group, the shell too: nothing
+    /// once the child exited, while no group of its session has the
+    /// terminal, and when the leader of the group exited (a zombie too). It
+    /// reads only /proc. Without @p withCmdline, the arguments are not read:
+    /// /proc/PID/cmdline waits for the memory lock of the process, which a
+    /// process stuck on a file system that does not answer can hold.
+    std::optional<ForegroundProcess> foreground(bool withCmdline = true) const;
+    /// Sends @p signal to the foreground process group, as a key such as
+    /// Ctrl+C does through the terminal (`afterglow ctl signal-program`),
+    /// also when its leader exited ("cmd | less" after cmd ended). False
+    /// once the child exited, while no group of its session has the
+    /// terminal, or when kill() fails. On false, errno is kill(2)'s when it
+    /// failed (EPERM for a group of another user), else 0.
+    bool signalForeground(int signal) const;
+    /// Stops reading the child's output, or reads it again. While output is
+    /// paused, the I/O thread calls no ptyData() and keeps writing queued
+    /// input: a Ctrl+C that the user types while the listener waits for an
+    /// answer reaches the program. The child exits are reported once output
+    /// resumes, after what the child wrote. Thread-safe, and ptyData() may
+    /// call it: the bytes that it got are all the listener's, and no more
+    /// come until output resumes. Then the I/O thread first calls ptyData()
+    /// with no bytes, for the listener to go on with what it held (a
+    /// terminal that stopped at a question, Terminal::feed({})).
+    void pauseOutput(bool paused);
 
 private:
     Pty(int masterFd, int wakeFd, int pidFd, pid_t pid, IPtyListener& listener);
+    /// The foreground process group when it is one of the child's session,
+    /// else -1.
+    pid_t foregroundGroup() const;
     void run();
     void wake();
     bool flushPending();
@@ -132,9 +247,12 @@ private:
     std::deque<std::string> m_pending;
     std::size_t m_pendingOffset = 0;
     std::size_t m_pendingBytes = 0;
+    bool m_refused = false; ///< write() refused bytes since the queue last had room
     std::atomic<bool> m_accepting{true};
 
     std::atomic<bool> m_stop{false};
+    std::atomic<bool> m_paused{false}; ///< pauseOutput()
+    std::atomic<bool> m_resumed{false}; ///< output resumed: ptyData({}) is due
     std::thread m_thread;
 };
 

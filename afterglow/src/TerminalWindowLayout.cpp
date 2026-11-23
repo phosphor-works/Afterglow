@@ -4,6 +4,7 @@
 #include "app/WindowStart.h"
 #include "chrome/ChromeController.h"
 #include "desktop/Accessibility.h"
+#include "mux/MuxClient.h"
 #include "DockArea.h"
 #include <algorithm>
 #include <cmath>
@@ -11,7 +12,8 @@
 namespace Afterglow {
 void TerminalWindow::releasePaneUi(Pane* pane)
 {
-    if (m_scriptDialog && m_scriptDialog->pane == pane) finishScriptDialog(false, {});
+    if (m_scriptDialog && m_scriptDialog->pane == pane)
+        finishScriptDialog(false, {});
     // The pane goes on in another window, with its overlay: a clipboard read
     // either asked for is denied, as a program expects, rather than dropped.
     Pane* const program = inputPane(pane);
@@ -19,16 +21,25 @@ void TerminalWindow::releasePaneUi(Pane* pane)
         m_controller->answerClipboard(0);
     // A close confirmation that names it would close a pane that lives on
     // elsewhere: none of its answer holds.
-    if (std::any_of(m_pendingConfirmPanes.cbegin(), m_pendingConfirmPanes.cend(), [pane](const auto& p) { return p == pane; })) {
+    if (std::any_of(m_pendingConfirmPanes.cbegin(), m_pendingConfirmPanes.cend(), [pane](const auto& p) {
+            return p == pane;
+        })) {
         m_controller->answerConfirm(false);
     }
     // Only what belongs to this pane: a paste or a title the user is
     // giving another pane stays open.
     dropPanePrompts(pane);
-    if (m_copyPane == pane) stopCopyMode();
-    if (m_hover.pane == pane) m_hover = {};
+    if (m_copyPane == pane)
+        stopCopyMode();
+    if (m_hover.pane == pane)
+        m_hover = {};
+    // The pointer leaves its cells here: no later move of this window
+    // reaches its program, which hears the leave now.
+    if (m_pointerPane && (m_pointerPane == pane || m_pointerPane == program))
+        leavePointerPane();
     // Its overlay goes with it, and leaves what it had here.
-    if (program != pane) dropOverlayUi(program);
+    if (program != pane)
+        dropOverlayUi(program);
     m_dividerDrag.reset(); // the layout changes under it
     if (m_menuTab && tabOf(pane) >= 0 && m_tabs[std::size_t(tabOf(pane))]->id == m_menuTab) {
         m_controller->closeContextMenu();
@@ -43,7 +54,8 @@ void TerminalWindow::releasePaneUi(Pane* pane)
 
 void TerminalWindow::reparentPane(Pane* pane, TerminalWindow* destination)
 {
-    if (destination == this) return;
+    if (destination == this)
+        return;
     m_shaderControls.removePane(pane->id()); // instance IDs belong to the source window
     QObject::disconnect(pane, nullptr, this, nullptr);
     // The destroyed handler that cleans these is disconnected: clean them now.
@@ -52,13 +64,20 @@ void TerminalWindow::reparentPane(Pane* pane, TerminalWindow* destination)
     m_paneOrigin.remove(pane);
     m_panePulse.remove(pane);
     m_historyRows.erase(pane);
-    if (m_scriptKeyMode && m_scriptKeyMode->pane == pane) m_scriptKeyMode->pane = nullptr;
-    if (auto node = m_statusViews.extract(pane); !node.empty()) destination->m_statusViews.insert(std::move(node));
-    if (auto node = m_clipboardGrants.extract(pane); !node.empty()) destination->m_clipboardGrants.insert(std::move(node));
-    if (m_notifyOnFinish.remove(pane)) destination->m_notifyOnFinish.insert(pane);
+    if (m_scriptKeyMode && m_scriptKeyMode->pane == pane)
+        m_scriptKeyMode->pane = nullptr;
+    if (auto node = m_statusViews.extract(pane); !node.empty())
+        destination->m_statusViews.insert(std::move(node));
+    if (auto node = m_clipboardGrants.extract(pane); !node.empty())
+        destination->m_clipboardGrants.insert(std::move(node));
+    if (m_notifyOnFinish.remove(pane))
+        destination->m_notifyOnFinish.insert(pane);
     const auto base = destination->m_scriptAppearanceOrder;
     for (auto it = m_scriptAppearance.begin(); it != m_scriptAppearance.end();) {
-        if (it->pane != pane) { ++it; continue; }
+        if (it->pane != pane) {
+            ++it;
+            continue;
+        }
         it->order += base;
         destination->m_scriptAppearanceOrder = std::max(destination->m_scriptAppearanceOrder, it->order);
         destination->m_scriptAppearance.push_back(std::move(*it));
@@ -68,6 +87,18 @@ void TerminalWindow::reparentPane(Pane* pane, TerminalWindow* destination)
         destination->motion(pane).pointerShape = it->second->pointerShape;
     m_motion.erase(pane); // motion objects reference the source window's clock
     m_growFrom.erase(pane);
+    // A key held over the pane or its overlay releases in the destination,
+    // which takes the keyboard. This window would drop the release: the
+    // pane is in none of its tabs.
+    const Pane* overlayProgram = pane->overlay() ? pane->overlay()->pane() : nullptr;
+    for (auto it = m_sentKeys.begin(); it != m_sentKeys.end();) {
+        if (it->pane.data() != pane && (!overlayProgram || it->pane.data() != overlayProgram)) {
+            ++it;
+            continue;
+        }
+        destination->m_sentKeys.insert(it.key(), *it);
+        it = m_sentKeys.erase(it);
+    }
     // Its overlay comes along, without its fade: the fade's clock is this window's.
     m_overlayFades.erase(pane);
     if (PaneOverlay* overlay = pane->overlay()) {
@@ -75,8 +106,10 @@ void TerminalWindow::reparentPane(Pane* pane, TerminalWindow* destination)
         QObject::disconnect(overlay, nullptr, this, nullptr);
         QObject::disconnect(program, nullptr, this, nullptr);
         // As for the host: what the program was given goes with it.
-        if (auto node = m_statusViews.extract(program); !node.empty()) destination->m_statusViews.insert(std::move(node));
-        if (auto node = m_clipboardGrants.extract(program); !node.empty()) destination->m_clipboardGrants.insert(std::move(node));
+        if (auto node = m_statusViews.extract(program); !node.empty())
+            destination->m_statusViews.insert(std::move(node));
+        if (auto node = m_clipboardGrants.extract(program); !node.empty())
+            destination->m_clipboardGrants.insert(std::move(node));
         if (const auto it = m_motion.find(program); it != m_motion.end())
             destination->motion(program).pointerShape = it->second->pointerShape;
         m_motion.erase(program);
@@ -84,10 +117,16 @@ void TerminalWindow::reparentPane(Pane* pane, TerminalWindow* destination)
     }
     // Its docks go with it. Their objects for assistive technology are this
     // window's children: the destination makes new ones.
-    for (const auto& dock : pane->docks()) releaseDockAccessibility(dock.get());
-    if (!pane->docks().empty()) windowAccessibilityChanged(this);
+    for (const auto& dock : pane->docks())
+        releaseDockAccessibility(dock.get());
+    if (!pane->docks().empty())
+        windowAccessibilityChanged(this);
     pane->setParent(destination);
     destination->bindPane(pane);
+    // Its dialogs went with it: the quick terminal forgets them, and does not
+    // slide in for them (settleQuickDialogs). Queued: once the transfer is over.
+    if (m_quick)
+        QMetaObject::invokeMethod(this, &TerminalWindow::settleQuickDialogs, Qt::QueuedConnection);
 }
 
 std::unique_ptr<TerminalWindow::Tab> TerminalWindow::removeTabShell(int index)
@@ -98,8 +137,10 @@ std::unique_ptr<TerminalWindow::Tab> TerminalWindow::removeTabShell(int index)
     auto tab = std::move(m_tabs[std::size_t(index)]);
     m_splits = nullptr;
     m_tabs.erase(m_tabs.begin() + index);
-    if (index < m_currentTab) --m_currentTab;
-    if (m_currentTab >= int(m_tabs.size())) m_currentTab = int(m_tabs.size()) - 1;
+    if (index < m_currentTab)
+        --m_currentTab;
+    if (m_currentTab >= int(m_tabs.size()))
+        m_currentTab = int(m_tabs.size()) - 1;
     return tab;
 }
 
@@ -117,57 +158,122 @@ void TerminalWindow::finishTransfer(quint32 previousTab, int previousIndex)
     // Another tab shows now: a switch like any other, with its transition
     // when the tab that was current is still here to leave.
     if (const quint32 now = m_tabs[std::size_t(m_currentTab)]->id; previousTab && previousTab != now) {
-        const auto left = std::find_if(m_tabs.begin(), m_tabs.end(), [previousTab](const auto& tab) { return tab->id == previousTab; });
+        const auto left = std::find_if(m_tabs.begin(), m_tabs.end(), [previousTab](const auto& tab) {
+            return tab->id == previousTab;
+        });
         const int from = left == m_tabs.end() ? previousIndex : int(left - m_tabs.begin());
-        if (left != m_tabs.end()) startTabTransition(from, m_currentTab);
+        if (left != m_tabs.end())
+            startTabTransition(from, m_currentTab);
         Q_EMIT tabSwitched(previousTab, now, m_currentTab >= from ? 1 : -1);
     }
     updatePaneVisibility();
     updateTitle();
-    if (!isVisible() && !m_quick) showForStartMode(*this, m_settings.settings().window);
+    if (!isVisible() && !m_quick)
+        showForStartMode(*this, m_settings.settings().window);
 }
 
-QString TerminalWindow::movePaneTo(Pane* pane, TerminalWindow* destination, Pane* beside, SplitTree::Direction direction)
+QString TerminalWindow::sessionMoveError(const TerminalWindow* destination) const
+{
+    // A session's programs run under its daemon, and its window shows them
+    // all: a program of a window cannot join the session. A pane of the
+    // session goes to the window of another session of the same daemon,
+    // which moves it (joinSession), and to no other window.
+    if (destination == this || (!m_session && !destination->m_session))
+        return {};
+    if (!m_session)
+        return QStringLiteral("A pane cannot move into the window of session %1")
+            .arg(destination->m_session->session());
+    if (!destination->m_session)
+        return QStringLiteral("A pane of session %1 can move only into the window of another session")
+            .arg(m_session->session());
+    if (!m_session->sameDaemon(*destination->m_session)) {
+        const bool otherHost = m_session->host() != destination->m_session->host();
+        return (otherHost ? QStringLiteral("A pane of session %1 cannot move to session %2, which runs on another host")
+                          : QStringLiteral(
+                                "A pane of session %1 cannot move to session %2, which runs under another mux daemon"))
+            .arg(m_session->session(), destination->m_session->session());
+    }
+    return {};
+}
+
+QString TerminalWindow::movePaneTo(Pane* pane, TerminalWindow* destination, Pane* beside,
+                                   SplitTree::Direction direction, Pane* after)
 {
     const int index = tabOf(pane);
     if (index < 0 || !destination || (beside && destination->tabOf(beside) < 0) || pane == beside)
         return QStringLiteral("Invalid pane destination");
-    if (m_focused && m_currentTab >= 0) m_tabs[std::size_t(m_currentTab)]->focused = m_focused;
+    if (const QString refused = sessionMoveError(destination); !refused.isEmpty())
+        return refused;
+    // Into the window of another session, the daemon moves its program
+    // (joinSession): its pane here cannot go there as it is.
+    if (m_session && destination != this)
+        return QStringLiteral("A pane of session %1 moves to session %2 through the mux daemon")
+            .arg(m_session->session(), destination->m_session->session());
+    // A break out takes it to another session wherever it is, and closes it
+    // here then (finishBreakOut): the move would be for nothing.
+    if (m_session && m_leavingPanes.contains(pane))
+        return QStringLiteral("This pane is leaving session %1 already").arg(m_session->session());
+    // A new tab in its own window for a pane alone in its tab would only
+    // replace the tab, with a new ID and without its title.
+    if (destination == this && !beside && m_tabs[std::size_t(index)]->splits->paneCount() == 1)
+        return QStringLiteral("The pane is alone in its tab already");
+    if (m_focused && m_currentTab >= 0)
+        m_tabs[std::size_t(m_currentTab)]->focused = m_focused;
     if (destination != this && destination->m_focused && destination->m_currentTab >= 0)
         destination->m_tabs[std::size_t(destination->m_currentTab)]->focused = destination->m_focused;
     // The tabs each window shows now, to tell a switch from staying put.
     const auto current = [](const TerminalWindow* w) {
-        return w->m_currentTab >= 0 && w->m_currentTab < int(w->m_tabs.size()) ? w->m_tabs[std::size_t(w->m_currentTab)]->id : 0;
+        return w->m_currentTab >= 0 && w->m_currentTab < int(w->m_tabs.size())
+            ? w->m_tabs[std::size_t(w->m_currentTab)]->id
+            : 0;
     };
     const quint32 sourceTab = current(this), destinationTab = current(destination);
     const int sourceIndex = m_currentTab, destinationIndex = destination->m_currentTab;
+    // As for a split (splitFocused): both panes keep the least size, or the
+    // move is refused before anything changes. The pane's own room counts
+    // when it is the target's sibling, which takes it (SplitTree::canSplit).
+    if (beside
+        && !destination->m_tabs[std::size_t(destination->tabOf(beside))]->splits->canSplit(
+            beside, direction, destination->dividerPixels(), destination->minimumPaneSize(), pane))
+        return QStringLiteral("There is not enough room beside that pane");
     const bool wasFocused = pane == m_focused;
     releasePaneUi(pane);
     auto& tab = *m_tabs[std::size_t(index)];
     // Another pane keeps its zoom; the tree drops the zoom of the pane it removes.
-    if (tab.splits->paneCount() == 1) removeTabShell(index);
+    if (tab.splits->paneCount() == 1)
+        removeTabShell(index);
     else {
         tab.splits->remove(pane);
         if (wasFocused || tab.focused == pane) {
             tab.focused = nullptr;
-            tab.splits->forEachPane([&](Pane* next, const QRect&) { if (!tab.focused) tab.focused = next; });
+            tab.splits->forEachPane([&](Pane* next, const QRect&) {
+                if (!tab.focused)
+                    tab.focused = next;
+            });
         }
     }
     reparentPane(pane, destination);
     if (beside) {
         auto& target = *destination->m_tabs[std::size_t(destination->tabOf(beside))];
         target.splits->setZoomedPane(nullptr);
-        target.splits->split(beside, pane, direction);
+        target.splits->split(beside, pane, direction, 0.5, destination->dividerPixels(),
+                             destination->minimumPaneSize());
         target.focused = pane;
         destination->m_currentTab = destination->tabOf(beside);
     } else {
         auto target = std::make_unique<Tab>();
         target->splits = std::make_unique<SplitTree>(pane);
         target->focused = pane;
-        destination->m_tabs.push_back(std::move(target));
-        destination->m_currentTab = int(destination->m_tabs.size()) - 1;
+        // After the tab of its target, found now that the pane's own tab may
+        // have gone: as the daemon places it.
+        const int afterIndex = after && after != pane ? destination->tabOf(after) : -1;
+        const auto at = afterIndex >= 0 ? destination->m_tabs.begin() + afterIndex + 1 : destination->m_tabs.end();
+        // The insert first: it can move the tabs, and begin() with them.
+        const auto inserted = destination->m_tabs.insert(at, std::move(target));
+        destination->m_currentTab = int(inserted - destination->m_tabs.begin());
     }
-    if (destination != this) finishTransfer(sourceTab, sourceIndex);
+    if (destination != this)
+        finishTransfer(sourceTab, sourceIndex);
     destination->finishTransfer(destination == this ? sourceTab : destinationTab,
                                 destination == this ? sourceIndex : destinationIndex);
     destination->requestActivate();
@@ -178,29 +284,46 @@ QString TerminalWindow::movePaneTo(Pane* pane, TerminalWindow* destination, Pane
 QString TerminalWindow::detachTabTo(Pane* pane, TerminalWindow* destination)
 {
     const int index = tabOf(pane);
-    if (index < 0 || !destination || destination == this) return QStringLiteral("Invalid tab destination");
+    if (index < 0 || !destination || destination == this)
+        return QStringLiteral("Invalid tab destination");
+    if (const QString refused = sessionMoveError(destination); !refused.isEmpty())
+        return refused;
+    // Into the window of another session, the daemon moves the programs: the
+    // panes here cannot go there as they are (movePaneTo).
+    if (m_session) {
+        return QStringLiteral("A pane of session %1 moves to session %2 through the mux daemon")
+            .arg(m_session->session(), destination->m_session->session());
+    }
     // Both windows' current tabs keep their focus through the transfer: each
     // is shown again from its saved focus.
-    if (m_focused && m_currentTab >= 0) m_tabs[std::size_t(m_currentTab)]->focused = m_focused;
+    if (m_focused && m_currentTab >= 0)
+        m_tabs[std::size_t(m_currentTab)]->focused = m_focused;
     if (destination->m_focused && destination->m_currentTab >= 0)
         destination->m_tabs[std::size_t(destination->m_currentTab)]->focused = destination->m_focused;
     const quint32 sourceTab = m_currentTab >= 0 ? m_tabs[std::size_t(m_currentTab)]->id : 0;
     const int sourceIndex = m_currentTab;
-    const quint32 destinationTab = destination->m_currentTab >= 0 && destination->m_currentTab < int(destination->m_tabs.size())
-        ? destination->m_tabs[std::size_t(destination->m_currentTab)]->id : 0;
+    const quint32 destinationTab =
+        destination->m_currentTab >= 0 && destination->m_currentTab < int(destination->m_tabs.size())
+        ? destination->m_tabs[std::size_t(destination->m_currentTab)]->id
+        : 0;
     const int destinationIndex = destination->m_currentTab;
     auto& source = *m_tabs[std::size_t(index)];
     QList<Pane*> moved;
-    source.splits->forEachPane([&](Pane* p, const QRect&) { moved << p; });
-    for (auto* p : moved) releasePaneUi(p);
+    source.splits->forEachPane([&](Pane* p, const QRect&) {
+        moved << p;
+    });
+    for (auto* p : moved)
+        releasePaneUi(p);
     auto tab = removeTabShell(index);
-    for (auto* p : moved) reparentPane(p, destination);
+    for (auto* p : moved)
+        reparentPane(p, destination);
     destination->m_tabs.push_back(std::move(tab)); // retains the live tab's identity and ratios
     destination->m_currentTab = int(destination->m_tabs.size()) - 1;
     finishTransfer(sourceTab, sourceIndex);
     destination->finishTransfer(destinationTab, destinationIndex);
     destination->requestActivate();
-    for (auto* p : moved) Q_EMIT destination->paneMoved(p);
+    for (auto* p : moved)
+        Q_EMIT destination->paneMoved(p);
     return {};
 }
 
@@ -218,27 +341,34 @@ void TerminalWindow::settleRearrangement(bool wasZoomed)
     m_dividerDrag.reset();
 }
 
-bool TerminalWindow::swapPane(Pane* pane, SplitTree::Neighbour direction)
+bool TerminalWindow::swapPane(Pane* pane, SplitTree::Neighbor direction)
 {
-    if (!m_splits || !m_splits->contains(pane)) return false;
-    auto* other = m_splits->neighbour(pane, direction);
+    if (!m_splits || !m_splits->contains(pane))
+        return false;
+    // Laid out first: a pane that a split just made has its place from the next layout.
+    auto* other = neighborOf(pane, direction);
     const bool zoomed = m_splits->zoomedPane() != nullptr;
-    if (!other || !m_splits->swap(pane, other)) return false;
+    if (!other || !m_splits->swap(pane, other))
+        return false;
     settleRearrangement(zoomed);
     updateChrome();
     m_layoutSize = {};
+    scheduleSessionLayout();
     scheduleRender();
     return true;
 }
 
 bool TerminalWindow::rotatePanes(bool clockwise)
 {
-    if (!m_splits) return false;
+    if (!m_splits)
+        return false;
     const bool zoomed = m_splits->zoomedPane() != nullptr;
-    if (!m_splits->rotate(clockwise)) return false;
+    if (!m_splits->rotate(clockwise))
+        return false;
     settleRearrangement(zoomed);
     updateChrome();
     m_layoutSize = {};
+    scheduleSessionLayout();
     scheduleRender();
     return true;
 }

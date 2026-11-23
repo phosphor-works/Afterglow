@@ -8,6 +8,7 @@ Afterglow is a terminal for Linux and Wayland. It uses Qt and Vulkan to render t
 ## Main features
 
 - Tabs, split panes, pane zoom and saved project layouts.
+- Terminal sessions that keep running without a window, with `afterglow mux`.
 - Automatic shell integration for Bash, Zsh and Fish.
 - Search, keyboard selection, command output and text hints.
 - Configurable fonts, colors, keybindings and desktop-themed controls.
@@ -26,26 +27,31 @@ Start with the [documentation index](docs/README.md).
 
 - [Build and install](docs/BUILD.md)
 - [Settings and appearance](docs/APPEARANCE.md)
-- [Keyboard, search and shell integration](docs/INPUT.md)
+- [Keyboard, mouse, touch, search and shell integration](docs/INPUT.md)
 - [Panes and projects](docs/PROJECTS.md)
 - [Luau scripting](docs/SCRIPTING.md)
 - [Shader effects](docs/SHADERS.md)
 - [Desktop integration](docs/DESKTOP.md)
 - [External control](docs/CONTROL.md)
+- [Mux sessions](docs/MUX.md)
 - [Supported protocols and limits](docs/COMPATIBILITY.md)
 
-See the [Phosphor scene](data/examples/phosphor/README.md) for an audio-responsive example.
+See the [Phosphor scene](examples/phosphor/README.md) for an audio-responsive example.
 See the [release notes](CHANGELOG.md) for supported features.
 
 ## License
 
-The application uses GPL-3.0-or-later. The libraries in `libs/` and the `aglow` client use LGPL-2.1-or-later.
+The application uses GPL-3.0-or-later, and so does the mux daemon `aglow-mux`. The libraries in `libs/` and the `aglow` client use LGPL-2.1-or-later.
 Most bundled shader packs use LGPL-2.1-or-later. Third-party themes use MIT.
 The icon uses CC-BY-SA-4.0.
-The binaries include zlib-ng (Zlib license), xxHash (BSD-2-Clause), valijson (BSD-2-Clause), Luau (MIT) and Lua (MIT).
-`aglow` includes zlib-ng, xxHash and stb_image (MIT). A static `aglow` also includes parts of glibc and of the GCC runtime libraries.
+The binaries include zlib-ng (Zlib license), xxHash (BSD-2-Clause), jsoncons (BSL-1.0, with its grisu3 and a5hash code under MIT), Luau (MIT) and Lua (MIT).
+`aglow` and `aglow-mux` include zlib-ng and xxHash.
+`aglow` and `aglow-mux` also include libpng (libpng-2.0 license), libjpeg-turbo (IJG and BSD-3-Clause licenses), libwebp (BSD-3-Clause) and Little CMS (MIT).
+This software is based in part on the work of the Independent JPEG Group.
+The character tables of `afterglow` and `aglow-mux` come from the Unicode Character Database (Unicode-3.0).
+A static `aglow` also includes parts of glibc and of the GCC runtime libraries.
 Each file, or `REUSE.toml` for a file without a header, identifies its license.
 The [LICENSES directory](LICENSES) contains the license texts of the files in this repository.
-The installation also includes the license texts of zlib-ng, xxHash, valijson, Luau and Lua.
-It also includes `LICENSE.stb_image`, and for a static `aglow`, `LICENSE.glibc` and `LICENSE.libstdc++`.
+The installation also includes the license texts of zlib-ng, xxHash, libpng, libjpeg-turbo, libwebp, Little CMS, the Unicode Character Database, jsoncons, Luau and Lua.
+For a static `aglow`, it also includes `LICENSE.glibc` and `LICENSE.libstdc++`.
 [Build and install](docs/BUILD.md#install) tells where they go.

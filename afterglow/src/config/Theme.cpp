@@ -5,6 +5,9 @@
 
 #include "app/BuildTree.h"
 
+#include <AfterglowProto/Color.h>
+#include <PhosphorPaths/SuiteDirectories.h>
+
 #include <QColor>
 #include <QDir>
 #include <QFile>
@@ -40,14 +43,14 @@ std::optional<AfterglowVt::Rgb> color(QString value)
     if (BareHex.match(value).hasMatch()) {
         value.prepend(QLatin1Char('#'));
     }
-    if (!isColorName(value)) {
-        return std::nullopt;
-    }
-    const QColor c = QColor::fromString(value);
-    return AfterglowVt::Rgb{std::uint8_t(c.red()), std::uint8_t(c.green()), std::uint8_t(c.blue())};
+    return rgbFromName(value);
 }
 
-enum class Assigned { Unused, Invalid, Set };
+enum class Assigned {
+    Unused,
+    Invalid,
+    Set
+};
 
 /// Sets the colour @p key names (in any of the three spellings) to @p value.
 /// Unused for keys that are not colours afterglow uses, Invalid for one of
@@ -126,7 +129,8 @@ QByteArray withoutByteOrderMark(const QByteArray& data)
 std::optional<AfterglowVt::Rgb> kdeColor(const QString& value)
 {
     const QStringList parts = value.split(QLatin1Char(','));
-    if (parts.size() != 3 && parts.size() != 4) { // kdeglobals may add an alpha
+    // kdeglobals may add an alpha. "oklch(0.7, 0.1, 200)" has commas too.
+    if ((parts.size() != 3 && parts.size() != 4) || value.contains(QLatin1Char('('))) {
         return color(value);
     }
     std::array<int, 3> rgb{};
@@ -168,13 +172,29 @@ std::optional<AfterglowVt::Rgb>* konsoleTarget(Theme& theme, const QString& sect
 
 } // namespace
 
+std::optional<AfterglowVt::Rgb> rgbFromName(const QString& name)
+{
+    // The mux daemon reads the colours of afterglow ctl --session with the same rules.
+    const QByteArray utf8 = name.toUtf8();
+    AfterglowVt::Rgb rgb;
+    if (!AfterglowProto::parseSettingColor(std::string_view(utf8.constData(), std::size_t(utf8.size())), rgb.r, rgb.g,
+                                           rgb.b)) {
+        return std::nullopt;
+    }
+    return rgb;
+}
+
+QString hexName(AfterglowVt::Rgb rgb)
+{
+    return QStringLiteral("#%1%2%3")
+        .arg(rgb.r, 2, 16, QLatin1Char('0'))
+        .arg(rgb.g, 2, 16, QLatin1Char('0'))
+        .arg(rgb.b, 2, 16, QLatin1Char('0'));
+}
+
 bool isColorName(const QString& name)
 {
-    static const QRegularExpression EightDigits(QStringLiteral("^#[0-9a-fA-F]{8}$"));
-    // Transparent by its alpha, not by its spelling: Qt drops the spaces and
-    // tabs of a name, so "trans parent" is transparent too.
-    return QColor::isValidColorName(name) && !EightDigits.match(name).hasMatch()
-        && QColor::fromString(name).alpha() == 255;
+    return rgbFromName(name).has_value();
 }
 
 QString pick(const QString& spec, bool dark)
@@ -214,7 +234,8 @@ QString bundledDirectory()
 #if defined(AFTERGLOW_INSTALLED_THEME_DIR)
     // A build-tree binary reads the checkout; an installed one its own prefix,
     // which need not be in XDG_DATA_DIRS.
-    return runningFromBuildTree() ? QStringLiteral(AFTERGLOW_SOURCE_THEME_DIR) : QStringLiteral(AFTERGLOW_INSTALLED_THEME_DIR);
+    return runningFromBuildTree() ? QStringLiteral(AFTERGLOW_SOURCE_THEME_DIR)
+                                  : QStringLiteral(AFTERGLOW_INSTALLED_THEME_DIR);
 #elif defined(AFTERGLOW_SOURCE_THEME_DIR)
     return QStringLiteral(AFTERGLOW_SOURCE_THEME_DIR);
 #else
@@ -237,10 +258,12 @@ QStringList dataDirs(const QString& sub)
 
 } // namespace
 
-QStringList searchDirs()
+QStringList searchDirs(const QString& configDirectory)
 {
-    QStringList dirs{QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
-                     + QStringLiteral("/afterglow/themes")};
+    // Beside the config file, as its scripts are: afterglow --config
+    // DIR/config.json takes DIR/themes in place of the user's own.
+    QStringList dirs{(configDirectory.isEmpty() ? PhosphorPaths::appConfigDir() : configDirectory)
+                     + QStringLiteral("/themes")};
     const QString bundled = bundledDirectory();
     // A build-tree binary puts the checkout above the data directories, so
     // that an installed copy does not shadow the themes that it is testing.
@@ -248,7 +271,7 @@ QStringList searchDirs()
     if (checkout && !bundled.isEmpty()) {
         dirs << bundled;
     }
-    dirs << dataDirs(QStringLiteral("afterglow/themes"));
+    dirs << dataDirs(PhosphorPaths::appSubdir() + QStringLiteral("/themes"));
     if (!checkout && !bundled.isEmpty()) {
         dirs << bundled;
     }
@@ -382,22 +405,36 @@ std::optional<Theme> parse(const QByteArray& data, QString* error, QStringList* 
             count(*target ? Assigned::Set : Assigned::Invalid, section);
         }
     } else {
-        // Ghostty writes "key = value"; kitty "key value".
+        // Ghostty writes "key = value"; kitty "key value", where the value is
+        // the rest of the line ("dark slate gray", "oklch(0.7 0.1 200)").
         static const QRegularExpression Ghostty(QStringLiteral("^([\\w-]+)\\s*=\\s*(.*)$"));
-        static const QRegularExpression Kitty(QStringLiteral("^([\\w-]+)\\s+(\\S+)"));
+        static const QRegularExpression Kitty(QStringLiteral("^([\\w-]+)\\s+(.+)$"));
+        // A kitty value with text after it still counts by its first word,
+        // or by its "name(...)": a tail glued to the ')' leaves only the part
+        // before the first space, which is no colour.
+        static const QRegularExpression FirstWord(QStringLiteral("^(\\w+\\([^)]*\\)(?=\\s|$)|\\S+)"));
         for (const QByteArray& raw : text.split('\n')) {
             const QString line = QString::fromUtf8(raw).trimmed();
             if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) {
                 continue;
             }
             QRegularExpressionMatch m = Ghostty.match(line);
-            if (!m.hasMatch()) {
+            const bool kitty = !m.hasMatch();
+            if (kitty) {
                 m = Kitty.match(line);
             }
             if (!m.hasMatch()) {
                 continue;
             }
-            count(assign(theme, m.captured(1), m.captured(2).trimmed()), m.captured(1));
+            const QString key = m.captured(1);
+            const QString value = m.captured(2).trimmed();
+            Assigned assigned = assign(theme, key, value);
+            if (kitty && assigned == Assigned::Invalid) {
+                if (const auto word = FirstWord.match(value); word.hasMatch() && word.captured(1) != value) {
+                    assigned = assign(theme, key, word.captured(1));
+                }
+            }
+            count(assigned, key);
         }
     }
     if (found == 0) {
@@ -413,7 +450,8 @@ bool isPlasma(const QString& name, QString* base)
 {
     static const QLatin1String Prefix("plasma");
     // In any case, as the light: and dark: of pick().
-    if (name.compare(Prefix, Qt::CaseInsensitive) != 0 && !name.startsWith(Prefix + QLatin1Char(':'), Qt::CaseInsensitive)) {
+    if (name.compare(Prefix, Qt::CaseInsensitive) != 0
+        && !name.startsWith(Prefix + QLatin1Char(':'), Qt::CaseInsensitive)) {
         return false;
     }
     if (base) {
@@ -426,8 +464,8 @@ QStringList plasmaSources()
 {
     // locateAll lists the user's file first; KDE reads the system's first.
     QStringList files = QStandardPaths::locateAll(QStandardPaths::GenericConfigLocation, QStringLiteral("kdeglobals"));
-    const QString user = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
-        + QStringLiteral("/kdeglobals");
+    const QString user =
+        QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + QStringLiteral("/kdeglobals");
     files.removeAll(user);
     std::reverse(files.begin(), files.end());
     files << user;
@@ -469,18 +507,25 @@ Theme plasmaColors(const QStringList& sources)
         }
     }
     // Without kdeglobals (another desktop, or a scheme that leaves a colour
-    // out) the platform theme's palette says the same.
-    const QPalette palette = hasGuiApplication() ? QGuiApplication::palette() : QPalette(Qt::black, Qt::white);
-    auto from = [&](QPalette::ColorRole role) {
+    // out) the platform theme's palette says the same. Without a GUI
+    // application (afterglow mux new) there is no palette of the desktop:
+    // a colour that the scheme leaves out stays unset, and the theme under
+    // it keeps its own.
+    const bool gui = hasGuiApplication();
+    const QPalette palette = gui ? QGuiApplication::palette() : QPalette();
+    auto from = [&](const std::optional<AfterglowVt::Rgb>& set,
+                    QPalette::ColorRole role) -> std::optional<AfterglowVt::Rgb> {
+        if (set || !gui)
+            return set;
         const QColor c = palette.color(QPalette::Active, role);
         return AfterglowVt::Rgb{std::uint8_t(c.red()), std::uint8_t(c.green()), std::uint8_t(c.blue())};
     };
     Theme theme;
-    theme.background = background.value_or(from(QPalette::Base));
-    theme.foreground = foreground.value_or(from(QPalette::Text));
-    theme.selectionBackground = selectionBackground.value_or(from(QPalette::Highlight));
-    theme.selectionForeground = selectionForeground.value_or(from(QPalette::HighlightedText));
-    theme.cursor = accent.value_or(from(QPalette::Accent));
+    theme.background = from(background, QPalette::Base);
+    theme.foreground = from(foreground, QPalette::Text);
+    theme.selectionBackground = from(selectionBackground, QPalette::Highlight);
+    theme.selectionForeground = from(selectionForeground, QPalette::HighlightedText);
+    theme.cursor = from(accent, QPalette::Accent);
     theme.cursorText = theme.background;
     return theme;
 }

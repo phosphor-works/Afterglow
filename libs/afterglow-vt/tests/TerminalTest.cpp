@@ -27,7 +27,10 @@ struct Term
         }())
     {
     }
-    void feed(std::string_view s) { t.feed(s); }
+    void feed(std::string_view s)
+    {
+        t.feed(s);
+    }
 };
 } // namespace
 
@@ -64,6 +67,30 @@ TEST(Terminal, CursorMovementAndErase)
     EXPECT_EQ(rowText(t.t, 1), "  xy");
     t.feed("\x1b[2J");
     EXPECT_EQ(screenText(t.t), "");
+}
+
+TEST(Terminal, EraseDisplay22MovesTheScreenIntoTheHistory)
+{
+    // kitty's ED 22: the lines down to the last one with text go into the
+    // history, then the screen is erased. The cursor stays.
+    Term t(5, 4);
+    t.feed("a\r\nb\r\nc\x1b[22J");
+    EXPECT_EQ(screenText(t.t), "");
+    ASSERT_EQ(t.t.screen().historySize(), 3u);
+    EXPECT_EQ(rowText(t.t.screen(), t.t.screen().absoluteRow(0)), "a");
+    EXPECT_EQ(rowText(t.t.screen(), t.t.screen().absoluteRow(2)), "c");
+    EXPECT_EQ(t.t.screen().cursor.y, 2);
+    EXPECT_EQ(t.t.screen().cursor.x, 1);
+
+    Term region(5, 4); // a scrolling region keeps the lines out of the history
+    region.feed("a\x1b[1;3r\x1b[22J");
+    EXPECT_EQ(screenText(region.t), "");
+    EXPECT_EQ(region.t.screen().historySize(), 0u);
+
+    Term alt(5, 4); // the alternate screen has no history
+    alt.feed("\x1b[?1049ha\x1b[22J");
+    EXPECT_EQ(screenText(alt.t), "");
+    EXPECT_EQ(alt.t.screen().historySize(), 0u);
 }
 
 TEST(Terminal, ScrollingFeedsHistory)
@@ -118,7 +145,9 @@ TEST(Terminal, WideCharactersOverwriteNarrowAndWideCellsCleanly)
     EXPECT_EQ(row.cells[0].width(), 2);
     EXPECT_TRUE(row.cells[1].isTail());
     EXPECT_EQ(row.cells[0].styleId(), row.cells[1].styleId());
-    EXPECT_EQ(rowText(t.t, 0), "\xe4\xb8\x81" "cd");
+    EXPECT_EQ(rowText(t.t, 0),
+              "\xe4\xb8\x81"
+              "cd");
     // Red is gone with the cells that held it: default and green are left.
     EXPECT_EQ(t.t.screen().styles().liveCount(), 2u);
 
@@ -190,7 +219,9 @@ TEST(Terminal, StylesAreReleased)
 TEST(Terminal, WideCharacters)
 {
     Term t(5, 2);
-    t.feed("a\xE4\xB8\xAD" "b");
+    t.feed(
+        "a\xE4\xB8\xAD"
+        "b");
     const Row& r = t.t.screen().row(0);
     EXPECT_EQ(r.cells[1].width(), 2);
     EXPECT_TRUE(r.cells[2].isTail());
@@ -258,15 +289,94 @@ TEST(Terminal, CursorColorQueryMatchesConfiguredOverrideAndReset)
 TEST(Terminal, Vs16WidensEmoji)
 {
     Term t(10, 2);
-    t.feed("\xE2\x9D\xA4\xEF\xB8\x8F" "a"); // heart + VS16
+    t.feed(
+        "\xE2\x9D\xA4\xEF\xB8\x8F"
+        "a"); // heart + VS16
     EXPECT_EQ(t.t.screen().row(0).cells[0].width(), 2);
     EXPECT_EQ(t.t.screen().cursor.x, 3);
+}
+
+TEST(Terminal, Vs15NarrowsAWideEmoji)
+{
+    // kitty's text sizing spec: VS15 right after a wide emoji makes its cell
+    // one cell wide, and the cursor comes back by one.
+    Term t(10, 2);
+    t.feed(
+        "\xE2\x8C\x9A\xEF\xB8\x8E"
+        "a"); // watch + VS15
+    EXPECT_EQ(t.t.screen().row(0).cells[0].width(), 1);
+    EXPECT_EQ(t.t.screen().row(0).cells[1].codepoint(), U'a');
+    EXPECT_EQ(t.t.screen().cursor.x, 2);
+    Term edge(4, 2); // in the last two columns: the freed cell takes the next character
+    edge.feed(
+        "ab\xF0\x9F\x98\x80\xEF\xB8\x8E"
+        "c");
+    EXPECT_EQ(rowText(edge.t, 0), "ab\U0001F600\uFE0Ec");
+    EXPECT_EQ(rowText(edge.t, 1), "");
+    Term plain(10, 2); // VS15 after a narrow character, or not right after the emoji, changes nothing
+    plain.feed(
+        "\xE2\x9D\xA4\xEF\xB8\x8E\xF0\x9F\x91\xA8\xE2\x80\x8D\xEF\xB8\x8E"
+        "a");
+    EXPECT_EQ(plain.t.screen().row(0).cells[0].width(), 1);
+    EXPECT_EQ(plain.t.screen().row(0).cells[1].width(), 2);
+    EXPECT_EQ(plain.t.screen().cursor.x, 4);
+    Term sized(10, 2); // a sized block keeps the width its program gave it
+    sized.feed(
+        "\x1b]66;w=2;\xE2\x8C\x9A\x07\xEF\xB8\x8E"
+        "a");
+    EXPECT_EQ(sized.t.screen().cursor.x, 3);
+}
+
+TEST(Terminal, AJoinedCharacterWithAWidthWidensItsCluster)
+{
+    // glibc's wcwidth counts a spacing mark, a consonant after a virama and
+    // the digit after a prepended mark, so programs that measure with it
+    // expect the cluster to take two cells. It takes no more than two, as in
+    // wcwidth and ghostty.
+    // clusterWidth(), which OSC 66 and the input method's text use, follows
+    // the same rules as printing.
+    const auto widthOf = [](const std::string& text) {
+        Term t(20, 2);
+        t.feed(text + "a");
+        const int printed = t.t.screen().cursor.x - 1;
+        std::u32string cluster;
+        char32_t cp = 0;
+        for (std::size_t i = 0; AfterglowProto::nextUtf8(text, i, cp);) {
+            cluster += cp;
+        }
+        EXPECT_EQ(t.t.clusterWidth(cluster), printed) << text;
+        return printed;
+    };
+    EXPECT_EQ(widthOf("\xE0\xB8\x95\xE0\xB9\x88\xE0\xB8\xB3"), 2); // Thai TO TAO, MAI EK, SARA AM
+    EXPECT_EQ(widthOf("\xE0\xBA\x81\xE0\xBA\xB3"), 2); // Lao KO, AM
+    EXPECT_EQ(widthOf("\xE0\xA4\x95\xE0\xA4\xBE"), 2); // Hindi KA, AA (a spacing mark)
+    EXPECT_EQ(widthOf("\xE0\xA4\x95\xE0\xA5\x8D\xE0\xA4\xB0"), 2); // Hindi KA, virama, RA
+    EXPECT_EQ(widthOf("\xE0\xA4\x95\xE0\xA5\x8D\xE0\xA4\xB7\xE0\xA5\x8D\xE0\xA4\xAE"), 2); // three consonants
+    EXPECT_EQ(widthOf("\xE0\xAE\x95\xE0\xAE\xBE"), 2); // Tamil KA, AA (an Extend spacing mark)
+    EXPECT_EQ(widthOf("\xD8\x81\xDB\xB1"), 2); // U+0601, a prepended mark, then a digit
+    EXPECT_EQ(widthOf("\xE0\xA4\x95\xE0\xA4\xBF\xE0\xA4\x82"), 2); // KA, I, a nasal mark (Mn)
+    EXPECT_EQ(widthOf("e\xCC\x81"), 1); // a nonspacing mark adds no width
+    EXPECT_EQ(widthOf("\xE2\x9D\xA4\xE2\x80\x8D\xF0\x9F\x94\xA5"), 1); // emoji after a ZWJ: the first one's width
+    EXPECT_EQ(widthOf("\xE1\x84\x80\xE1\x85\xA1\xE1\x86\xA8"), 2); // Hangul jamo: the leading one's width
+    EXPECT_EQ(widthOf("\xE2\x8C\x9A\xEF\xB8\x8E"), 1); // VS15 after a wide emoji
+    EXPECT_EQ(widthOf("\xE2\x9D\xA4\xEF\xB8\x8F"), 2); // VS16 after a text emoji
+
+    // The new tail cell takes the character that was after the cluster.
+    Term t(10, 2);
+    t.feed("xyz\r\xE0\xA4\x95\xE0\xA4\xBE");
+    EXPECT_EQ(rowText(t.t, 0), "\u0915\u093Ez");
+    Term off(10, 2); // without grapheme clustering, each character takes its own cells
+    off.feed("\x1b[?2027l\xE0\xA4\x95\xE0\xA5\x8D\xE0\xA4\xB0");
+    EXPECT_EQ(off.t.screen().row(0).cells[0].width(), 1);
+    EXPECT_EQ(off.t.screen().cursor.x, 2);
 }
 
 TEST(Terminal, ZwjFamilyIsOneWideCell)
 {
     Term t(10, 2);
-    t.feed("\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7" "a");
+    t.feed(
+        "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7"
+        "a");
     EXPECT_EQ(t.t.screen().cursor.x, 3);
     EXPECT_EQ(t.t.screen().row(0).cells[2].codepoint(), U'a');
 }
@@ -349,6 +459,14 @@ TEST(Terminal, KittyKeyboardStack)
     t.host.written.clear();
     t.feed("\x1b[?1049h\x1b[?u\x1b[>8u\x1b[?1049l\x1b[?u");
     EXPECT_EQ(t.host.written, "\x1b[?0u\x1b[?1u");
+    // The alternate screen's stack stays from one visit to the next, as in kitty.
+    t.host.written.clear();
+    t.feed("\x1b[?1049h\x1b[?u\x1b[?1049l");
+    EXPECT_EQ(t.host.written, "\x1b[?8u");
+    // DECSTR clears both stacks, as kitty's soft reset does.
+    t.host.written.clear();
+    t.feed("\x1b[!p\x1b[?u\x1b[?1049h\x1b[?u\x1b[?1049l");
+    EXPECT_EQ(t.host.written, "\x1b[?0u\x1b[?0u");
     // plain CSI u is still restore-cursor
     t.feed("\x1b[1;5H\x1b[s\x1b[2;1H\x1b[u");
     EXPECT_EQ(t.t.screen().cursor.x, 4);
@@ -357,7 +475,7 @@ TEST(Terminal, KittyKeyboardStack)
 TEST(Terminal, SetOptionsAppliesLive)
 {
     Term t(10, 2);
-    t.feed("\x1b]11;#000000\x07\x1b[1 q"); // a blinking block
+    t.feed("\x1b[1 q"); // a blinking block
     TerminalOptions o;
     o.defaultBackground = Rgb{1, 2, 3};
     o.cursorShape = CursorShape::Bar;
@@ -379,7 +497,9 @@ TEST(Terminal, Osc8Hyperlinks)
     Term t(20, 2);
     t.feed("\x1b]8;id=a;https://example.com\x1b\\link\x1b[1mbold\x1b[0m\x1b]8;;\x1b\\ plain");
     const Screen& s = t.t.screen();
-    const auto linkAt = [&](int x) { return s.styles().get(s.row(0).cells[std::size_t(x)].styleId()).link; };
+    const auto linkAt = [&](int x) {
+        return s.styles().get(s.row(0).cells[std::size_t(x)].styleId()).link;
+    };
     ASSERT_NE(linkAt(0), 0u);
     EXPECT_EQ(s.styles().linkUri(linkAt(0)), "https://example.com");
     EXPECT_EQ(linkAt(5), linkAt(0)); // SGR changes keep the link
@@ -437,6 +557,14 @@ TEST(Terminal, ShellIntegrationCommands)
     ASSERT_EQ(host.commandsFinished.size(), 2u);
     EXPECT_EQ(host.commandsFinished[1], -1);
     EXPECT_EQ(t.text(Terminal::TextScope::Screen), "$ make test\nok 1\nok 2\n$ sleep 9");
+    // A negative code is not reported: -1, as the region has none.
+    t.feed(
+        "\x1b]133;B\x07"
+        "false\r\n\x1b]133;C\x07\x1b]133;D;-7\x07");
+    ASSERT_EQ(host.commandsFinished.size(), 3u);
+    EXPECT_EQ(host.commandsFinished[2], -1);
+    ASSERT_FALSE(t.semanticRegions().empty());
+    EXPECT_FALSE(t.semanticRegions().back().exitCode.has_value());
 }
 
 TEST(Terminal, ClearScreenAndHistory)
@@ -485,8 +613,10 @@ TEST(Terminal, BatchedPrintingMatchesBytewise)
         "plain ascii that wraps past the edge of this narrow terminal\r\n",
         "Ελληνικά кириллица 日本語の文字 한국어 \xed\x95\x9c\xea\xb8\x80 wide at the edge: 中中中中中中中中中中中\r\n",
         "e\xcc\x81 n\xcc\x83 a\xcc\x8a\xcc\x8a combining after simple letters\r\n",
-        "flags \xf0\x9f\x87\xaf\xf0\x9f\x87\xb5\xf0\x9f\x87\xba\xf0\x9f\x87\xb8 zwj \xf0\x9f\x91\xa8\xe2\x80\x8d\xf0\x9f\x91\xa9 vs16 \xe2\x9d\xa4\xef\xb8\x8f\r\n",
-        "prepend \xd8\x80" "a then devanagari \xe0\xa4\x95\xe0\xa5\x8d\xe0\xa4\xb7 hangul \xe1\x84\x80\xe1\x85\xa1\xe1\x86\xa8\r\n",
+        "flags \xf0\x9f\x87\xaf\xf0\x9f\x87\xb5\xf0\x9f\x87\xba\xf0\x9f\x87\xb8 zwj "
+        "\xf0\x9f\x91\xa8\xe2\x80\x8d\xf0\x9f\x91\xa9 vs16 \xe2\x9d\xa4\xef\xb8\x8f\r\n",
+        "prepend \xd8\x80"
+        "a then devanagari \xe0\xa4\x95\xe0\xa5\x8d\xe0\xa4\xb7 hangul \xe1\x84\x80\xe1\x85\xa1\xe1\x86\xa8\r\n",
         "\x1b[31mred \xc3\xa9t\xc3\xa9\x1b[0m \x1b[1mbold \xce\xb1\xce\xb2\x1b[m\r\n",
         "bad \xc3 \xe2\x82 \xed\xa0\x80 \xc0\xaf \xf4\x90\x80\x80 \xff end\r\n",
         "\x1b[4h insert \xc3\xa9\xc3\xa9 \x1b[4l \x1b(0lqqk\x1b(B mixed\r\n",
@@ -561,7 +691,9 @@ TEST(Terminal, BidiControlsAreRetainedAndCopiedOnlyForBidiShellContent)
     // Bidi off: the control takes no cell, as everywhere else.
     RecordingHost host;
     Terminal off(20, 3, host);
-    off.feed("\xe2\x80\xae" "abc");
+    off.feed(
+        "\xe2\x80\xae"
+        "abc");
     EXPECT_EQ(off.screen().row(0).at(0).codepoint(), U'a');
     EXPECT_EQ(off.text(Terminal::TextScope::All), "abc");
 }
@@ -572,7 +704,7 @@ TEST(Terminal, SemanticRegionsRetainTextThroughReflow)
     t.feed("\x1b]133;A\a$ \x1b]133;B\aprint abc\x1b]133;C\a\r\nabcdefghijklmno\x1b]133;D;0\a");
     auto regions = t.t.semanticRegions();
     ASSERT_EQ(regions.size(), 3u);
-    EXPECT_EQ(t.t.semanticRegionText(regions[0].id), "$" );
+    EXPECT_EQ(t.t.semanticRegionText(regions[0].id), "$");
     EXPECT_EQ(t.t.semanticRegionText(regions[1].id), "print abc");
     EXPECT_EQ(t.t.semanticRegionText(regions[2].id), "\nabcdefghijklmno");
     t.t.resize(6, 5, 10, 20);
@@ -585,6 +717,67 @@ TEST(Terminal, SemanticRegionsRetainTextThroughReflow)
     t.t.reset();
     t.feed("\x1b]133;A\a");
     EXPECT_GT(t.t.semanticRegions().front().id, regions.back().id);
+}
+
+TEST(Terminal, TheCommandOfARowAndTheFirstOutputOfRows)
+{
+    Term t(20, 10);
+    // Rows 0 to 2: "$ one" and its two lines. Row 3: "$ two" with no
+    // output. Rows 4 and 5: "$ three", which still runs, and its line.
+    t.feed("\x1b]133;A\a$ \x1b]133;B\aone\x1b]133;C\a\r\nout1\r\nout1b\r\n\x1b]133;D;0\a");
+    t.feed("\x1b]133;A\a$ \x1b]133;B\atwo\x1b]133;C\a\r\n\x1b]133;D;0\a");
+    t.feed("\x1b]133;A\a$ \x1b]133;B\athree\x1b]133;C\a\r\nout3\r\n");
+    const auto regions = t.t.semanticRegions();
+    ASSERT_EQ(regions.size(), 9u);
+    const std::uint64_t one = regions[2].id, two = regions[5].id, three = regions[8].id;
+    ASSERT_EQ(t.t.semanticRegionText(one), "\nout1\nout1b\n");
+    // The prompt, the input and the output of a command give its output;
+    // a running command holds the rows down to the cursor.
+    for (const std::uint64_t row : {0, 1, 2})
+        EXPECT_EQ(t.t.commandOutputAt(row), one) << row;
+    EXPECT_EQ(t.t.commandOutputAt(3), two);
+    for (const std::uint64_t row : {4, 5, 6})
+        EXPECT_EQ(t.t.commandOutputAt(row), three) << row;
+    EXPECT_EQ(t.t.commandOutputAt(7), std::nullopt);
+    // The first output with a row in a range: one that ends at the start of
+    // a row has nothing there.
+    EXPECT_EQ(t.t.firstCommandOutputIn(0, 9), one);
+    EXPECT_EQ(t.t.firstCommandOutputIn(2, 9), one);
+    EXPECT_EQ(t.t.firstCommandOutputIn(3, 9), two);
+    EXPECT_EQ(t.t.firstCommandOutputIn(4, 9), three);
+    EXPECT_EQ(t.t.firstCommandOutputIn(7, 9), std::nullopt);
+
+    // A shell that marks only the output (C and D): each output is a command.
+    Term bare(20, 10);
+    bare.feed("\x1b]133;C\a\r\nx\r\n\x1b]133;D\a\x1b]133;C\a\r\ny\r\n\x1b]133;D\a");
+    const auto outputs = bare.t.semanticRegions();
+    ASSERT_EQ(outputs.size(), 2u);
+    EXPECT_EQ(bare.t.commandOutputAt(1), outputs[0].id);
+    EXPECT_EQ(bare.t.commandOutputAt(2), outputs[1].id);
+    // No regions: no command.
+    Term none(20, 10);
+    EXPECT_EQ(none.t.commandOutputAt(0), std::nullopt);
+    EXPECT_EQ(none.t.firstCommandOutputIn(0, 9), std::nullopt);
+    // Stable ids, not visible rows: in a screen of three rows, the first
+    // command is in the history. Once its rows left the history, its output
+    // is no first output of any rows.
+    Term history(20, 3, 3);
+    history.feed("\x1b]133;A\a$ \x1b]133;B\aone\x1b]133;C\a\r\nout1\r\n\x1b]133;D;0\a");
+    history.feed("\x1b]133;A\a$ \x1b]133;B\atwo\x1b]133;C\a\r\nout2\r\nout2b\r\n\x1b]133;D;0\a");
+    const auto both = history.t.semanticRegions();
+    ASSERT_EQ(both.size(), 6u);
+    ASSERT_EQ(history.t.primaryScreen().historySize(), 3u);
+    ASSERT_EQ(history.t.primaryScreen().rowsDropped(), 0u);
+    EXPECT_EQ(history.t.commandOutputAt(0), both[2].id);
+    EXPECT_EQ(history.t.commandOutputAt(1), both[2].id);
+    EXPECT_EQ(history.t.commandOutputAt(2), both[5].id);
+    EXPECT_EQ(history.t.commandOutputAt(4), both[5].id);
+    EXPECT_EQ(history.t.firstCommandOutputIn(0, 5), both[2].id);
+    EXPECT_EQ(history.t.firstCommandOutputIn(2, 5), both[5].id);
+    history.feed("x\r\ny\r\nz\r\n");
+    ASSERT_EQ(history.t.primaryScreen().rowsDropped(), 3u);
+    EXPECT_FALSE(history.t.semanticRegions()[2].available);
+    EXPECT_EQ(history.t.firstCommandOutputIn(0, 8), both[5].id);
 }
 
 TEST(Terminal, SemanticRegionsWhoseRowsAResizeDropsAreGone)
@@ -664,8 +857,9 @@ TEST(Terminal, SemanticRegionsKeepTheNewest1024)
     Term t(20, 5);
     t.feed("\x1b]133;A\a");
     const std::uint64_t first = t.t.semanticRegions().front().id;
+    // A prompt after a D is a new one, with a region of its own.
     for (int i = 0; i < 1099; ++i) {
-        t.feed("\x1b]133;A\a");
+        t.feed("\x1b]133;D\a\x1b]133;A\a");
     }
     const auto regions = t.t.semanticRegions();
     ASSERT_EQ(regions.size(), 1024u);
@@ -714,8 +908,12 @@ TEST(Terminal, SemanticRegionBegunAfterARegionScrollMovesWithTheNext)
 TEST(Terminal, SavedCursorRetainsHyperlinkAndAltScreenReinternsIt)
 {
     Term t(20, 4);
-    t.feed("\x1b]8;id=one;https://one.example\a\x1b" "7\x1b]8;;\a");
-    t.feed("\x1b]8;id=two;https://two.example\aX\x1b]8;;\a\x1b" "8A");
+    t.feed(
+        "\x1b]8;id=one;https://one.example\a\x1b"
+        "7\x1b]8;;\a");
+    t.feed(
+        "\x1b]8;id=two;https://two.example\aX\x1b]8;;\a\x1b"
+        "8A");
     const auto& screen = t.t.screen();
     EXPECT_EQ(screen.styles().linkUri(screen.styles().get(screen.row(0).at(0).styleId()).link), "https://one.example");
     t.feed("\x1b[?1049hB");
@@ -742,20 +940,275 @@ TEST(Terminal, KeycapWidensAndSemanticEndIncludesRightmostCell)
     EXPECT_EQ(t.t.semanticRegionText(t.t.semanticRegions().back().id), "12345");
 }
 
-TEST(Terminal, ReloadKeepsTheProgramsCursorAndDropsItsColours)
+TEST(Terminal, ReloadKeepsTheProgramsCursorAndColours)
 {
     Term t(10, 2);
     t.feed("\x1b[6 q"); // a steady bar, as vim's insert mode asks
-    t.feed("\x1b]17;#102030\x07\x1b]4;1;#ff0000\x07\x1b[#P\x1b]4;1;#00ff00\x07");
+    // XTPUSHCOLORS saves the configured background and the program's red.
+    t.feed("\x1b]17;#102030\x07\x1b]4;1;#ff0000\x07\x1b[#P\x1b]4;1;#00ff00\x07\x1b]11;#010203\x07");
     TerminalOptions o = t.t.options();
-    o.maxScrollback = 5; // unrelated to the cursor and the colours
+    o.maxScrollback = 5; // unrelated to the cursor
+    o.basePalette[1] = {0x11, 0x11, 0x11};
+    o.basePalette[2] = {0x22, 0x22, 0x22};
+    o.defaultForeground = {0x33, 0x33, 0x33};
+    o.defaultBackground = {0x44, 0x44, 0x44};
     t.t.setOptions(o);
     EXPECT_EQ(t.t.cursorShape(), CursorShape::Bar);
     EXPECT_FALSE(t.t.modes().cursorBlink);
-    EXPECT_EQ(t.t.selectionBackground(), nullptr);
-    const Rgb base = t.t.paletteColor(1);
-    t.feed("\x1b[#Q"); // the stack went with the reload: nothing to pop
-    EXPECT_EQ(t.t.paletteColor(1), base);
+    // What the program set stays, and the rest takes the new configuration.
+    ASSERT_NE(t.t.selectionBackground(), nullptr);
+    EXPECT_EQ(*t.t.selectionBackground(), (Rgb{0x10, 0x20, 0x30}));
+    EXPECT_EQ(t.t.paletteColor(1), (Rgb{0x00, 0xff, 0x00}));
+    EXPECT_EQ(t.t.paletteColor(2), (Rgb{0x22, 0x22, 0x22}));
+    EXPECT_EQ(t.t.defaultForeground(), (Rgb{0x33, 0x33, 0x33}));
+    EXPECT_EQ(t.t.defaultBackground(), (Rgb{0x01, 0x02, 0x03}));
+    // The stack moved to the new configuration too: a pop brings back the
+    // program's red and no colour of the old configuration.
+    t.feed("\x1b[#Q");
+    EXPECT_EQ(t.t.paletteColor(1), (Rgb{0xff, 0x00, 0x00}));
+    EXPECT_EQ(t.t.paletteColor(2), (Rgb{0x22, 0x22, 0x22}));
+    EXPECT_EQ(t.t.defaultBackground(), (Rgb{0x44, 0x44, 0x44}));
+    ASSERT_NE(t.t.selectionBackground(), nullptr);
+    EXPECT_EQ(*t.t.selectionBackground(), (Rgb{0x10, 0x20, 0x30}));
+    // A reset returns to the new configuration.
+    t.feed("\x1b]104;1\x07\x1b]11;#010203\x07\x1b]111\x07");
+    EXPECT_EQ(t.t.paletteColor(1), (Rgb{0x11, 0x11, 0x11}));
+    EXPECT_EQ(t.t.defaultBackground(), (Rgb{0x44, 0x44, 0x44}));
+    // The same options again change nothing that a program set.
+    t.feed("\x1b]4;3;#abcdef\x07");
+    t.t.setOptions(o);
+    EXPECT_EQ(t.t.paletteColor(3), (Rgb{0xab, 0xcd, 0xef}));
+}
+
+// The state of the shell follows its marks: A and B a prompt, C a command,
+// D and the next A a prompt again; a secondary prompt while a command goes
+// on; nothing before the first mark and after a reset.
+TEST(Terminal, ShellStateFollowsTheMarks)
+{
+    Term t(30, 6);
+    EXPECT_EQ(t.t.shellState(), ShellState::None);
+    t.feed("plain output\r\n");
+    EXPECT_EQ(t.t.shellState(), ShellState::None);
+    t.feed("\x1b]133;A\x07$ ");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    t.feed("\x1b]133;B\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    EXPECT_FALSE(t.t.lastExitCode());
+    t.feed("sleep 1\r\n\x1b]133;C\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Running);
+    t.feed("\x1b]133;D;3\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Running);
+    EXPECT_EQ(t.t.lastExitCode(), 3);
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    EXPECT_EQ(t.t.lastExitCode(), 3);
+    // An empty line: D with no command, and a new prompt. The last exit
+    // code stays that of the last command.
+    t.feed("\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    EXPECT_EQ(t.t.lastExitCode(), 3);
+    // An open quote: the secondary prompt, until the command runs.
+    t.feed("echo \"\r\n\x1b]133;A;k=s\x07> ");
+    EXPECT_EQ(t.t.shellState(), ShellState::Continuation);
+    t.feed("\"\r\n\x1b]133;C\x07\r\n\x1b]133;D;0\x07");
+    EXPECT_EQ(t.t.lastExitCode(), 0);
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    // A secondary prompt that Ctrl+C ends: the next primary prompt.
+    t.feed("echo \"\r\n\x1b]133;A;k=s\x07> ^C\r\n\x1b]133;A\x07$ \x1b]133;B\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    // A command with no D: the next A ends it with no code.
+    t.feed("true\r\n\x1b]133;C\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    EXPECT_FALSE(t.t.lastExitCode());
+    // DECSTR keeps the marks; RIS forgets them.
+    t.feed("\x1b[!p");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    t.feed(
+        "\x1b"
+        "c");
+    EXPECT_EQ(t.t.shellState(), ShellState::None);
+    EXPECT_FALSE(t.t.lastExitCode());
+    // A full-screen program runs on the alternate screen.
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07vim\r\n\x1b]133;C\x07\x1b[?1049h");
+    EXPECT_EQ(t.t.shellState(), ShellState::Running);
+    t.feed("\x1b[?1049l\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    // A program that exited has no prompt.
+    t.t.programExited();
+    EXPECT_EQ(t.t.shellState(), ShellState::None);
+}
+
+// A command that starts and ends within one feed leaves the state at the
+// prompt: the id of the newest prompt tells that a new one came.
+TEST(Terminal, ANewPromptHasANewId)
+{
+    Term t(30, 6);
+    EXPECT_EQ(t.t.lastPromptId(), 0u);
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07");
+    const std::uint64_t first = t.t.lastPromptId();
+    EXPECT_NE(first, 0u);
+    t.feed("true\r\n\x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+    EXPECT_GT(t.t.lastPromptId(), first);
+    // A secondary prompt is no new prompt.
+    const std::uint64_t second = t.t.lastPromptId();
+    t.feed("echo \"\r\n\x1b]133;A;k=s\x07> ");
+    EXPECT_EQ(t.t.lastPromptId(), second);
+}
+
+// Typed text is the text from the input mark to the cursor: not the right
+// prompt or an autosuggestion after the cursor.
+TEST(Terminal, ShellInputIsTheTextBeforeTheCursor)
+{
+    Term t(30, 4);
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07");
+    EXPECT_FALSE(t.t.shellInput());
+    // zsh's right prompt, then the cursor back after the left one.
+    t.feed("\x1b[s\x1b[25G10:00\x1b[u");
+    EXPECT_FALSE(t.t.shellInput());
+    t.feed("make");
+    EXPECT_TRUE(t.t.shellInput());
+    // Erased again: only blanks.
+    t.feed("\b\b\b\b    \b\b\b\b");
+    EXPECT_FALSE(t.t.shellInput());
+    // Blanks before the cursor are no typed text either.
+    t.feed("ab\b\b  ");
+    EXPECT_FALSE(t.t.shellInput());
+    t.feed("\b\b");
+    // Typed text that wraps.
+    t.feed(std::string(40, 'x'));
+    EXPECT_TRUE(t.t.shellInput());
+    t.feed("\r\n\x1b]133;C\x07");
+    EXPECT_FALSE(t.t.shellInput());
+    // A shell that marks no input (no B): never typed text.
+    Term noB(30, 4);
+    noB.feed("\x1b]133;A\x07$ make");
+    EXPECT_FALSE(noB.t.shellInput());
+}
+
+// textSince gives the text from a mark to the cursor, also after the mark's
+// row scrolled into the history; from the oldest row kept once the row left
+// it; the screen on the alternate screen. A clear makes the mark stale.
+TEST(Terminal, TextSinceAMark)
+{
+    Term t(20, 4, 5);
+    t.feed("before\r\n$ ");
+    const TextMark mark = t.t.textMark();
+    t.feed("cmd\r\none\r\ntwo\r\nthree");
+    bool truncated = true, trimmed = true, stale = true;
+    EXPECT_EQ(t.t.textSince(mark, 1024, &truncated, &trimmed, &stale, {}), "cmd\none\ntwo\nthree");
+    EXPECT_FALSE(truncated);
+    EXPECT_FALSE(trimmed);
+    EXPECT_FALSE(stale);
+    // The mark's row in the history, still kept.
+    t.feed("\r\nfour");
+    const Screen& primary = t.t.primaryScreen();
+    ASSERT_GE(primary.absoluteIndexOf(mark.row), 0);
+    ASSERT_LT(std::size_t(primary.absoluteIndexOf(mark.row)), primary.historySize());
+    EXPECT_EQ(t.t.textSince(mark, 1024, &truncated, &trimmed, &stale, {}), "cmd\none\ntwo\nthree\nfour");
+    EXPECT_FALSE(trimmed);
+    // Past the 5 rows of history and 4 of the screen, the mark's row goes.
+    for (int i = 0; i < 12; ++i)
+        t.feed("\r\nline " + std::to_string(i));
+    const std::string all = t.t.textSince(mark, 1024, &truncated, &trimmed, &stale, {});
+    EXPECT_TRUE(trimmed);
+    EXPECT_FALSE(truncated);
+    EXPECT_TRUE(all.starts_with("line 3\n")) << all;
+    EXPECT_TRUE(all.ends_with("line 11")) << all;
+    // The alternate screen has no history: its screen.
+    t.feed("\x1b[?1049h\x1b[HFULL");
+    EXPECT_EQ(t.t.textSince(mark, 1024, &truncated, &trimmed, &stale, {}), "FULL");
+    EXPECT_FALSE(trimmed);
+    EXPECT_FALSE(stale);
+    t.feed("\x1b[?1049l");
+    // A clear gives the rows of the mark other text: the mark is stale, and
+    // one taken after it reads again.
+    t.feed("\r\n\r\n\r\n");
+    const TextMark low = t.t.textMark();
+    t.feed("\x1b[2J\x1b[Hcleared");
+    EXPECT_EQ(t.t.textSince(low, 1024, &truncated, &trimmed, &stale, {}), "");
+    EXPECT_TRUE(stale);
+    const TextMark after = t.t.textMark();
+    t.feed("\r\nnext");
+    EXPECT_EQ(t.t.textSince(after, 1024, &truncated, &trimmed, &stale, {}), "\nnext");
+    EXPECT_FALSE(stale);
+}
+
+// keepEnd cuts a long text at the start of a row and keeps its end, where
+// the result of a build is; without it the end is cut.
+TEST(Terminal, KeepEndKeepsTheLastRows)
+{
+    Term t(20, 4, 100);
+    const TextMark mark = t.t.textMark();
+    for (int i = 0; i < 30; ++i)
+        t.feed("row " + std::to_string(i) + "\r\n");
+    t.feed("done");
+    TextFormat end;
+    end.keepEnd = true;
+    bool truncated = false, trimmed = false;
+    const std::string kept = t.t.textSince(mark, 40, &truncated, &trimmed, nullptr, end);
+    EXPECT_TRUE(truncated);
+    EXPECT_LE(kept.size(), 40u);
+    EXPECT_TRUE(kept.ends_with("row 29\ndone")) << kept;
+    EXPECT_TRUE(kept.starts_with("row ")) << kept;
+    const std::string start = t.t.textSince(mark, 40, &truncated, &trimmed, nullptr, {});
+    EXPECT_TRUE(truncated);
+    EXPECT_TRUE(start.starts_with("row 0\n")) << start;
+    // A text that fits is whole, and not cut.
+    const std::string whole = t.t.textSince(mark, 4096, &truncated, &trimmed, nullptr, end);
+    EXPECT_FALSE(truncated);
+    EXPECT_TRUE(whole.starts_with("row 0\n")) << whole;
+    // Blank rows before the end that fits are no cut.
+    Term blank(20, 4, 100);
+    const TextMark top = blank.t.textMark();
+    blank.feed("\r\n\r\n\r\n\r\nlast");
+    EXPECT_EQ(blank.t.textSince(top, 4, &truncated, &trimmed, nullptr, end), "last");
+    EXPECT_FALSE(truncated);
+    // The last output keeps its end too: the rows that fit in 30 bytes, and
+    // the empty row of its D.
+    Term out(20, 4, 100);
+    out.feed("\x1b]133;A\x07$ \x1b]133;B\x07make\r\n\x1b]133;C\x07");
+    for (int i = 0; i < 30; ++i)
+        out.feed("out " + std::to_string(i) + "\r\n");
+    out.feed("\x1b]133;D;2\x07");
+    const std::string last = out.t.text(Terminal::TextScope::LastOutput, 30, &truncated, end);
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ(last, "out 26\nout 27\nout 28\nout 29\n");
+    // In ANSI, a row after one that wraps first ends the style that that
+    // one left open: what fits still fits.
+    Term ansi(10, 4, 100);
+    const TextMark styled = ansi.t.textMark();
+    ansi.feed("\x1b[31mrrrrrrrrrr\x1b[mabc");
+    TextFormat both = end;
+    both.ansi = true;
+    // Each row alone takes 17 and 3 bytes, and 23 together.
+    EXPECT_EQ(ansi.t.textSince(styled, 21, &truncated, &trimmed, nullptr, both), "abc");
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ(ansi.t.textSince(styled, 30, &truncated, &trimmed, nullptr, both), "\x1b[0;31mrrrrrrrrrr\x1b[mabc");
+    EXPECT_FALSE(truncated);
+}
+
+// A held pane whose shell exited at its prompt: nothing draws the prompt
+// again, so a resize holds no frame for it and a click moves no cursor.
+TEST(Terminal, AnExitLeavesThePrompt)
+{
+    Term t(20, 4);
+    t.feed("\x1b]133;A;click_events=1\x1b\\$ \x1b]133;B\x1b\\");
+    ASSERT_TRUE(t.t.atShellPrompt());
+    ASSERT_NE(t.t.promptClickInput(0, 0), "");
+    const std::uint64_t before = t.t.generation();
+    t.t.programExited();
+    EXPECT_GT(t.t.generation(), before);
+    EXPECT_FALSE(t.t.atShellPrompt());
+    EXPECT_EQ(t.t.promptClickInput(0, 0), "");
+    t.t.resize(12, 4, 10, 20);
+    EXPECT_FALSE(t.t.promptRedrawPending());
+    // A width change at a live prompt waits for the shell.
+    Term live(20, 4);
+    live.feed("\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\");
+    live.t.resize(12, 4, 10, 20);
+    EXPECT_TRUE(live.t.promptRedrawPending());
 }
 
 TEST(Terminal, MulticellWalkBelowTheScrollRegionEnds)
@@ -788,11 +1241,31 @@ constexpr std::string_view KittyPixel = "\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\";
 TEST(Terminal, ResetDuringACommandKeepsItsFinish)
 {
     // RIS (as `reset` sends it) in the middle of a command: the shell's D
-    // still finishes the command.
-    Term t(20, 4);
-    t.feed("\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07\x1b" "c\x1b]133;D;0\x07");
-    ASSERT_EQ(t.host.commandsStarted.size(), 1u);
-    EXPECT_EQ(t.host.commandsFinished, std::vector<int>{0});
+    // still finishes the command, with its code, and the command runs until
+    // then. Whole, and a byte at a time.
+    const std::string marks = "\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07\x1b";
+    for (const bool bytewise : {false, true}) {
+        Term t(20, 4);
+        const auto feed = [&](std::string_view bytes) {
+            if (!bytewise)
+                return t.feed(bytes);
+            for (const char c : bytes)
+                t.feed(std::string_view(&c, 1));
+        };
+        feed(marks + "c");
+        EXPECT_EQ(t.t.shellState(), ShellState::Running) << bytewise;
+        const std::uint64_t prompt = t.t.lastPromptId();
+        feed("\x1b]133;D;7\x07");
+        ASSERT_EQ(t.host.commandsStarted.size(), 1u);
+        EXPECT_EQ(t.host.commandsFinished, std::vector<int>{7});
+        EXPECT_EQ(t.t.lastExitCode(), 7);
+        // No prompt since the reset: no shell to tell of yet.
+        EXPECT_EQ(t.t.shellState(), ShellState::None);
+        feed("\x1b]133;A\x07$ ");
+        EXPECT_EQ(t.t.shellState(), ShellState::Prompt);
+        EXPECT_GT(t.t.lastPromptId(), prompt);
+        EXPECT_EQ(t.t.lastExitCode(), 7);
+    }
 }
 
 TEST(Terminal, CommandFinishesWhileTheAlternateScreenIsActive)
@@ -822,6 +1295,125 @@ TEST(Terminal, EncodedCommandLinesLoseControlBytes)
     t.feed("\x1b]633;E;a\\x1bb\\x-1\x07\x1b]133;D\x07\x1b]633;C\x07");
     ASSERT_EQ(t.host.commandsStarted.size(), 2u);
     EXPECT_EQ(t.host.commandsStarted[1], "ab\\x-1");
+}
+
+TEST(Terminal, PlainCommandLinesLoseControlsToo)
+{
+    // The parser keeps DEL and C1 controls in an OSC string: C1 CSI as UTF-8
+    // goes, and a raw C1 byte, which is no UTF-8, becomes U+FFFD.
+    Term t(20, 4);
+    t.feed(
+        "\x1b]133;C;cmdline=a\xc2\x9b"
+        "31mb\x7f\x9b"
+        "c\x07");
+    ASSERT_EQ(t.host.commandsStarted.size(), 1u);
+    EXPECT_EQ(t.host.commandsStarted[0],
+              "a31mb\xef\xbf\xbd"
+              "c");
+}
+
+TEST(Terminal, ACommandLineOverTheLimitKeepsItsMark)
+{
+    // fish sends the command line with C. One too long to keep goes alone:
+    // the output still begins, and the command is the text typed after B.
+    Term t(20, 4);
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n");
+    t.feed("\x1b]133;C;cmdline_url=" + std::string(70000, 'x') + "\x07out");
+    ASSERT_EQ(t.host.commandsStarted.size(), 1u);
+    EXPECT_EQ(t.host.commandsStarted[0], "ls");
+    ASSERT_FALSE(t.t.semanticRegions().empty());
+    EXPECT_EQ(t.t.semanticRegions().back().kind, SemanticZoneKind::Output);
+    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "out");
+    t.feed("\x1b]133;D;0\x07");
+    EXPECT_EQ(t.host.commandsFinished, std::vector<int>{0});
+}
+
+TEST(Terminal, AReportedCommandLineEndsWithItsCycle)
+{
+    // VS Code reports the line (633 E) before C. A cycle that never reached
+    // C (the line was cut off) leaves none for the next command.
+    Term t(20, 4);
+    t.feed("\x1b]633;A\x07$ \x1b]633;B\x07old\x1b]633;E;old\x07^C\r\n");
+    t.feed("\x1b]633;A\x07$ \x1b]633;B\x07ls\r\n\x1b]633;C\x07");
+    ASSERT_EQ(t.host.commandsStarted.size(), 1u);
+    EXPECT_EQ(t.host.commandsStarted[0], "ls");
+}
+
+TEST(Terminal, OutputThatItsCommandClearsGoesOnFromTheTop)
+{
+    // clear (ED 2 and the cursor home) with the output's start on a row
+    // below the cursor's new place: the output is what comes after.
+    Term t(20, 6);
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07watch\r\n\x1b]133;C\x07\r\n\r\n\r\nold");
+    t.feed("\x1b[H\x1b[2Jnew");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "new");
+    ASSERT_FALSE(t.t.semanticRegions().empty());
+    EXPECT_EQ(t.t.semanticRegionText(t.t.semanticRegions().back().id), "new");
+    // DECCOLM clears the page as ED 2 does, here at the width it has.
+    t.feed("\x1b]133;D;0\x07\r\n\x1b]133;A\x07$ \x1b]133;B\x07wide\r\n\x1b]133;C\x07\r\n\r\nold");
+    t.feed("\x1b[?40h\x1b[?3hcleared");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "cleared");
+}
+
+TEST(Terminal, OutputThatItsCommandErasesFromTheHomeGoesOnFromTheTop)
+{
+    // clear as CSI H CSI J (ED 0 from the top left corner) erases the same
+    // rows as ED 2: the output is what comes after, as there.
+    Term t(20, 6);
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07watch\r\n\x1b]133;C\x07\r\n\r\n\r\nold");
+    t.feed("\x1b[H\x1b[Jnew");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "new");
+    ASSERT_FALSE(t.t.semanticRegions().empty());
+    EXPECT_EQ(t.t.semanticRegionText(t.t.semanticRegions().back().id), "new");
+    // ED 0 from elsewhere erases only a part: the output keeps its start.
+    t.feed(
+        "\x1b]133;D;0\x07\r\n\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07"
+        "a\r\nb");
+    t.feed("\x1b[4;2H\x1b[J");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "a\nb");
+}
+
+TEST(Terminal, AnOsc8LinkOverTheLimitEndsTheLinkBefore)
+{
+    Term t(20, 2);
+    t.feed("\x1b]8;;https://a.example\x07" "a\x1b]8;;https://" + std::string(9000, 'b') + "\x07" "b");
+    const Screen& s = t.t.screen();
+    const auto linkAt = [&](int x) {
+        return s.styles().get(s.row(0).cells[std::size_t(x)].styleId()).link;
+    };
+    EXPECT_NE(linkAt(0), 0u);
+    EXPECT_EQ(linkAt(1), 0u);
+}
+
+TEST(Terminal, TitlesLoseControlsSeparatorsAndBidiControls)
+{
+    // DEL, C1 NEL, a line separator and a right-to-left override go; a byte
+    // that is no UTF-8 becomes U+FFFD.
+    Term t(20, 2);
+    t.feed(
+        "\x1b]2;a\x7f"
+        "b\xc2\x85"
+        "c\xe2\x80\xa8"
+        "d\xe2\x80\xae"
+        "e\xff"
+        "f\x07");
+    EXPECT_EQ(t.host.title,
+              "abcde\xef\xbf\xbd"
+              "f");
+    EXPECT_EQ(t.t.title(), t.host.title);
+}
+
+TEST(Terminal, C1ControlsSentAsUtf8AreNotPrinted)
+{
+    // Not a mark on the cell before: a copy of the text would carry them.
+    Term t(10, 2);
+    t.feed(
+        "a\xc2\x85"
+        "b\xc2\x9b");
+    EXPECT_EQ(rowText(t.t, 0), "ab");
+    EXPECT_FALSE(t.t.screen().row(0).cells[0].hasGrapheme());
+    EXPECT_FALSE(t.t.screen().row(0).cells[1].hasGrapheme());
+    EXPECT_EQ(t.t.screen().cursor.x, 2);
 }
 
 TEST(Terminal, WorkingDirectoryReportsOnlyChanges)
@@ -863,7 +1455,9 @@ TEST(Terminal, SavedCursorKeepsItsPendingWrapThroughReflow)
     Term saved(80, 5);
     saved.feed(std::string(80, 'a') + "\x1b" "7");
     saved.t.resize(100, 5, 8, 16);
-    saved.feed("\x1b" "8b");
+    saved.feed(
+        "\x1b"
+        "8b");
     EXPECT_EQ(rowText(saved.t, 0), std::string(80, 'a') + "b");
 }
 
@@ -895,6 +1489,21 @@ TEST(Terminal, XtversionReportsTheProjectVersion)
     Term t(10, 3);
     t.feed("\x1b[>q");
     EXPECT_EQ(t.host.written, std::string("\x1bP>|afterglow ") + AFTERGLOW_VT_VERSION + "\x1b\\");
+}
+
+TEST(Terminal, TitleStackPushesAndPops)
+{
+    // XTWINOPS 22 saves the title and 23 restores it, as xterm does: vim
+    // saves the shell's title when it starts and gives it back when it ends.
+    Term t(10, 3);
+    t.feed("\x1b]2;shell\x07\x1b[22;0t\x1b]2;vim\x07");
+    EXPECT_EQ(t.t.title(), "vim");
+    t.feed("\x1b[23;0t");
+    EXPECT_EQ(t.t.title(), "shell");
+    EXPECT_EQ(t.host.title, "shell");
+    // A pop with nothing saved changes nothing.
+    t.feed("\x1b[23;0t");
+    EXPECT_EQ(t.t.title(), "shell");
 }
 
 TEST(Terminal, PromptRedrawWithoutScrollback)
@@ -949,13 +1558,20 @@ TEST(Terminal, DoubleWidthLinesKeepTheCursorVisible)
     EXPECT_EQ(wrap.t.screen().row(0).at(39).codepoint(), U'A');
     EXPECT_TRUE(wrap.t.screen().row(0).at(79).isEmpty());
     Term restore(80, 4);
-    restore.feed("\x1b[1;70H\x1b" "7\x1b#6\x1b" "8"); // DECRC onto a line made double width since
+    restore.feed(
+        "\x1b[1;70H\x1b"
+        "7\x1b#6\x1b"
+        "8"); // DECRC onto a line made double width since
     EXPECT_LE(restore.t.screen().cursor.x, 39);
     Term vt52(80, 4);
-    vt52.feed("\x1b[2;1H\x1b#6\x1b[1;70H\x1b[?2l\x1b" "B"); // VT52 cursor down onto it
+    vt52.feed(
+        "\x1b[2;1H\x1b#6\x1b[1;70H\x1b[?2l\x1b"
+        "B"); // VT52 cursor down onto it
     EXPECT_EQ(vt52.t.screen().cursor.y, 1);
     EXPECT_LE(vt52.t.screen().cursor.x, 39);
-    vt52.feed("\x1b<\x1b[3;70H\x1b[?2l\x1b" "A"); // and up onto it
+    vt52.feed(
+        "\x1b<\x1b[3;70H\x1b[?2l\x1b"
+        "A"); // and up onto it
     EXPECT_EQ(vt52.t.screen().cursor.y, 1);
     EXPECT_LE(vt52.t.screen().cursor.x, 39);
     // 47 keeps each screen's line sizes while the screens share the cursor.
@@ -1126,6 +1742,13 @@ TEST(Terminal, CapabilityRepliesNeverEchoControlBytes)
     t.host.written.clear();
     t.feed("\x1bP+q5365\x1b\\"); // Se: back to the configured cursor
     EXPECT_EQ(t.host.written, "\x1bP1+r5365=1B5B302071\x1b\\");
+    // A well-formed name longer than any capability is not echoed.
+    t.host.written.clear();
+    t.feed("\x1bP+q" + std::string(256, 'A') + "\x1b\\");
+    EXPECT_EQ(t.host.written, "\x1bP0+r" + std::string(256, 'A') + "\x1b\\");
+    t.host.written.clear();
+    t.feed("\x1bP+q" + std::string(1 << 20, 'A') + "\x1b\\");
+    EXPECT_EQ(t.host.written, "\x1bP0+r\x1b\\");
 }
 
 TEST(Terminal, ClipboardReadReplyEchoesOnlySelectionLetters)
@@ -1172,14 +1795,26 @@ TEST(Terminal, DecimalValuesIgnoreTheLocale)
     t.feed("\x1b]4;1;rgbi:0.5/0.5/0.5\x07\x1b]4;1;?\x07");
     t.feed("\x1b]21;transparent_background_color1=#102030@0.25\x07\x1b]21;transparent_background_color1=?\x07");
     std::setlocale(LC_NUMERIC, previous.c_str());
-    EXPECT_EQ(t.host.written, "\x1b]4;1;rgb:8080/8080/8080\x07\x1b]21;transparent_background_color1=rgb:10/20/30@0.25\x07");
+    EXPECT_EQ(t.host.written,
+              "\x1b]4;1;rgb:8080/8080/8080\x07\x1b]21;transparent_background_color1=rgb:10/20/30@0.25\x07");
 }
 
-TEST(Terminal, RepeatShowsTheCharacterAsDrawn)
+TEST(Terminal, RepeatMapsTheCharacterThroughTheCharsetOfNow)
 {
+    // xterm and kitty repeat the character as the program sent it, through
+    // the G-set in GL at the time of REP.
     Term t(10, 2);
     t.feed("q\x1b(0\x1b[2b\x1b(B");
-    EXPECT_EQ(rowText(t.t, 0), "qqq"); // printed before the switch: repeats as printed
+    EXPECT_EQ(rowText(t.t, 0), "q\u2500\u2500");
+    Term back(10, 2); // a mapped character goes back to what was sent
+    back.feed("\x1b(0q\x1b(B\x1b[2b");
+    EXPECT_EQ(rowText(back.t, 0), "\u2500qq");
+    Term shift(10, 2); // a pending single shift is for the next character sent
+    shift.feed("\x1b*0q\x1bN\x1b[bq");
+    EXPECT_EQ(rowText(shift.t, 0), "qq\u2500");
+    Term insert(10, 2); // also under IRM
+    insert.feed("xyz\r\x1b[4hq\x1b(0\x1b[2b\x1b(B\x1b[4l");
+    EXPECT_EQ(rowText(insert.t, 0), "q\u2500\u2500xyz");
 }
 
 TEST(Terminal, RepeatInInsertModeShiftsOnce)
@@ -1235,6 +1870,88 @@ TEST(Terminal, OutOfRangeColoursAreIgnored)
     }
 }
 
+TEST(Terminal, MalformedPrivateCsiLeavesTheNextSgrIntact)
+{
+    // In kitty before 0.49.0, ESC [ ? : left the parser in a state where
+    // later SGR colours were ignored.
+    for (std::string_view bad :
+         {"\x1b[?:", "\x1b[?:m", "\x1b[?:;:5h", "\x1b[?::::::::::::::::::::::::::::::::m", "\x1b[?:\x1b[?:"}) {
+        Term t(10, 2);
+        t.feed(std::string(bad) + "\x1b[31mA");
+        const auto& s = t.t.screen();
+        EXPECT_EQ(rowText(t.t, 0), "A") << bad;
+        EXPECT_EQ(s.styles().get(s.row(0).at(0).styleId()).fg, Color::palette(1)) << bad;
+    }
+}
+
+TEST(Terminal, XtsaveWithoutModesSavesTheQuietModes)
+{
+    // kitty: XTSAVE and XTRESTORE without modes take every mode that has no
+    // side effect (misc-protocol.rst), with IRM and LNM. DECOM moves the
+    // cursor and stays out.
+    Term t(10, 3);
+    t.feed("\x1b[?1h\x1b[?1000h\x1b[?1006h\x1b[?2004h\x1b[4h\x1b[20h\x1b[?6h\x1b[?s");
+    t.feed("\x1b[?1l\x1b[?1003h\x1b[?1015h\x1b[?2004l\x1b[4l\x1b[20l\x1b[?25l\x1b[?6l\x1b[?5h");
+    t.feed("\x1b[?r");
+    const Modes& m = t.t.modes();
+    EXPECT_TRUE(m.cursorKeysApp);
+    EXPECT_EQ(m.mouseTracking, MouseTracking::Normal);
+    EXPECT_EQ(m.mouseFormat, MouseFormat::Sgr);
+    EXPECT_TRUE(m.bracketedPaste);
+    EXPECT_TRUE(m.insert);
+    EXPECT_TRUE(m.newline);
+    EXPECT_TRUE(m.cursorVisible);
+    EXPECT_FALSE(m.reverseVideo);
+    EXPECT_FALSE(m.originMode);
+    // A list of modes still saves only those.
+    t.feed("\x1b[?2004l\x1b[?2004s\x1b[?2004h\x1b[?1l\x1b[?2004r");
+    EXPECT_FALSE(t.t.modes().bracketedPaste);
+    EXPECT_FALSE(t.t.modes().cursorKeysApp);
+}
+
+TEST(Terminal, UnscrollFillsTheTopFromTheScrollback)
+{
+    // kitty's unscroll, CSI n + T: SD whose new rows come from the history.
+    Term t(10, 3);
+    t.t.resize(10, 3, 10, 20);
+    t.feed("1\r\n2\r\n3\r\n4\r\n");
+    t.feed(KittyPixel); // anchored on the last row, which the unscroll drops
+    t.feed("\x1b[2;1H");
+    t.feed("\x1b_Ga=T,f=24,s=1,v=1,i=7,C=1;AAAA\x1b\\"); // on "4", which stays
+    t.feed("\x1b[3;3H");
+    ASSERT_EQ(rowText(t.t, 0), "3");
+    ASSERT_EQ(t.t.screen().historySize(), 2u);
+    ASSERT_EQ(t.t.graphics().placements().size(), 2u);
+    const std::uint64_t idOf4 = t.t.screen().rowsDropped() + t.t.screen().historySize() + 1;
+    t.feed("\x1b[+T");
+    EXPECT_EQ(rowText(t.t, 0), "2");
+    EXPECT_EQ(rowText(t.t, 1), "3");
+    EXPECT_EQ(rowText(t.t, 2), "4");
+    EXPECT_EQ(t.t.screen().historySize(), 1u);
+    // The cursor stays where it was, as with SD.
+    EXPECT_EQ(t.t.screen().cursor.y, 2);
+    EXPECT_EQ(t.t.screen().cursor.x, 2);
+    // The image on the dropped row went; the other kept its row, now lower.
+    ASSERT_EQ(t.t.graphics().placements().size(), 1u);
+    EXPECT_EQ(t.t.graphics().placements()[0].row, idOf4);
+    // More than the history has: the rest come in blank above it.
+    t.feed("\x1b[3+T");
+    EXPECT_EQ(rowText(t.t, 0), "");
+    EXPECT_EQ(rowText(t.t, 1), "");
+    EXPECT_EQ(rowText(t.t, 2), "1");
+    EXPECT_EQ(t.t.screen().historySize(), 0u);
+    // With margins, and on the alternate screen, it is a plain SD.
+    Term m(10, 3);
+    m.feed("1\r\n2\r\n3\r\n4\r\n5\x1b[2;3r\x1b[+T");
+    EXPECT_EQ(rowText(m.t, 0), "3");
+    EXPECT_EQ(rowText(m.t, 1), "");
+    EXPECT_EQ(rowText(m.t, 2), "4");
+    EXPECT_EQ(m.t.screen().historySize(), 2u);
+    m.feed("\x1b[r\x1b[?1049hA\r\nB\x1b[+T");
+    EXPECT_EQ(rowText(m.t, 0), "");
+    EXPECT_EQ(rowText(m.t, 1), "A");
+}
+
 TEST(Terminal, ResetClearsKeyboardStacksAndImagesOfBothScreens)
 {
     Term t(10, 3);
@@ -1246,7 +1963,9 @@ TEST(Terminal, ResetClearsKeyboardStacksAndImagesOfBothScreens)
     // keeps it, so only the reset can clear it.
     t.feed("\x1b_Ga=t,i=9,f=24,s=1,v=1,q=2;AAAA\x1b\\");
     ASSERT_EQ(t.t.graphics().images().count(9), 1u);
-    t.feed("\x1b" "c");
+    t.feed(
+        "\x1b"
+        "c");
     t.host.written.clear();
     t.feed("\x1b[?u\x1b[?1049h\x1b[?u");
     EXPECT_TRUE(t.t.graphics().images().empty());
@@ -1301,7 +2020,164 @@ TEST(Terminal, ResetKeepsShellContexts)
     t.feed("\x1b]3008;start=a;type=shell\x1b\\");
     ASSERT_EQ(t.t.contexts().stack().size(), 1u);
     const int changes = t.host.contextChanges;
-    t.feed("\x1b" "c");
+    t.feed(
+        "\x1b"
+        "c");
     EXPECT_EQ(t.t.contexts().stack().size(), 1u);
     EXPECT_EQ(t.host.contextChanges, changes);
+}
+
+// As kitty's get-text --ansi: each change of style as SGR, links as OSC 8,
+// and each line reset at its end. Blanks at the end that show a background
+// stay; plain ones go.
+TEST(Terminal, TextWithItsStyles)
+{
+    Term t(20, 4);
+    t.feed("\x1b[1;31mred\x1b[m plain\x1b[48;5;200m  \x1b[m\r\n");
+    t.feed("\x1b]8;id=a;http://x\x1b\\link\x1b]8;;\x1b\\ \x1b[4:3;58;2;1;2;3;38;2;9;8;7mwave\x1b[m\r\n");
+    t.feed("\x1b[92;104;7mhi\x1b[m");
+    TextFormat ansi;
+    ansi.ansi = true;
+    EXPECT_EQ(t.t.text(Terminal::TextScope::Screen, 1 << 20, nullptr, ansi),
+              "\x1b[0;1;31mred\x1b[m plain\x1b[0;48;5;200m  \x1b[m\n"
+              "\x1b]8;id=a;http://x\x1b\\link\x1b]8;;\x1b\\ \x1b[0;4:3;38;2;9;8;7;58;2;1;2;3mwave\x1b[m\n"
+              "\x1b[0;7;92;104mhi\x1b[m");
+    // Plain text stays as it was.
+    EXPECT_EQ(t.t.text(Terminal::TextScope::Screen), "red plain\nlink wave\nhi");
+}
+
+TEST(Terminal, TextWithWrapMarkersAndTheCursor)
+{
+    Term t(5, 3);
+    t.feed("abcdefg\r\nxy");
+    TextFormat format;
+    format.wrapMarkers = true;
+    EXPECT_EQ(t.t.text(Terminal::TextScope::Screen, 1 << 20, nullptr, format), "abcde\rfg\nxy");
+    // The cursor: row 3, column 3, a steady bar, hidden.
+    t.feed("\x1b[6 q\x1b[?25l");
+    format.wrapMarkers = false;
+    format.cursor = true;
+    EXPECT_EQ(t.t.text(Terminal::TextScope::Screen, 1 << 20, nullptr, format), "abcdefg\nxy\x1b[3;3H\x1b[6 q\x1b[?25l");
+}
+
+// A limit cuts at the last whole character or escape sequence, and the cut
+// text ends the style and the link that it leaves open, within the limit.
+TEST(Terminal, StyledTextCutsNoEscapeSequence)
+{
+    Term t(20, 2);
+    t.feed("a\x1b[31mbc");
+    TextFormat ansi;
+    ansi.ansi = true;
+    const std::string whole = "a\x1b[0;31mbc\x1b[m";
+    for (std::size_t limit = 0; limit < 20; ++limit) {
+        bool truncated = false;
+        const std::string text = t.t.text(Terminal::TextScope::Screen, limit, &truncated, ansi);
+        EXPECT_LE(text.size(), limit);
+        // Only the blank row after it left out: nothing is lost.
+        EXPECT_EQ(truncated, limit < whole.size()) << limit;
+        const std::string expected = limit == 0 ? ""
+            : limit < 11                        ? "a"
+            : limit == 11                       ? "a\x1b[0;31m\x1b[m"
+            : limit == 12                       ? "a\x1b[0;31mb\x1b[m"
+                                                : whole;
+        EXPECT_EQ(text, expected) << limit;
+    }
+    // A link: its end goes with the cut.
+    Term link(20, 2);
+    link.feed("\x1b]8;;http://x\x1b\\abcd");
+    const std::string linked = link.t.text(Terminal::TextScope::Screen, 24, nullptr, ansi);
+    EXPECT_EQ(linked, "\x1b]8;;http://x\x1b\\ab\x1b]8;;\x1b\\");
+    // The cursor's sequences count in the limit, and go only whole.
+    TextFormat cursor;
+    cursor.cursor = true;
+    bool truncated = false;
+    const std::string all = t.t.text(Terminal::TextScope::Screen, 1 << 20, &truncated, cursor);
+    EXPECT_FALSE(truncated);
+    for (std::size_t limit = 0; limit <= all.size(); ++limit) {
+        const std::string text = t.t.text(Terminal::TextScope::Screen, limit, &truncated, cursor);
+        EXPECT_LE(text.size(), limit);
+        EXPECT_EQ(truncated, limit < all.size()) << limit;
+    }
+}
+
+// The blank rows that the end of a text trims are no part that a limit cuts.
+TEST(Terminal, ALimitThatLeavesOutOnlyBlankRowsCutsNothing)
+{
+    Term t(10, 4);
+    t.feed("abc\r\n\r\n");
+    bool truncated = true;
+    EXPECT_EQ(t.t.text(Terminal::TextScope::Screen, 3, &truncated), "abc");
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ(t.t.text(Terminal::TextScope::All, 3, &truncated), "abc");
+    EXPECT_FALSE(truncated);
+    t.feed("\x1b[4;1Hz");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::Screen, 3, &truncated), "abc");
+    EXPECT_TRUE(truncated);
+}
+
+// set-colors of afterglow ctl: the OSCs of a program's colours, from the
+// host, and only those, with no query.
+TEST(Terminal, TheHostSetsAndResetsColoursByName)
+{
+    Term t(10, 2);
+    const auto named = [&t](std::string_view name) -> std::optional<Rgb> {
+        for (const auto& color : t.t.namedColors())
+            if (color.name == name)
+                return color.rgb;
+        ADD_FAILURE() << "no colour " << name;
+        return std::nullopt;
+    };
+    const auto color1 = named("color1");
+    ASSERT_TRUE(color1);
+    const Rgb configured = *color1;
+    ASSERT_EQ(t.t.namedColors().size(), 5u + 256u);
+    EXPECT_FALSE(named("cursor"));
+    for (const auto& [name, rgb] :
+         {std::pair{"background", Rgb{1, 2, 3}}, std::pair{"color1", Rgb{0xff, 0, 0x10}},
+          std::pair{"cursor", Rgb{9, 9, 9}}, std::pair{"selection_background", Rgb{4, 5, 6}}}) {
+        const auto osc = Terminal::colorOscOf(name, rgb);
+        ASSERT_TRUE(osc) << name;
+        EXPECT_TRUE(t.t.applyColorOsc(*osc)) << *osc;
+        EXPECT_EQ(named(name), rgb) << name;
+    }
+    EXPECT_EQ(*Terminal::colorOscOf("color1", Rgb{0xff, 0, 0x10}), "4;1;#ff0010");
+    for (const char* bad : {"color256", "color01", "color-1", "colour1", "bg"})
+        EXPECT_FALSE(Terminal::colorOscOf(bad, Rgb{})) << bad;
+    // Only colours, and no query, which would answer the program.
+    EXPECT_FALSE(t.t.applyColorOsc("4;1;?"));
+    EXPECT_FALSE(t.t.applyColorOsc("52;c;aGk="));
+    EXPECT_FALSE(t.t.applyColorOsc("0;title"));
+    EXPECT_TRUE(t.host.written.empty());
+    for (const std::string& reset : Terminal::colorResetOscs())
+        EXPECT_TRUE(t.t.applyColorOsc(reset)) << reset;
+    EXPECT_EQ(named("color1"), configured);
+    EXPECT_FALSE(named("cursor"));
+    EXPECT_FALSE(named("selection_background"));
+    EXPECT_EQ(named("background"), t.t.options().defaultBackground);
+}
+
+// it2ul (OSC 1337 RequestUpload): a host that cannot ask the user, and a
+// format other than tgz, get no answer. Ctrl+C would signal the foreground
+// job from the program's own output: only a person's cancel sends it.
+TEST(Terminal, AnUploadRequestThatNoHostTakesGetsNoAnswer)
+{
+    Term t(10, 2);
+    t.feed("\x1b]1337;RequestUpload=format=tgz;version=dGFy\a");
+    EXPECT_EQ(t.host.written, "");
+    struct Asking : RecordingHost
+    {
+        int asked = 0;
+        bool uploadRequested() override
+        {
+            ++asked;
+            return true;
+        }
+    } asking;
+    Terminal terminal(10, 2, asking);
+    terminal.feed("\x1b]1337;RequestUpload=format=tgz\a");
+    EXPECT_EQ(asking.asked, 1);
+    EXPECT_EQ(asking.written, "");
+    terminal.feed("\x1b]1337;RequestUpload=format=zip\a");
+    EXPECT_EQ(asking.asked, 1);
+    EXPECT_EQ(asking.written, "");
 }

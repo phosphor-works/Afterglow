@@ -36,17 +36,30 @@ public:
         Held, ///< another process holds the path
         Failed, ///< this process cannot use the path (a bind error, a file that is not a socket)
     };
-    /// Listens on @p path. On Held or Failed the router has no socket.
+    /// Listens on @p path. On Held, or on Failed for @p path, the router has
+    /// no socket. Failed also when this object listens already: its socket
+    /// stays as it is.
     Listen listen(const QString& path);
-    bool listening() const { return !m_path.isEmpty(); }
-    PhosphorIpc::IpcRouter& router() { return *m_router; }
+    /// Stops listening, and removes the socket file and its lock. The
+    /// targets stay registered, for a later listen(). The destructor calls
+    /// it; tests call it to free the path while the process runs on.
+    void close();
+    bool listening() const
+    {
+        return !m_path.isEmpty();
+    }
+    PhosphorIpc::IpcRouter& router()
+    {
+        return *m_router;
+    }
 
     /// Removes the sockets in $XDG_RUNTIME_DIR that a process left when it
     /// ended without its destructors (a crash, SIGKILL). Nothing else removes
     /// them until a later process binds the same name.
     static void removeStaleSockets();
     /// The socket that this process listens on, for the panes'
-    /// AFTERGLOW_SOCKET. Empty when it listens on none.
+    /// AFTERGLOW_SOCKET and for the windows of mux sessions, which serve
+    /// `aglow run` in their panes through it. Empty when it listens on none.
     static QString processPath();
     /// The socket of the main process on this Wayland display. Empty without
     /// XDG_RUNTIME_DIR.
@@ -54,6 +67,21 @@ public:
     /// The socket of a process that runs on its own. Empty without
     /// XDG_RUNTIME_DIR.
     static QString ownPath();
+    /// Where the sockets are, as AfterglowProto::sharedSocketPath finds
+    /// them: an absolute XDG_RUNTIME_DIR, else empty (no socket, and none to
+    /// clean up).
+    static QString runtimeDirectory();
+    /// Takes the lock on @p socket's PATH.lock for another socket of this
+    /// process (the remote sessions' sockets): removeStaleSockets then
+    /// passes it by, as it does a listening InstanceSocket. The descriptor,
+    /// AfterglowProto::LockHeld while another holder has it (this process
+    /// included), AfterglowProto::LockFailed when the file cannot be opened
+    /// or locked.
+    static int lock(const QString& socket);
+    /// Lets go of lock(): removes the lock file, when it is still the one of
+    /// @p fd, and closes @p fd. The socket file goes first, so that no other
+    /// process takes the path.
+    static void unlock(const QString& socket, int fd);
 
 private:
     std::unique_ptr<PhosphorIpc::IpcRouter> m_router;

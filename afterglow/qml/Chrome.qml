@@ -13,15 +13,16 @@ Item {
 
     required property QtObject controller
 
-    SystemPalette { id: systemPalette }
+    SystemPalette {
+        id: systemPalette
+    }
 
     // How long the history scrollbar takes to fade in or out.
     readonly property int scrollbarFade: 200
     // Where the panes are, in logical pixels: the window less the tab bar
     // and the scripts' docks. The overlays that belong to the panes (the
     // search bar and the badges) keep inside it, off a dock.
-    readonly property rect paneArea: root.controller.paneArea.width > 0 ? root.controller.paneArea
-                                     : Qt.rect(0, tabBar.height, root.width, root.height - tabBar.height)
+    readonly property rect paneArea: root.controller.paneArea.width > 0 ? root.controller.paneArea : Qt.rect(0, tabBar.height, root.width, root.height - tabBar.height)
     readonly property real paneRightInset: Math.max(0, root.width - paneArea.x - paneArea.width)
     readonly property real paneBottomInset: Math.max(0, root.height - paneArea.y - paneArea.height)
     // The most each bottom badge takes while both show: half of what the
@@ -32,22 +33,24 @@ Item {
     // The history scrollbar does not take the wheel, so the wheel over it still
     // scrolls the pane or reaches the program.
     function wantsPointer(x: real, y: real, wheel: bool): bool {
-        if (scriptDialog.active) return true
+        if (scriptDialog.active)
+            return true;
         if (contextMenu.visible || titlePrompt.visible || confirmPrompt.visible)
-            return true
+            return true;
         if (tabBar.visible && y < tabBar.height)
-            return true
+            return true;
         if (commandPalette.visible || pasteConfirm.visible || root.controller.clipboardPromptOpen)
-            return true
+            return true;
         if (historyScroll.visible && !wheel) {
-            const p = historyScroll.mapFromItem(root, x, y)
-            if (historyScroll.contains(p)) return true
+            const p = historyScroll.mapFromItem(root, x, y);
+            if (historyScroll.contains(p))
+                return true;
         }
         if (searchBar.visible) {
-            const p = searchBar.mapFromItem(root, x, y)
-            return searchBar.contains(p)
+            const p = searchBar.mapFromItem(root, x, y);
+            return searchBar.contains(p);
         }
-        return false
+        return false;
     }
 
     // The keyboard belongs to the topmost open overlay, so keys never go to
@@ -55,17 +58,17 @@ Item {
     // prompt is open) waits; one that closes hands the focus down. The list
     // is the paint order below, topmost first.
     function restoreFocus(): void {
-        const overlays = [clipboardPrompt, pasteConfirm, confirmPrompt, contextMenu, scriptDialog.item,
-                          titlePrompt, commandPalette, searchBar]
+        const overlays = [clipboardPrompt, pasteConfirm, confirmPrompt, contextMenu, scriptDialog.item, titlePrompt, commandPalette, searchBar];
         for (const overlay of overlays) {
             if (overlay && overlay.visible) {
                 // The keys are in it already (Tab reached Cancel): an overlay
                 // that changes below must not move them back to the default.
                 for (let item = root.Window.activeFocusItem; item; item = item.parent) {
-                    if (item === overlay) return
+                    if (item === overlay)
+                        return;
                 }
-                overlay.takeFocus()
-                return
+                overlay.takeFocus();
+                return;
             }
         }
     }
@@ -75,9 +78,10 @@ Item {
     // once" instead of Deny). So the focus leaves a hidden item first, and a
     // visible focused button keeps it.
     function overlayChanged(): void {
-        const focus = root.Window.activeFocusItem
-        if (focus && !focus.visible) root.forceActiveFocus()
-        Qt.callLater(root.restoreFocus)
+        const focus = root.Window.activeFocusItem;
+        if (focus && !focus.visible)
+            root.forceActiveFocus();
+        Qt.callLater(root.restoreFocus);
     }
     // An overlay can be open before the scene is made, which runs in the
     // background: no visibility change then gives it the keyboard.
@@ -90,20 +94,22 @@ Item {
         model: root.controller.paneTitles.length
         delegate: Rectangle {
             required property int index
-            readonly property var modelData: root.controller.paneTitles[index] || ({ x: 0, y: 0, width: 0, height: 0, title: "" })
+            readonly property var modelData: root.controller.paneTitles[index] || ({
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                    title: ""
+                })
             // Keep clear of the history scrollbar on the focused pane.
             readonly property real scrollbarSpace: modelData.focused && historyScroll.visible ? historyScroll.width : 0
             x: modelData.x + modelData.width - width - 8 - scrollbarSpace
             y: modelData.y + 6
-            width: Math.min(label.implicitWidth + 16 + (paneStatus.visible ? paneStatus.width + 6 : 0)
-                            + (paneContext.visible ? paneContext.width + 6 : 0), modelData.width * 0.5)
+            width: Math.min(label.implicitWidth + 16 + (paneStatus.visible ? paneStatus.width + 6 : 0) + (paneContext.visible ? paneContext.width + 6 : 0), modelData.width * 0.5)
             height: label.implicitHeight + 6
             radius: height / 2
-            color: Qt.rgba(systemPalette.window.r, systemPalette.window.g,
-                           systemPalette.window.b, 0.85)
-            border.color: modelData.focused ? systemPalette.highlight
-                                            : Qt.rgba(systemPalette.windowText.r, systemPalette.windowText.g,
-                                                      systemPalette.windowText.b, 0.15)
+            color: Qt.rgba(systemPalette.window.r, systemPalette.window.g, systemPalette.window.b, 0.85)
+            border.color: modelData.focused ? systemPalette.highlight : Qt.rgba(systemPalette.windowText.r, systemPalette.windowText.g, systemPalette.windowText.b, 0.15)
             StatusIndicator {
                 id: paneStatus
                 controller: root.controller
@@ -117,8 +123,7 @@ Item {
             Rectangle {
                 id: paneContext
                 readonly property string kind: parent.modelData.contextKind || ""
-                readonly property color tint: kind === "elevated" ? root.controller.badColor
-                                            : kind === "remote" ? root.controller.warnColor : systemPalette.highlight
+                readonly property color tint: kind === "elevated" ? root.controller.badColor : kind === "remote" ? root.controller.warnColor : systemPalette.highlight
                 visible: (parent.modelData.context || "").length > 0
                 anchors.left: paneStatus.visible ? paneStatus.right : parent.left
                 anchors.leftMargin: paneStatus.visible ? 4 : 6
@@ -182,36 +187,49 @@ Item {
         property bool revealed: false
         property real fromBottom: 0
         opacity: !fades || revealed || hovered || pressed ? 1 : 0
-        Behavior on opacity { NumberAnimation { duration: root.scrollbarFade; easing.type: Easing.OutCubic } }
+        Behavior on opacity {
+            NumberAnimation {
+                duration: root.scrollbarFade
+                easing.type: Easing.OutCubic
+            }
+        }
         Timer {
             id: hideTimer
-            interval: root.controller.history.hideDelay === undefined ? 1200 : root.controller.history.hideDelay
+            // Window.scrollbarHideDelay. The map has no delay only while the bar is hidden.
+            interval: root.controller.history.hideDelay || 0
             onTriggered: historyScroll.revealed = false
         }
         function reveal(): void {
-            revealed = true
-            hideTimer.restart()
+            revealed = true;
+            hideTimer.restart();
         }
-        onHoveredChanged: if (!hovered) reveal()
-        onPressedChanged: if (!pressed) reveal()
+        onHoveredChanged: if (!hovered)
+            reveal()
+        onPressedChanged: if (!pressed)
+            reveal()
         property bool syncing: false
         function syncPosition(): void {
-            syncing = true
-            position = root.controller.history.position || 0
-            syncing = false
+            syncing = true;
+            position = root.controller.history.position || 0;
+            syncing = false;
         }
-        onPositionChanged: { if (!syncing) root.controller.scrollHistory(position) }
+        onPositionChanged: {
+            if (!syncing)
+                root.controller.scrollHistory(position);
+        }
         Component.onCompleted: syncPosition()
         Connections {
             target: root.controller
             function onHistoryChanged(): void {
-                const history = root.controller.history
-                const offset = 1 - (history.position || 0) - (history.size === undefined ? 1 : history.size)
+                const history = root.controller.history;
+                const offset = 1 - (history.position || 0) - (history.size === undefined ? 1 : history.size);
                 if (Math.abs(offset - historyScroll.fromBottom) > 1e-9) {
-                    historyScroll.fromBottom = offset
-                    if (historyScroll.visible) historyScroll.reveal()
+                    historyScroll.fromBottom = offset;
+                    if (historyScroll.visible)
+                        historyScroll.reveal();
                 }
-                if (!historyScroll.pressed) historyScroll.syncPosition()
+                if (!historyScroll.pressed)
+                    historyScroll.syncPosition();
             }
         }
     }
@@ -245,10 +263,9 @@ Item {
                 textFormat: Text.StyledText
                 // Typed letters dimmed, the rest bold.
                 function escaped(text: string): string {
-                    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+                    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
                 }
-                text: "<span style='color:#80000000'>" + escaped(parent.modelData.label.substring(0, parent.modelData.typed))
-                      + "</span><b>" + escaped(parent.modelData.label.substring(parent.modelData.typed)) + "</b>"
+                text: "<span style='color:#80000000'>" + escaped(parent.modelData.label.substring(0, parent.modelData.typed)) + "</span><b>" + escaped(parent.modelData.label.substring(parent.modelData.typed)) + "</b>"
                 color: "#000000"
                 font.family: "monospace"
                 font.pixelSize: 12
@@ -262,8 +279,7 @@ Item {
     Rectangle {
         visible: root.controller.unicodeInput.active === true
         readonly property real below: (root.controller.unicodeInput.y || 0) + 4
-        readonly property real above: (root.controller.unicodeInput.top === undefined
-                                       ? below - 4 : root.controller.unicodeInput.top) - height - 4
+        readonly property real above: (root.controller.unicodeInput.top === undefined ? below - 4 : root.controller.unicodeInput.top) - height - 4
         x: Math.max(0, Math.min(root.controller.unicodeInput.x || 0, root.width - width))
         y: below + height <= root.height ? below : Math.max(0, above)
         width: unicodeRow.implicitWidth + 16
@@ -362,7 +378,11 @@ Item {
         // Made inside the background incubation, the item can come after
         // the activation: restoreFocus needs it.
         onLoaded: root.overlayChanged()
-        sourceComponent: Component { ScriptDialog { controller: root.controller } }
+        sourceComponent: Component {
+            ScriptDialog {
+                controller: root.controller
+            }
+        }
     }
 
     ContextMenu {

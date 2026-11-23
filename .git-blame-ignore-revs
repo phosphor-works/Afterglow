@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-License-Identifier: CC0-1.0
+#
+# Commits that git blame skips: formatting only. GitHub reads this file. For a
+# local blame: git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# Format the C++ and QML sources as the other Phosphor repositories do
+93123e8bf70280ef8f02b5c2e67d97fea88773d6

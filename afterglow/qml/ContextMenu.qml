@@ -27,23 +27,33 @@ Item {
     // One entry per open level. The panels follow this model, so opening or
     // closing a submenu adds or removes one panel and keeps the others (with
     // their rows and hover state) as they are.
-    ListModel { id: panelModel }
+    ListModel {
+        id: panelModel
+    }
     onLevelsChanged: {
         while (panelModel.count > levels.length)
-            panelModel.remove(panelModel.count - 1)
+            panelModel.remove(panelModel.count - 1);
         while (panelModel.count < levels.length)
-            panelModel.append({})
+            panelModel.append({});
     }
 
     function syncVisibility() {
         if (visible) {
-            const at = controller.contextMenu
-            levels = [{ items: at.items || [], left: at.x || 0, right: at.x || 0, top: at.y || 0, root: true }]
-            currents = [-1]
-            hoverTimer.stop()
+            const at = controller.contextMenu;
+            levels = [
+                {
+                    items: at.items || [],
+                    left: at.x || 0,
+                    right: at.x || 0,
+                    top: at.y || 0,
+                    root: true
+                }
+            ];
+            currents = [-1];
+            hoverTimer.stop();
         } else {
-            levels = []
-            currents = []
+            levels = [];
+            currents = [];
         }
     }
 
@@ -51,77 +61,83 @@ Item {
     Component.onCompleted: syncVisibility()
 
     function takeFocus() {
-        keys.forceActiveFocus()
+        keys.forceActiveFocus();
     }
 
     function itemAt(level: int, index: int): var {
-        return level < levels.length ? levels[level].items[index] : undefined
+        return level < levels.length ? levels[level].items[index] : undefined;
     }
 
     function selectable(level: int, index: int): bool {
-        const item = itemAt(level, index)
-        return item !== undefined && !item.separator && item.enabled !== false
+        const item = itemAt(level, index);
+        return item !== undefined && !item.separator && item.enabled !== false;
     }
 
     function setCurrent(level: int, index: int) {
-        const c = currents.slice()
-        c[level] = index
-        currents = c
+        const c = currents.slice();
+        c[level] = index;
+        currents = c;
     }
 
     function closeFrom(level: int) {
         if (level < levels.length) {
-            levels = levels.slice(0, level)
-            currents = currents.slice(0, level)
+            levels = levels.slice(0, level);
+            currents = currents.slice(0, level);
         }
     }
 
     // Opens the submenu of row @p index at @p level beside that row.
     function openSubmenu(level: int, index: int, highlightFirst: bool) {
-        const item = itemAt(level, index)
-        const panel = panels.itemAt(level)
+        const item = itemAt(level, index);
+        const panel = panels.itemAt(level);
         if (!item || !item.items || !panel)
-            return
-        const row = panel.rowAt(index)
-        const top = row ? row.mapToItem(menu, 0, 0).y - 5 : panel.y
-        const lv = levels.slice(0, level + 1)
-        lv.push({ items: item.items, left: panel.x + 4, right: panel.x + panel.width - 4, top: top, root: false })
-        const c = currents.slice(0, level + 1)
-        c[level] = index
-        c.push(-1)
-        levels = lv
-        currents = c
+            return;
+        const row = panel.rowAt(index);
+        const top = row ? row.mapToItem(menu, 0, 0).y - 5 : panel.y;
+        const lv = levels.slice(0, level + 1);
+        lv.push({
+            items: item.items,
+            left: panel.x + 4,
+            right: panel.x + panel.width - 4,
+            top: top,
+            root: false
+        });
+        const c = currents.slice(0, level + 1);
+        c[level] = index;
+        c.push(-1);
+        levels = lv;
+        currents = c;
         if (highlightFirst)
-            step(level + 1, 1)
+            step(level + 1, 1);
     }
 
     function step(level: int, direction: int) {
-        const items = level < levels.length ? levels[level].items : []
+        const items = level < levels.length ? levels[level].items : [];
         if (items.length === 0)
-            return
-        let i = currents[level]
+            return;
+        let i = currents[level];
         if (i < 0 && direction < 0)
-            i = 0
+            i = 0;
         for (let n = 0; n < items.length; ++n) {
-            i = (i + direction + items.length) % items.length
+            i = (i + direction + items.length) % items.length;
             if (selectable(level, i)) {
-                setCurrent(level, i)
-                const panel = panels.itemAt(level)
+                setCurrent(level, i);
+                const panel = panels.itemAt(level);
                 if (panel)
-                    panel.reveal(i)
-                return
+                    panel.reveal(i);
+                return;
             }
         }
     }
 
     function activate(level: int, index: int) {
         if (!selectable(level, index))
-            return
-        const item = itemAt(level, index)
+            return;
+        const item = itemAt(level, index);
         if (item.items)
-            openSubmenu(level, index, true)
+            openSubmenu(level, index, true);
         else
-            controller.activateMenuItem(item.id)
+            controller.activateMenuItem(item.id);
     }
 
     // Hovering a submenu row opens it after a moment, so passing over rows
@@ -132,15 +148,18 @@ Item {
         property int index: -1
         interval: menu.submenuDelay
         onTriggered: {
-            const item = menu.itemAt(level, index)
+            const item = menu.itemAt(level, index);
             if (item && item.items && menu.selectable(level, index))
-                menu.openSubmenu(level, index, false)
+                menu.openSubmenu(level, index, false);
             else
-                menu.closeFrom(level + 1)
+                menu.closeFrom(level + 1);
         }
     }
 
-    QQC.Label { id: menuFont; visible: false }
+    QQC.Label {
+        id: menuFont
+        visible: false
+    }
 
     FontMetrics {
         id: metrics
@@ -163,39 +182,44 @@ Item {
 
             required property int index
             readonly property int level: index
-            readonly property var spec: menu.levels[level] || ({ items: [], left: 0, right: 0, top: 0, root: true })
+            readonly property var spec: menu.levels[level] || ({
+                    items: [],
+                    left: 0,
+                    right: 0,
+                    top: 0,
+                    root: true
+                })
             readonly property real wanted: {
-                let w = 0
+                let w = 0;
                 for (const item of spec.items) {
                     if (item.separator)
-                        continue
-                    const trailing = item.items ? 20 : (item.shortcut ? metrics.advanceWidth(item.shortcut) + 36 : 0)
-                    w = Math.max(w, metrics.advanceWidth(item.title) + trailing)
+                        continue;
+                    const trailing = item.items ? 20 : (item.shortcut ? metrics.advanceWidth(item.shortcut) + 36 : 0);
+                    w = Math.max(w, metrics.advanceWidth(item.title) + trailing);
                 }
-                return w + 58 // padding and the icon column
+                return w + 58; // padding and the icon column
             }
 
             function rowAt(i: int): Item {
-                return rows.itemAt(i)
+                return rows.itemAt(i);
             }
 
             // Scrolls row @p i into view when the panel is shorter than its rows.
             function reveal(i: int) {
-                const row = rows.itemAt(i)
+                const row = rows.itemAt(i);
                 if (!row)
-                    return
+                    return;
                 if (row.y < scroller.contentY)
-                    scroller.contentY = row.y
+                    scroller.contentY = row.y;
                 else if (row.y + row.height > scroller.contentY + scroller.height)
-                    scroller.contentY = row.y + row.height - scroller.height
+                    scroller.contentY = row.y + row.height - scroller.height;
             }
 
             z: level
             width: Math.min(Math.max(spec.root ? 220 : 180, wanted), menu.width - 8)
             height: Math.min(column.implicitHeight + 10, menu.height - 8)
             x: spec.right + width + 4 <= menu.width ? spec.right : Math.max(4, spec.left - width)
-            y: spec.root ? (spec.top + height + 4 <= menu.height ? spec.top : Math.max(4, spec.top - height))
-                         : Math.max(4, Math.min(spec.top, menu.height - height - 4))
+            y: spec.root ? (spec.top + height + 4 <= menu.height ? spec.top : Math.max(4, spec.top - height)) : Math.max(4, Math.min(spec.top, menu.height - height - 4))
             padding: 5
 
             // Presses between rows must not close the menu.
@@ -280,14 +304,14 @@ Item {
                                 hoverEnabled: true
                                 acceptedButtons: Qt.LeftButton | Qt.RightButton
                                 onEntered: {
-                                    menu.setCurrent(panel.level, entry.usable ? entry.index : -1)
-                                    hoverTimer.level = panel.level
-                                    hoverTimer.index = entry.index
-                                    hoverTimer.restart()
+                                    menu.setCurrent(panel.level, entry.usable ? entry.index : -1);
+                                    hoverTimer.level = panel.level;
+                                    hoverTimer.index = entry.index;
+                                    hoverTimer.restart();
                                 }
                                 onClicked: {
-                                    hoverTimer.stop()
-                                    menu.activate(panel.level, entry.index)
+                                    hoverTimer.stop();
+                                    menu.activate(panel.level, entry.index);
                                 }
                             }
                         }
@@ -303,22 +327,22 @@ Item {
         Keys.onUpPressed: menu.step(level, -1)
         Keys.onDownPressed: menu.step(level, 1)
         Keys.onRightPressed: {
-            const item = menu.itemAt(level, menu.currents[level])
+            const item = menu.itemAt(level, menu.currents[level]);
             if (item && item.items && menu.selectable(level, menu.currents[level]))
-                menu.openSubmenu(level, menu.currents[level], true)
+                menu.openSubmenu(level, menu.currents[level], true);
         }
         Keys.onLeftPressed: {
             if (level > 0)
-                menu.closeFrom(level)
+                menu.closeFrom(level);
         }
         Keys.onReturnPressed: menu.activate(level, menu.currents[level])
         Keys.onEnterPressed: menu.activate(level, menu.currents[level])
         Keys.onSpacePressed: menu.activate(level, menu.currents[level])
         Keys.onEscapePressed: {
             if (level > 0)
-                menu.closeFrom(level)
+                menu.closeFrom(level);
             else
-                menu.controller.closeContextMenu()
+                menu.controller.closeContextMenu();
         }
     }
 }

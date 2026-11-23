@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-License-Identifier: LGPL-2.1-or-later
+#
+# The errors that ucs-detect 2.3.9 (wcwidth 0.9.4, Unicode 18.0.0) finds in
+# the terminal core, one a line: MODE | KEY | ERRORS | reason. MODE is mode
+# 2027 (grapheme clustering) on or off. KEY is a category of ucs-detect or
+# "language NAME". A key that is not here expects no error.
+# tools/conformance/ucs-detect.sh fails when a result has more errors.
+
+# Afterglow joins characters into grapheme clusters as UAX #29 says, and gives
+# a cluster the widths that glibc's wcwidth gives its characters, within two
+# cells. wcwidth 0.9 goes further in two ways: it counts no width for a virama
+# that is a spacing mark (Mc), and it joins a consonant after any virama into
+# one conjunct, also where UAX #29 starts a new cluster. Programs that measure
+# with glibc expect Afterglow's widths here.
+on | language Javanese (Javanese) | 10 | a virama that is a spacing mark (Mc) counts, as in glibc and ghostty
+on | language Khün | 71 | a consonant after SAKOT starts a new cluster (UAX #29), as glibc counts
+on | language Malayalam | 1 | a consonant after a chillu and virama starts a new cluster (UAX #29), as glibc counts
+on | language Sanskrit (Grantha) | 22 | a virama that is a spacing mark (Mc) counts, as in glibc and ghostty
+
+# Without grapheme clustering, each character with a width takes its own
+# cells and the rest join the cell before them. The clusters that ucs-detect
+# measures then come out wider than wcwidth's. ucs-detect sets the mode itself
+# around its tables of characters, so only the languages show it.
+off | language Bengali | 96 | no grapheme clustering
+off | language Bhojpuri | 41 | no grapheme clustering
+off | language Burmese | 10 | no grapheme clustering
+off | language Chakma | 13 | no grapheme clustering
+off | language Gujarati | 50 | no grapheme clustering
+off | language Hindi | 56 | no grapheme clustering
+off | language Javanese (Javanese) | 321 | no grapheme clustering
+off | language Kannada | 14 | no grapheme clustering
+off | language Khmer, Central | 90 | no grapheme clustering
+off | language Khün | 75 | no grapheme clustering
+off | language Magahi | 7 | no grapheme clustering
+off | language Maithili | 19 | no grapheme clustering
+off | language Malayalam | 140 | no grapheme clustering
+off | language Marathi | 46 | no grapheme clustering
+off | language Mon | 7 | no grapheme clustering
+off | language Nepali | 22 | no grapheme clustering
+off | language Sanskrit | 81 | no grapheme clustering
+off | language Sanskrit (Grantha) | 61 | no grapheme clustering
+off | language Tamang, Eastern | 6 | no grapheme clustering
+off | language Telugu | 42 | no grapheme clustering

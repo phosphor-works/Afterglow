@@ -9,6 +9,7 @@
 #include <bitset>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <string_view>
 
@@ -28,14 +29,23 @@ struct Params
     int count = 0;
     bool overflow = false;
 
-    std::uint16_t at(int i, std::uint16_t fallback = 0) const { return i < count ? values[i] : fallback; }
+    std::uint16_t at(int i, std::uint16_t fallback = 0) const
+    {
+        return i < count ? values[i] : fallback;
+    }
     /// Value at @p i where 0 or absent means @p fallback (the usual "default 1").
     std::uint16_t atOr(int i, std::uint16_t fallback) const
     {
         return (i < count && values[i] != 0) ? values[i] : fallback;
     }
-    bool isSub(int i) const { return i > 0 && i < count && subMask[std::size_t(i)]; }
-    bool given(int i) const { return i < count && givenMask[std::size_t(i)]; }
+    bool isSub(int i) const
+    {
+        return i > 0 && i < count && subMask[std::size_t(i)];
+    }
+    bool given(int i) const
+    {
+        return i < count && givenMask[std::size_t(i)];
+    }
 };
 
 /// Up to two intermediate bytes plus an optional private marker ('?', '>', '<', '=').
@@ -46,8 +56,14 @@ struct Intermediates
     int count = 0;
     bool overflow = false;
 
-    bool empty() const { return marker == 0 && count == 0; }
-    bool is(char m, char i0 = 0) const { return marker == m && (i0 == 0 ? count == 0 : (count == 1 && bytes[0] == i0)); }
+    bool empty() const
+    {
+        return marker == 0 && count == 0;
+    }
+    bool is(char m, char i0 = 0) const
+    {
+        return marker == m && (i0 == 0 ? count == 0 : (count == 1 && bytes[0] == i0));
+    }
 };
 
 /// DEC/ANSI escape sequence parser, modelled on Paul Williams' state machine,
@@ -65,23 +81,41 @@ struct Intermediates
 ///   void oscDispatch(std::string_view payload, bool belTerminated);
 ///   void dcsDispatch(const Params&, const Intermediates&, std::uint8_t final, std::string_view data);
 ///   void apcDispatch(std::string_view payload);
+///
+/// Optional, for an OSC string too large to keep (an iTerm2 download):
+///   bool oscHead(std::string_view head);   // at the OSC's first ':', when
+///       it is in the first MaxStreamHead bytes; @p head ends with that ':'.
+///       True to take the rest as a stream.
+///   void oscStreamData(std::string_view data);
+///   void oscStreamEnd(bool complete);      // true: BEL or ESC \ ended it;
+///       false: CAN, SUB, ESC with another byte, a reset or cancelStream()
+///   bool holdsInput() const;               // true: feed() stops at once
 template<typename Handler>
 class Parser
 {
 public:
     // Room for full-screen sixel images.
     static constexpr std::size_t MaxStringPayload = std::size_t(64) << 20;
+    /// An OSC with no ':' in this many bytes is kept whole, up to
+    /// MaxStringPayload, and dispatched once it ends.
+    static constexpr std::size_t MaxStreamHead = 4096;
 
     explicit Parser(Handler& handler)
         : m_handler(handler)
     {
     }
 
-    void feed(std::string_view bytes)
+    /// Parses @p bytes, and returns how many it took: all of them, unless
+    /// the handler holds its input (holdsInput()) after one of them.
+    std::size_t feed(std::string_view bytes)
     {
-        const auto* p = reinterpret_cast<const std::uint8_t*>(bytes.data());
+        const auto* begin = reinterpret_cast<const std::uint8_t*>(bytes.data());
+        const auto* p = begin;
         const auto* end = p + bytes.size();
         while (p < end) {
+            if (holding()) {
+                break;
+            }
             if (inStringPayload()) {
                 // Fast path: inside an OSC, DCS or APC string every byte from
                 // 0x20 up (but DEL) is payload; only control bytes can end or
@@ -91,9 +125,15 @@ public:
                     ++p;
                 }
                 if (p != run) {
-                    appendString(reinterpret_cast<const char*>(run), std::size_t(p - run));
+                    const std::size_t taken = appendString(reinterpret_cast<const char*>(run), std::size_t(p - run));
+                    if (taken < std::size_t(p - run)) {
+                        // The handler took a stream's head and holds the rest.
+                        return std::size_t(run + taken - begin);
+                    }
                 }
-                if (p == end) {
+                // A head that ends the run (an empty download) can hold the
+                // input too: its end waits for the answer.
+                if (p == end || holding()) {
                     break;
                 }
             } else if (m_state == State::Ground && m_utf8Needed == 0) {
@@ -136,6 +176,20 @@ public:
             }
             advance(*p++);
         }
+        return std::size_t(p - begin);
+    }
+
+    /// Ends an OSC that streams as incomplete, as CAN would: its sender is
+    /// gone. The parser is back in the ground state. Nothing for another
+    /// state.
+    void cancelStream()
+    {
+        if (!m_streaming) {
+            return;
+        }
+        abortString();
+        clearSequence();
+        m_state = State::Ground;
     }
 
     void reset()
@@ -167,6 +221,12 @@ private:
 
     void advance(std::uint8_t b)
     {
+        if (m_streamEnding) {
+            // The ESC after a stream: ST ends it whole. Another sequence
+            // (a prompt mark, RIS) cuts it short, as CAN does.
+            m_streamEnding = false;
+            endStream(b == '\\');
+        }
         // Anywhere transitions.
         if (b == 0x18 || b == 0x1A) { // CAN, SUB
             abortString();
@@ -205,6 +265,7 @@ private:
                 m_state = State::CsiEntry;
             } else if (b == ']') {
                 m_string.clear();
+                m_streamDecided = false;
                 m_state = State::OscString;
             } else if (b == 'X' || b == '^' || b == '_') {
                 m_string.clear();
@@ -436,7 +497,9 @@ private:
         finishParams();
         m_dcsFinal = final;
         m_string.clear();
-        m_state = m_inter.overflow ? State::DcsIgnore : State::DcsPassthrough;
+        // A sequence that will not be dispatched collects nothing: its data
+        // could run to MaxStringPayload only to be dropped at the end.
+        m_state = m_inter.overflow || m_params.overflow ? State::DcsIgnore : State::DcsPassthrough;
     }
 
     /// Parses a CSI sequence from just after "ESC [" and dispatches it, as
@@ -507,21 +570,82 @@ private:
             || (m_state == State::SosPmApcString && m_stringIsApc);
     }
 
-    void appendString(const char* bytes, std::size_t length)
+    bool holding() const
     {
+        if constexpr (requires { m_handler.holdsInput(); }) {
+            return m_handler.holdsInput();
+        } else {
+            return false;
+        }
+    }
+
+    /// Appends payload, or passes it on for an OSC that the handler streams.
+    /// Returns the bytes taken: fewer when the handler took a stream's head
+    /// and holds its input.
+    std::size_t appendString(const char* bytes, std::size_t length)
+    {
+        if (m_streaming) {
+            if constexpr (requires { m_handler.oscStreamData(std::string_view()); }) {
+                m_handler.oscStreamData(std::string_view(bytes, length));
+            }
+            return length;
+        }
+        std::size_t taken = 0;
+        if constexpr (requires { m_handler.oscHead(std::string_view()); }) {
+            // Up to the first ':', which ends the head of a stream.
+            if (m_state == State::OscString && !m_streamDecided) {
+                const auto* colon = static_cast<const char*>(std::memchr(bytes, ':', length));
+                const std::size_t upTo = colon ? std::size_t(colon - bytes) + 1 : length;
+                const std::size_t head = std::min(upTo, MaxStreamHead - std::min(MaxStreamHead, m_string.size()));
+                m_string.append(bytes, head);
+                taken = head;
+                if (colon && head == upTo) {
+                    decideStream();
+                } else if (m_string.size() >= MaxStreamHead) {
+                    m_streamDecided = true;
+                }
+                if (m_streaming) {
+                    if (holding()) {
+                        return taken;
+                    }
+                    return taken + appendString(bytes + taken, length - taken);
+                }
+            }
+        }
+        const std::size_t rest = length - taken;
         const std::size_t room = MaxStringPayload - std::min(MaxStringPayload, m_string.size());
-        m_string.append(bytes, std::min(length, room));
-        if (length > room) {
+        m_string.append(bytes + taken, std::min(rest, room));
+        if (rest > room) {
             m_stringOverflow = true;
         }
+        return length;
     }
 
     void appendString(std::uint8_t b)
     {
-        if (m_string.size() < MaxStringPayload) {
-            m_string.push_back(char(b));
-        } else {
-            m_stringOverflow = true;
+        const char c = char(b);
+        appendString(&c, 1);
+    }
+
+    /// The head of the OSC is complete: the handler decides whether the rest
+    /// streams. The head stays out of the stream.
+    void decideStream()
+    {
+        m_streamDecided = true;
+        if constexpr (requires { m_handler.oscHead(std::string_view()); }) {
+            m_streaming = m_handler.oscHead(m_string);
+        }
+    }
+
+    void endStream(bool complete)
+    {
+        if (!m_streaming) {
+            return;
+        }
+        m_streaming = false;
+        m_streamEnding = false;
+        if constexpr (requires { m_handler.oscStreamEnd(true); }) {
+            m_handler.oscStreamEnd(complete);
         }
     }
 
@@ -531,12 +655,18 @@ private:
         m_stringOverflow = false;
         switch (m_state) {
         case State::OscString:
-            if (!overflow) {
+            if (m_streaming) {
+                if (bel) {
+                    endStream(true);
+                } else {
+                    m_streamEnding = true; // the byte after the ESC decides
+                }
+            } else if (!overflow) {
                 m_handler.oscDispatch(m_string, bel);
             }
             break;
         case State::DcsPassthrough:
-            if (!overflow && !m_params.overflow) {
+            if (!overflow) {
                 m_handler.dcsDispatch(m_params, m_inter, m_dcsFinal, m_string);
             }
             break;
@@ -553,6 +683,7 @@ private:
 
     void abortString()
     {
+        endStream(false);
         releaseString();
         m_stringOverflow = false;
     }
@@ -595,6 +726,12 @@ private:
     std::string m_string;
     bool m_stringIsApc = false;
     bool m_stringOverflow = false;
+    /// The OSC's head was seen and the handler asked: whether it streams.
+    bool m_streamDecided = false;
+    bool m_streaming = false;
+    /// An ESC ended the streamed OSC's bytes: whether it ended whole waits
+    /// for the next byte.
+    bool m_streamEnding = false;
     std::uint8_t m_dcsFinal = 0;
 
     char32_t m_utf8Cp = 0;

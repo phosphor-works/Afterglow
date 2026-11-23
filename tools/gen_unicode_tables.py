@@ -105,6 +105,10 @@ def main():
     def width(cp):
         if cp == 0x00AD:  # soft hyphen renders as a hyphen in terminals
             return 1
+        if gc[cp] == "Cf" and gcb[cp] == GCB.index("Prepend"):
+            # A prepended concatenation mark (U+0600 ARABIC NUMBER SIGN) is
+            # drawn over the digits after it and takes a cell, as in glibc.
+            return 1
         if gc[cp] in ("Mn", "Me", "Cf", "Cc"):
             return 0
         if 0x1160 <= cp <= 0x11FF or 0xD7B0 <= cp <= 0xD7FF:  # Hangul medial vowels / final consonants
@@ -120,6 +124,10 @@ def main():
         else:
             w = width(cp)
         vs16 = 1 if (emoji[cp] and not emoji_pres[cp]) else 0
+        # A wide emoji, not a regional indicator, that VS15 (U+FE0E) asks to
+        # show as text, in one cell. As kitty does, also for the wide ones
+        # with text presentation by default (U+3030 WAVY DASH, U+3297).
+        vs15 = 1 if (emoji[cp] and w == 2 and gcb[cp] != GCB.index("Regional_Indicator")) else 0
         # East Asian Ambiguous: one cell normally, two where CJK text expects it.
         ambiguous = 1 if (eaw[cp] == "A" and w == 1) else 0
         packed[cp] = (gcb[cp]
@@ -127,7 +135,8 @@ def main():
                       | (incb[cp] << 5)
                       | (w << 7)
                       | (vs16 << 9)
-                      | (ambiguous << 10))
+                      | (ambiguous << 10)
+                      | (vs15 << 11))
 
     values = sorted(set(packed))
     value_index = {v: i for i, v in enumerate(values)}

@@ -40,7 +40,8 @@ bool g_active = false;
 std::size_t indexOf(int sig)
 {
     for (std::size_t i = 0; i < HandledCount; ++i) {
-        if (Handled[i] == sig) return i;
+        if (Handled[i] == sig)
+            return i;
     }
     return HandledCount;
 }
@@ -48,7 +49,8 @@ std::size_t indexOf(int sig)
 void restore()
 {
     for (std::size_t i = 0; i < HandledCount; ++i) {
-        if (g_handling[i].exchange(false)) sigaction(Handled[i], &g_previous[i], nullptr);
+        if (g_handling[i].exchange(false))
+            sigaction(Handled[i], &g_previous[i], nullptr);
     }
 }
 
@@ -81,8 +83,7 @@ QuitSignals::QuitSignals(QObject* parent)
     }
     // A signal that came after the last instance went.
     unsigned char stale = 0;
-    while (read(g_pipe[0], &stale, 1) == 1) {
-    }
+    while (read(g_pipe[0], &stale, 1) == 1) { }
     g_active = true;
     g_owner = getpid();
     m_notifier = new QSocketNotifier(g_pipe[0], QSocketNotifier::Read, this);
@@ -93,7 +94,8 @@ QuitSignals::QuitSignals(QObject* parent)
     action.sa_flags = SA_RESTART;
     for (std::size_t i = 0; i < HandledCount; ++i) {
         sigaction(Handled[i], nullptr, &g_previous[i]);
-        if (g_previous[i].sa_handler == SIG_IGN) continue;
+        if (g_previous[i].sa_handler == SIG_IGN)
+            continue;
         g_handling[i] = true;
         sigaction(Handled[i], &action, nullptr);
     }
@@ -101,7 +103,8 @@ QuitSignals::QuitSignals(QObject* parent)
 
 QuitSignals::~QuitSignals()
 {
-    if (!m_notifier) return;
+    if (!m_notifier)
+        return;
     restore();
     g_active = false;
 }
@@ -109,9 +112,11 @@ QuitSignals::~QuitSignals()
 void QuitSignals::deliver()
 {
     unsigned char byte = 0;
-    if (read(g_pipe[0], &byte, 1) != 1 || indexOf(byte) == HandledCount) return;
+    if (read(g_pipe[0], &byte, 1) != 1 || indexOf(byte) == HandledCount)
+        return;
     qCInfo(lcApp) << "closing on signal" << int(byte);
-    if (m_signal == 0) m_signal = byte;
+    if (m_signal == 0)
+        m_signal = byte;
     QCoreApplication::quit();
 }
 

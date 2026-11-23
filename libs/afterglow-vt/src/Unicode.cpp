@@ -13,7 +13,7 @@ namespace {
 // Packed word layout, written by tools/gen_unicode_tables.py:
 //   [3:0] Grapheme_Cluster_Break   [4] Extended_Pictographic
 //   [6:5] InCB                     [8:7] width   [9] widens with VS16
-//   [10] East Asian Ambiguous
+//   [10] East Asian Ambiguous      [11] narrows with VS15
 constexpr std::uint16_t packedFor(char32_t cp) noexcept
 {
     if (cp >= 0x110000) {
@@ -38,6 +38,7 @@ Props props(char32_t cp) noexcept
     p.width = static_cast<std::uint8_t>((v >> 7) & 3);
     p.widensWithVs16 = (v >> 9) & 1;
     p.ambiguous = (v >> 10) & 1;
+    p.narrowsWithVs15 = (v >> 11) & 1;
     return p;
 }
 

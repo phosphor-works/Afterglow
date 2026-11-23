@@ -16,7 +16,7 @@ Item {
 
     // Called by Chrome.qml when this is the topmost open overlay.
     function takeFocus() {
-        panel.forceActiveFocus()
+        panel.forceActiveFocus();
     }
 
     Scrim {
@@ -66,8 +66,10 @@ Item {
             }
         }
 
-        Keys.onReturnPressed: if (panel.Window.activeFocusItem === panel) prompt.controller.answerConfirm(true)
-        Keys.onEnterPressed: if (panel.Window.activeFocusItem === panel) prompt.controller.answerConfirm(true)
+        Keys.onReturnPressed: if (panel.Window.activeFocusItem === panel)
+            prompt.controller.answerConfirm(true)
+        Keys.onEnterPressed: if (panel.Window.activeFocusItem === panel)
+            prompt.controller.answerConfirm(true)
         Keys.onEscapePressed: prompt.controller.answerConfirm(false)
     }
 }

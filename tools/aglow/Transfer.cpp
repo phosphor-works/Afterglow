@@ -42,7 +42,7 @@ constexpr long long ProgressMs = 200;
 // The longest password that --permissions-bypass reads from a file or a descriptor.
 constexpr std::size_t MaxPassword = 4096;
 
-const Cli::Command command {
+const Cli::Command command{
     "transfer",
     "source_files_or_directories destination_path",
     "Transfer files over the TTY device.",
@@ -60,35 +60,54 @@ const Cli::Command command {
     "directory here, and at the home directory on the terminal's computer. The terminal asks for permission "
     "before any file moves.",
     {
-        { "--direction -d", Cli::Option::Kind::Choice, "download", { "upload", "download", "send", "receive" },
-          "Whether to send or receive files. send or download copy files from the computer where aglow runs to the "
-          "computer of the terminal. receive or upload copy files from the computer of the terminal to the computer "
-          "where aglow runs." },
-        { "--mode -m", Cli::Option::Kind::Choice, "normal", { "normal", "mirror" },
-          "How to read the arguments. In mirror mode every argument is a file or directory on the sending computer, "
-          "copied to the same path on the receiving computer. When aglow sends, a relative path starts at the working "
-          "directory, and a path under the home directory goes under the home directory of the other computer. When "
-          "aglow receives, a path given as ~, as ~/ and a path, or as a relative path is under the home directory on "
-          "both computers. An absolute path stays the same. In normal mode the "
-          "last argument is the destination on the receiving computer. With more than one source, the destination "
-          "is a directory that receives them. With one source, end the destination with a slash to put the source "
-          "in that directory. Without the slash, the source is copied to the destination path itself. A received "
-          "source also goes into the destination when it is an existing directory here." },
-        { "--compress", Cli::Option::Kind::Choice, "auto", { "auto", "never", "always" },
-          "Whether to compress the data. auto leaves out files that are compressed already, such as archives, "
-          "images, audio and video." },
-        { "--permissions-bypass -p", Cli::Option::Kind::String, "", {},
-          "The password that skips the permission prompt of the terminal. It must match the password of the "
-          "terminal. White space at its start and end is removed. A value that starts with ., / or ~ is a file to "
-          "read the password from. A value of - reads it from standard input, without echo on a terminal. A number below 256 "
-          "is a file descriptor to read it from. A password given as the value itself is visible to other users in "
-          "the list of processes. Give a file or standard input instead." },
-        { "--confirm-paths -c", Cli::Option::Kind::Flag, "", {},
-          "Before any file data moves, show where each file goes and ask for confirmation." },
-        { "--transmit-deltas -x", Cli::Option::Kind::Flag, "", {},
-          "When a file exists on the receiving side, send only the changes (the rsync algorithm). This is slower "
-          "for small files or on a fast link. When aglow receives, the terminal learns which destination files "
-          "exist here, their sizes and the hashes of their blocks." },
+        {"--direction -d",
+         Cli::Option::Kind::Choice,
+         "download",
+         {"upload", "download", "send", "receive"},
+         "Whether to send or receive files. send or download copy files from the computer where aglow runs to the "
+         "computer of the terminal. receive or upload copy files from the computer of the terminal to the computer "
+         "where aglow runs."},
+        {"--mode -m",
+         Cli::Option::Kind::Choice,
+         "normal",
+         {"normal", "mirror"},
+         "How to read the arguments. In mirror mode every argument is a file or directory on the sending computer, "
+         "copied to the same path on the receiving computer. When aglow sends, a relative path starts at the working "
+         "directory, and a path under the home directory goes under the home directory of the other computer. When "
+         "aglow receives, a path given as ~, as ~/ and a path, or as a relative path is under the home directory on "
+         "both computers. An absolute path stays the same. In normal mode the "
+         "last argument is the destination on the receiving computer. With more than one source, the destination "
+         "is a directory that receives them. With one source, end the destination with a slash to put the source "
+         "in that directory. Without the slash, the source is copied to the destination path itself. A received "
+         "source also goes into the destination when it is an existing directory here."},
+        {"--compress",
+         Cli::Option::Kind::Choice,
+         "auto",
+         {"auto", "never", "always"},
+         "Whether to compress the data. auto leaves out files that are compressed already, such as archives, "
+         "images, audio and video."},
+        {"--permissions-bypass -p",
+         Cli::Option::Kind::String,
+         "",
+         {},
+         "The password that skips the permission prompt of the terminal. It must match the password of the "
+         "terminal. White space at its start and end is removed. A value that starts with ., / or ~ is a file to "
+         "read the password from. A value of - reads it from standard input, without echo on a terminal. A number "
+         "below 256 "
+         "is a file descriptor to read it from. A password given as the value itself is visible to other users in "
+         "the list of processes. Give a file or standard input instead."},
+        {"--confirm-paths -c",
+         Cli::Option::Kind::Flag,
+         "",
+         {},
+         "Before any file data moves, show where each file goes and ask for confirmation."},
+        {"--transmit-deltas -x",
+         Cli::Option::Kind::Flag,
+         "",
+         {},
+         "When a file exists on the receiving side, send only the changes (the rsync algorithm). This is slower "
+         "for small files or on a fast link. When aglow receives, the terminal learns which destination files "
+         "exist here, their sizes and the hashes of their blocks."},
     },
 };
 
@@ -117,7 +136,7 @@ extern "C" void onSecretSignal(int number)
 // stop the prompt starts again, since the terminal dropped the typed text.
 bool readSecret(int fd, std::string& text, std::string& error)
 {
-    termios saved { };
+    termios saved{};
     if (!::isatty(fd) || ::tcgetattr(fd, &saved) != 0) {
         int failure = 0;
         char buffer[512];
@@ -142,21 +161,21 @@ bool readSecret(int fd, std::string& text, std::string& error)
         }
         return true;
     }
-    constexpr int Signals[] = { SIGINT, SIGTERM, SIGHUP, SIGTSTP };
-    sigset_t held { };
+    constexpr int Signals[] = {SIGINT, SIGTERM, SIGHUP, SIGTSTP};
+    sigset_t held{};
     sigemptyset(&held);
     for (const int number : Signals) {
         sigaddset(&held, number);
     }
     for (;;) {
-        sigset_t old { };
+        sigset_t old{};
         ::sigprocmask(SIG_BLOCK, &held, &old);
         // No SA_RESTART: the wait must end. A signal that the program
         // started with ignored stays ignored.
-        struct sigaction catcher { };
+        struct sigaction catcher{};
         catcher.sa_handler = onSecretSignal;
         sigemptyset(&catcher.sa_mask);
-        struct sigaction previous[std::size(Signals)] { };
+        struct sigaction previous[std::size(Signals)]{};
         for (std::size_t i = 0; i < std::size(Signals); ++i) {
             ::sigaction(Signals[i], nullptr, &previous[i]);
             if (previous[i].sa_handler != SIG_IGN) {
@@ -175,7 +194,7 @@ bool readSecret(int fd, std::string& text, std::string& error)
         while (!g_secretSignal) {
             // ppoll unblocks the signals only for the wait, so that none
             // comes between a check and a read that would block.
-            pollfd ready { fd, POLLIN, 0 };
+            pollfd ready{fd, POLLIN, 0};
             if (::ppoll(&ready, 1, nullptr, &old) < 0) {
                 if (errno == EINTR) {
                     continue;
@@ -362,7 +381,7 @@ public:
                 }
             }
         }
-        static const char* spinner[] = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+        static const char* spinner[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
         // The rate counts from the start of the data, not from the permission prompt.
         if (m_start < 0 && m_client.state() == State::Running) {
             m_start = now;
@@ -387,7 +406,10 @@ public:
         m_tty.write(out + fit(std::move(line), std::size_t(m_tty.size().ws_col)));
     }
 
-    void clear() { m_tty.write("\r\x1b[K"); }
+    void clear()
+    {
+        m_tty.write("\r\x1b[K");
+    }
 
 private:
     Tty& m_tty;
@@ -418,11 +440,12 @@ int runTransfer(int argc, char** argv)
     options.cwd = currentDirectory();
     options.deltas = parsed->flag("transmit-deltas");
     options.confirmPaths = parsed->flag("confirm-paths");
-    options.mode = parsed->value("mode") == "mirror" ? TransferClientOptions::Mode::Mirror : TransferClientOptions::Mode::Normal;
+    options.mode =
+        parsed->value("mode") == "mirror" ? TransferClientOptions::Mode::Mirror : TransferClientOptions::Mode::Normal;
     const auto compress = parsed->value("compress");
-    options.compress = compress == "never"    ? TransferClientOptions::Compress::Never
-        : compress == "always"                ? TransferClientOptions::Compress::Always
-                                              : TransferClientOptions::Compress::Auto;
+    options.compress = compress == "never" ? TransferClientOptions::Compress::Never
+        : compress == "always"             ? TransferClientOptions::Compress::Always
+                                           : TransferClientOptions::Compress::Auto;
     // Before the password: a read of standard input for a command that cannot run is wasted.
     if (parsed->args.empty()) {
         report("transfer", "Must specify at least one file to transfer");
@@ -492,7 +515,8 @@ int runTransfer(int argc, char** argv)
                     const auto& from = sending ? item.local : item.remote;
                     const auto& to = sending ? item.remote : item.local;
                     if (!from.empty() && !to.empty()) {
-                        list += std::string(typeLabel(item.type)) + " " + printable(from) + " → " + printable(to) + "\n";
+                        list +=
+                            std::string(typeLabel(item.type)) + " " + printable(from) + " → " + printable(to) + "\n";
                     }
                 }
                 list += "Press \x1b[32my\x1b[39m to continue or \x1b[31mn\x1b[39m to abort\n";
@@ -526,8 +550,9 @@ int runTransfer(int argc, char** argv)
                     }
                 } else if (input.type == Input::Type::Text && client->state() == State::Confirm) {
                     // The first answer in the text: a quick "y" can arrive with more keys.
-                    const auto answer = std::find_if(input.data.begin(), input.data.end(),
-                                                     [](char c) { return c == 'y' || c == 'Y' || c == 'n' || c == 'N'; });
+                    const auto answer = std::find_if(input.data.begin(), input.data.end(), [](char c) {
+                        return c == 'y' || c == 'Y' || c == 'n' || c == 'N';
+                    });
                     if (answer != input.data.end()) {
                         client->confirm(*answer == 'y' || *answer == 'Y');
                     }
@@ -537,7 +562,7 @@ int runTransfer(int argc, char** argv)
                 if (!ended() && !caught) {
                     caught = signal;
                 }
-                cancel(signal == SIGINT    ? "Canceled by an interrupt"
+                cancel(signal == SIGINT       ? "Canceled by an interrupt"
                            : signal == SIGHUP ? "Canceled because the terminal hung up"
                                               : "Canceled by a termination signal");
             }
@@ -569,14 +594,18 @@ int runTransfer(int argc, char** argv)
     tty.restore();
     int code = 0;
     const auto& items = client->items();
-    const bool failed = std::any_of(items.begin(), items.end(), [](const TransferItem& item) { return !item.error.empty(); });
+    const bool failed = std::any_of(items.begin(), items.end(), [](const TransferItem& item) {
+        return !item.error.empty();
+    });
     if (client->state() != State::Done) {
         std::string why = client->error();
         if (why.empty()) {
             why = ttyGone ? "The terminal closed" : "The transfer was canceled";
         }
         // Completed files took their names. The others left no file.
-        if (std::any_of(items.begin(), items.end(), [](const TransferItem& item) { return item.finished && item.error.empty(); })) {
+        if (std::any_of(items.begin(), items.end(), [](const TransferItem& item) {
+                return item.finished && item.error.empty();
+            })) {
             why += ". The files that were complete before it are in place";
         }
         report("transfer", why);
@@ -584,10 +613,11 @@ int runTransfer(int argc, char** argv)
     } else {
         if (client->deltaFileBytes() > 0) {
             const auto moved = client->deltaBytes() + client->signatureBytes();
-            std::printf("Rsync stats:\n  Delta size: %s Signature size: %s\n  Transmitted: %s of a total of %s (%.1f%%)\n",
-                        humanSize(client->deltaBytes()).c_str(), humanSize(client->signatureBytes()).c_str(),
-                        humanSize(moved).c_str(), humanSize(client->deltaFileBytes()).c_str(),
-                        100.0 * double(moved) / double(client->deltaFileBytes()));
+            std::printf(
+                "Rsync stats:\n  Delta size: %s Signature size: %s\n  Transmitted: %s of a total of %s (%.1f%%)\n",
+                humanSize(client->deltaBytes()).c_str(), humanSize(client->signatureBytes()).c_str(),
+                humanSize(moved).c_str(), humanSize(client->deltaFileBytes()).c_str(),
+                100.0 * double(moved) / double(client->deltaFileBytes()));
         }
         if (failed) {
             std::fprintf(stderr, "Failed to transfer %s:\n", describe(items, true).c_str());

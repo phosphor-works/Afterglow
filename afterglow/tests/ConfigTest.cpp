@@ -3,9 +3,12 @@
 
 #include "config/Settings.h"
 #include "config/Theme.h"
+#include "animation/MomentumScroll.h"
 #include "desktop/DragDrop.h"
 #include "desktop/FileTransfer.h"
 #include "scripting/ScriptHost.h"
+
+#include "MuxProtocol.h"
 
 #include <AfterglowRender/Snapshot.h>
 
@@ -17,6 +20,7 @@
 #include <QThread>
 #include <QSaveFile>
 #include <QKeyEvent>
+#include <QLoggingCategory>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -28,8 +32,12 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstdio>
+#include <functional>
 #include <limits>
+#include <memory>
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 using namespace Afterglow;
@@ -69,8 +77,10 @@ protected:
     void TearDown() override
     {
         for (const auto& [name, wasSet, value] : m_saved) {
-            if (wasSet) qputenv(name, value);
-            else qunsetenv(name);
+            if (wasSet)
+                qputenv(name, value);
+            else
+                qunsetenv(name);
         }
     }
 
@@ -102,9 +112,48 @@ protected:
     QTemporaryDir m_home;
 };
 
+/// A umask that lets group and others read new files, for the time of a
+/// test: a private file must then come from Afterglow, not from the umask
+/// that the test run inherited.
+struct OpenUmask
+{
+    mode_t saved = ::umask(022);
+    ~OpenUmask()
+    {
+        ::umask(saved);
+    }
+};
+
 bool mentions(const QStringList& problems, const QString& text)
 {
-    return std::any_of(problems.begin(), problems.end(), [&](const QString& p) { return p.contains(text); });
+    return std::any_of(problems.begin(), problems.end(), [&](const QString& p) {
+        return p.contains(text);
+    });
+}
+
+/// The application that the file watchers need, unless a test made one.
+std::unique_ptr<QCoreApplication> watchApplication()
+{
+    static int argc = 1;
+    static char name[] = "config-test";
+    static char* argv[] = {name, nullptr};
+    if (QCoreApplication::instance())
+        return {};
+    return std::make_unique<QCoreApplication>(argc, argv);
+}
+
+/// Runs the event loop until @p done holds, for at most 2.5 seconds.
+bool waitUntil(const std::function<bool()>& done)
+{
+    QElapsedTimer timer;
+    timer.start();
+    do {
+        QCoreApplication::processEvents();
+        if (done())
+            return true;
+        QThread::msleep(5);
+    } while (timer.elapsed() < 2500);
+    return done();
 }
 
 QKeyEvent press(int key, Qt::KeyboardModifiers modifiers = Qt::NoModifier, bool autoRepeat = false)
@@ -131,15 +180,16 @@ TEST(Themes, PicksTheHalfForTheColourScheme)
 
 TEST(Themes, ReadsGhosttyThemes)
 {
-    const auto theme = Themes::parse("# a comment\n"
-                                     "palette = 0=#1d1f21\n"
-                                     "palette = 12=81a2be\n"
-                                     "background = 1d1f21\n"
-                                     "foreground = #c5c8c6\n"
-                                     "cursor-color = #c5c8c6\n"
-                                     "cursor-text = #1d1f21\n"
-                                     "selection-background = #373b41\n"
-                                     "selection-foreground = #c5c8c6\n");
+    const auto theme = Themes::parse(
+        "# a comment\n"
+        "palette = 0=#1d1f21\n"
+        "palette = 12=81a2be\n"
+        "background = 1d1f21\n"
+        "foreground = #c5c8c6\n"
+        "cursor-color = #c5c8c6\n"
+        "cursor-text = #1d1f21\n"
+        "selection-background = #373b41\n"
+        "selection-foreground = #c5c8c6\n");
     ASSERT_TRUE(theme);
     EXPECT_TRUE(theme->palette[0] == Rgb(0x1d, 0x1f, 0x21));
     EXPECT_TRUE(theme->palette[12] == Rgb(0x81, 0xa2, 0xbe));
@@ -154,15 +204,16 @@ TEST(Themes, ReadsGhosttyThemes)
 
 TEST(Themes, ReadsKonsoleColorSchemes)
 {
-    const QByteArray scheme = "[Background]\nColor=35,38,39\n\n"
-                              "[BackgroundFaint]\nColor=49,54,59\n\n"
-                              "[Color0]\nColor=35,38,39\n\n"
-                              "[Color1]\nColor=237,21,21\n\n"
-                              "[Color1Intense]\nColor=192,57,43\n\n"
-                              "[Color7Intense]\nColor=255,255,255\n\n"
-                              "[Foreground]\nColor=252,252,252\n\n"
-                              "[ForegroundIntense]\nColor=255,255,255\n\n"
-                              "[General]\nDescription=Breeze\nOpacity=1\nWallpaper=\n";
+    const QByteArray scheme =
+        "[Background]\nColor=35,38,39\n\n"
+        "[BackgroundFaint]\nColor=49,54,59\n\n"
+        "[Color0]\nColor=35,38,39\n\n"
+        "[Color1]\nColor=237,21,21\n\n"
+        "[Color1Intense]\nColor=192,57,43\n\n"
+        "[Color7Intense]\nColor=255,255,255\n\n"
+        "[Foreground]\nColor=252,252,252\n\n"
+        "[ForegroundIntense]\nColor=255,255,255\n\n"
+        "[General]\nDescription=Breeze\nOpacity=1\nWallpaper=\n";
     EXPECT_TRUE(Themes::isKonsole(scheme));
     EXPECT_FALSE(Themes::isKonsole("background = #000000\n"));
     QStringList ignored;
@@ -204,14 +255,15 @@ TEST(Themes, PlasmaNamesTakeAnOptionalBaseTheme)
 
 TEST(Themes, ReadsKittyThemes)
 {
-    const auto theme = Themes::parse("## name: Example\n"
-                                     "foreground            #c0caf5\n"
-                                     "background #1a1b26\n"
-                                     "cursor_text_color #1a1b26\n"
-                                     "selection_background #283457\n"
-                                     "color1 #f7768e\n"
-                                     "color15 #c0caf5\n"
-                                     "url_color #73daca\n");
+    const auto theme = Themes::parse(
+        "## name: Example\n"
+        "foreground            #c0caf5\n"
+        "background #1a1b26\n"
+        "cursor_text_color #1a1b26\n"
+        "selection_background #283457\n"
+        "color1 #f7768e\n"
+        "color15 #c0caf5\n"
+        "url_color #73daca\n");
     ASSERT_TRUE(theme);
     EXPECT_TRUE(theme->foreground == Rgb(0xc0, 0xca, 0xf5));
     EXPECT_TRUE(theme->background == Rgb(0x1a, 0x1b, 0x26));
@@ -219,6 +271,56 @@ TEST(Themes, ReadsKittyThemes)
     EXPECT_TRUE(theme->selectionBackground == Rgb(0x28, 0x34, 0x57));
     EXPECT_TRUE(theme->palette[1] == Rgb(0xf7, 0x76, 0x8e));
     EXPECT_TRUE(theme->palette[15] == Rgb(0xc0, 0xca, 0xf5));
+}
+
+TEST(Themes, ReadsOklchAndLabInKittyAndJsonThemes)
+{
+    // As kitty 0.50 reads them, with spaces inside the value. The values
+    // follow CSS Color 4: kitty itself gives lab(10 0 0) as a middle gray.
+    QStringList invalid;
+    const auto kitty = Themes::parse(
+        "foreground   oklch(0.9 0.05 140)\n"
+        "background lab(10 0 0)\n"
+        "color1     oklch(0.7, 0.25, 25)    \n"
+        "color2 #00ff00\n"
+        "color3 oklch(0.5 0.1 100) # a comment\n"
+        "color4 oklch(0.5 0.1 100)x\n"
+        "color5 dark slate gray\n",
+        nullptr, nullptr, &invalid);
+    ASSERT_TRUE(kitty);
+    EXPECT_TRUE(kitty->foreground == Rgb(205, 231, 199));
+    EXPECT_TRUE(kitty->background == Rgb(27, 27, 27));
+    EXPECT_TRUE(kitty->palette[1] == Rgb(255, 86, 85));
+    EXPECT_TRUE(kitty->palette[2] == Rgb(0, 255, 0));
+    EXPECT_TRUE(kitty->palette[3] == Rgb(113, 100, 11));
+    // kitty reads the rest of the line, so a name can have spaces.
+    EXPECT_TRUE(kitty->palette[5] == Rgb(47, 79, 79));
+    // A tail glued to the ')' is no colour, as "#ff0000x" is none.
+    EXPECT_FALSE(kitty->palette[4]);
+    EXPECT_EQ(invalid, QStringList{QStringLiteral("color4")});
+    const auto ghostty = Themes::parse("foreground = oklch(0.9 0.05 140)\npalette = 4=lab(50 0 -50)\n");
+    ASSERT_TRUE(ghostty);
+    EXPECT_TRUE(ghostty->foreground == Rgb(205, 231, 199));
+    EXPECT_TRUE(ghostty->palette[4] == Rgb(54, 122, 205));
+    // Konsole writes "r,g,b": the commas of an OKLCH value are not that.
+    const auto konsole = Themes::parse(
+        "[Background]\nColor=oklch(0.5, 0.1, 100)\n\n"
+        "[Foreground]\nColor=lab(50 0 -50)\n\n[Color0]\nColor=1,2,3\n");
+    ASSERT_TRUE(konsole);
+    EXPECT_TRUE(konsole->background == Rgb(113, 100, 11));
+    EXPECT_TRUE(konsole->foreground == Rgb(54, 122, 205));
+    EXPECT_TRUE(konsole->palette[0] == Rgb(1, 2, 3));
+    const auto json = Themes::parse(R"json({"background": "LAB(50 0 -50)", "palette": ["oklch(70% 0.1 200)"]})json");
+    ASSERT_TRUE(json);
+    EXPECT_TRUE(json->background == Rgb(54, 122, 205));
+    EXPECT_TRUE(json->palette[0] == Rgb(64, 177, 183));
+    EXPECT_TRUE(Themes::isColorName(QStringLiteral("oklch(0.5 0.1 100)")));
+    EXPECT_TRUE(Themes::isColorName(QStringLiteral("lab(50 60 40)")));
+    // Terminal colours have no alpha: kitty reads one in these forms, and
+    // ignores it.
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("oklch(0.5 0.1 100 / 0.5)")) == Rgb(113, 100, 11));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("oklch(0.5 0.1)")));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("rgb(1, 2, 3)")));
 }
 
 TEST(Themes, ReadsJsonThemes)
@@ -258,11 +360,10 @@ TEST(Themes, EightDigitHexIsNotAColour)
     // Qt reads eight digits as #AARRGGBB; these colours have no alpha.
     EXPECT_FALSE(Themes::isColorName(QStringLiteral("#1e1e2eff")));
     EXPECT_TRUE(Themes::isColorName(QStringLiteral("#1e1e2e")));
-    EXPECT_TRUE(Themes::isColorName(QStringLiteral("#fff")));
-    EXPECT_TRUE(Themes::isColorName(QStringLiteral("red")));
     QStringList ignored;
     QStringList invalid;
-    const auto theme = Themes::parse(R"({"background": "#101010", "foreground": "#1e1e2eff"})", nullptr, &ignored, &invalid);
+    const auto theme =
+        Themes::parse(R"({"background": "#101010", "foreground": "#1e1e2eff"})", nullptr, &ignored, &invalid);
     ASSERT_TRUE(theme);
     EXPECT_FALSE(theme->foreground);
     // A key Afterglow uses, with a value it cannot: not an unused key.
@@ -270,33 +371,79 @@ TEST(Themes, EightDigitHexIsNotAColour)
     EXPECT_EQ(invalid, QStringList{QStringLiteral("foreground")});
 }
 
+TEST(Themes, ReadsColorForms)
+{
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("#1e1e2e")) == Rgb(0x1e, 0x1e, 0x2e));
+    // White, as in CSS and kitty, where the escape codes read f0f0f0.
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("#fff")) == Rgb(255, 255, 255));
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("#fffeeeddd")) == Rgb(255, 238, 221));
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("red")) == Rgb(255, 0, 0));
+    // The X11 names, as the escape codes and kitty read them, not the SVG
+    // names of Qt, where green is #008000 and gray #808080.
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("green")) == Rgb(0, 255, 0));
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("Gray")) == Rgb(190, 190, 190));
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("dark slate gray")) == Rgb(47, 79, 79));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("teal")));
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("rgb:ff/80/00")) == Rgb(255, 128, 0));
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("rgbi:1/0/0")) == Rgb(255, 0, 0));
+    // White space around a colour does not count, in every form.
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral(" #1e1e2e\t")) == Rgb(0x1e, 0x1e, 0x2e));
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral(" red ")) == Rgb(255, 0, 0));
+    EXPECT_FALSE(Themes::isColorName(QString()));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("#12345")));
+    // Each hex form as QColor widens it, and no alpha.
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("#abc")) == Rgb(0xaa, 0xbb, 0xcc));
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("#123456789")) == Rgb(0x12, 0x45, 0x78));
+    EXPECT_TRUE(Themes::rgbFromName(QStringLiteral("#ffff80000000")) == Rgb(255, 128, 0));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("#1e1e2eff")));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("#12g")));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("  ")));
+    // hexName writes what rgbFromName reads back.
+    EXPECT_EQ(Themes::hexName(Rgb(0x0a, 0xbc, 0xff)), QStringLiteral("#0abcff"));
+    EXPECT_TRUE(Themes::rgbFromName(Themes::hexName(Rgb(1, 2, 3))) == Rgb(1, 2, 3));
+}
+
 TEST(Themes, RejectsFilesWithoutColours)
 {
     QString error;
     EXPECT_FALSE(Themes::parse("font-size = 12\n", &error));
     EXPECT_FALSE(error.isEmpty());
+    // Each parse sets its own error: the first one must not pass for the second.
+    error.clear();
     EXPECT_FALSE(Themes::parse("{ not json", &error));
+    EXPECT_FALSE(error.isEmpty());
 }
 
 TEST(Themes, BundledThemesLoad)
 {
-    const QStringList names = QDir(QStringLiteral(AFTERGLOW_THEME_DIR)).entryList({QStringLiteral("*.json")}, QDir::Files);
-    ASSERT_GE(names.size(), 33);
+    const QStringList names =
+        QDir(QStringLiteral(AFTERGLOW_THEME_DIR)).entryList({QStringLiteral("*.json")}, QDir::Files);
+    // CHANGELOG.md counts them.
+    ASSERT_EQ(names.size(), 33);
     for (const QString& file : names) {
         const QString name = QFileInfo(file).completeBaseName();
         const QString path = Themes::locate(name, {QStringLiteral(AFTERGLOW_THEME_DIR)});
-        ASSERT_FALSE(path.isEmpty()) << name.toStdString();
+        // A broken theme fails its own row: the others are still checked.
+        if (path.isEmpty()) {
+            ADD_FAILURE() << name.toStdString() << ": not found";
+            continue;
+        }
         QFile f(path);
-        ASSERT_TRUE(f.open(QIODevice::ReadOnly));
+        if (!f.open(QIODevice::ReadOnly)) {
+            ADD_FAILURE() << name.toStdString() << ": cannot open";
+            continue;
+        }
         QStringList ignored;
         QStringList invalid;
         const auto theme = Themes::parse(f.readAll(), nullptr, &ignored, &invalid);
-        ASSERT_TRUE(theme) << name.toStdString();
+        if (!theme) {
+            ADD_FAILURE() << name.toStdString() << ": does not parse";
+            continue;
+        }
         // A misspelt key would be dropped without a word.
         EXPECT_TRUE(ignored.isEmpty()) << name.toStdString() << ": " << ignored.join(QLatin1Char(' ')).toStdString();
         EXPECT_TRUE(invalid.isEmpty()) << name.toStdString() << ": " << invalid.join(QLatin1Char(' ')).toStdString();
-        EXPECT_TRUE(theme->foreground && theme->background)
-            << name.toStdString();
+        EXPECT_TRUE(theme->foreground && theme->background) << name.toStdString();
         for (const auto& c : theme->palette) {
             EXPECT_TRUE(c.has_value()) << name.toStdString();
         }
@@ -305,7 +452,8 @@ TEST(Themes, BundledThemesLoad)
 
 TEST_F(ConfigTest, ThemeColoursReplaceTheConfigs)
 {
-    const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "afterglow-light", "background": "#000000"}})");
+    const QString config =
+        write(QStringLiteral("config.json"), R"({"Colors": {"theme": "afterglow-light", "background": "#000000"}})");
     SettingsStore store(config);
     const Settings& s = store.settings();
     EXPECT_TRUE(same(s.terminal.defaultBackground, {0xf6, 0xf5, 0xf2}));
@@ -313,11 +461,29 @@ TEST_F(ConfigTest, ThemeColoursReplaceTheConfigs)
     EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
 }
 
+TEST_F(ConfigTest, ColorSettingsTakeOklchAndLab)
+{
+    const QString config = write(QStringLiteral("config.json"),
+                                 R"json({"Colors": {"background": "lab(10 0 0)", "foreground": "oklch(0.9 0.05 140)",
+                                     "palette": ["oklch(0.5 0.1 100)", "lab(50 60 40)"], "visualBell": "oklch(0.5)"}})json");
+    SettingsStore store(config);
+    const Settings& s = store.settings();
+    EXPECT_TRUE(same(s.terminal.defaultBackground, {27, 27, 27}));
+    EXPECT_TRUE(same(s.terminal.defaultForeground, {205, 231, 199}));
+    EXPECT_TRUE(same(s.terminal.basePalette[0], {113, 100, 11}));
+    EXPECT_TRUE(same(s.terminal.basePalette[1], {214, 60, 55}));
+    // A form that is no colour is reported, as a hex value with a typo is,
+    // and the default stays.
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Colors.visualBell is not a color")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_TRUE(same(s.colors.visualBell, Settings{}.colors.visualBell));
+}
+
 TEST_F(ConfigTest, UserThemesComeFirstAndDeriveADivider)
 {
     // The same name as a bundled theme, whose background is #1c1c1c.
-    QDir().mkpath(m_home.path() + QStringLiteral("/afterglow/themes"));
-    write(QStringLiteral("afterglow/themes/afterglow-dark"), "background = #000000\nforeground = #ffffff\n");
+    QDir().mkpath(m_home.path() + QStringLiteral("/themes"));
+    write(QStringLiteral("themes/afterglow-dark"), "background = #000000\nforeground = #ffffff\n");
     const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "afterglow-dark"}})");
     SettingsStore store(config);
     const Settings& s = store.settings();
@@ -332,25 +498,29 @@ TEST_F(ConfigTest, APopupBorderComesFromTheThemeOrItsColorsOrTheConfig)
 {
     auto borderOf = [&](const QByteArray& json) {
         SettingsStore store(write(QStringLiteral("config.json"), json));
-        EXPECT_TRUE(store.problems().isEmpty()) << json.toStdString() << ": " << store.problems().join(QLatin1Char('\n')).toStdString();
+        EXPECT_TRUE(store.problems().isEmpty())
+            << json.toStdString() << ": " << store.problems().join(QLatin1Char('\n')).toStdString();
         return store.settings().window.popupBorderColor;
     };
     // No theme: halfway from the background to the text in use, or the user's own.
     EXPECT_EQ(borderOf("{}"), AfterglowRender::packRgba(0x7a, 0x7a, 0x7a));
-    EXPECT_EQ(borderOf(R"({"Colors": {"background": "#ffffff", "foreground": "#000000"}})"), AfterglowRender::packRgba(0x80, 0x80, 0x80));
+    EXPECT_EQ(borderOf(R"({"Colors": {"background": "#ffffff", "foreground": "#000000"}})"),
+              AfterglowRender::packRgba(0x80, 0x80, 0x80));
     EXPECT_EQ(borderOf(R"({"Colors": {"popupBorder": "#123456"}})"), AfterglowRender::packRgba(0x12, 0x34, 0x56));
     // The bundled themes set none: halfway from their background to their
     // text, not the config's.
-    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "afterglow-dark", "popupBorder": "#ff00ff"}})"), AfterglowRender::packRgba(0x7a, 0x7a, 0x7a));
+    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "afterglow-dark", "popupBorder": "#ff00ff"}})"),
+              AfterglowRender::packRgba(0x7a, 0x7a, 0x7a));
     EXPECT_EQ(borderOf(R"({"Colors": {"theme": "afterglow-light"}})"), AfterglowRender::packRgba(0x91, 0x90, 0x91));
     // A theme replaces the config's, as it does the divider.
     EXPECT_EQ(borderOf(R"({"Colors": {"theme": "afterglow-light", "popupBorder": "#123456"}})"),
               AfterglowRender::packRgba(0x91, 0x90, 0x91));
     // A theme that sets one, and Ghostty and Kitty themes without one.
-    QDir().mkpath(m_home.filePath(QStringLiteral("afterglow/themes")));
+    QDir().mkpath(m_home.filePath(QStringLiteral("themes")));
     QDir().mkpath(m_home.filePath(QStringLiteral("ghostty/themes")));
     QDir().mkpath(m_home.filePath(QStringLiteral("kitty/themes")));
-    write(QStringLiteral("afterglow/themes/boxed.json"), R"({"background": "#000000", "foreground": "#ffffff", "popupBorder": "#ff8800"})");
+    write(QStringLiteral("themes/boxed.json"),
+          R"({"background": "#000000", "foreground": "#ffffff", "popupBorder": "#ff8800"})");
     write(QStringLiteral("ghostty/themes/Night"), "background = #000000\nforeground = #c8c8c8\n");
     write(QStringLiteral("kitty/themes/Paper.conf"), "background #ffffff\nforeground #000000\n");
     EXPECT_EQ(borderOf(R"({"Colors": {"theme": "boxed"}})"), AfterglowRender::packRgba(0xff, 0x88, 0x00));
@@ -377,8 +547,10 @@ TEST_F(ConfigTest, PopupCornersAreRoundedOrSquare)
 TEST_F(ConfigTest, AThemeWhosePopupBorderChangesAppliesOnReload)
 {
     const QString theme = write(QStringLiteral("theme.json"), R"({"background": "#000000", "popupBorder": "#112233"})");
-    SettingsStore store(write(QStringLiteral("config.json"),
-                              QJsonDocument(QJsonObject{{QStringLiteral("Colors"), QJsonObject{{QStringLiteral("theme"), theme}}}}).toJson()));
+    SettingsStore store(
+        write(QStringLiteral("config.json"),
+              QJsonDocument(QJsonObject{{QStringLiteral("Colors"), QJsonObject{{QStringLiteral("theme"), theme}}}})
+                  .toJson()));
     ASSERT_EQ(store.settings().window.popupBorderColor, AfterglowRender::packRgba(0x11, 0x22, 0x33));
     int changes = 0;
     QObject::connect(&store, &SettingsStore::changed, [&](const Settings& previous) {
@@ -395,18 +567,21 @@ namespace {
 std::optional<Theme> bundled(const char* name)
 {
     QFile file(Themes::locate(QString::fromLatin1(name), Themes::searchDirs()));
-    if (!file.open(QIODevice::ReadOnly)) return std::nullopt;
+    if (!file.open(QIODevice::ReadOnly))
+        return std::nullopt;
     return Themes::parse(file.readAll());
 }
-const QByteArray DarkPlasma = "[Colors:View]\nBackgroundNormal=20,22,24\nForegroundNormal=230,231,232\n"
-                              "DecorationFocus=61,174,233\n\n[Colors:Selection]\nBackgroundNormal=30,90,150\n"
-                              "ForegroundNormal=250,251,252\n";
+const QByteArray DarkPlasma =
+    "[Colors:View]\nBackgroundNormal=20,22,24\nForegroundNormal=230,231,232\n"
+    "DecorationFocus=61,174,233\n\n[Colors:Selection]\nBackgroundNormal=30,90,150\n"
+    "ForegroundNormal=250,251,252\n";
 } // namespace
 
 TEST_F(ConfigTest, KonsoleColorSchemesAreFoundByNameAfterAfterglowThemes)
 {
     QDir().mkpath(m_home.filePath(QStringLiteral("data-home/konsole")));
-    write(QStringLiteral("data-home/konsole/Breezy.colorscheme"), "[Background]\nColor=1,2,3\n[Foreground]\nColor=4,5,6\n");
+    write(QStringLiteral("data-home/konsole/Breezy.colorscheme"),
+          "[Background]\nColor=1,2,3\n[Foreground]\nColor=4,5,6\n");
     const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "Breezy"}})");
     {
         SettingsStore store(config);
@@ -414,8 +589,8 @@ TEST_F(ConfigTest, KonsoleColorSchemesAreFoundByNameAfterAfterglowThemes)
         EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
     }
     // An Afterglow theme of the same name comes first.
-    QDir().mkpath(m_home.filePath(QStringLiteral("afterglow/themes")));
-    write(QStringLiteral("afterglow/themes/Breezy.json"), R"({"background": "#0a0b0c"})");
+    QDir().mkpath(m_home.filePath(QStringLiteral("themes")));
+    write(QStringLiteral("themes/Breezy.json"), R"({"background": "#0a0b0c"})");
     SettingsStore store(config);
     EXPECT_TRUE(same(store.settings().terminal.defaultBackground, {0x0a, 0x0b, 0x0c}));
 }
@@ -431,12 +606,14 @@ TEST_F(ConfigTest, GhosttyAndKittyThemesAreFoundInTheirOwnDirectories)
     write(QStringLiteral("data-dirs/ghostty/themes/Shipped Night"), "background = #040506\n");
     write(QStringLiteral("kitty/themes/Paper.conf"), "background #070809\n");
     auto backgroundOf = [&](const char* theme) {
-        const QString config = write(QStringLiteral("config.json"),
-                                     QJsonDocument(QJsonObject{{QStringLiteral("Colors"),
-                                                                QJsonObject{{QStringLiteral("theme"), QString::fromUtf8(theme)}}}})
-                                         .toJson());
+        const QString config =
+            write(QStringLiteral("config.json"),
+                  QJsonDocument(QJsonObject{{QStringLiteral("Colors"),
+                                             QJsonObject{{QStringLiteral("theme"), QString::fromUtf8(theme)}}}})
+                      .toJson());
         SettingsStore store(config);
-        EXPECT_TRUE(store.problems().isEmpty()) << theme << ": " << store.problems().join(QLatin1Char('\n')).toStdString();
+        EXPECT_TRUE(store.problems().isEmpty())
+            << theme << ": " << store.problems().join(QLatin1Char('\n')).toStdString();
         return store.settings().terminal.defaultBackground;
     };
     EXPECT_TRUE(same(backgroundOf("Mine"), {1, 2, 3}));
@@ -461,30 +638,39 @@ TEST_F(ConfigTest, PlasmaThemeTakesTheDesktopColorsOverTheNamedTheme)
     ASSERT_TRUE(light && light->palette[1]);
     EXPECT_TRUE(same(s.terminal.basePalette[1], *light->palette[1]));
     // The divider and the popup border come from the desktop's background and text.
-    auto mix = [](int a, int b) { return a + (b - a) / 5; };
+    auto mix = [](int a, int b) {
+        return a + (b - a) / 5;
+    };
     EXPECT_EQ(s.window.dividerColor, AfterglowRender::packRgba(mix(20, 230), mix(22, 231), mix(24, 232)));
-    auto half = [](int a, int b) { return a + (b - a) / 2; };
+    auto half = [](int a, int b) {
+        return a + (b - a) / 2;
+    };
     EXPECT_EQ(s.window.popupBorderColor, AfterglowRender::packRgba(half(20, 230), half(22, 231), half(24, 232)));
     EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
     EXPECT_TRUE(store.watchedPaths().contains(m_home.filePath(QStringLiteral("kdeglobals"))));
     // Also over a theme that sets its own, picked for its own background.
-    QDir().mkpath(m_home.filePath(QStringLiteral("afterglow/themes")));
-    write(QStringLiteral("afterglow/themes/boxed.json"), R"({"background": "#ffffff", "divider": "#00ff00", "popupBorder": "#ff8800"})");
+    QDir().mkpath(m_home.filePath(QStringLiteral("themes")));
+    write(QStringLiteral("themes/boxed.json"),
+          R"({"background": "#ffffff", "divider": "#00ff00", "popupBorder": "#ff8800"})");
     SettingsStore boxed(write(QStringLiteral("boxed.json"), R"({"Colors": {"theme": "plasma:boxed"}})"));
-    EXPECT_EQ(boxed.settings().window.dividerColor, AfterglowRender::packRgba(mix(20, 230), mix(22, 231), mix(24, 232)));
-    EXPECT_EQ(boxed.settings().window.popupBorderColor, AfterglowRender::packRgba(half(20, 230), half(22, 231), half(24, 232)));
+    EXPECT_EQ(boxed.settings().window.dividerColor,
+              AfterglowRender::packRgba(mix(20, 230), mix(22, 231), mix(24, 232)));
+    EXPECT_EQ(boxed.settings().window.popupBorderColor,
+              AfterglowRender::packRgba(half(20, 230), half(22, 231), half(24, 232)));
 }
 
 TEST_F(ConfigTest, PlasmaColorsReadHexValuesTheViewSectionAndTheSystemFile)
 {
     // As Plasma writes it today: hex values, and the same keys in other sections.
-    write(QStringLiteral("kdeglobals"), "[Colors:Button]\nBackgroundNormal=#ff0000\nForegroundNormal=#00ff00\n\n"
-                                        "[Colors:View]\nBackgroundAlternate=#071C33\nBackgroundNormal=#2E4159\n"
-                                        "DecorationFocus=#80B9FF\nForegroundNormal=#e2e2e6\n");
+    write(QStringLiteral("kdeglobals"),
+          "[Colors:Button]\nBackgroundNormal=#ff0000\nForegroundNormal=#00ff00\n\n"
+          "[Colors:View]\nBackgroundAlternate=#071C33\nBackgroundNormal=#2E4159\n"
+          "DecorationFocus=#80B9FF\nForegroundNormal=#e2e2e6\n");
     // The system's file under the user's: it supplies what the user's leaves out.
     QDir().mkpath(m_home.filePath(QStringLiteral("config-dirs")));
-    write(QStringLiteral("config-dirs/kdeglobals"), "[Colors:View]\nBackgroundNormal=1,1,1\n\n"
-                                                    "[Colors:Selection]\nBackgroundNormal=61,174,233,255\nForegroundNormal=252,252,252\n");
+    write(QStringLiteral("config-dirs/kdeglobals"),
+          "[Colors:View]\nBackgroundNormal=1,1,1\n\n"
+          "[Colors:Selection]\nBackgroundNormal=61,174,233,255\nForegroundNormal=252,252,252\n");
     const QStringList sources = Themes::plasmaSources();
     ASSERT_EQ(sources.size(), 2);
     EXPECT_EQ(sources.last(), m_home.filePath(QStringLiteral("kdeglobals")));
@@ -494,6 +680,36 @@ TEST_F(ConfigTest, PlasmaColorsReadHexValuesTheViewSectionAndTheSystemFile)
     EXPECT_TRUE(theme.cursor == Rgb(0x80, 0xb9, 0xff));
     EXPECT_TRUE(theme.selectionBackground == Rgb(61, 174, 233));
     EXPECT_TRUE(theme.selectionForeground == Rgb(252, 252, 252));
+}
+
+// The tests run without a QGuiApplication, as afterglow mux new does: a
+// colour that the scheme leaves out stays the theme's, not a fixed one.
+TEST_F(ConfigTest, WithoutTheDesktopPlasmaKeepsTheColorsThatTheSchemeLeavesOut)
+{
+    ASSERT_EQ(qobject_cast<QGuiApplication*>(QCoreApplication::instance()), nullptr);
+    write(QStringLiteral("kdeglobals"), "[Colors:View]\nBackgroundNormal=10,20,30\nForegroundNormal=200,210,220\n");
+    const auto light = bundled("afterglow-light");
+    ASSERT_TRUE(light);
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma:afterglow-light"}})"));
+    const auto& t = store.settings().terminal;
+    EXPECT_TRUE(t.defaultBackground == Rgb(10, 20, 30));
+    EXPECT_TRUE(t.defaultForeground == Rgb(200, 210, 220));
+    EXPECT_TRUE(t.selectionBackground == light->selectionBackground);
+    EXPECT_TRUE(t.cursorColor == light->cursor);
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+// plasma alone with a scheme that gives no background: dark, as afterglow
+// mux new, which has no desktop, takes the dark side.
+TEST_F(ConfigTest, PlasmaWithoutABackgroundTakesTheDarkTheme)
+{
+    ASSERT_EQ(qobject_cast<QGuiApplication*>(QCoreApplication::instance()), nullptr);
+    const auto dark = bundled("afterglow-dark");
+    ASSERT_TRUE(dark && dark->palette[4]);
+    write(QStringLiteral("kdeglobals"), "[Colors:View]\nForegroundNormal=200,210,220\n");
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma"}})"));
+    EXPECT_TRUE(same(store.settings().terminal.basePalette[4], *dark->palette[4]));
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
 }
 
 TEST_F(ConfigTest, PlasmaThemeAloneTakesTheColorsOfTheSchemesBrightness)
@@ -514,7 +730,9 @@ TEST_F(ConfigTest, PlasmaThemeAloneTakesTheColorsOfTheSchemesBrightness)
     // The watch follows the theme that was read, not another read of kdeglobals.
     const QStringList watched = store.watchedPaths();
     auto watches = [&](const QString& file) {
-        return std::any_of(watched.begin(), watched.end(), [&](const QString& p) { return p.endsWith(file); });
+        return std::any_of(watched.begin(), watched.end(), [&](const QString& p) {
+            return p.endsWith(file);
+        });
     };
     EXPECT_TRUE(watches(QStringLiteral("/afterglow-light.json")));
     EXPECT_FALSE(watches(QStringLiteral("/afterglow-dark.json")));
@@ -523,11 +741,7 @@ TEST_F(ConfigTest, PlasmaThemeAloneTakesTheColorsOfTheSchemesBrightness)
 
 TEST_F(ConfigTest, PlasmaThemeFollowsAChangedColorScheme)
 {
-    int argc = 1;
-    char name[] = "config-test";
-    char* argv[] = {name, nullptr};
-    std::unique_ptr<QCoreApplication> app;
-    if (!QCoreApplication::instance()) app = std::make_unique<QCoreApplication>(argc, argv);
+    const auto app = watchApplication();
     write(QStringLiteral("kdeglobals"), DarkPlasma);
     const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma:afterglow-dark"}})");
     SettingsStore store(config);
@@ -548,11 +762,7 @@ TEST_F(ConfigTest, PlasmaThemeFollowsAChangedColorScheme)
 
 TEST_F(ConfigTest, PlasmaThemeRereadsTheColorsOnANewApplicationPalette)
 {
-    int argc = 1;
-    char name[] = "config-test";
-    char* argv[] = {name, nullptr};
-    std::unique_ptr<QCoreApplication> app;
-    if (!QCoreApplication::instance()) app = std::make_unique<QCoreApplication>(argc, argv);
+    const auto app = watchApplication();
     write(QStringLiteral("kdeglobals"), DarkPlasma);
     const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma:afterglow-dark"}})");
     SettingsStore store(config);
@@ -567,18 +777,16 @@ TEST_F(ConfigTest, PlasmaThemeRereadsTheColorsOnANewApplicationPalette)
 
 TEST_F(ConfigTest, TheDesktopEventsOfOneChangeReadOnce)
 {
-    int argc = 1;
-    char name[] = "config-test";
-    char* argv[] = {name, nullptr};
-    std::unique_ptr<QCoreApplication> app;
-    if (!QCoreApplication::instance()) app = std::make_unique<QCoreApplication>(argc, argv);
+    const auto app = watchApplication();
     write(QStringLiteral("kdeglobals"), DarkPlasma);
     // A plasma theme and the desktop font: both kinds of event pass the filter.
     const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma:afterglow-dark"}})");
     SettingsStore store(config);
     ASSERT_TRUE(same(store.settings().terminal.defaultBackground, {20, 22, 24}));
     int changes = 0;
-    QObject::connect(&store, &SettingsStore::changed, &store, [&] { ++changes; });
+    QObject::connect(&store, &SettingsStore::changed, &store, [&] {
+        ++changes;
+    });
     QEvent palette(QEvent::ApplicationPaletteChange);
     QEvent font(QEvent::ApplicationFontChange);
     // Qt delivers a desktop change as several events in a row. The read
@@ -602,7 +810,8 @@ TEST_F(ConfigTest, TheDesktopEventsOfOneChangeReadOnce)
 
 TEST_F(ConfigTest, MissingThemeKeepsTheConfigsColours)
 {
-    const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "no-such-theme", "background": "#123456"}})");
+    const QString config =
+        write(QStringLiteral("config.json"), R"({"Colors": {"theme": "no-such-theme", "background": "#123456"}})");
     SettingsStore store(config);
     EXPECT_TRUE(same(store.settings().terminal.defaultBackground, {0x12, 0x34, 0x56}));
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("no-such-theme")));
@@ -615,8 +824,8 @@ TEST_F(ConfigTest, ReadsFontColorTerminalAndWindowSettings)
         "Colors": {"cursorText": "#010203", "selectionForeground": "#ffffff", "boldIsBright": true, "minimumContrast": 4.5},
         "Terminal": {"env": {"EDITOR": "nvim", "BAD=KEY": "x"}, "wordSeparators": " ,", "scrollLines": 5,
                      "confirmClose": false, "hideMouseWhileTyping": true},
-        "Window": {"workingDirectory": "home", "startMode": "MAXIMIZED", "decorations": false, "tabBar": "sometimes",
-                   "scrollbar": "always", "scrollbarHideDelay": 90000},
+        "Window": {"workingDirectory": "home", "startMode": "MAXIMIZED", "decorations": false, "tabBar": "sometimes", "tabBarHeight": 100,
+                   "scrollbar": "always", "scrollbarHideDelay": 90000, "scrollbarWidth": 2, "resizeStepCells": 0},
         "Animation": {"splitCurve": " 0.2,0,0,1 ", "splitDuration": 5}
     })");
     SettingsStore store(config);
@@ -643,6 +852,16 @@ TEST_F(ConfigTest, ReadsFontColorTerminalAndWindowSettings)
     EXPECT_EQ(s.window.tabBar, WindowSettings::TabBar::Auto); // not a choice: the default
     EXPECT_EQ(s.window.scrollbar, WindowSettings::Scrollbar::Always);
     EXPECT_EQ(s.window.scrollbarHideDelay, 60000); // clamped
+    EXPECT_EQ(s.window.scrollbarWidth, 4); // clamped
+    EXPECT_EQ(s.window.tabBarHeight, 64); // clamped
+    EXPECT_EQ(WindowSettings{}.tabBarHeight, 30);
+    EXPECT_EQ(WindowSettings{}.scrollbarWidth, 12);
+    EXPECT_EQ(s.window.resizeStepCells, 1); // clamped
+    EXPECT_EQ(WindowSettings{}.resizeStepCells, 2);
+    const QString steps = write(QStringLiteral("steps.json"), R"({"Window": {"resizeStepCells": 5}})");
+    EXPECT_EQ(SettingsStore(steps).settings().window.resizeStepCells, 5);
+    const QString far = write(QStringLiteral("far.json"), R"({"Window": {"resizeStepCells": 99999}})");
+    EXPECT_EQ(SettingsStore(far).settings().window.resizeStepCells, WindowSettings::MaxResizeStepCells);
     EXPECT_EQ(s.animation.splitCurve, QStringLiteral("0.2,0,0,1"));
     EXPECT_EQ(s.animation.splitDuration, 16); // clamped
 }
@@ -664,6 +883,338 @@ TEST(Keybinds, TextBindingsSendTheirBytes)
     EXPECT_EQ(kb.match(&press), Action::None);
 }
 
+TEST_F(ConfigTest, ReadsWhatClosingTheWindowOfASessionDoes)
+{
+    EXPECT_EQ(MuxSettings{}.onClose, MuxSettings::Close::Kill);
+    {
+        SettingsStore store(write(QStringLiteral("detach.json"), R"({"Mux": {"onClose": "detach"}})"));
+        EXPECT_EQ(store.settings().mux.onClose, MuxSettings::Close::Detach);
+        EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+    }
+    // Not a choice: the default, and the problem says so.
+    SettingsStore store(write(QStringLiteral("other.json"), R"({"Mux": {"onClose": "keep"}})"));
+    EXPECT_EQ(store.settings().mux.onClose, MuxSettings::Close::Kill);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Mux.onClose must be one of")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+TEST_F(ConfigTest, ReadsTheEventQueueOfASessionWithinTheDaemonsBounds)
+{
+    // The daemon's default, for an attach that passes none.
+    EXPECT_EQ(std::int64_t(MuxSettings{}.eventQueue), AfterglowMux::DefaultEventQueue);
+    // The bounds are the daemon's: every value of the setting is one that an
+    // attach call may pass.
+    const auto key = [](const char* group, const char* name) {
+        return SettingsStore::reference()
+            .value(QStringLiteral("groups"))
+            .toObject()
+            .value(QLatin1String(group))
+            .toObject()
+            .value(QLatin1String(name))
+            .toObject();
+    };
+    const auto queue = key("Mux", "eventQueue");
+    EXPECT_EQ(std::int64_t(queue.value(QStringLiteral("minimum")).toInt()) << 20, AfterglowMux::MinEventQueue);
+    EXPECT_EQ(std::int64_t(queue.value(QStringLiteral("maximum")).toInt()) << 20, AfterglowMux::MaxEventQueue);
+    // The other settings that a session takes: a range past the daemon's
+    // bound would make it refuse the settings of every window.
+    EXPECT_EQ(key("Terminal", "scrollback").value(QStringLiteral("maximum")).toInteger(), AfterglowMux::MaxScrollback);
+    EXPECT_EQ(key("Colors", "minimumContrast").value(QStringLiteral("minimum")).toDouble(), AfterglowMux::MinContrast);
+    EXPECT_EQ(key("Colors", "minimumContrast").value(QStringLiteral("maximum")).toDouble(), AfterglowMux::MaxContrast);
+    EXPECT_EQ(key("Graphics", "quota").value(QStringLiteral("maximum")).toInteger() << 20,
+              AfterglowMux::MaxGraphicsQuota);
+    EXPECT_EQ(key("Control", "eventInterval").value(QStringLiteral("minimum")).toInteger(), 0);
+    EXPECT_EQ(key("Control", "eventInterval").value(QStringLiteral("maximum")).toInteger(),
+              AfterglowMux::MaxEventInterval);
+    // A session that no window showed follows the Control settings of the
+    // afterglow mux new or afterglow mcp that started it: the same defaults.
+    const AfterglowMux::ControlOptions daemon;
+    const ControlSettings control;
+    EXPECT_EQ(daemon.enabled, control.enabled);
+    EXPECT_EQ(daemon.allowReadText, control.allowReadText);
+    EXPECT_EQ(daemon.eventInterval, control.eventInterval);
+    EXPECT_EQ(daemon.allowAdopt, control.allowAdopt);
+    for (const auto& [given, expected] : std::vector<std::pair<int, std::size_t>>{{16, 16}, {0, 1}, {1000, 64}}) {
+        SettingsStore store(
+            write(QStringLiteral("queue.json"), QStringLiteral(R"({"Mux": {"eventQueue": %1}})").arg(given).toUtf8()));
+        EXPECT_EQ(store.settings().mux.eventQueue, expected << 20) << given;
+    }
+}
+
+// The notifications that a pane of a session keeps while no window shows
+// it: the daemon's default and bounds, which it checks in the settings of a
+// window, and the clamp of the store.
+TEST_F(ConfigTest, ReadsTheKeptNotificationsOfASessionWithinTheDaemonsBounds)
+{
+    EXPECT_EQ(std::int64_t(MuxSettings{}.keptNotifications), AfterglowMux::DefaultKeptNotifications);
+    EXPECT_EQ(AfterglowMux::SessionSettings{}.keptNotifications, MuxSettings{}.keptNotifications);
+    const QJsonObject kept = SettingsStore::reference()
+                                 .value(QStringLiteral("groups"))
+                                 .toObject()
+                                 .value(QStringLiteral("Mux"))
+                                 .toObject()
+                                 .value(QStringLiteral("keptNotifications"))
+                                 .toObject();
+    EXPECT_EQ(kept.value(QStringLiteral("minimum")).toInteger(), 0);
+    EXPECT_EQ(kept.value(QStringLiteral("maximum")).toInteger(), AfterglowMux::MaxKeptNotifications);
+    for (const auto& [given, expected] : std::vector<std::pair<int, int>>{{3, 3}, {0, 0}, {-5, 0}, {1000, 100}}) {
+        SettingsStore store(write(QStringLiteral("kept.json"),
+                                  QStringLiteral(R"({"Mux": {"keptNotifications": %1}})").arg(given).toUtf8()));
+        EXPECT_EQ(store.settings().mux.keptNotifications, expected) << given;
+    }
+}
+
+// The badge of an agent session: "agent" with no color of its own by
+// default (the window then takes color13 of the palette), the user's text
+// and color, and no badge for an empty text.
+TEST_F(ConfigTest, ReadsTheBadgeOfAnAgentSession)
+{
+    SettingsStore defaults(write(QStringLiteral("agent-default.json"), "{}"));
+    EXPECT_EQ(defaults.settings().mux.agentLabel, QStringLiteral("agent"));
+    EXPECT_FALSE(defaults.settings().mux.agentColor);
+    SettingsStore given(
+        write(QStringLiteral("agent.json"), R"({"Mux": {"agentLabel": "claude", "agentColor": "#102030"}})"));
+    EXPECT_EQ(given.settings().mux.agentLabel, QStringLiteral("claude"));
+    ASSERT_TRUE(given.settings().mux.agentColor);
+    EXPECT_EQ(*given.settings().mux.agentColor, (AfterglowVt::Rgb{0x10, 0x20, 0x30}));
+    EXPECT_TRUE(given.problems().isEmpty()) << given.problems().join(QLatin1Char('\n')).toStdString();
+    SettingsStore none(write(QStringLiteral("agent-none.json"), R"({"Mux": {"agentLabel": ""}})"));
+    EXPECT_EQ(none.settings().mux.agentLabel, QString());
+}
+
+// A color that is none: the default, and a problem that says so, as for the
+// colors of Colors.
+TEST_F(ConfigTest, ReportsAnAgentColorThatIsNoColor)
+{
+    SettingsStore store(write(QStringLiteral("agent-color.json"), R"({"Mux": {"agentColor": "not-a-color"}})"));
+    EXPECT_FALSE(store.settings().mux.agentColor);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Mux.agentColor is not a color")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+// One line in the tab bar and the title: the label loses its spaces at the
+// ends and its control characters, and is cut at MaxAgentLabel with a
+// problem that says so.
+TEST_F(ConfigTest, KeepsTheAgentLabelToOneShortLine)
+{
+    SettingsStore spaced(
+        write(QStringLiteral("agent-spaced.json"), "{\"Mux\": {\"agentLabel\": \"  ai\\u001b[31m\\u0007bot\\t \"}}"));
+    EXPECT_EQ(spaced.settings().mux.agentLabel, QStringLiteral("ai[31mbot"));
+    EXPECT_TRUE(spaced.problems().isEmpty()) << spaced.problems().join(QLatin1Char('\n')).toStdString();
+    const QString exact(MuxSettings::MaxAgentLabel, QLatin1Char('a'));
+    SettingsStore fits(write(QStringLiteral("agent-fits.json"),
+                             QStringLiteral(R"({"Mux": {"agentLabel": "%1"}})").arg(exact).toUtf8()));
+    EXPECT_EQ(fits.settings().mux.agentLabel, exact);
+    EXPECT_TRUE(fits.problems().isEmpty());
+    SettingsStore longer(write(QStringLiteral("agent-long.json"),
+                               QStringLiteral(R"({"Mux": {"agentLabel": "%1b"}})").arg(exact).toUtf8()));
+    EXPECT_EQ(longer.settings().mux.agentLabel, exact);
+    EXPECT_TRUE(
+        mentions(longer.problems(),
+                 QStringLiteral("Mux.agentLabel is longer than %1 UTF-16 units").arg(MuxSettings::MaxAgentLabel)))
+        << longer.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+// Control.allowAdopt: off by default, and on when the user says so.
+TEST_F(ConfigTest, ReadsWhetherAnAgentCanAdoptASession)
+{
+    SettingsStore defaults(write(QStringLiteral("adopt-default.json"), "{}"));
+    EXPECT_FALSE(defaults.settings().control.allowAdopt);
+    SettingsStore given(write(QStringLiteral("adopt.json"), R"({"Control": {"allowAdopt": true}})"));
+    EXPECT_TRUE(given.settings().control.allowAdopt);
+}
+
+// The settings of afterglow mcp: the defaults, the user's values, and the
+// clamp of each number to its bounds.
+TEST_F(ConfigTest, ReadsTheSettingsOfTheMcpServer)
+{
+    SettingsStore defaults(write(QStringLiteral("mcp-default.json"), "{}"));
+    const McpSettings& d = defaults.settings().mcp;
+    EXPECT_EQ(d.waitTimeout, 120000);
+    EXPECT_EQ(d.maxWaitTimeout, 3600000);
+    EXPECT_EQ(d.outputLimit, 65536);
+    EXPECT_EQ(d.tailLines, 200);
+    EXPECT_EQ(d.screenshotMaxSize, 2048);
+    EXPECT_TRUE(d.endSessionOnExit);
+    SettingsStore given(write(QStringLiteral("mcp.json"),
+                              R"({"Mcp": {"waitTimeout": 5000, "maxWaitTimeout": 60000, "outputLimit": 4096,
+                                          "tailLines": 10, "screenshotMaxSize": 512, "endSessionOnExit": false}})"));
+    const McpSettings& g = given.settings().mcp;
+    EXPECT_EQ(g.waitTimeout, 5000);
+    EXPECT_EQ(g.maxWaitTimeout, 60000);
+    EXPECT_EQ(g.outputLimit, 4096);
+    EXPECT_EQ(g.tailLines, 10);
+    EXPECT_EQ(g.screenshotMaxSize, 512);
+    EXPECT_FALSE(g.endSessionOnExit);
+    SettingsStore low(write(QStringLiteral("mcp-low.json"),
+                            R"({"Mcp": {"waitTimeout": 1, "maxWaitTimeout": -5, "outputLimit": 0, "tailLines": 0,
+                                        "screenshotMaxSize": 1}})"));
+    EXPECT_EQ(low.settings().mcp.waitTimeout, McpSettings::MinTimeout);
+    EXPECT_EQ(low.settings().mcp.maxWaitTimeout, McpSettings::MinTimeout);
+    EXPECT_EQ(low.settings().mcp.outputLimit, McpSettings::MinOutputLimit);
+    EXPECT_EQ(low.settings().mcp.tailLines, 1);
+    EXPECT_EQ(low.settings().mcp.screenshotMaxSize, McpSettings::MinScreenshotSize);
+    SettingsStore high(write(QStringLiteral("mcp-high.json"),
+                             R"({"Mcp": {"waitTimeout": 999999999, "maxWaitTimeout": 999999999,
+                                         "outputLimit": 99999999, "tailLines": 99999999,
+                                         "screenshotMaxSize": 99999}})"));
+    EXPECT_EQ(high.settings().mcp.waitTimeout, McpSettings::MaxTimeout);
+    EXPECT_EQ(high.settings().mcp.maxWaitTimeout, McpSettings::MaxTimeout);
+    EXPECT_EQ(high.settings().mcp.outputLimit, McpSettings::MaxOutputLimit);
+    EXPECT_EQ(high.settings().mcp.tailLines, McpSettings::MaxTailLines);
+    EXPECT_EQ(high.settings().mcp.screenshotMaxSize, McpSettings::MaxScreenshotSize);
+    // The time of a call that gives none is at most the longest that one
+    // can ask for, for every tool that waits.
+    SettingsStore capped(
+        write(QStringLiteral("mcp-capped.json"), R"({"Mcp": {"waitTimeout": 600000, "maxWaitTimeout": 60000}})"));
+    EXPECT_EQ(capped.settings().mcp.waitTimeout, 60000);
+    EXPECT_EQ(capped.settings().mcp.maxWaitTimeout, 60000);
+}
+
+// The variables that a session takes from Afterglow: tmux 3.8's without
+// MSYSTEM, WINDOWID and the XDG_ desktop names, or the user's names, without
+// the ones that are not variable names or that Afterglow keeps for itself.
+TEST_F(ConfigTest, ReadsTheVariablesThatASessionUpdates)
+{
+    EXPECT_EQ(
+        MuxSettings{}.updateEnvironment,
+        (QStringList{QStringLiteral("DISPLAY"), QStringLiteral("WAYLAND_DISPLAY"), QStringLiteral("XAUTHORITY"),
+                     QStringLiteral("SSH_AUTH_SOCK"), QStringLiteral("SSH_AGENT_PID"), QStringLiteral("SSH_CONNECTION"),
+                     QStringLiteral("SSH_ASKPASS"), QStringLiteral("KRB5CCNAME")}));
+    SettingsStore store(
+        write(QStringLiteral("environment.json"),
+              R"({"Mux": {"updateEnvironment": ["GPG_AGENT_INFO", "BAD NAME", "AFTERGLOW_SOCKET", "GPG_AGENT_INFO",
+                                                                "_X1", "AFTERGLOW_MINE", "TERM", "AFTERGLOW_SHELL_INTEGRATION"]}})"));
+    // AFTERGLOW_SHELL_INTEGRATION is the user's, as in Terminal.env.
+    EXPECT_EQ(store.settings().mux.updateEnvironment,
+              (QStringList{QStringLiteral("GPG_AGENT_INFO"), QStringLiteral("_X1"),
+                           QStringLiteral("AFTERGLOW_SHELL_INTEGRATION")}));
+    const std::string problems = store.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("BAD NAME, which is not a variable name"))) << problems;
+    // A name that Afterglow sets gets the reason of Terminal.env; another
+    // name of its prefix, the prefix.
+    EXPECT_TRUE(mentions(store.problems(),
+                         QStringLiteral("AFTERGLOW_SOCKET, which is not used. Afterglow sets it for each pane")))
+        << problems;
+    EXPECT_TRUE(mentions(
+        store.problems(),
+        QStringLiteral("AFTERGLOW_MINE, which is not used. Afterglow keeps the names that start with AFTERGLOW_")))
+        << problems;
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("TERM, which is not used. Use Terminal.term"))) << problems;
+    SettingsStore none(write(QStringLiteral("none.json"), R"({"Mux": {"updateEnvironment": []}})"));
+    EXPECT_TRUE(none.settings().mux.updateEnvironment.isEmpty());
+}
+
+// The daemon refuses the settings of a window that name more variables: the
+// read keeps the first ones, and a duplicate does not count.
+TEST_F(ConfigTest, KeepsTheVariablesOfASessionWithinTheDaemonsBound)
+{
+    const int most = int(AfterglowMux::MaxUpdatedVariables);
+    QJsonArray names{QStringLiteral("V0")};
+    for (int i = 0; i <= most; ++i)
+        names.append(QStringLiteral("V%1").arg(i));
+    const QJsonObject config{{QStringLiteral("Mux"), QJsonObject{{QStringLiteral("updateEnvironment"), names}}}};
+    SettingsStore store(write(QStringLiteral("many.json"), QJsonDocument(config).toJson()));
+    const QStringList& kept = store.settings().mux.updateEnvironment;
+    ASSERT_EQ(kept.size(), most);
+    EXPECT_EQ(kept.first(), QStringLiteral("V0"));
+    EXPECT_EQ(kept.last(), QStringLiteral("V%1").arg(most - 1));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("names more than %1 variables").arg(most)))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
+    // At the bound: every name, and no problem.
+    names.removeLast();
+    SettingsStore full(write(
+        QStringLiteral("full.json"),
+        QJsonDocument(QJsonObject{{QStringLiteral("Mux"), QJsonObject{{QStringLiteral("updateEnvironment"), names}}}})
+            .toJson()));
+    EXPECT_EQ(full.settings().mux.updateEnvironment.size(), most);
+    EXPECT_TRUE(full.problems().isEmpty()) << full.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+// How a session of another host is reached: the program that ssh runs there,
+// the wait for a sign-in and the life of Afterglow's own ssh master.
+TEST_F(ConfigTest, ReadsHowASessionOfAnotherHostIsReached)
+{
+    const Settings defaults;
+    EXPECT_EQ(defaults.mux.remoteCommand, QStringLiteral("aglow-mux"));
+    EXPECT_EQ(defaults.mux.signInTimeout, 120);
+    EXPECT_EQ(defaults.sshControlPersist, 10);
+    {
+        SettingsStore store(write(QStringLiteral("remote.json"),
+                                  R"({"Mux": {"remoteCommand": " /opt/aglow/bin/aglow-mux ", "signInTimeout": 30},
+                                      "Terminal": {"sshControlPersist": 60}})"));
+        EXPECT_EQ(store.settings().mux.remoteCommand, QStringLiteral("/opt/aglow/bin/aglow-mux"));
+        EXPECT_EQ(store.settings().mux.signInTimeout, 30);
+        EXPECT_EQ(store.settings().sshControlPersist, 60);
+        EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+    }
+    {
+        // Clamped, and an empty program is the default: never a command
+        // without a program.
+        SettingsStore store(
+            write(QStringLiteral("remote.json"),
+                  R"({"Mux": {"remoteCommand": "  ", "signInTimeout": 1}, "Terminal": {"sshControlPersist": 0}})"));
+        EXPECT_EQ(store.settings().mux.remoteCommand, QStringLiteral("aglow-mux"));
+        EXPECT_EQ(store.settings().mux.signInTimeout, 5);
+        EXPECT_EQ(store.settings().sshControlPersist, 1);
+    }
+    SettingsStore store(write(QStringLiteral("remote.json"),
+                              R"({"Mux": {"signInTimeout": 100000}, "Terminal": {"sshControlPersist": 100000}})"));
+    EXPECT_EQ(store.settings().mux.signInTimeout, 600);
+    EXPECT_EQ(store.settings().sshControlPersist, 3600);
+}
+
+// A file that means to turn scripts or the control socket off, and says it
+// wrongly, turns them off: they fail closed.
+TEST_F(ConfigTest, ScriptsAndControlStayOffForAValueThatIsNotABoolean)
+{
+    for (const char* json : {R"({"Scripts": {"enabled": "disabled"}, "Control": {"enabled": "False "}})",
+                             R"({"Scripts": false, "Control": 0})"}) {
+        SCOPED_TRACE(json);
+        SettingsStore store(write(QStringLiteral("off.json"), json));
+        EXPECT_FALSE(store.settings().scripts);
+        EXPECT_FALSE(store.settings().control.enabled);
+        EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Scripts")))
+            << store.problems().join(QLatin1Char('\n')).toStdString();
+    }
+    {
+        SettingsStore store(
+            write(QStringLiteral("off.json"), R"({"Scripts": {"enabled": "no way"}, "Control": {"enabled": 7}})"));
+        EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Scripts.enabled must be true or false. It stays off")));
+        EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Control.enabled must be true or false. It stays off")));
+    }
+    {
+        SettingsStore store(write(QStringLiteral("off.json"), R"({"Scripts": false})"));
+        EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Using the defaults, with Scripts.enabled off")))
+            << store.problems().join(QLatin1Char('\n')).toStdString();
+    }
+    // A command-line override still wins, over a bad value and over a group
+    // that is no object.
+    for (const char* json : {R"({"Scripts": {"enabled": "no way"}})", R"({"Scripts": false})"}) {
+        SettingsStore store(write(QStringLiteral("off.json"), json),
+                            QJsonObject{{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), true}}}});
+        EXPECT_TRUE(store.settings().scripts) << json;
+    }
+    // A valid false stays false, with no problem.
+    SettingsStore store(write(QStringLiteral("off.json"), R"({"Scripts": {"enabled": false}})"));
+    EXPECT_FALSE(store.settings().scripts);
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+TEST_F(ConfigTest, LinkSchemesThatAreNoSchemeAreReported)
+{
+    SettingsStore store(write(QStringLiteral("schemes.json"),
+                              R"({"Links": {"schemes": ["HTTPS:", "https://", "mailto:x", "git+ssh"]}})"));
+    const QStringList& schemes = store.settings().links.schemes;
+    EXPECT_TRUE(schemes.contains(QStringLiteral("https")));
+    EXPECT_TRUE(schemes.contains(QStringLiteral("git+ssh")));
+    for (const QString& scheme : schemes)
+        EXPECT_FALSE(scheme.contains(QLatin1Char('/')) || scheme.contains(QLatin1Char(':'))) << scheme.toStdString();
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("https://")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("mailto:x")));
+}
+
 TEST_F(ConfigTest, ReadsSymbolMapMouseAndLinkSettings)
 {
     const QString config = write(QStringLiteral("config.json"), R"({
@@ -672,7 +1223,7 @@ TEST_F(ConfigTest, ReadsSymbolMapMouseAndLinkSettings)
         "Terminal": {"cursorBlinkInterval": 20, "scrollOnOutput": true, "scrollOnInput": false,
                      "ambiguousWide": true, "bellSound": " default "},
         "Window": {"balancePadding": true},
-        "Mouse": {"rightClick": "copy-or-paste", "middleClick": "clipboard"},
+        "Mouse": {"rightClick": "copy-or-paste", "middleClick": "clipboard", "commandOutputClick": "select"},
         "Links": {"detectUrls": false, "detectPaths": false, "openWith": "firefox --new-tab", "modifier": "none",
                   "openFilesWith": ["kate", "--line", "{line}", " {file} ", ""]}
     })");
@@ -693,14 +1244,17 @@ TEST_F(ConfigTest, ReadsSymbolMapMouseAndLinkSettings)
     EXPECT_TRUE(s.window.balancePadding);
     EXPECT_EQ(s.mouse.rightClick, MouseSettings::RightClick::CopyOrPaste);
     EXPECT_EQ(s.mouse.middleClick, MouseSettings::MiddleClick::Clipboard);
+    EXPECT_EQ(s.mouse.commandOutputClick, MouseSettings::CommandOutputClick::Select);
     EXPECT_FALSE(s.links.detectUrls);
     EXPECT_EQ(s.links.openWith, QStringLiteral("firefox --new-tab"));
     EXPECT_EQ(s.links.modifier, Qt::KeyboardModifiers(Qt::NoModifier));
     EXPECT_FALSE(s.links.detectPaths);
     // Each argument as written: the program gets what the list says.
-    EXPECT_EQ(s.links.openFilesWith, (QStringList{QStringLiteral("kate"), QStringLiteral("--line"), QStringLiteral("{line}"),
-                                                  QStringLiteral(" {file} "), QString()}));
-    EXPECT_FALSE(mentions(store.problems(), QStringLiteral("Links"))) << store.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_EQ(s.links.openFilesWith,
+              (QStringList{QStringLiteral("kate"), QStringLiteral("--line"), QStringLiteral("{line}"),
+                           QStringLiteral(" {file} "), QString()}));
+    EXPECT_FALSE(mentions(store.problems(), QStringLiteral("Links")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
 }
 
 TEST_F(ConfigTest, PathLinksDefaultOnAndOpenFilesWithIsChecked)
@@ -709,9 +1263,10 @@ TEST_F(ConfigTest, PathLinksDefaultOnAndOpenFilesWithIsChecked)
     EXPECT_TRUE(defaults.settings().links.detectPaths);
     EXPECT_TRUE(defaults.settings().links.openFilesWith.isEmpty());
     EXPECT_EQ(defaults.settings().links.remoteCommands,
-              (QStringList{QStringLiteral("ssh"), QStringLiteral("mosh-client"), QStringLiteral("et"), QStringLiteral("telnet"),
-                           QStringLiteral("rlogin")}));
-    SettingsStore clients(write(QStringLiteral("clients.json"), R"({"Links": {"remoteCommands": [" kitten ", "", "ssh"]}})"));
+              (QStringList{QStringLiteral("ssh"), QStringLiteral("mosh-client"), QStringLiteral("et"),
+                           QStringLiteral("telnet"), QStringLiteral("rlogin")}));
+    SettingsStore clients(
+        write(QStringLiteral("clients.json"), R"({"Links": {"remoteCommands": [" kitten ", "", "ssh"]}})"));
     EXPECT_EQ(clients.settings().links.remoteCommands, (QStringList{QStringLiteral("kitten"), QStringLiteral("ssh")}));
     SettingsStore none(write(QStringLiteral("none.json"), R"({"Links": {"remoteCommands": []}})"));
     EXPECT_TRUE(none.settings().links.remoteCommands.isEmpty());
@@ -723,11 +1278,21 @@ TEST_F(ConfigTest, PathLinksDefaultOnAndOpenFilesWithIsChecked)
         EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Links.openFilesWith"))) << value;
     }
     QJsonArray many;
-    for (qsizetype i = 0; i <= MaxHintCommandArguments; ++i) many.append(QStringLiteral("a"));
-    SettingsStore capped(write(QStringLiteral("many.json"),
-                               QJsonDocument(QJsonObject{{QStringLiteral("Links"), QJsonObject{{QStringLiteral("openFilesWith"), many}}}}).toJson()));
+    for (qsizetype i = 0; i <= MaxHintCommandArguments; ++i)
+        many.append(QStringLiteral("a"));
+    SettingsStore capped(write(
+        QStringLiteral("many.json"),
+        QJsonDocument(QJsonObject{{QStringLiteral("Links"), QJsonObject{{QStringLiteral("openFilesWith"), many}}}})
+            .toJson()));
     EXPECT_TRUE(capped.settings().links.openFilesWith.isEmpty());
     EXPECT_TRUE(mentions(capped.problems(), QStringLiteral("1 to %1 strings").arg(MaxHintCommandArguments)));
+}
+
+TEST_F(ConfigTest, TheLinkModifierCanBeSuper)
+{
+    SettingsStore store(write(QStringLiteral("links.json"), R"({"Links": {"modifier": "super"}})"));
+    EXPECT_EQ(store.settings().links.modifier, Qt::KeyboardModifiers(Qt::MetaModifier));
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
 }
 
 TEST(Overrides, ParseAssignments)
@@ -778,14 +1343,156 @@ TEST_F(ConfigTest, AudioDefaultsAndOverrides)
     EXPECT_EQ(custom.settings().audio.inputSource, QStringLiteral("speakers.monitor"));
 }
 
+TEST_F(ConfigTest, CommandOutputClickDefaultsToThePagerAndFallsBack)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_EQ(defaults.settings().mouse.commandOutputClick, MouseSettings::CommandOutputClick::Pager);
+    SettingsStore none(write(QStringLiteral("none.json"), R"({"Mouse": {"commandOutputClick": "none"}})"));
+    EXPECT_EQ(none.settings().mouse.commandOutputClick, MouseSettings::CommandOutputClick::None);
+    SettingsStore bad(write(QStringLiteral("bad.json"), R"({"Mouse": {"commandOutputClick": "open"}})"));
+    EXPECT_EQ(bad.settings().mouse.commandOutputClick, MouseSettings::CommandOutputClick::Pager);
+    EXPECT_TRUE(mentions(bad.problems(), QStringLiteral("Mouse.commandOutputClick must be one of")))
+        << bad.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+TEST_F(ConfigTest, CommandOutputModifierIsACombinationOfModifiers)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_EQ(defaults.settings().mouse.commandOutputModifier, Qt::ControlModifier | Qt::ShiftModifier);
+    EXPECT_EQ(modifierText(defaults.settings().mouse.commandOutputModifier), QStringLiteral("Ctrl+Shift"));
+    SettingsStore alt(write(QStringLiteral("alt.json"), R"({"Mouse": {"commandOutputModifier": " Super + alt "}})"));
+    EXPECT_EQ(alt.settings().mouse.commandOutputModifier, Qt::AltModifier | Qt::MetaModifier);
+    EXPECT_TRUE(alt.problems().isEmpty()) << alt.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_EQ(modifierText(alt.settings().mouse.commandOutputModifier), QStringLiteral("Alt+Super"));
+    // No modifier, another name, or one twice: the default, with a problem.
+    for (const char* chord : {"", "none", "ctrl+hyper", "ctrl+ctrl", "ctrl+"}) {
+        SettingsStore bad(
+            write(QStringLiteral("bad.json"),
+                  QStringLiteral(R"({"Mouse": {"commandOutputModifier": "%1"}})").arg(QLatin1String(chord)).toUtf8()));
+        EXPECT_EQ(bad.settings().mouse.commandOutputModifier, Qt::ControlModifier | Qt::ShiftModifier) << chord;
+        EXPECT_TRUE(mentions(bad.problems(), QStringLiteral("Mouse.commandOutputModifier"))) << chord;
+    }
+}
+
+TEST_F(ConfigTest, ActionTraitsGateTextReadsSessionsAndPaneActions)
+{
+    // Every action has its entry, with its traits: the last of the enum
+    // too.
+    for (int i = int(Action::None) + 1; i < int(Action::Count); ++i) {
+        EXPECT_TRUE(Keybinds::allActions().contains(Action(i))) << i;
+    }
+    EXPECT_EQ(Keybinds::allActions().size(), qsizetype(Action::Count) - 1);
+    for (Action a : Keybinds::allActions()) {
+        // Every action is found by its name.
+        EXPECT_EQ(Keybinds::fromToken(Keybinds::token(a)), a) << Keybinds::token(a).toStdString();
+        // An action that reads pane text reaches past a session's window too.
+        if (Keybinds::readsPaneText(a)) {
+            EXPECT_TRUE(Keybinds::reachesThisComputer(a)) << Keybinds::token(a).toStdString();
+        }
+    }
+    EXPECT_EQ(Keybinds::fromToken(QStringLiteral("no_such_action")), Action::None);
+    for (Action a : {Action::Copy, Action::Paste, Action::SelectAll, Action::ShowLastOutput,
+                     Action::ShowFirstOutputOnScreen, Action::ShowLastVisitedOutput})
+        EXPECT_TRUE(Keybinds::readsPaneText(a)) << Keybinds::token(a).toStdString();
+    for (Action a : {Action::Search, Action::CopyMode, Action::NewTab, Action::None})
+        EXPECT_FALSE(Keybinds::readsPaneText(a)) << Keybinds::token(a).toStdString();
+    for (Action a : {Action::NewWindow, Action::OpenConfig, Action::ReloadConfig, Action::UsePackageShaders,
+                     Action::SaveProject, Action::SwitchProject, Action::EndScriptKeyMode, Action::CancelOverlay})
+        EXPECT_TRUE(Keybinds::reachesThisComputer(a)) << Keybinds::token(a).toStdString();
+    for (Action a : {Action::SplitRight, Action::NewTab, Action::CommandPalette, Action::DetachTab, Action::None})
+        EXPECT_FALSE(Keybinds::reachesThisComputer(a)) << Keybinds::token(a).toStdString();
+    for (Action a : {Action::Copy, Action::SplitRight, Action::NewTab, Action::NewWindow, Action::ShowLastVisitedOutput,
+                     Action::MovePaneToWindow})
+        EXPECT_TRUE(Keybinds::isPaneAction(a)) << Keybinds::token(a).toStdString();
+    for (Action a : {Action::CloseTab, Action::CommandPalette, Action::EndScriptKeyMode, Action::CancelOverlay,
+                     Action::OpenConfig, Action::None})
+        EXPECT_FALSE(Keybinds::isPaneAction(a)) << Keybinds::token(a).toStdString();
+}
+
+TEST_F(ConfigTest, ShellIntegrationReadsKittysWordsInOneForm)
+{
+    const auto read = [&](const char* value, QStringList* problems = nullptr) {
+        SettingsStore store(write(
+            QStringLiteral("shell.json"),
+            QStringLiteral(R"({"Terminal": {"shellIntegration": "%1"}})").arg(QString::fromUtf8(value)).toUtf8()));
+        if (problems)
+            *problems = store.problems();
+        return store.settings().shellIntegration;
+    };
+    EXPECT_EQ(SettingsStore(write(QStringLiteral("none.json"), "{}")).settings().shellIntegration,
+              QStringLiteral("enabled"));
+    EXPECT_EQ(read(""), QStringLiteral("enabled"));
+    EXPECT_EQ(read("disabled"), QStringLiteral("disabled"));
+    // Any case and any white space, each switch once; enabled adds nothing to switches.
+    EXPECT_EQ(read("No-Title\\tno-sudo\\n no-title Enabled"), QStringLiteral("no-title no-sudo"));
+    // Kitty's no-rc and no-complete are switches too.
+    QStringList problems;
+    EXPECT_EQ(read("no-rc No-Complete no-rc", &problems), QStringLiteral("no-rc no-complete"));
+    EXPECT_TRUE(problems.isEmpty()) << problems.join(QLatin1Char('\n')).toStdString();
+    EXPECT_EQ(read("no-cwd no-color", &problems), QStringLiteral("no-cwd"));
+    EXPECT_TRUE(mentions(problems, QStringLiteral("\"no-color\" is not a switch")));
+    EXPECT_EQ(read("no-color", &problems), QStringLiteral("enabled"));
+    // disabled wins, and the words that do nothing beside it are reported.
+    EXPECT_EQ(read("enabled disabled", &problems), QStringLiteral("disabled"));
+    EXPECT_TRUE(mentions(problems, QStringLiteral("has disabled with other words")));
+    EXPECT_EQ(read("disabled no-cwd", &problems), QStringLiteral("disabled"));
+    EXPECT_TRUE(mentions(problems, QStringLiteral("has disabled with other words")));
+    EXPECT_EQ(read("DISABLED", &problems), QStringLiteral("disabled"));
+    EXPECT_TRUE(problems.isEmpty()) << problems.join(QLatin1Char('\n')).toStdString();
+}
+
+TEST_F(ConfigTest, DownloadsAndUploadsHaveTheirChoicesAndLimits)
+{
+    const Settings defaults = SettingsStore(write(QStringLiteral("none.json"), "{}")).settings();
+    EXPECT_EQ(defaults.downloads, Settings::Permission::Ask);
+    EXPECT_EQ(defaults.uploads, Settings::Permission::Ask);
+    EXPECT_TRUE(defaults.downloadDirectory.isEmpty());
+    EXPECT_EQ(defaults.uploadLimit, std::size_t(16) << 20);
+    // uploads has no allow: the picker is the consent.
+    SettingsStore allow(
+        write(QStringLiteral("allow.json"), R"({"Terminal": {"uploads": "allow", "downloads": "never"}})"));
+    EXPECT_EQ(allow.settings().uploads, Settings::Permission::Ask);
+    EXPECT_EQ(allow.settings().downloads, Settings::Permission::Ask);
+    EXPECT_TRUE(mentions(allow.problems(), QStringLiteral("Terminal.uploads must be one of")));
+    EXPECT_TRUE(mentions(allow.problems(), QStringLiteral("Terminal.downloads must be one of")));
+    SettingsStore low(write(QStringLiteral("low.json"), R"({"Terminal": {"uploadLimit": 0}})"));
+    EXPECT_EQ(low.settings().uploadLimit, std::size_t(1) << 20);
+    SettingsStore high(write(QStringLiteral("high.json"), R"({"Terminal": {"uploadLimit": 1000}})"));
+    EXPECT_EQ(high.settings().uploadLimit, std::size_t(Settings::MaxUploadLimit) << 20);
+    // 32 MiB of input holds the answer of 23 MiB in base64, with its line ends.
+    EXPECT_EQ(Settings::MaxUploadLimit, 23);
+    // A directory that would resolve against wherever Afterglow started is the desktop's.
+    for (const char* directory : {"Downloads", "~someone/Downloads", "./here"}) {
+        SettingsStore relative(write(
+            QStringLiteral("relative.json"),
+            QStringLiteral(R"({"Terminal": {"downloadDirectory": "%1"}})").arg(QString::fromUtf8(directory)).toUtf8()));
+        EXPECT_TRUE(relative.settings().downloadDirectory.isEmpty()) << directory;
+        EXPECT_TRUE(mentions(relative.problems(), QStringLiteral("Terminal.downloadDirectory"))) << directory;
+    }
+    // ~ is the home directory once, at the read.
+    for (const auto& [directory, expected] :
+         {std::pair{"/tmp/afterglow", QStringLiteral("/tmp/afterglow")}, std::pair{"~", QDir::homePath()},
+          std::pair{"~/Downloads", QDir::homePath() + QStringLiteral("/Downloads")}}) {
+        SettingsStore kept(write(QStringLiteral("kept.json"),
+                                 QStringLiteral(R"({"Terminal": {"downloadDirectory": " %1 "}})")
+                                     .arg(QString::fromUtf8(directory))
+                                     .toUtf8()));
+        EXPECT_EQ(kept.settings().downloadDirectory, expected) << directory;
+        EXPECT_TRUE(kept.problems().isEmpty()) << directory;
+    }
+}
+
 TEST_F(ConfigTest, StructuralActionClassification)
 {
-    for (Action action : {Action::SplitRight, Action::SplitLeft, Action::SplitDown, Action::SplitUp,
-                          Action::NewTab, Action::NewWindow, Action::ClosePane, Action::CloseTab, Action::CloseWindow}) {
-        EXPECT_TRUE(Keybinds::isStructural(action));
+    for (Action action : {Action::SplitRight, Action::SplitLeft, Action::SplitDown, Action::SplitUp, Action::NewTab,
+                          Action::NewWindow, Action::ClosePane, Action::CloseTab, Action::CloseWindow,
+                          Action::ShowLastOutput, Action::ShowFirstOutputOnScreen, Action::ShowLastVisitedOutput,
+                          Action::MovePaneToTab, Action::MovePaneToWindow, Action::DetachTab, Action::SwitchProject}) {
+        EXPECT_TRUE(Keybinds::isStructural(action)) << Keybinds::token(action).toStdString();
     }
-    for (Action action : {Action::Copy, Action::NextTab, Action::MoveTabLeft, Action::RenamePane, Action::EqualizeSplits}) {
-        EXPECT_FALSE(Keybinds::isStructural(action));
+    for (Action action : {Action::Copy, Action::NextTab, Action::MoveTabLeft, Action::RenamePane,
+                          Action::EqualizeSplits, Action::None}) {
+        EXPECT_FALSE(Keybinds::isStructural(action)) << Keybinds::token(action).toStdString();
     }
 }
 
@@ -796,8 +1503,10 @@ TEST_F(ConfigTest, FontRenderingDefaultsNormalizationAndReload)
     EXPECT_EQ(store.settings().font.antialiasing, AfterglowRender::Antialiasing::Grayscale);
     EXPECT_FLOAT_EQ(store.settings().font.gamma, 1.0f);
     const std::pair<const char*, AfterglowRender::Antialiasing> modes[] = {
-        {"RGB", AfterglowRender::Antialiasing::Rgb}, {"bgr", AfterglowRender::Antialiasing::Bgr},
-        {"none", AfterglowRender::Antialiasing::None}, {"invalid", AfterglowRender::Antialiasing::Grayscale},
+        {"RGB", AfterglowRender::Antialiasing::Rgb},
+        {"bgr", AfterglowRender::Antialiasing::Bgr},
+        {"none", AfterglowRender::Antialiasing::None},
+        {"invalid", AfterglowRender::Antialiasing::Grayscale},
     };
     for (const auto& [name, aa] : modes) {
         write(QStringLiteral("fonts.json"), QByteArray("{\"Font\":{\"antialiasing\":\"") + name + "\",\"gamma\":1.4}}");
@@ -850,7 +1559,7 @@ TEST(KeyModes, TablesCancelExpireAndDoNotTrapUnmatchedInput)
                        {QStringLiteral("pop_key_table"), QStringLiteral("Return")}};
     QStringList errors;
     const auto modes = KeyModes::fromConfig(bindings, {{QStringLiteral("resize"), resize}}, {}, 1000, 5000,
-        Keybinds::fromMap(bindings, &errors), &errors);
+                                            Keybinds::fromMap(bindings, &errors), &errors);
     EXPECT_TRUE(errors.isEmpty());
     KeyModes::State state;
     QKeyEvent leader(QEvent::KeyPress, Qt::Key_Space, Qt::ControlModifier);
@@ -858,7 +1567,10 @@ TEST(KeyModes, TablesCancelExpireAndDoNotTrapUnmatchedInput)
     QKeyEvent h(QEvent::KeyPress, Qt::Key_H, Qt::NoModifier);
     QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
     QKeyEvent x(QEvent::KeyPress, Qt::Key_X, Qt::NoModifier);
-    auto enter = [&] { modes.press(&leader, state, 0); modes.press(&r, state, 100); };
+    auto enter = [&] {
+        modes.press(&leader, state, 0);
+        modes.press(&r, state, 100);
+    };
     enter();
     EXPECT_EQ(state.table, QStringLiteral("resize"));
     EXPECT_EQ(modes.press(&h, state, 200).target, QStringLiteral("resize_left"));
@@ -881,7 +1593,7 @@ TEST(KeyModes, TablesMatchTheCallersBaseKey)
     QVariantMap resize{{QStringLiteral("resize_left"), QStringLiteral("H")}};
     QStringList errors;
     const auto modes = KeyModes::fromConfig(bindings, {{QStringLiteral("resize"), resize}}, {}, 1000, 5000,
-        Keybinds::fromMap(bindings, &errors), &errors);
+                                            Keybinds::fromMap(bindings, &errors), &errors);
     ASSERT_TRUE(errors.isEmpty()) << errors.join(QLatin1Char('\n')).toStdString();
     KeyModes::State state;
     const QKeyEvent leader = press(Qt::Key_Space, Qt::ControlModifier);
@@ -905,6 +1617,11 @@ TEST(KeyModes, RejectsAmbiguousPrefixesAndPreservesExistingSingles)
     const auto singles = Keybinds::fromMap(bindings, &errors);
     const auto modes = KeyModes::fromConfig(bindings, {}, {}, 1000, 5000, singles, &errors);
     EXPECT_EQ(errors.size(), 2);
+    // One error for each mistake, not two for one of them.
+    EXPECT_TRUE(mentions(errors, QStringLiteral("conflicts with an existing single-key binding")))
+        << errors.join(QLatin1Char('\n')).toStdString();
+    EXPECT_TRUE(mentions(errors, QStringLiteral("ambiguous key sequence")))
+        << errors.join(QLatin1Char('\n')).toStdString();
     KeyModes::State state;
     QKeyEvent copy(QEvent::KeyPress, Qt::Key_C, Qt::ControlModifier | Qt::ShiftModifier);
     EXPECT_FALSE(modes.press(&copy, state, 0).consumed);
@@ -915,14 +1632,18 @@ TEST(Config, ReferenceUsesRuntimeDefaultsAndChoices)
 {
     const auto groups = Afterglow::SettingsStore::reference().value(QStringLiteral("groups")).toObject();
     const auto font = groups.value(QStringLiteral("Font")).toObject();
-    EXPECT_EQ(font.value(QStringLiteral("antialiasing")).toObject().value(QStringLiteral("default")).toString(), QStringLiteral("grayscale"));
+    EXPECT_EQ(font.value(QStringLiteral("antialiasing")).toObject().value(QStringLiteral("default")).toString(),
+              QStringLiteral("grayscale"));
     // The choices are the ones that the store reads, in their order. A key
     // with a narrower set than its type (graphicsFileTransfer has no ask)
     // lists only its own.
     EXPECT_EQ(font.value(QStringLiteral("antialiasing")).toObject().value(QStringLiteral("choices")).toArray(),
-              (QJsonArray{QStringLiteral("grayscale"), QStringLiteral("none"), QStringLiteral("rgb"), QStringLiteral("bgr")}));
-    const auto transfer = groups.value(QStringLiteral("Terminal")).toObject().value(QStringLiteral("graphicsFileTransfer")).toObject();
-    EXPECT_EQ(transfer.value(QStringLiteral("choices")).toArray(), (QJsonArray{QStringLiteral("allow"), QStringLiteral("deny")}));
+              (QJsonArray{QStringLiteral("grayscale"), QStringLiteral("none"), QStringLiteral("rgb"),
+                          QStringLiteral("bgr")}));
+    const auto transfer =
+        groups.value(QStringLiteral("Terminal")).toObject().value(QStringLiteral("graphicsFileTransfer")).toObject();
+    EXPECT_EQ(transfer.value(QStringLiteral("choices")).toArray(),
+              (QJsonArray{QStringLiteral("allow"), QStringLiteral("deny")}));
     // A key without choices has no list.
     EXPECT_FALSE(font.value(QStringLiteral("family")).toObject().contains(QStringLiteral("choices")));
     // 0 is the desktop's size; other sizes are clamped to 4–96, the limits
@@ -932,9 +1653,18 @@ TEST(Config, ReferenceUsesRuntimeDefaultsAndChoices)
     EXPECT_EQ(font.value(QStringLiteral("size")).toObject().value(QStringLiteral("maximum")).toInt(), 96);
     EXPECT_EQ(AfterglowRender::FontSpec::MinPoints, 4.0f);
     EXPECT_EQ(AfterglowRender::FontSpec::MaxPoints, 96.0f);
-    EXPECT_TRUE(font.value(QStringLiteral("size")).toObject().value(QStringLiteral("description")).toString().contains(QStringLiteral("clamps other values to 4–96")));
+    EXPECT_TRUE(font.value(QStringLiteral("size"))
+                    .toObject()
+                    .value(QStringLiteral("description"))
+                    .toString()
+                    .contains(QStringLiteral("clamps other values to 4–96")));
     EXPECT_TRUE(font.value(QStringLiteral("family")).toObject().value(QStringLiteral("default")).toString().isEmpty());
-    EXPECT_TRUE(groups.value(QStringLiteral("Keybinds")).toObject().value(QStringLiteral("bindings")).toObject().value(QStringLiteral("default")).isObject());
+    EXPECT_TRUE(groups.value(QStringLiteral("Keybinds"))
+                    .toObject()
+                    .value(QStringLiteral("bindings"))
+                    .toObject()
+                    .value(QStringLiteral("default"))
+                    .isObject());
 }
 
 // The reference says that an integer key drops the fraction. The JSON
@@ -967,9 +1697,10 @@ TEST_F(ConfigTest, BidiAndScriptReadPolicyHaveExplicitDefaultsAndOverrides)
     SettingsStore defaults(path);
     EXPECT_EQ(defaults.settings().terminal.bidi, AfterglowVt::BidiMode::Off);
     EXPECT_TRUE(defaults.settings().scriptsAllowReadText);
-    SettingsStore configured(path, QJsonObject{
-        {QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("bidi"), QStringLiteral("rtl")}}},
-        {QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("allowReadText"), false}}}});
+    SettingsStore configured(
+        path,
+        QJsonObject{{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("bidi"), QStringLiteral("rtl")}}},
+                    {QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("allowReadText"), false}}}});
     EXPECT_EQ(configured.settings().terminal.bidi, AfterglowVt::BidiMode::RightToLeft);
     EXPECT_FALSE(configured.settings().scriptsAllowReadText);
 }
@@ -977,42 +1708,62 @@ TEST_F(ConfigTest, BidiAndScriptReadPolicyHaveExplicitDefaultsAndOverrides)
 TEST_F(ConfigTest, ScriptCommandLimitsHaveDefaultsOverridesAndRanges)
 {
     // The two byte limits are KiB in the file and bytes in Settings, as
-    // Terminal.lastOutputLimit.
+    // Terminal.pagerOutputLimit.
     const auto path = write(QStringLiteral("commands.json"), "{}");
     const Settings defaults = SettingsStore(path).settings();
     EXPECT_EQ(defaults.scriptCommandTimeout, 600000);
     EXPECT_EQ(defaults.scriptCommandStdinLimit, qint64(1024) << 10);
     EXPECT_EQ(defaults.scriptCommandRunLimit, 16);
     EXPECT_EQ(defaults.scriptCommandOutputLimit, qint64(16384) << 10);
-    const auto scripts = SettingsStore::reference().value(QStringLiteral("groups")).toObject().value(QStringLiteral("Scripts")).toObject();
-    EXPECT_EQ(scripts.value(QStringLiteral("commandStdinLimit")).toObject().value(QStringLiteral("default")).toInt(), 1024);
-    EXPECT_EQ(scripts.value(QStringLiteral("commandOutputLimit")).toObject().value(QStringLiteral("default")).toInt(), 16384);
-    const Settings set = SettingsStore(path, QJsonObject{{QStringLiteral("Scripts"), QJsonObject{
-        {QStringLiteral("commandTimeout"), 5000}, {QStringLiteral("commandStdinLimit"), 0},
-        {QStringLiteral("commandRunLimit"), 2}, {QStringLiteral("commandOutputLimit"), 100}}}}).settings();
+    const auto scripts = SettingsStore::reference()
+                             .value(QStringLiteral("groups"))
+                             .toObject()
+                             .value(QStringLiteral("Scripts"))
+                             .toObject();
+    EXPECT_EQ(scripts.value(QStringLiteral("commandStdinLimit")).toObject().value(QStringLiteral("default")).toInt(),
+              1024);
+    EXPECT_EQ(scripts.value(QStringLiteral("commandOutputLimit")).toObject().value(QStringLiteral("default")).toInt(),
+              16384);
+    const Settings set = SettingsStore(path,
+                                       QJsonObject{{QStringLiteral("Scripts"),
+                                                    QJsonObject{{QStringLiteral("commandTimeout"), 5000},
+                                                                {QStringLiteral("commandStdinLimit"), 0},
+                                                                {QStringLiteral("commandRunLimit"), 2},
+                                                                {QStringLiteral("commandOutputLimit"), 100}}}})
+                             .settings();
     EXPECT_EQ(set.scriptCommandTimeout, 5000);
     EXPECT_EQ(set.scriptCommandStdinLimit, 0); // refuses any input
     EXPECT_EQ(set.scriptCommandRunLimit, 2);
     EXPECT_EQ(set.scriptCommandOutputLimit, qint64(100) << 10);
-    const Settings low = SettingsStore(path, QJsonObject{{QStringLiteral("Scripts"), QJsonObject{
-        {QStringLiteral("commandTimeout"), 10}, {QStringLiteral("commandStdinLimit"), -5},
-        {QStringLiteral("commandRunLimit"), 0}, {QStringLiteral("commandOutputLimit"), 1}}}}).settings();
+    const Settings low = SettingsStore(path,
+                                       QJsonObject{{QStringLiteral("Scripts"),
+                                                    QJsonObject{{QStringLiteral("commandTimeout"), 10},
+                                                                {QStringLiteral("commandStdinLimit"), -5},
+                                                                {QStringLiteral("commandRunLimit"), 0},
+                                                                {QStringLiteral("commandOutputLimit"), 1}}}})
+                             .settings();
     EXPECT_EQ(low.scriptCommandTimeout, 1000);
     EXPECT_EQ(low.scriptCommandStdinLimit, 0);
     EXPECT_EQ(low.scriptCommandRunLimit, 1);
     EXPECT_EQ(low.scriptCommandOutputLimit, qint64(64) << 10);
     // Stdin stays well below the 16 MiB heap of a script, and runs at the
     // 16 waiting handlers of a script.
-    const Settings high = SettingsStore(path, QJsonObject{{QStringLiteral("Scripts"), QJsonObject{
-        {QStringLiteral("commandTimeout"), 1 << 30}, {QStringLiteral("commandStdinLimit"), 1 << 20},
-        {QStringLiteral("commandRunLimit"), 256}, {QStringLiteral("commandOutputLimit"), 1 << 30}}}}).settings();
+    const Settings high = SettingsStore(path,
+                                        QJsonObject{{QStringLiteral("Scripts"),
+                                                     QJsonObject{{QStringLiteral("commandTimeout"), 1 << 30},
+                                                                 {QStringLiteral("commandStdinLimit"), 1 << 20},
+                                                                 {QStringLiteral("commandRunLimit"), 256},
+                                                                 {QStringLiteral("commandOutputLimit"), 1 << 30}}}})
+                              .settings();
     EXPECT_EQ(high.scriptCommandTimeout, 3600000);
     EXPECT_EQ(high.scriptCommandStdinLimit, qint64(4096) << 10);
     EXPECT_EQ(high.scriptCommandRunLimit, 16);
     EXPECT_EQ(high.scriptCommandOutputLimit, qint64(262144) << 10);
     // A value of the wrong type is reported and uses the default.
-    SettingsStore wrong(path, QJsonObject{{QStringLiteral("Scripts"), QJsonObject{
-        {QStringLiteral("commandStdinLimit"), QStringLiteral("lots")}, {QStringLiteral("commandRunLimit"), true}}}});
+    SettingsStore wrong(path,
+                        QJsonObject{{QStringLiteral("Scripts"),
+                                     QJsonObject{{QStringLiteral("commandStdinLimit"), QStringLiteral("lots")},
+                                                 {QStringLiteral("commandRunLimit"), true}}}});
     EXPECT_EQ(wrong.settings().scriptCommandStdinLimit, defaults.scriptCommandStdinLimit);
     EXPECT_TRUE(mentions(wrong.problems(), QStringLiteral("Scripts.commandStdinLimit must be a whole number")));
 }
@@ -1027,19 +1778,32 @@ TEST(Config, ScriptCommandLimitsOfTheHostMatchTheSettingDefaults)
     EXPECT_EQ(limits.inputBytes, settings.scriptCommandStdinLimit);
     EXPECT_EQ(limits.runs, settings.scriptCommandRunLimit);
     EXPECT_EQ(limits.outputBytes, settings.scriptCommandOutputLimit);
+    // The description states the host's rule for disabling a script.
+    const QString cpu = SettingsStore::reference()
+                            .value(QStringLiteral("groups"))
+                            .toObject()
+                            .value(QStringLiteral("Scripts"))
+                            .toObject()
+                            .value(QStringLiteral("cpuBudget"))
+                            .toObject()
+                            .value(QStringLiteral("description"))
+                            .toString();
+    EXPECT_TRUE(cpu.contains(QStringLiteral("After %1 such seconds, each less than %2 seconds after")
+                                 .arg(ScriptHost::MaxCpuOverruns)
+                                 .arg(ScriptHost::CpuOverrunGapMs / 1000)))
+        << cpu.toStdString();
 }
 
 TEST_F(ConfigTest, ExternalThemeWatchRecoversCreationReplacementAndDeletion)
 {
-    int argc = 1;
-    char name[] = "config-test";
-    char* argv[] = {name, nullptr};
-    std::unique_ptr<QCoreApplication> app;
-    if (!QCoreApplication::instance()) app = std::make_unique<QCoreApplication>(argc, argv);
+    const auto app = watchApplication();
     const auto theme = m_home.filePath(QStringLiteral("new/sub/theme.json"));
-    const auto config = write(QStringLiteral("watch.json"), QJsonDocument(QJsonObject{
-        {QStringLiteral("Colors"), QJsonObject{{QStringLiteral("theme"), theme}, {QStringLiteral("foreground"), QStringLiteral("#112233")}}}
-    }).toJson());
+    const auto config =
+        write(QStringLiteral("watch.json"),
+              QJsonDocument(QJsonObject{{QStringLiteral("Colors"),
+                                         QJsonObject{{QStringLiteral("theme"), theme},
+                                                     {QStringLiteral("foreground"), QStringLiteral("#112233")}}}})
+                  .toJson());
     SettingsStore store(config);
     auto waitFor = [&](Rgb color) {
         QElapsedTimer timer;
@@ -1047,7 +1811,8 @@ TEST_F(ConfigTest, ExternalThemeWatchRecoversCreationReplacementAndDeletion)
         do {
             QCoreApplication::processEvents();
             QThread::msleep(5);
-            if (same(store.settings().terminal.defaultForeground, color)) return true;
+            if (same(store.settings().terminal.defaultForeground, color))
+                return true;
         } while (timer.elapsed() < 2500);
         return false;
     };
@@ -1069,7 +1834,8 @@ TEST_F(ConfigTest, ExternalThemeWatchRecoversCreationReplacementAndDeletion)
     const auto other = write(QStringLiteral("other.json"), "{\"foreground\":\"#123456\"}");
     QFile file(config);
     ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
-    file.write(QJsonDocument(QJsonObject{{QStringLiteral("Colors"), QJsonObject{{QStringLiteral("theme"), other}}}}).toJson());
+    file.write(
+        QJsonDocument(QJsonObject{{QStringLiteral("Colors"), QJsonObject{{QStringLiteral("theme"), other}}}}).toJson());
     file.close();
     ASSERT_TRUE(waitFor({0x12, 0x34, 0x56}));
     // After the switch only the new theme is watched. A reload that changes
@@ -1082,9 +1848,11 @@ TEST_F(ConfigTest, ExternalThemeWatchRecoversCreationReplacementAndDeletion)
 
 TEST_F(ConfigTest, WritesOneKeyAndKeepsTheRest)
 {
-    const QString path = write(QStringLiteral("config.json"), R"({"Font": {"size": 15}, "Shaders": {"window": ["bloom"]}})");
+    const QString path =
+        write(QStringLiteral("config.json"), R"({"Font": {"size": 15}, "Shaders": {"window": ["bloom"]}})");
     SettingsStore store(path);
-    ASSERT_TRUE(store.write(QStringLiteral("Shaders"), QStringLiteral("overview"), QStringLiteral("scripted-overview.wall")));
+    ASSERT_TRUE(
+        store.write(QStringLiteral("Shaders"), QStringLiteral("overview"), QStringLiteral("scripted-overview.wall")));
     EXPECT_EQ(store.settings().shaders.overview, QStringLiteral("scripted-overview.wall"));
     EXPECT_EQ(store.settings().shaders.window, QStringList{QStringLiteral("bloom")});
     EXPECT_EQ(store.settings().font.sizePoints, 15.0f);
@@ -1096,20 +1864,17 @@ TEST_F(ConfigTest, SecurityPoliciesDefaultAndOverride)
 {
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
     const Settings& d = defaults.settings();
-    EXPECT_FALSE(d.allowScreenReadback);
-    EXPECT_EQ(d.graphicsFileTransfer, Settings::Permission::Allow);
     EXPECT_EQ(d.clipboardWrite, Settings::Permission::Allow);
-    EXPECT_EQ(d.links.schemes, (QStringList{QStringLiteral("http"), QStringLiteral("https"), QStringLiteral("mailto"),
-                                            QStringLiteral("ftp"), QStringLiteral("file")}));
+    EXPECT_EQ(d.links.schemes,
+              (QStringList{QStringLiteral("http"), QStringLiteral("https"), QStringLiteral("mailto"),
+                           QStringLiteral("ftp"), QStringLiteral("file")}));
 
     SettingsStore custom(write(QStringLiteral("custom.json"), R"({
         "Terminal": {"allowScreenReadback": true, "graphicsFileTransfer": "DENY", "clipboardWrite": "ask"},
         "Links": {"schemes": [" HTTPS ", "gemini:", "", "https"]}
     })"));
     const Settings& c = custom.settings();
-    EXPECT_TRUE(c.allowScreenReadback);
-    EXPECT_EQ(c.graphicsFileTransfer, Settings::Permission::Deny);
-    // The terminal core enforces them, so they reach its options.
+    // The terminal core enforces them: they are its options.
     EXPECT_TRUE(c.terminal.allowScreenReadback);
     EXPECT_FALSE(c.terminal.graphicsFileTransfer);
     EXPECT_FALSE(d.terminal.allowScreenReadback);
@@ -1119,8 +1884,9 @@ TEST_F(ConfigTest, SecurityPoliciesDefaultAndOverride)
     EXPECT_EQ(c.links.schemes, (QStringList{QStringLiteral("https"), QStringLiteral("gemini")}));
 
     // Not a choice: the default. graphicsFileTransfer has no ask.
-    SettingsStore invalid(write(QStringLiteral("invalid.json"), R"({"Terminal": {"graphicsFileTransfer": "ask", "clipboardWrite": "maybe"}})"));
-    EXPECT_EQ(invalid.settings().graphicsFileTransfer, Settings::Permission::Allow);
+    SettingsStore invalid(write(QStringLiteral("invalid.json"),
+                                R"({"Terminal": {"graphicsFileTransfer": "ask", "clipboardWrite": "maybe"}})"));
+    EXPECT_TRUE(invalid.settings().terminal.graphicsFileTransfer);
     EXPECT_EQ(invalid.settings().clipboardWrite, Settings::Permission::Allow);
 }
 
@@ -1140,7 +1906,8 @@ TEST(Keybinds, CancelOverlayHasADefaultChord)
 {
     const Keybinds kb = Keybinds::defaults();
     EXPECT_EQ(Keybinds::token(Action::CancelOverlay), QStringLiteral("cancel_overlay"));
-    EXPECT_EQ(Keybinds::defaultMap().value(QStringLiteral("cancel_overlay")).toString(), QStringLiteral("Ctrl+Shift+Alt+Escape"));
+    EXPECT_EQ(Keybinds::defaultMap().value(QStringLiteral("cancel_overlay")).toString(),
+              QStringLiteral("Ctrl+Shift+Alt+Escape"));
     const QKeyEvent press(QEvent::KeyPress, Qt::Key_Escape, Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier);
     EXPECT_EQ(kb.match(&press), Action::CancelOverlay);
     // The chord without Alt still ends a script's key mode.
@@ -1168,7 +1935,8 @@ TEST_F(ConfigTest, FontFollowsTheDesktopUntilSet)
     EXPECT_EQ(d.features, (std::vector<std::string>{"calt", "liga"}));
     EXPECT_DOUBLE_EQ(defaults.settings().fontSizeStep, 1.0);
 
-    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Font": {"family": " Iosevka ", "size": 13.5, "sizeStep": 0.5,
+    SettingsStore custom(
+        write(QStringLiteral("custom.json"), R"({"Font": {"family": " Iosevka ", "size": 13.5, "sizeStep": 0.5,
                                                                            "features": ["-liga"]}})"));
     const AfterglowRender::FontSpec& c = custom.settings().font;
     EXPECT_EQ(c.regular.family, "Iosevka");
@@ -1194,7 +1962,8 @@ TEST_F(ConfigTest, DoubleKeysRejectNonFiniteValues)
                                              {QStringLiteral("gamma"), std::numeric_limits<double>::infinity()}}}};
     SettingsStore store(path, overrides);
     EXPECT_TRUE(std::isfinite(store.settings().font.sizePoints));
-    EXPECT_GT(store.settings().font.sizePoints, 0.0f);
+    // The default, the desktop's size, not some clamped value.
+    EXPECT_FLOAT_EQ(store.settings().font.sizePoints, SettingsStore(path).settings().font.sizePoints);
     EXPECT_FLOAT_EQ(store.settings().font.gamma, 1.0f); // the default, not the maximum
 }
 
@@ -1242,6 +2011,25 @@ TEST_F(ConfigTest, PopupDimDefaultsOverridesAndClamps)
     EXPECT_DOUBLE_EQ(low.settings().window.popupDim, 0.0);
 }
 
+TEST_F(ConfigTest, TheDefaultShadersAreTheBundledEventPacksAndNoLayerShaders)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    const ShaderRefs& shaders = defaults.settings().shaders;
+    EXPECT_EQ(shaders.overview, QStringLiteral("phosphor-overview"));
+    EXPECT_EQ(shaders.tabTransition, QStringLiteral("phosphor-tabs"));
+    EXPECT_EQ(shaders.paneEffects, QStringLiteral("phosphor-panes"));
+    EXPECT_EQ(shaders.overlayTransition, QStringLiteral("overlay-fade"));
+    // A default names a pack that installs: the example packs do not.
+    for (const QString* ref :
+         {&shaders.overview, &shaders.tabTransition, &shaders.paneEffects, &shaders.overlayTransition}) {
+        EXPECT_TRUE(
+            QFile::exists(QStringLiteral(AFTERGLOW_BUNDLED_SHADERS "/") + *ref + QStringLiteral("/metadata.json")))
+            << ref->toStdString();
+    }
+    // The layer chains draw nothing until the user names a pack.
+    EXPECT_EQ(shaders.size(), 4);
+}
+
 TEST_F(ConfigTest, OverlayTransitionAndFadeDefaultsOverridesAndClamps)
 {
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
@@ -1249,7 +2037,8 @@ TEST_F(ConfigTest, OverlayTransitionAndFadeDefaultsOverridesAndClamps)
     EXPECT_EQ(defaults.settings().animation.overlayCurve, QStringLiteral("0.4,0,0.2,1"));
     EXPECT_EQ(defaults.settings().animation.overlayDuration, 180);
 
-    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Animation": {"overlayCurve": " spring:20,1 ", "overlayDuration": 600}})"));
+    SettingsStore custom(write(QStringLiteral("custom.json"),
+                               R"({"Animation": {"overlayCurve": " spring:20,1 ", "overlayDuration": 600}})"));
     EXPECT_EQ(custom.settings().animation.overlayCurve, QStringLiteral("spring:20,1"));
     EXPECT_EQ(custom.settings().animation.overlayDuration, 600);
 
@@ -1262,7 +2051,8 @@ TEST_F(ConfigTest, OverlayTransitionAndFadeDefaultsOverridesAndClamps)
     // as written (ShaderControlsTest resolves them into the chain).
     SettingsStore none(write(QStringLiteral("none.json"), R"({"Shaders": {"overlayTransition": ""}})"));
     EXPECT_TRUE(none.settings().shaders.overlayTransition.isEmpty());
-    SettingsStore packaged(write(QStringLiteral("packaged.json"), R"({"Shaders": {"overlayTransition": " my-kit.dissolve "}})"));
+    SettingsStore packaged(
+        write(QStringLiteral("packaged.json"), R"({"Shaders": {"overlayTransition": " my-kit.dissolve "}})"));
     EXPECT_EQ(packaged.settings().shaders.overlayTransition, QStringLiteral("my-kit.dissolve"));
 
     SettingsStore low(write(QStringLiteral("low.json"), R"({"Animation": {"overlayDuration": 1}})"));
@@ -1271,18 +2061,35 @@ TEST_F(ConfigTest, OverlayTransitionAndFadeDefaultsOverridesAndClamps)
     EXPECT_EQ(high.settings().animation.overlayDuration, 5000);
 }
 
-TEST_F(ConfigTest, LastOutputLimitIsKibibytesWithAClamp)
+TEST_F(ConfigTest, ContextDurationDefaultOverrideAndClamps)
+{
+    // A portal has its own time: it is longer than a pane's open and close.
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_EQ(defaults.settings().animation.contextDuration, 1000);
+    EXPECT_EQ(defaults.settings().animation.paneEffectDuration, 420);
+
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Animation": {"contextDuration": 2500}})"));
+    EXPECT_EQ(custom.settings().animation.contextDuration, 2500);
+    EXPECT_EQ(custom.settings().animation.paneEffectDuration, 420);
+
+    SettingsStore low(write(QStringLiteral("low.json"), R"({"Animation": {"contextDuration": 1}})"));
+    EXPECT_EQ(low.settings().animation.contextDuration, 16);
+    SettingsStore high(write(QStringLiteral("high.json"), R"({"Animation": {"contextDuration": 99999}})"));
+    EXPECT_EQ(high.settings().animation.contextDuration, 5000);
+}
+
+TEST_F(ConfigTest, PagerOutputLimitIsKibibytesWithAClamp)
 {
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
-    EXPECT_EQ(defaults.settings().lastOutputLimit, std::size_t(1024) << 10);
+    EXPECT_EQ(defaults.settings().pagerOutputLimit, std::size_t(1024) << 10);
 
-    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Terminal": {"lastOutputLimit": 4096}})"));
-    EXPECT_EQ(custom.settings().lastOutputLimit, std::size_t(4096) << 10);
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Terminal": {"pagerOutputLimit": 4096}})"));
+    EXPECT_EQ(custom.settings().pagerOutputLimit, std::size_t(4096) << 10);
 
-    SettingsStore low(write(QStringLiteral("low.json"), R"({"Terminal": {"lastOutputLimit": 0}})"));
-    EXPECT_EQ(low.settings().lastOutputLimit, std::size_t(1) << 10);
-    SettingsStore high(write(QStringLiteral("high.json"), R"({"Terminal": {"lastOutputLimit": 999999}})"));
-    EXPECT_EQ(high.settings().lastOutputLimit, std::size_t(65536) << 10);
+    SettingsStore low(write(QStringLiteral("low.json"), R"({"Terminal": {"pagerOutputLimit": 0}})"));
+    EXPECT_EQ(low.settings().pagerOutputLimit, std::size_t(1) << 10);
+    SettingsStore high(write(QStringLiteral("high.json"), R"({"Terminal": {"pagerOutputLimit": 999999}})"));
+    EXPECT_EQ(high.settings().pagerOutputLimit, std::size_t(65536) << 10);
 }
 
 TEST_F(ConfigTest, FileTransferDeltaLimitIsGibibytesWithAClamp)
@@ -1313,6 +2120,24 @@ TEST_F(ConfigTest, DragAnswerWaitIsMillisecondsWithAClamp)
     EXPECT_EQ(off.settings().dragAnswerWait, 0);
     SettingsStore high(write(QStringLiteral("high.json"), R"({"Terminal": {"dragAnswerWait": 99999}})"));
     EXPECT_EQ(high.settings().dragAnswerWait, 1000);
+}
+
+TEST_F(ConfigTest, RemoteCommandsOverSshAreOffByDefault)
+{
+    // On, a remote host can start local code: the user turns it on.
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_FALSE(defaults.settings().sshRemoteCommands);
+    SettingsStore on(write(QStringLiteral("on.json"), R"({"Terminal": {"sshRemoteCommands": true}})"));
+    EXPECT_TRUE(on.settings().sshRemoteCommands);
+}
+
+TEST_F(ConfigTest, DragSelectionIsOffByDefault)
+{
+    // As in Kitty: a press inside the selection starts a new selection.
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_FALSE(defaults.settings().mouse.dragSelection);
+    SettingsStore on(write(QStringLiteral("on.json"), R"({"Mouse": {"dragSelection": true}})"));
+    EXPECT_TRUE(on.settings().mouse.dragSelection);
 }
 
 TEST_F(ConfigTest, DragTreeLifetimeIsMinutesWithAClamp)
@@ -1365,6 +2190,39 @@ TEST_F(ConfigTest, IntervalsOfBellsStatusPasteReadsAndAutoScrollAreSettings)
     EXPECT_EQ(clamped.settings().mouse.autoScrollInterval, 10);
 }
 
+TEST_F(ConfigTest, FingerScrollsAreSettingsWithKittysDefaults)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_DOUBLE_EQ(defaults.settings().mouse.momentumScroll, 0.96);
+    EXPECT_DOUBLE_EQ(defaults.settings().mouse.touchScrollMultiplier, 1.0);
+    EXPECT_EQ(defaults.settings().mouse.touchSelectHold, 400);
+    // The coast keeps the same friction in a window that has applied no
+    // setting yet.
+    EXPECT_DOUBLE_EQ(Settings{}.mouse.momentumScroll, MomentumScroll::DefaultFriction);
+    EXPECT_DOUBLE_EQ(MomentumScroll{}.friction(), MomentumScroll::DefaultFriction);
+
+    SettingsStore custom(
+        write(QStringLiteral("custom.json"),
+              R"({"Mouse": {"momentumScroll": 0, "touchScrollMultiplier": -2.5, "touchSelectHold": 800}})"));
+    EXPECT_DOUBLE_EQ(custom.settings().mouse.momentumScroll, 0.0);
+    EXPECT_DOUBLE_EQ(custom.settings().mouse.touchScrollMultiplier, -2.5);
+    EXPECT_EQ(custom.settings().mouse.touchSelectHold, 800);
+
+    SettingsStore high(
+        write(QStringLiteral("high.json"),
+              R"({"Mouse": {"momentumScroll": 3, "touchScrollMultiplier": 50, "touchSelectHold": 99999}})"));
+    EXPECT_DOUBLE_EQ(high.settings().mouse.momentumScroll, 1.0);
+    EXPECT_DOUBLE_EQ(high.settings().mouse.touchScrollMultiplier, 10.0);
+    EXPECT_EQ(high.settings().mouse.touchSelectHold, 2000);
+
+    SettingsStore low(
+        write(QStringLiteral("low.json"),
+              R"({"Mouse": {"momentumScroll": -1, "touchScrollMultiplier": -50, "touchSelectHold": 0}})"));
+    EXPECT_DOUBLE_EQ(low.settings().mouse.momentumScroll, 0.0);
+    EXPECT_DOUBLE_EQ(low.settings().mouse.touchScrollMultiplier, -10.0);
+    EXPECT_EQ(low.settings().mouse.touchSelectHold, 100);
+}
+
 TEST_F(ConfigTest, HighlightColoursComeFromTheConfigAndTheTheme)
 {
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
@@ -1386,11 +2244,13 @@ TEST_F(ConfigTest, HighlightColoursComeFromTheConfigAndTheTheme)
     EXPECT_DOUBLE_EQ(c.visualBellIntensity, 1.0); // clamped
 
     // A theme's colours replace the config's; what it leaves out stays.
-    QDir().mkpath(m_home.path() + QStringLiteral("/afterglow/themes"));
-    write(QStringLiteral("afterglow/themes/marks.json"),
-          R"({"background": "#000000", "searchMatch": "#111111", "visualBell": "#222222", "visualBellIntensity": 0.5})");
-    SettingsStore themed(write(QStringLiteral("themed.json"),
-                               R"({"Colors": {"theme": "marks", "searchMatch": "#010203", "searchCurrentMatch": "#040506"}})"));
+    QDir().mkpath(m_home.path() + QStringLiteral("/themes"));
+    write(
+        QStringLiteral("themes/marks.json"),
+        R"({"background": "#000000", "searchMatch": "#111111", "visualBell": "#222222", "visualBellIntensity": 0.5})");
+    SettingsStore themed(
+        write(QStringLiteral("themed.json"),
+              R"({"Colors": {"theme": "marks", "searchMatch": "#010203", "searchCurrentMatch": "#040506"}})"));
     const HighlightColors& t = themed.settings().colors;
     EXPECT_TRUE(same(t.searchMatch, {0x11, 0x11, 0x11}));
     EXPECT_TRUE(same(t.searchCurrentMatch, {4, 5, 6}));
@@ -1417,8 +2277,10 @@ TEST_F(ConfigTest, LimitsDefaultAndOverride)
 {
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
     const Settings& d = defaults.settings();
-    EXPECT_EQ(d.graphicsQuota, std::size_t(320) << 20);
+    EXPECT_EQ(d.terminal.graphicsQuota, std::size_t(320) << 20);
     EXPECT_EQ(d.notificationRateLimit, 20);
+    EXPECT_EQ(d.notificationRateWindow, 10);
+    EXPECT_TRUE(d.notifications);
     EXPECT_EQ(d.hintAlphabet, QStringLiteral("asdfjklghqweruiopzxcvbnmty"));
     EXPECT_EQ(d.quickTerminal.position, QuickTerminalSettings::Position::Top);
     EXPECT_TRUE(d.quickTerminal.screen.isEmpty());
@@ -1431,15 +2293,16 @@ TEST_F(ConfigTest, LimitsDefaultAndOverride)
 
     SettingsStore custom(write(QStringLiteral("custom.json"), R"({
         "Graphics": {"quota": 64},
-        "Notifications": {"rateLimit": 0},
+        "Notifications": {"rateLimit": 0, "rateWindow": 60, "enabled": false},
         "Hints": {"alphabet": "Q W E R"},
         "QuickTerminal": {"position": "bottom", "screen": " DP-1 "},
         "Audio": {"framerate": 500, "smoothing": 30, "extraSmoothing": 0.99, "lowerCutoff": 5, "higherCutoff": 12000}
     })"));
     const Settings& c = custom.settings();
-    EXPECT_EQ(c.graphicsQuota, std::size_t(64) << 20);
     EXPECT_EQ(c.terminal.graphicsQuota, std::size_t(64) << 20);
     EXPECT_EQ(c.notificationRateLimit, 0);
+    EXPECT_EQ(c.notificationRateWindow, 60);
+    EXPECT_FALSE(c.notifications);
     EXPECT_EQ(c.hintAlphabet, QStringLiteral("qwer"));
     EXPECT_TRUE(custom.problems().filter(QStringLiteral("Hints.alphabet")).isEmpty());
     EXPECT_EQ(c.quickTerminal.position, QuickTerminalSettings::Position::Bottom);
@@ -1453,14 +2316,127 @@ TEST_F(ConfigTest, LimitsDefaultAndOverride)
     // Repeated letters, a single letter and non-letters fall back to the
     // default, and the user hears of it.
     for (const char* alphabet : {"aab", "a", "ab1"}) {
-        SettingsStore bad(write(QStringLiteral("bad.json"), QByteArray(R"({"Hints": {"alphabet": ")") + alphabet + "\"}}"));
+        SettingsStore bad(
+            write(QStringLiteral("bad.json"), QByteArray(R"({"Hints": {"alphabet": ")") + alphabet + "\"}}"));
         EXPECT_EQ(bad.settings().hintAlphabet, QStringLiteral("asdfjklghqweruiopzxcvbnmty")) << alphabet;
         EXPECT_TRUE(mentions(bad.problems(), QStringLiteral("Hints.alphabet"))) << alphabet;
     }
-    SettingsStore quotaFloor(write(QStringLiteral("quota.json"),
-                                   R"({"Graphics": {"quota": 1}, "Notifications": {"rateLimit": -4}})"));
-    EXPECT_EQ(quotaFloor.settings().graphicsQuota, std::size_t(16) << 20);
+    SettingsStore quotaFloor(
+        write(QStringLiteral("quota.json"),
+              R"({"Graphics": {"quota": 1}, "Notifications": {"rateLimit": -4, "rateWindow": 0}})"));
+    EXPECT_EQ(quotaFloor.settings().terminal.graphicsQuota, std::size_t(16) << 20);
     EXPECT_EQ(quotaFloor.settings().notificationRateLimit, 0);
+    EXPECT_EQ(quotaFloor.settings().notificationRateWindow, 1);
+    SettingsStore windowCeiling(write(QStringLiteral("window.json"), R"({"Notifications": {"rateWindow": 99999}})"));
+    EXPECT_EQ(windowCeiling.settings().notificationRateWindow, 3600);
+    // The switch moved to the Notifications group: the old key is unknown.
+    SettingsStore moved(write(QStringLiteral("moved.json"), R"({"Terminal": {"notifications": false}})"));
+    EXPECT_TRUE(moved.settings().notifications);
+    EXPECT_TRUE(mentions(moved.problems(), QStringLiteral("Unknown setting Terminal.notifications")));
+}
+
+// Notifications.filters, as kitty's filter_notification: field:regexp terms
+// with and, or, not, parentheses and all. A rule that does not parse is a
+// problem, and the others stay.
+TEST_F(ConfigTest, NotificationFilterRules)
+{
+    using Fields = NotificationFilter::Fields;
+    const auto all = NotificationFilter::parse(QStringLiteral("all"), nullptr);
+    ASSERT_TRUE(all);
+    const auto rule = [&](const char* text) {
+        QString error;
+        auto filter = NotificationFilter::parse(QString::fromUtf8(text), &error);
+        EXPECT_TRUE(filter) << text << ": " << error.toStdString();
+        return filter.value_or(*all);
+    };
+    const Fields vimUpdate{QStringLiteral("vim"), QStringLiteral("An Update is ready"), QStringLiteral("nvim"), {}};
+    const Fields vimSaved{QStringLiteral("vim"), QStringLiteral("saved"), QStringLiteral("gvim"), {}};
+    const Fields mail{QStringLiteral("hello there"),
+                      QStringLiteral("abc then def"),
+                      QStringLiteral("mutt"),
+                      {QStringLiteral("im.received"), QStringLiteral("x")}};
+    // kitty's examples.
+    const NotificationFilter vim = rule(R"(app:"[ng]?vim" and not body:"(?i)update")");
+    EXPECT_FALSE(vim.matches(vimUpdate));
+    EXPECT_TRUE(vim.matches(vimSaved));
+    EXPECT_FALSE(vim.matches(mail));
+    const NotificationFilter either = rule(R"(title:hello or body:"abc.*def")");
+    EXPECT_TRUE(either.matches(mail));
+    EXPECT_FALSE(either.matches(vimSaved));
+    EXPECT_TRUE(rule("all").matches(Fields{}));
+    // A search anywhere in the field; terms side by side join with and;
+    // parentheses group; a type matches any of the types.
+    EXPECT_TRUE(rule("title:ell").matches(mail));
+    EXPECT_FALSE(rule("title:ell app:vim").matches(mail));
+    EXPECT_TRUE(rule("not (app:vim or app:emacs) type:^im\\.").matches(mail));
+    EXPECT_TRUE(rule("type:(im|x)$").matches(mail));
+    EXPECT_FALSE(rule("type:im").matches(vimSaved));
+    // Keywords and fields in any case, and a quoted value after a space, as
+    // in kitty. In quotes, \" and \\ stand for a quote and a backslash.
+    EXPECT_TRUE(rule("Title:ell AND NOT App:vim").matches(mail));
+    EXPECT_TRUE(rule("body: \"abc then\"").matches(mail));
+    EXPECT_TRUE(rule(R"(body:"say \"hi\"")").matches(Fields{{}, QStringLiteral("say \"hi\""), {}, {}}));
+    EXPECT_TRUE(rule(R"(body:"a\\d")").matches(Fields{{}, QStringLiteral("a7"), {}, {}}));
+    // A pattern without quotes ends at a parenthesis that it does not open.
+    EXPECT_TRUE(rule("(title:hel(l)o)").matches(mail));
+    // \w is Unicode, as in kitty's Python re.
+    EXPECT_TRUE(rule("title:^\\w+$").matches(Fields{QStringLiteral("übersicht"), {}, {}, {}}));
+    // Rules that do not parse, each for its own reason.
+    const std::pair<const char*, const char*> bad[] = {
+        {"", "the rule ends where a term should be"},
+        {"titl:x", "\"titl\" is not a field"},
+        {"title:", "title: has no pattern"},
+        {"title: x", "title: has no pattern"},
+        {"title:(", "is not a regular expression"},
+        {"(title:x", "a parenthesis is not closed"},
+        {"title:x)", "unexpected text after the rule"},
+        {"title:x and", "the rule ends where a term should be"},
+        {"hello", "\"hello\" is not a term"},
+        {"title:\"open", "a quote is not closed"},
+        {"not", "the rule ends where a term should be"},
+    };
+    for (const auto& [text, reason] : bad) {
+        QString error;
+        EXPECT_FALSE(NotificationFilter::parse(QString::fromUtf8(text), &error)) << text;
+        EXPECT_TRUE(error.contains(QLatin1String(reason))) << text << ": " << error.toStdString();
+    }
+    // Parentheses nest at most 32 deep; not, and and or do not nest, so a
+    // long chain of them parses and matches without a deep recursion.
+    const auto nested = [](int depth) {
+        return QString(depth, QLatin1Char('(')) + QStringLiteral("title:x") + QString(depth, QLatin1Char(')'));
+    };
+    QString error;
+    EXPECT_TRUE(NotificationFilter::parse(nested(32), &error)) << error.toStdString();
+    EXPECT_FALSE(NotificationFilter::parse(nested(33), &error));
+    EXPECT_TRUE(error.contains(QLatin1String("nests more than 32 levels"))) << error.toStdString();
+    QString nots;
+    for (int i = 0; i < 100001; ++i)
+        nots += QStringLiteral("not ");
+    const auto negated = NotificationFilter::parse(nots + QStringLiteral("title:x"), &error);
+    ASSERT_TRUE(negated) << error.toStdString();
+    EXPECT_FALSE(negated->matches(Fields{QStringLiteral("x"), {}, {}, {}}));
+    EXPECT_TRUE(negated->matches(Fields{QStringLiteral("y"), {}, {}, {}}));
+    // Terms without a pattern but two: 100000 patterns would each compile,
+    // and take about 250 MiB.
+    QStringList terms;
+    for (int i = 0; i < 100000; ++i)
+        terms << (i == 5 || i == 99999 ? QStringLiteral("title:^x%1$").arg(i) : QStringLiteral("not all"));
+    const auto chained =
+        NotificationFilter::parse(terms.join(QStringLiteral(" or ")) + QStringLiteral(" and body:z"), &error);
+    ASSERT_TRUE(chained) << error.toStdString();
+    EXPECT_TRUE(chained->matches(Fields{QStringLiteral("x99999"), QStringLiteral("z"), {}, {}}));
+    EXPECT_FALSE(chained->matches(Fields{QStringLiteral("x99999"), QStringLiteral("y"), {}, {}}));
+    EXPECT_TRUE(chained->matches(Fields{QStringLiteral("x5"), {}, {}, {}}));
+
+    SettingsStore store(
+        write(QStringLiteral("filter.json"), R"({"Notifications": {"filters": ["app:vim", "titl:bad", 3, "  "]}})"));
+    ASSERT_EQ(store.settings().notificationFilters.size(), 1u);
+    EXPECT_EQ(store.settings().notificationFilters[0].text(), QStringLiteral("app:vim"));
+    // The blank rule goes with no problem, as a blank entry of any list.
+    EXPECT_EQ(store.problems().size(), 2) << store.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Notifications.filters has the rule \"titl:bad\"")));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Notifications.filters[2] must be a string")));
+    EXPECT_TRUE(SettingsStore(write(QStringLiteral("none.json"), "{}")).settings().notificationFilters.empty());
 }
 
 TEST(Config, SchemaDefaultsHaveTheirDeclaredTypes)
@@ -1469,8 +2445,10 @@ TEST(Config, SchemaDefaultsHaveTheirDeclaredTypes)
     const PhosphorConfig::Schema schema = SettingsStore::schema();
     for (auto group = schema.groups.cbegin(); group != schema.groups.cend(); ++group) {
         for (const auto& key : group.value()) {
-            if (!key.defaultValue.isValid() || key.expectedType == QMetaType::UnknownType) continue;
-            EXPECT_EQ(key.defaultValue.typeId(), int(key.expectedType)) << (group.key() + QLatin1Char('.') + key.key).toStdString();
+            if (!key.defaultValue.isValid() || key.expectedType == QMetaType::UnknownType)
+                continue;
+            EXPECT_EQ(key.defaultValue.typeId(), int(key.expectedType))
+                << (group.key() + QLatin1Char('.') + key.key).toStdString();
         }
     }
 }
@@ -1505,8 +2483,8 @@ TEST_F(ConfigTest, StructDefaultsAgreeWithTheSchema)
     const Settings& read = store.settings();
     Settings expected;
     // Font.family "" and Font.size 0 come from the desktop.
-    for (auto face : {&AfterglowRender::FontSpec::regular, &AfterglowRender::FontSpec::bold, &AfterglowRender::FontSpec::italic,
-                      &AfterglowRender::FontSpec::boldItalic}) {
+    for (auto face : {&AfterglowRender::FontSpec::regular, &AfterglowRender::FontSpec::bold,
+                      &AfterglowRender::FontSpec::italic, &AfterglowRender::FontSpec::boldItalic}) {
         (expected.font.*face).family = (read.font.*face).family;
     }
     expected.font.sizePoints = read.font.sizePoints;
@@ -1519,12 +2497,15 @@ TEST_F(ConfigTest, StructDefaultsAgreeWithTheSchema)
     EXPECT_TRUE(read.audio == expected.audio);
     EXPECT_TRUE(read.quickTerminal == expected.quickTerminal);
     EXPECT_TRUE(read.control == expected.control);
+    EXPECT_TRUE(read.mux == expected.mux);
+    EXPECT_TRUE(read.mcp == expected.mcp);
     EXPECT_TRUE(read.mouse == expected.mouse);
     EXPECT_TRUE(read.links == expected.links);
     EXPECT_TRUE(read.colors == expected.colors);
     EXPECT_EQ(read.shaders, expected.shaders);
     EXPECT_EQ(read.hintPatterns, expected.hintPatterns);
     EXPECT_EQ(read.keybinds, expected.keybinds);
+    EXPECT_TRUE(read.modifierRemap == expected.modifierRemap);
     EXPECT_TRUE(read == expected);
     EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
 }
@@ -1534,7 +2515,9 @@ TEST_F(ConfigTest, ReloadThatChangesNothingEmitsNothing)
     const QString path = write(QStringLiteral("config.json"), R"({"Window": {"padding": 9}})");
     SettingsStore store(path);
     int changes = 0;
-    QObject::connect(&store, &SettingsStore::changed, &store, [&] { ++changes; });
+    QObject::connect(&store, &SettingsStore::changed, &store, [&] {
+        ++changes;
+    });
     store.reload();
     EXPECT_EQ(changes, 0);
     // A write emits once; the watcher's reload of the same file adds nothing.
@@ -1549,7 +2532,8 @@ TEST_F(ConfigTest, WriteKeepsAFileThatDoesNotParse)
     const QString path = write(QStringLiteral("config.json"), R"({"Window": {"padding": 9}})");
     SettingsStore store(path);
     write(QStringLiteral("config.json"), R"({"Window": {"padding": 10)");
-    EXPECT_FALSE(store.write(QStringLiteral("Shaders"), QStringLiteral("overview"), QStringLiteral("pane-deck")));
+    EXPECT_FALSE(
+        store.write(QStringLiteral("Shaders"), QStringLiteral("overview"), QStringLiteral("phosphor-overview")));
     EXPECT_EQ(read(path), QByteArray(R"({"Window": {"padding": 10)"));
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("does not parse")));
 }
@@ -1609,7 +2593,8 @@ TEST_F(ConfigTest, PersistedReadsTheFileWithoutOverrides)
     ASSERT_TRUE(SettingsStore::addOverride(overrides, QStringLiteral("Window.padding=30")));
     SettingsStore store(path, overrides);
     EXPECT_EQ(store.settings().shaders.window, QStringList{QStringLiteral("crt")});
-    EXPECT_EQ(store.persisted(QStringLiteral("Shaders"), QStringLiteral("window")).toStringList(), QStringList{QStringLiteral("bloom")});
+    EXPECT_EQ(store.persisted(QStringLiteral("Shaders"), QStringLiteral("window")).toStringList(),
+              QStringList{QStringLiteral("bloom")});
     // Not in the file: the default, not the override.
     EXPECT_EQ(store.persisted(QStringLiteral("Window"), QStringLiteral("padding")).toInt(), WindowSettings{}.padding);
     EXPECT_FALSE(store.persisted(QStringLiteral("Window"), QStringLiteral("nosuchkey")).isValid());
@@ -1643,6 +2628,7 @@ TEST_F(ConfigTest, ReloadKeepsSettingsUnlessTheFileIsGone)
 
 TEST_F(ConfigTest, EnsureFileCreatesAnEmptyPrivateFileOnce)
 {
+    const OpenUmask umask;
     const QString path = m_home.filePath(QStringLiteral("fresh/config.json"));
     SettingsStore store(path);
     const Settings before = store.settings();
@@ -1650,7 +2636,8 @@ TEST_F(ConfigTest, EnsureFileCreatesAnEmptyPrivateFileOnce)
     // Open Config needs a file for the editor to open.
     ASSERT_TRUE(store.ensureFile());
     ASSERT_TRUE(QFile::exists(path));
-    const auto others = QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ReadOther | QFileDevice::WriteOther;
+    const auto others =
+        QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ReadOther | QFileDevice::WriteOther;
     EXPECT_EQ(QFile::permissions(path) & others, QFileDevice::Permissions{});
     EXPECT_TRUE(QJsonDocument::fromJson(read(path)).object().isEmpty());
     store.reload();
@@ -1662,13 +2649,49 @@ TEST_F(ConfigTest, EnsureFileCreatesAnEmptyPrivateFileOnce)
     EXPECT_EQ(read(path), QByteArray(R"({"Window": {"padding": 9}})"));
 }
 
+// A file that cannot be made, where its directory cannot be made: no file
+// for the editor, no write, and the settings stay.
+TEST_F(ConfigTest, EnsureFileAndWriteFailWhereNoFileCanBeMade)
+{
+    if (::geteuid() == 0)
+        GTEST_SKIP() << "root writes anyway";
+    const QString locked = m_home.filePath(QStringLiteral("unwritable"));
+    ASSERT_TRUE(QDir().mkpath(locked));
+    const QString path = locked + QStringLiteral("/sub/config.json");
+    SettingsStore store(path);
+    const Settings before = store.settings();
+    ASSERT_TRUE(QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+    const bool ensured = store.ensureFile();
+    const bool written = store.write(QStringLiteral("Window"), QStringLiteral("padding"), 9);
+    QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    EXPECT_FALSE(ensured);
+    EXPECT_FALSE(written);
+    EXPECT_FALSE(QFile::exists(path));
+    EXPECT_TRUE(store.settings() == before);
+}
+
+// Scripts.enabled and Control.enabled fail closed in read() for a value that
+// is no boolean, and persisted() gives the value that read() takes.
+TEST_F(ConfigTest, PersistedSwitchesFailClosedAsTheyRead)
+{
+    SettingsStore store(
+        write(QStringLiteral("switches.json"), R"({"Control": {"enabled": "maybe"}, "Scripts": "off"})"));
+    EXPECT_FALSE(store.settings().control.enabled);
+    EXPECT_FALSE(store.settings().scripts);
+    EXPECT_EQ(store.persisted(QStringLiteral("Control"), QStringLiteral("enabled")), QVariant(false));
+    EXPECT_EQ(store.persisted(QStringLiteral("Scripts"), QStringLiteral("enabled")), QVariant(false));
+    SettingsStore plain(write(QStringLiteral("switches-on.json"), "{}"));
+    EXPECT_EQ(plain.persisted(QStringLiteral("Control"), QStringLiteral("enabled")), QVariant(true));
+}
+
 TEST_F(ConfigTest, ThemeEditsApplyWhileTheConfigDoesNotParse)
 {
     const QString theme = write(QStringLiteral("theme.json"), R"({"foreground": "#445566"})");
-    const QString config = write(QStringLiteral("config.json"),
-                                 QJsonDocument(QJsonObject{{QStringLiteral("Colors"), QJsonObject{{QStringLiteral("theme"), theme}}},
-                                                           {QStringLiteral("Window"), QJsonObject{{QStringLiteral("padding"), 9}}}})
-                                     .toJson());
+    const QString config =
+        write(QStringLiteral("config.json"),
+              QJsonDocument(QJsonObject{{QStringLiteral("Colors"), QJsonObject{{QStringLiteral("theme"), theme}}},
+                                        {QStringLiteral("Window"), QJsonObject{{QStringLiteral("padding"), 9}}}})
+                  .toJson());
     SettingsStore store(config);
     ASSERT_TRUE(same(store.settings().terminal.defaultForeground, {0x44, 0x55, 0x66}));
     write(QStringLiteral("config.json"), "{ \"Window\": ");
@@ -1687,14 +2710,15 @@ TEST_F(ConfigTest, BuildTreeThemesComeBeforeTheDataDirectories)
     // An installed copy in ~/.local/share must not shadow the checkout's
     // theme that a build-tree binary is testing. This test runs from the
     // build tree.
-    ASSERT_TRUE(QDir().mkpath(m_home.filePath(QStringLiteral("data-home/afterglow/themes"))));
-    write(QStringLiteral("data-home/afterglow/themes/nord.json"), R"({"background": "#010101", "foreground": "#ffffff"})");
+    ASSERT_TRUE(QDir().mkpath(m_home.filePath(QStringLiteral("data-home/phosphor-works/afterglow/themes"))));
+    write(QStringLiteral("data-home/phosphor-works/afterglow/themes/nord.json"),
+          R"({"background": "#010101", "foreground": "#ffffff"})");
     SettingsStore store(write(QStringLiteral("config.json"), R"({"Colors": {"theme": "nord"}})"));
     EXPECT_TRUE(same(store.settings().terminal.defaultBackground, {0x2e, 0x34, 0x40}));
     const QStringList dirs = Themes::searchDirs();
     ASSERT_GE(dirs.size(), 3);
     // The user's own config directory still comes first.
-    EXPECT_EQ(dirs.first(), m_home.path() + QStringLiteral("/afterglow/themes"));
+    EXPECT_EQ(dirs.first(), m_home.path() + QStringLiteral("/phosphor-works/afterglow/themes"));
 }
 
 TEST_F(ConfigTest, FirstRunWritesNoFile)
@@ -1712,11 +2736,13 @@ TEST_F(ConfigTest, FirstRunWritesNoFile)
 
 TEST_F(ConfigTest, FirstWriteCreatesAPrivateFileWithOnlyThatKey)
 {
+    const OpenUmask umask;
     const QString path = m_home.filePath(QStringLiteral("fresh/config.json"));
     SettingsStore store(path);
     ASSERT_TRUE(store.write(QStringLiteral("Window"), QStringLiteral("padding"), 11));
     ASSERT_TRUE(QFile::exists(path));
-    const auto others = QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ReadOther | QFileDevice::WriteOther;
+    const auto others =
+        QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ReadOther | QFileDevice::WriteOther;
     EXPECT_EQ(QFile::permissions(path) & others, QFileDevice::Permissions{});
     const QJsonObject file = QJsonDocument::fromJson(read(path)).object();
     // The changed key, and the schema version PhosphorConfig stamps on every file.
@@ -1758,7 +2784,8 @@ TEST_F(ConfigTest, HintPatternsThatDoNotCompileAreReported)
     ]}})"));
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Hints.patterns[0]: the pattern does not compile")));
     ASSERT_EQ(store.settings().hintPatterns.size(), 1);
-    EXPECT_EQ(store.settings().hintPatterns.first().toMap().value(QStringLiteral("pattern")).toString(), QStringLiteral("[a-z]+"));
+    EXPECT_EQ(store.settings().hintPatterns.first().toMap().value(QStringLiteral("pattern")).toString(),
+              QStringLiteral("[a-z]+"));
 }
 
 TEST_F(ConfigTest, AWriteThatCannotBeSavedChangesNothing)
@@ -1771,7 +2798,8 @@ TEST_F(ConfigTest, AWriteThatCannotBeSavedChangesNothing)
         ASSERT_TRUE(file.open(QIODevice::WriteOnly));
         file.write(R"({"Terminal": {"scrollLines": 5}})");
     }
-    if (::geteuid() == 0) GTEST_SKIP() << "root writes anyway";
+    if (::geteuid() == 0)
+        GTEST_SKIP() << "root writes anyway";
     {
         SettingsStore store(path);
         ASSERT_TRUE(QFile::setPermissions(path, QFileDevice::ReadOwner));
@@ -1780,7 +2808,8 @@ TEST_F(ConfigTest, AWriteThatCannotBeSavedChangesNothing)
         QFile::setPermissions(directory, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
         QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
         EXPECT_FALSE(written);
-        EXPECT_EQ(store.persisted(QStringLiteral("Terminal"), QStringLiteral("scrollLines")).toInt(), 5);
+        // The settings in use, not the file, which the store left as it was.
+        EXPECT_EQ(store.settings().scrollLines, 5);
         // The store closes with the file writable again: it must not save the
         // lost change then, over what the user has in the file.
     }
@@ -1792,13 +2821,16 @@ TEST_F(ConfigTest, AWriteThatCannotBeSavedAppliesWhatTheFileHolds)
     const QString directory = m_home.filePath(QStringLiteral("locked"));
     ASSERT_TRUE(QDir().mkpath(directory));
     const QString path = write(QStringLiteral("locked/config.json"), R"({"Terminal": {"scrollLines": 5}})");
-    if (::geteuid() == 0) GTEST_SKIP() << "root writes anyway";
+    if (::geteuid() == 0)
+        GTEST_SKIP() << "root writes anyway";
     SettingsStore store(path);
     QStringList published;
-    QObject::connect(&store, &SettingsStore::problemsChanged, &store,
-                     [&](const QStringList& problems) { published << problems.join(QLatin1Char('\n')); });
+    QObject::connect(&store, &SettingsStore::problemsChanged, &store, [&](const QStringList& problems) {
+        published << problems.join(QLatin1Char('\n'));
+    });
     // Saved within the watcher's debounce: the write reads it first.
-    write(QStringLiteral("locked/config.json"), R"({"Terminal": {"scrollLines": 6}, "Window": {"tabBar": "sometimes"}})");
+    write(QStringLiteral("locked/config.json"),
+          R"({"Terminal": {"scrollLines": 6}, "Window": {"tabBar": "sometimes"}})");
     ASSERT_TRUE(QFile::setPermissions(path, QFileDevice::ReadOwner));
     ASSERT_TRUE(QFile::setPermissions(directory, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
     const bool written = store.write(QStringLiteral("Terminal"), QStringLiteral("scrollLines"), 9);
@@ -1827,7 +2859,8 @@ TEST_F(ConfigTest, EnumKeysTakeOnlyTheirChoicesInAnyCase)
 
 TEST_F(ConfigTest, MalformedValuesAndUnknownKeysAreReported)
 {
-    SettingsStore store(write(QStringLiteral("config.json"), R"({"Shaders": {"pane": "bloom"}, "Window": {"tabBar": "sometimes"},
+    SettingsStore store(
+        write(QStringLiteral("config.json"), R"({"Shaders": {"pane": "bloom"}, "Window": {"tabBar": "sometimes"},
         "Colors": {"divider": "nope", "palette": ["#000000", "nope"]}, "Font": {"sise": 3}, "Fonts": {}, "Mouse": 5,
         "Animation": {"cursorCurve": "not-a-curve", "scrollCurve": " spring:30,1 "}, "QuickTerminal": {"curve": 5}})"));
     const QStringList problems = store.problems();
@@ -1876,20 +2909,33 @@ TEST_F(ConfigTest, HintPatternsAreCheckedWhenRead)
     }
 
     QJsonArray many;
-    for (qsizetype i = 0; i <= MaxHintPatterns; ++i) many.append(QJsonObject{{QStringLiteral("pattern"), QStringLiteral("x%1").arg(i)}});
-    SettingsStore capped(write(QStringLiteral("many.json"),
-                               QJsonDocument(QJsonObject{{QStringLiteral("Hints"), QJsonObject{{QStringLiteral("patterns"), many}}}}).toJson()));
+    for (qsizetype i = 0; i <= MaxHintPatterns; ++i)
+        many.append(QJsonObject{{QStringLiteral("pattern"), QStringLiteral("x%1").arg(i)}});
+    SettingsStore capped(
+        write(QStringLiteral("many.json"),
+              QJsonDocument(QJsonObject{{QStringLiteral("Hints"), QJsonObject{{QStringLiteral("patterns"), many}}}})
+                  .toJson()));
     EXPECT_EQ(capped.settings().hintPatterns.size(), MaxHintPatterns);
     EXPECT_TRUE(mentions(capped.problems(), QStringLiteral("first %1").arg(MaxHintPatterns)));
-    const QString description = SettingsStore::reference().value(QStringLiteral("groups")).toObject().value(QStringLiteral("Hints"))
-                                    .toObject().value(QStringLiteral("patterns")).toObject().value(QStringLiteral("description")).toString();
-    EXPECT_TRUE(description.contains(QStringLiteral("Up to %1 hints").arg(MaxHintPatterns))) << description.toStdString();
-    EXPECT_TRUE(description.contains(QStringLiteral("1 to %1 arguments").arg(MaxHintCommandArguments))) << description.toStdString();
+    const QString description = SettingsStore::reference()
+                                    .value(QStringLiteral("groups"))
+                                    .toObject()
+                                    .value(QStringLiteral("Hints"))
+                                    .toObject()
+                                    .value(QStringLiteral("patterns"))
+                                    .toObject()
+                                    .value(QStringLiteral("description"))
+                                    .toString();
+    EXPECT_TRUE(description.contains(QStringLiteral("Up to %1 hints").arg(MaxHintPatterns)))
+        << description.toStdString();
+    EXPECT_TRUE(description.contains(QStringLiteral("1 to %1 arguments").arg(MaxHintCommandArguments)))
+        << description.toStdString();
 }
 
 TEST_F(ConfigTest, EnvironmentValuesMustBeStrings)
 {
-    SettingsStore store(write(QStringLiteral("config.json"), R"({"Terminal": {"env": {"EDITOR": "nvim", "N": 5, "Z": null}}})"));
+    SettingsStore store(
+        write(QStringLiteral("config.json"), R"({"Terminal": {"env": {"EDITOR": "nvim", "N": 5, "Z": null}}})"));
     ASSERT_EQ(store.settings().environment.size(), 1u);
     EXPECT_EQ(store.settings().environment[0].first, "EDITOR");
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.env.N")));
@@ -1898,7 +2944,8 @@ TEST_F(ConfigTest, EnvironmentValuesMustBeStrings)
 
 TEST_F(ConfigTest, FamiliesAndShaderReferencesAreTrimmed)
 {
-    SettingsStore store(write(QStringLiteral("config.json"), R"({"Font": {"family": "Iosevka", "boldFamily": " ", "italicFamily": " Mono "},
+    SettingsStore store(write(QStringLiteral("config.json"),
+                              R"({"Font": {"family": "Iosevka", "boldFamily": " ", "italicFamily": " Mono "},
                                                                  "Shaders": {"pane": [" bloom", ""]},
                                                                  "Audio": {"inputSource": " auto "}})"));
     const Settings& s = store.settings();
@@ -1929,9 +2976,12 @@ TEST_F(ConfigTest, RelativeThemePathsStartAtTheConfigDirectory)
 TEST_F(ConfigTest, ThemeThatStopsParsingKeepsItsColours)
 {
     const QString theme = write(QStringLiteral("theme.json"), R"({"foreground": "#445566"})");
-    const QString config = write(QStringLiteral("config.json"),
-                                 QJsonDocument(QJsonObject{{QStringLiteral("Colors"), QJsonObject{{QStringLiteral("theme"), theme},
-                                     {QStringLiteral("foreground"), QStringLiteral("#112233")}}}}).toJson());
+    const QString config =
+        write(QStringLiteral("config.json"),
+              QJsonDocument(QJsonObject{{QStringLiteral("Colors"),
+                                         QJsonObject{{QStringLiteral("theme"), theme},
+                                                     {QStringLiteral("foreground"), QStringLiteral("#112233")}}}})
+                  .toJson());
     SettingsStore store(config);
     ASSERT_TRUE(same(store.settings().terminal.defaultForeground, {0x44, 0x55, 0x66}));
     write(QStringLiteral("theme.json"), R"({"foreground": )");
@@ -1948,9 +2998,10 @@ TEST_F(ConfigTest, ThemeValuesThatAreNotColorsAreNotCalledUnusedKeys)
 {
     const QString theme = write(QStringLiteral("theme.json"), R"({"foreground": "#1e1e2eff", "background": "#101010",
                                                                   "palette": ["#000000", "nope"]})");
-    SettingsStore store(write(QStringLiteral("config.json"),
-                              QJsonDocument(QJsonObject{{QStringLiteral("Colors"), QJsonObject{{QStringLiteral("theme"), theme}}}})
-                                  .toJson()));
+    SettingsStore store(
+        write(QStringLiteral("config.json"),
+              QJsonDocument(QJsonObject{{QStringLiteral("Colors"), QJsonObject{{QStringLiteral("theme"), theme}}}})
+                  .toJson()));
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("values Afterglow cannot use: foreground, palette[1]")));
     EXPECT_FALSE(mentions(store.problems(), QStringLiteral("does not use")));
     EXPECT_TRUE(same(store.settings().terminal.defaultBackground, {0x10, 0x10, 0x10}));
@@ -1959,8 +3010,8 @@ TEST_F(ConfigTest, ThemeValuesThatAreNotColorsAreNotCalledUnusedKeys)
 TEST_F(ConfigTest, JsonThemeWithoutTheJsonExtensionReportsItsKeys)
 {
     // The search directories hold a bare "mine" too; the content says it is JSON.
-    QDir().mkpath(m_home.path() + QStringLiteral("/afterglow/themes"));
-    write(QStringLiteral("afterglow/themes/mine"), R"({"foreground": "#445566", "selectionBackgroud": "#111111"})");
+    QDir().mkpath(m_home.path() + QStringLiteral("/themes"));
+    write(QStringLiteral("themes/mine"), R"({"foreground": "#445566", "selectionBackgroud": "#111111"})");
     SettingsStore store(write(QStringLiteral("config.json"), R"({"Colors": {"theme": "mine"}})"));
     EXPECT_TRUE(same(store.settings().terminal.defaultForeground, {0x44, 0x55, 0x66}));
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("keys Afterglow does not use: selectionBackgroud")));
@@ -1991,6 +3042,107 @@ TEST(Themes, ReadsByteOrderMarksAnyCasePaletteAndReportsIgnoredKeys)
     QStringList ignored;
     ASSERT_TRUE(Themes::parse(R"({"foreground": "#000000", "selectionBackgroud": "#111111"})", nullptr, &ignored));
     EXPECT_EQ(ignored, QStringList{QStringLiteral("selectionBackgroud")});
+}
+
+TEST(ModifierRemap, ReadsKittysRules)
+{
+    using M = Qt::KeyboardModifiers;
+    // A swap is two rules, which act at once: they do not chain.
+    auto remap = ModifierRemap::parse(QStringLiteral("ctrl:super super:ctrl"));
+    ASSERT_TRUE(remap);
+    EXPECT_EQ(remap->apply(Qt::ControlModifier), M(Qt::MetaModifier));
+    EXPECT_EQ(remap->apply(Qt::MetaModifier), M(Qt::ControlModifier));
+    EXPECT_EQ(remap->apply(Qt::ControlModifier | Qt::MetaModifier | Qt::ShiftModifier),
+              M(Qt::ControlModifier | Qt::MetaModifier | Qt::ShiftModifier));
+    // Other flags stay.
+    EXPECT_EQ(remap->apply(Qt::ControlModifier | Qt::KeypadModifier), M(Qt::MetaModifier | Qt::KeypadModifier));
+    EXPECT_EQ(remap->apply(Qt::ControlModifier | Qt::GroupSwitchModifier),
+              M(Qt::MetaModifier | Qt::GroupSwitchModifier));
+    // A modifier key reports the one modifier that a rule makes of it, and
+    // a modifier that no rule names keeps its key.
+    EXPECT_EQ(remap->singleTarget(Qt::ControlModifier), Qt::MetaModifier);
+    EXPECT_EQ(remap->singleTarget(Qt::AltModifier), Qt::NoModifier);
+    EXPECT_EQ(remap->singleTarget(Qt::KeypadModifier), Qt::NoModifier);
+    // A destination of several modifiers, kitty's aliases, any case and any
+    // white space, and the last rule for a source wins.
+    remap = ModifierRemap::parse(QStringLiteral("  OPT:ctrl+shift\tcmd:alt\u00A0cmd:Control  "));
+    ASSERT_TRUE(remap);
+    EXPECT_EQ(remap->apply(Qt::AltModifier), M(Qt::ControlModifier | Qt::ShiftModifier));
+    EXPECT_EQ(remap->singleTarget(Qt::AltModifier), Qt::NoModifier);
+    EXPECT_EQ(remap->apply(Qt::MetaModifier), M(Qt::ControlModifier));
+    EXPECT_EQ(remap->apply(Qt::ShiftModifier), M(Qt::ShiftModifier));
+    // Kitty's symbols, and a source named twice, which is one modifier.
+    remap = ModifierRemap::parse(QStringLiteral("⌘:⌃ ⇧+shift:⌥"));
+    ASSERT_TRUE(remap);
+    EXPECT_EQ(remap->apply(Qt::MetaModifier), M(Qt::ControlModifier));
+    EXPECT_EQ(remap->apply(Qt::ShiftModifier), M(Qt::AltModifier));
+    // A destination may keep its source: the key adds a modifier.
+    remap = ModifierRemap::parse(QStringLiteral("shift:shift+ctrl"));
+    ASSERT_TRUE(remap);
+    EXPECT_EQ(remap->apply(Qt::ShiftModifier), M(Qt::ShiftModifier | Qt::ControlModifier));
+    EXPECT_EQ(remap->singleTarget(Qt::ShiftModifier), Qt::NoModifier);
+    // An empty value remaps nothing.
+    remap = ModifierRemap::parse(QStringLiteral(" "));
+    ASSERT_TRUE(remap);
+    EXPECT_TRUE(remap->isEmpty());
+    EXPECT_EQ(remap->apply(Qt::ControlModifier), M(Qt::ControlModifier));
+}
+
+TEST(ModifierRemap, RefusesWhatKittyRefusesAndHyperAndMeta)
+{
+    // Each error names its rule or its name.
+    const std::pair<const char*, const char*> refused[] = {
+        {"ctrl", "\"ctrl\" has no colon"},
+        {"ctrl:", "\"ctrl:\" has a modifier with no name"},
+        {":super", "\":super\" has a modifier with no name"},
+        {"ctrl:super+", "\"ctrl:super+\" has a modifier with no name"},
+        {"ctrl+alt:super", "\"ctrl+alt:super\" has more than one modifier before the colon"},
+        {"ctrl:ctrl", "\"ctrl:ctrl\" makes a modifier into itself"},
+        {"none:ctrl", "\"none\" is not shift, ctrl, alt or super"},
+        {"ctrl:none", "\"none\" is not shift, ctrl, alt or super"},
+        {"ctrl:capslock", "\"capslock\" is not shift, ctrl, alt or super"},
+        {"kitty_mod:ctrl", "\"kitty_mod\" is not shift, ctrl, alt or super"},
+        {"ctrl:super ctrl", "\"ctrl\" has no colon"},
+        {"ctrl:alt:shift", "\"alt:shift\" is not shift, ctrl, alt or super"},
+        {"hyper:ctrl", "Kitty's hyper is not a modifier of Afterglow"},
+        {"ctrl:meta", "Write super for the key that key bindings call Meta"},
+    };
+    for (const auto& [text, reason] : refused) {
+        QString error;
+        EXPECT_FALSE(ModifierRemap::parse(QString::fromUtf8(text), &error)) << text;
+        EXPECT_TRUE(error.contains(QString::fromUtf8(reason))) << text << ": " << error.toStdString();
+    }
+}
+
+TEST_F(ConfigTest, RemapModifiersIsReadReloadedAndAnErrorRemapsNothing)
+{
+    {
+        SettingsStore store(write(QStringLiteral("default.json"), "{}"));
+        EXPECT_TRUE(store.settings().modifierRemap.isEmpty());
+    }
+    const QString config =
+        write(QStringLiteral("swap.json"), R"({"Keybinds": {"remapModifiers": "ctrl:super super:ctrl"}})");
+    SettingsStore store(config);
+    EXPECT_EQ(store.settings().modifierRemap.apply(Qt::ControlModifier), Qt::KeyboardModifiers(Qt::MetaModifier));
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+    int changes = 0;
+    QObject::connect(&store, &SettingsStore::changed, [&](const Settings&) {
+        ++changes;
+    });
+    // A reload applies a new remap, and one with an error remaps nothing and says why.
+    write(QStringLiteral("swap.json"), R"({"Keybinds": {"remapModifiers": "alt:ctrl"}})");
+    store.reload();
+    EXPECT_EQ(changes, 1);
+    EXPECT_EQ(store.settings().modifierRemap.apply(Qt::AltModifier), Qt::KeyboardModifiers(Qt::ControlModifier));
+    EXPECT_EQ(store.settings().modifierRemap.apply(Qt::MetaModifier), Qt::KeyboardModifiers(Qt::MetaModifier));
+    write(QStringLiteral("swap.json"), R"({"Keybinds": {"remapModifiers": "ctrl:super hyper:alt"}})");
+    store.reload();
+    EXPECT_EQ(changes, 2);
+    EXPECT_TRUE(store.settings().modifierRemap.isEmpty());
+    EXPECT_TRUE(mentions(store.problems(),
+                         QStringLiteral("Keybinds.remapModifiers: Kitty's hyper is not a modifier of "
+                                        "Afterglow. Remapping no modifier")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
 }
 
 TEST(Keybinds, ExplicitBindingsTakeKeysFromDefaults)
@@ -2052,15 +3204,16 @@ TEST(Keybinds, ShiftedSymbolsMatchBindingsWithoutShift)
     EXPECT_EQ(kb.match(&equalize), Action::EqualizeSplits);
     // Letters keep their Shift: Ctrl+Shift+A is not Ctrl+A.
     // select_all's default Ctrl+Shift+A would match first, whatever Shift does.
-    const Keybinds letters = Keybinds::fromMap({{QStringLiteral("new_tab"), QStringLiteral("Ctrl+A")},
-                                                {QStringLiteral("select_all"), QString()}});
+    const Keybinds letters = Keybinds::fromMap(
+        {{QStringLiteral("new_tab"), QStringLiteral("Ctrl+A")}, {QStringLiteral("select_all"), QString()}});
     const QKeyEvent shiftA = press(Qt::Key_A, Qt::ControlModifier | Qt::ShiftModifier);
     EXPECT_EQ(letters.match(&shiftA), Action::None);
 }
 
 TEST(Keybinds, BindingsOfKeepTheConfigOrder)
 {
-    const Keybinds kb = Keybinds::fromMap({{QStringLiteral("font_bigger"), QStringList{QStringLiteral("Ctrl+Z"), QStringLiteral("Ctrl+A")}}});
+    const Keybinds kb = Keybinds::fromMap(
+        {{QStringLiteral("font_bigger"), QStringList{QStringLiteral("Ctrl+Z"), QStringLiteral("Ctrl+A")}}});
     const QStringList expected{QKeySequence(QStringLiteral("Ctrl+Z")).toString(QKeySequence::NativeText),
                                QKeySequence(QStringLiteral("Ctrl+A")).toString(QKeySequence::NativeText)};
     EXPECT_EQ(kb.bindingsOf(Action::FontBigger), expected);
@@ -2076,8 +3229,10 @@ KeyModes modesFor(const QVariantMap& bindings, const QVariantMap& tables, const 
 TEST(KeyModes, TableOutlivesAPrefixThatTimedOut)
 {
     QStringList errors;
-    const auto modes = modesFor({{QStringLiteral("table:resize"), QStringLiteral("Ctrl+Space, R")}},
-                                {{QStringLiteral("resize"), QVariantMap{{QStringLiteral("split_right"), QStringLiteral("G, G")}}}}, {}, &errors);
+    const auto modes =
+        modesFor({{QStringLiteral("table:resize"), QStringLiteral("Ctrl+Space, R")}},
+                 {{QStringLiteral("resize"), QVariantMap{{QStringLiteral("split_right"), QStringLiteral("G, G")}}}}, {},
+                 &errors);
     ASSERT_TRUE(errors.isEmpty()) << errors.join(QLatin1Char('\n')).toStdString();
     KeyModes::State state;
     const QKeyEvent leader = press(Qt::Key_Space, Qt::ControlModifier);
@@ -2099,7 +3254,8 @@ TEST(KeyModes, TableOutlivesAPrefixThatTimedOut)
 TEST(KeyModes, ModifierAndLockKeysKeepAPendingSequence)
 {
     QStringList errors;
-    const auto modes = modesFor({{QStringLiteral("split_right"), QStringLiteral("Leader, E")}}, {}, QStringLiteral("Ctrl+Space"), &errors);
+    const auto modes = modesFor({{QStringLiteral("split_right"), QStringLiteral("Leader, E")}}, {},
+                                QStringLiteral("Ctrl+Space"), &errors);
     KeyModes::State state;
     const QKeyEvent leader = press(Qt::Key_Space, Qt::ControlModifier);
     modes.press(&leader, state, 0);
@@ -2148,14 +3304,16 @@ TEST(KeyModes, BareLeaderInAnyCaseBindsAnAction)
     // A bare Leader and a Leader sequence share their first key.
     EXPECT_TRUE(mentions(errors, QStringLiteral("ambiguous")));
     QStringList single;
-    const auto alone = modesFor({{QStringLiteral("command_palette"), QStringLiteral("Leader")}}, {}, QStringLiteral("Ctrl+B"), &single);
+    const auto alone = modesFor({{QStringLiteral("command_palette"), QStringLiteral("Leader")}}, {},
+                                QStringLiteral("Ctrl+B"), &single);
     EXPECT_TRUE(single.isEmpty()) << single.join(QLatin1Char('\n')).toStdString();
     KeyModes::State state;
     const QKeyEvent leader = press(Qt::Key_B, Qt::ControlModifier);
     EXPECT_EQ(alone.press(&leader, state, 0).target, QStringLiteral("command_palette"));
 
     QStringList lower;
-    const auto sequence = modesFor({{QStringLiteral("split_right"), QStringLiteral(" leader, E")}}, {}, QStringLiteral("Ctrl+B"), &lower);
+    const auto sequence =
+        modesFor({{QStringLiteral("split_right"), QStringLiteral(" leader, E")}}, {}, QStringLiteral("Ctrl+B"), &lower);
     EXPECT_TRUE(lower.isEmpty()) << lower.join(QLatin1Char('\n')).toStdString();
     const QKeyEvent e = press(Qt::Key_E);
     sequence.press(&leader, state, 0);
@@ -2189,8 +3347,9 @@ TEST(KeyModes, TablesCanBindEscapeAndHoldingTheirKeyTypesNothing)
 {
     QStringList errors;
     const auto modes = modesFor({{QStringLiteral("table:resize"), QStringLiteral("Ctrl+Space, R")}},
-                                {{QStringLiteral("resize"), QVariantMap{{QStringLiteral("split_right"), QStringLiteral("Escape")},
-                                                                        {QStringLiteral("resize_left"), QStringLiteral("H")}}}},
+                                {{QStringLiteral("resize"),
+                                  QVariantMap{{QStringLiteral("split_right"), QStringLiteral("Escape")},
+                                              {QStringLiteral("resize_left"), QStringLiteral("H")}}}},
                                 {}, &errors);
     ASSERT_TRUE(errors.isEmpty()) << errors.join(QLatin1Char('\n')).toStdString();
     KeyModes::State state;
@@ -2217,19 +3376,19 @@ TEST(Keybinds, TheCallerGivesTheKeyOnTheLatinLayout)
     const Keybinds kb = Keybinds::defaults();
     EXPECT_EQ(kb.match(&cyrillic), Action::None);
     EXPECT_EQ(kb.match(&cyrillic, U'c'), Action::Copy);
-    EXPECT_TRUE(Keybinds::combinations(&cyrillic, U'c').contains(
-        QKeyCombination(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_C).toCombined()));
+    EXPECT_TRUE(Keybinds::combinations(&cyrillic, U'c')
+                    .contains(QKeyCombination(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_C).toCombined()));
 }
 
 TEST(Keybinds, ScriptCommandsBindKeysAndMalformedTargetsAreReported)
 {
     QStringList errors;
-    const Keybinds kb = Keybinds::fromMap(
-        {{QStringLiteral("script:projects.switch"), QStringList{QStringLiteral("Ctrl+Alt+P"), QStringLiteral("Ctrl+Alt+O")}},
-         {QStringLiteral("script:projects"), QStringLiteral("Ctrl+Alt+X")},
-         {QStringLiteral("script:.switch"), QStringLiteral("Ctrl+Alt+Y")},
-         {QStringLiteral("script:projects."), QStringLiteral("Ctrl+Alt+Z")}},
-        &errors);
+    const Keybinds kb = Keybinds::fromMap({{QStringLiteral("script:projects.switch"),
+                                            QStringList{QStringLiteral("Ctrl+Alt+P"), QStringLiteral("Ctrl+Alt+O")}},
+                                           {QStringLiteral("script:projects"), QStringLiteral("Ctrl+Alt+X")},
+                                           {QStringLiteral("script:.switch"), QStringLiteral("Ctrl+Alt+Y")},
+                                           {QStringLiteral("script:projects."), QStringLiteral("Ctrl+Alt+Z")}},
+                                          &errors);
     const QKeyEvent p = press(Qt::Key_P, Qt::ControlModifier | Qt::AltModifier);
     EXPECT_EQ(kb.matchScript(&p), QStringLiteral("projects.switch"));
     EXPECT_EQ(kb.match(&p), Action::None);
@@ -2244,7 +3403,8 @@ TEST(Keybinds, ScriptCommandsBindKeysAndMalformedTargetsAreReported)
     }
     EXPECT_EQ(errors.size(), 3) << errors.join(QLatin1Char('\n')).toStdString();
     for (const char* target : {"script:projects", "script:.switch", "script:projects."}) {
-        EXPECT_TRUE(mentions(errors, QStringLiteral("\"%1\" names no script command").arg(QLatin1String(target)))) << target;
+        EXPECT_TRUE(mentions(errors, QStringLiteral("\"%1\" names no script command").arg(QLatin1String(target))))
+            << target;
     }
     EXPECT_TRUE(Keybinds::isScriptTarget(QStringLiteral("script:a.b.c")));
     EXPECT_FALSE(Keybinds::isScriptTarget(QStringLiteral("text:a.b")));
@@ -2254,8 +3414,9 @@ TEST(KeyModes, AMalformedScriptTargetInATableIsReported)
 {
     QStringList errors;
     const auto modes = modesFor({{QStringLiteral("table:run"), QStringLiteral("Ctrl+Space, R")}},
-                                {{QStringLiteral("run"), QVariantMap{{QStringLiteral("script:nodot"), QStringLiteral("N")},
-                                                                     {QStringLiteral("script:a.go"), QStringLiteral("G")}}}},
+                                {{QStringLiteral("run"),
+                                  QVariantMap{{QStringLiteral("script:nodot"), QStringLiteral("N")},
+                                              {QStringLiteral("script:a.go"), QStringLiteral("G")}}}},
                                 {}, &errors);
     EXPECT_TRUE(mentions(errors, QStringLiteral("\"script:nodot\" names no script command")));
     KeyModes::State state;
@@ -2275,8 +3436,9 @@ TEST(KeyModes, AMalformedScriptTargetInATableIsReported)
 TEST_F(ConfigTest, StringSettingsOfAnotherJsonTypeUseTheDefault)
 {
     // PhosphorConfig reads false as "false": the pager would run false.
-    SettingsStore store(write(QStringLiteral("config.json"),
-                              R"({"Terminal": {"pager": false, "term": 5, "shell": " /bin/zsh "}, "Font": {"family": ["Iosevka"]}})"));
+    SettingsStore store(
+        write(QStringLiteral("config.json"),
+              R"({"Terminal": {"pager": false, "term": 5, "shell": " /bin/zsh "}, "Font": {"family": ["Iosevka"]}})"));
     const Settings defaults;
     EXPECT_EQ(store.settings().pager, defaults.pager);
     EXPECT_EQ(store.settings().term, defaults.term);
@@ -2305,24 +3467,29 @@ TEST_F(ConfigTest, ListEntriesThatAreNotStringsAreReported)
     EXPECT_EQ(store.settings().links.schemes, QStringList{QStringLiteral("https")});
     EXPECT_EQ(store.settings().shaders.pane, QStringList{QStringLiteral("bloom")});
     for (const char* entry : {"Font.features[1]", "Links.schemes[1]", "Shaders.pane[0]"}) {
-        EXPECT_TRUE(mentions(store.problems(), QStringLiteral("%1 must be a string").arg(QLatin1String(entry)))) << entry;
+        EXPECT_TRUE(mentions(store.problems(), QStringLiteral("%1 must be a string").arg(QLatin1String(entry))))
+            << entry;
     }
 }
 
 TEST_F(ConfigTest, PaletteSizeAndOutOfRangeNumbersAreReported)
 {
     QJsonArray seventeen;
-    for (int i = 0; i < 17; ++i) seventeen.append(QStringLiteral("#000000"));
-    SettingsStore store(write(QStringLiteral("config.json"),
-                              QJsonDocument(QJsonObject{{QStringLiteral("Colors"), QJsonObject{{QStringLiteral("palette"), seventeen}}},
-                                                        {QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("scrollback"), 1e12}}}})
-                                  .toJson()));
-    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Colors.palette needs 16 colors, not 17. Afterglow uses the first 16")));
+    for (int i = 0; i < 17; ++i)
+        seventeen.append(QStringLiteral("#000000"));
+    SettingsStore store(write(
+        QStringLiteral("config.json"),
+        QJsonDocument(QJsonObject{{QStringLiteral("Colors"), QJsonObject{{QStringLiteral("palette"), seventeen}}},
+                                  {QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("scrollback"), 1e12}}}})
+            .toJson()));
+    EXPECT_TRUE(mentions(store.problems(),
+                         QStringLiteral("Colors.palette needs 16 colors, not 17. Afterglow uses the first 16")));
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.scrollback is too large or too small")));
     EXPECT_FALSE(mentions(store.problems(), QStringLiteral("Terminal.scrollback must be a whole number")));
     EXPECT_EQ(store.settings().terminal.maxScrollback, Settings{}.terminal.maxScrollback);
     SettingsStore one(write(QStringLiteral("one.json"), R"({"Colors": {"palette": ["#ff0000"]}})"));
-    EXPECT_TRUE(mentions(one.problems(), QStringLiteral("Colors.palette needs 16 colors, not 1. The others use the default")));
+    EXPECT_TRUE(
+        mentions(one.problems(), QStringLiteral("Colors.palette needs 16 colors, not 1. The others use the default")));
     EXPECT_TRUE(same(one.settings().terminal.basePalette[0], {0xff, 0x00, 0x00}));
 }
 
@@ -2334,8 +3501,9 @@ TEST_F(ConfigTest, AReloadPublishesItsProblemsOnce)
     store.reload();
     ASSERT_EQ(store.problems().size(), 1);
     QList<QStringList> published;
-    QObject::connect(&store, &SettingsStore::problemsChanged, &store,
-                     [&published](const QStringList& problems) { published.append(problems); });
+    QObject::connect(&store, &SettingsStore::problemsChanged, &store, [&published](const QStringList& problems) {
+        published.append(problems);
+    });
     // The parse problem goes and an unknown key comes in the same reload:
     // one signal with both changes, not one with the file's half first.
     write(QStringLiteral("config.json"), R"({"Window": {"padding": 9, "nope": 1}})");
@@ -2353,8 +3521,20 @@ int g_configWarnings = 0;
 QtMessageHandler g_previousHandler = nullptr;
 void countConfigWarnings(QtMsgType type, const QMessageLogContext& context, const QString& message)
 {
-    if (type == QtWarningMsg && context.category && qstrcmp(context.category, "afterglow.config") == 0) ++g_configWarnings;
-    if (g_previousHandler) g_previousHandler(type, context, message);
+    if (type == QtWarningMsg && context.category && qstrcmp(context.category, "afterglow.config") == 0)
+        ++g_configWarnings;
+    if (g_previousHandler)
+        g_previousHandler(type, context, message);
+}
+QLoggingCategory::CategoryFilter g_previousFilter = nullptr;
+/// QT_LOGGING_RULES from the environment ("afterglow.*=false") would
+/// silence the warnings that the test counts.
+void enableConfigWarnings(QLoggingCategory* category)
+{
+    if (g_previousFilter)
+        g_previousFilter(category);
+    if (qstrcmp(category->categoryName(), "afterglow.config") == 0)
+        category->setEnabled(QtWarningMsg, true);
 }
 } // namespace
 
@@ -2362,6 +3542,7 @@ TEST_F(ConfigTest, AProblemIsLoggedWhenItAppears)
 {
     const QString path = write(QStringLiteral("config.json"), R"({"Window": {"nope": 1}})");
     g_configWarnings = 0;
+    g_previousFilter = QLoggingCategory::installFilter(enableConfigWarnings);
     g_previousHandler = qInstallMessageHandler(countConfigWarnings);
     {
         SettingsStore store(path);
@@ -2372,19 +3553,28 @@ TEST_F(ConfigTest, AProblemIsLoggedWhenItAppears)
         store.reload();
     }
     qInstallMessageHandler(g_previousHandler);
+    QLoggingCategory::installFilter(g_previousFilter);
     // The unknown key once, the parse problem once.
     EXPECT_EQ(g_configWarnings, 2);
 }
 
 TEST_F(ConfigTest, ThemeDirectoriesThatDoNotExistYetAreWatched)
 {
-    // A theme saved into ~/.local/share/afterglow/themes, made after the
+    // A theme saved into ~/.local/share/phosphor-works/afterglow/themes, made after the
     // start, must reload: the watch lists the directory before it exists.
-    const QString dir = m_home.filePath(QStringLiteral("data-home/afterglow/themes"));
+    const QString dir = m_home.filePath(QStringLiteral("data-home/phosphor-works/afterglow/themes"));
     ASSERT_FALSE(QFileInfo::exists(dir));
+    const auto app = watchApplication();
     SettingsStore store(write(QStringLiteral("config.json"), R"({"Colors": {"theme": "later"}})"));
     EXPECT_TRUE(store.watchedPaths().contains(dir + QStringLiteral("/later.json")));
     EXPECT_TRUE(Themes::searchDirs().contains(dir));
+    // Listed is not enough: the directory and the theme come, and it applies.
+    ASSERT_TRUE(QDir().mkpath(dir));
+    write(QStringLiteral("data-home/phosphor-works/afterglow/themes/later.json"), R"({"foreground": "#405060"})");
+    EXPECT_TRUE(waitUntil([&] {
+        return same(store.settings().terminal.defaultForeground, {0x40, 0x50, 0x60});
+    }));
+    EXPECT_FALSE(mentions(store.problems(), QStringLiteral("not found")));
 }
 
 TEST_F(ConfigTest, EverySettingReachesTheSettings)
@@ -2400,13 +3590,15 @@ TEST_F(ConfigTest, EverySettingReachesTheSettings)
     for (auto group = schema.groups.cbegin(); group != schema.groups.cend(); ++group) {
         for (const auto& def : group.value()) {
             const QString name = group.key() + QLatin1Char('.') + def.key;
-            if (unused.contains(name)) continue;
+            if (unused.contains(name))
+                continue;
             const QJsonObject entry = reference.value(group.key()).toObject().value(def.key).toObject();
             const QJsonValue current = QJsonValue::fromVariant(def.defaultValue);
             QJsonValue value;
             if (!def.choices.isEmpty()) {
                 for (const auto& choice : def.choices) {
-                    if (choice.value != def.defaultValue) value = QJsonValue::fromVariant(choice.value);
+                    if (choice.value != def.defaultValue)
+                        value = QJsonValue::fromVariant(choice.value);
                 }
             } else if (def.expectedType == QMetaType::Bool) {
                 value = !def.defaultValue.toBool();
@@ -2417,9 +3609,11 @@ TEST_F(ConfigTest, EverySettingReachesTheSettings)
                 value = QStringLiteral("nord");
             } else if (name == QLatin1String("Colors.palette")) {
                 QJsonArray palette;
-                for (int i = 0; i < 16; ++i) palette.append(QStringLiteral("#123456"));
+                for (int i = 0; i < 16; ++i)
+                    palette.append(QStringLiteral("#123456"));
                 value = palette;
-            } else if (group.key() == QLatin1String("Colors") && def.expectedType == QMetaType::QString) {
+            } else if ((group.key() == QLatin1String("Colors") && def.expectedType == QMetaType::QString)
+                       || name == QLatin1String("Mux.agentColor")) {
                 value = QStringLiteral("#123456");
             } else if (def.key.endsWith(QLatin1String("Curve")) || name == QLatin1String("QuickTerminal.curve")) {
                 value = QStringLiteral("spring:30,1");
@@ -2432,18 +3626,37 @@ TEST_F(ConfigTest, EverySettingReachesTheSettings)
             } else if (name == QLatin1String("Font.symbolMap")) {
                 value = QJsonObject{{QStringLiteral("U+E000"), QStringLiteral("Afterglow Test")}};
             } else if (name == QLatin1String("Hints.patterns")) {
-                value = QJsonArray{
-                    QJsonObject{{QStringLiteral("pattern"), QStringLiteral("x+")}, {QStringLiteral("action"), QStringLiteral("open")}}};
+                value = QJsonArray{QJsonObject{{QStringLiteral("pattern"), QStringLiteral("x+")},
+                                               {QStringLiteral("action"), QStringLiteral("open")}}};
             } else if (name == QLatin1String("Keybinds.bindings")) {
                 value = QJsonObject{{QStringLiteral("new_tab"), QStringLiteral("Ctrl+Alt+F12")}};
+            } else if (name == QLatin1String("Terminal.shellIntegration")) {
+                value = QStringLiteral("no-title no-sudo");
+            } else if (name == QLatin1String("Keybinds.remapModifiers")) {
+                value = QStringLiteral("ctrl:super super:ctrl");
+            } else if (name == QLatin1String("Shaders.params")) {
+                value = QJsonObject{{QStringLiteral("bloom"), QJsonObject{{QStringLiteral("strength"), 0.5}}}};
+            } else if (name == QLatin1String("Mouse.commandOutputModifier")) {
+                value = QStringLiteral("alt");
+            } else if (name == QLatin1String("Window.workingDirectory")
+                       || name == QLatin1String("Terminal.downloadDirectory")) {
+                value = QStringLiteral("~/afterglow-test");
+            } else if (name == QLatin1String("Mux.updateEnvironment")) {
+                value = QJsonArray{QStringLiteral("TEST_VARIABLE")};
+            } else if (name == QLatin1String("Notifications.filters")) {
+                value = QJsonArray{QStringLiteral("app:afterglow-test")};
             } else if (def.expectedType == QMetaType::QVariantMap) {
-                value = QJsonObject{{QStringLiteral("AFTERGLOW_TEST"), QStringLiteral("1")}};
+                // Not AFTERGLOW_: Afterglow keeps those names for itself.
+                value = QJsonObject{{QStringLiteral("TEST_VARIABLE"), QStringLiteral("1")}};
             } else if (def.expectedType == QMetaType::QVariantList) {
                 value = QJsonArray{QStringLiteral("afterglow-test")};
             } else {
                 value = QStringLiteral("afterglow-test");
             }
-            ASSERT_FALSE(value.isUndefined()) << name.toStdString();
+            if (value.isUndefined()) {
+                ADD_FAILURE() << name.toStdString() << " has no test value";
+                continue;
+            }
             SettingsStore store(path, QJsonObject{{group.key(), QJsonObject{{def.key, value}}}});
             EXPECT_FALSE(store.settings() == defaults) << name.toStdString();
             // A value that a check refused would reach the settings as the
@@ -2457,7 +3670,8 @@ TEST_F(ConfigTest, EverySettingReachesTheSettings)
 TEST_F(ConfigTest, AStringKeyOfAnotherJsonTypeIsReportedBeforeItsOwnCheck)
 {
     // PhosphorConfig would read true as "true", four distinct letters.
-    SettingsStore store(write(QStringLiteral("config.json"), R"({"Hints": {"alphabet": true}, "Terminal": {"bell": 1}})"));
+    SettingsStore store(
+        write(QStringLiteral("config.json"), R"({"Hints": {"alphabet": true}, "Terminal": {"bell": 1}})"));
     EXPECT_EQ(store.settings().hintAlphabet, Settings{}.hintAlphabet);
     EXPECT_EQ(store.settings().bell, Settings{}.bell);
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Hints.alphabet must be a string. Using the default")));
@@ -2474,8 +3688,8 @@ TEST_F(ConfigTest, ListsAndMapsOfAnotherJsonTypeUseTheDefault)
     EXPECT_EQ(store.settings().links.schemes, defaults.links.schemes);
     EXPECT_EQ(store.settings().hintPatterns, defaults.hintPatterns);
     EXPECT_TRUE(store.settings().environment.empty());
-    for (const char* key : {"Font.features must be a list", "Links.schemes must be a list", "Hints.patterns must be a list",
-                            "Terminal.env must be an object"}) {
+    for (const char* key : {"Font.features must be a list", "Links.schemes must be a list",
+                            "Hints.patterns must be a list", "Terminal.env must be an object"}) {
         EXPECT_TRUE(mentions(store.problems(), QString::fromLatin1(key))) << key;
     }
     // An override of the wrong type gives way to the default too, not to the file.
@@ -2489,8 +3703,9 @@ TEST_F(ConfigTest, ListsAndMapsOfAnotherJsonTypeUseTheDefault)
 
 TEST_F(ConfigTest, NumbersThatTheValidatorsReplaceAreReported)
 {
-    SettingsStore store(write(QStringLiteral("config.json"),
-                              R"({"Font": {"gamma": "nan", "cellHeight": "inf"}, "Terminal": {"scrollback": "99999999999"}})"));
+    SettingsStore store(
+        write(QStringLiteral("config.json"),
+              R"({"Font": {"gamma": "nan", "cellHeight": "inf"}, "Terminal": {"scrollback": "99999999999"}})"));
     EXPECT_FLOAT_EQ(store.settings().font.gamma, Settings{}.font.gamma);
     EXPECT_FLOAT_EQ(store.settings().font.cellHeightScale, Settings{}.font.cellHeightScale);
     EXPECT_EQ(store.settings().terminal.maxScrollback, Settings{}.terminal.maxScrollback);
@@ -2502,8 +3717,9 @@ TEST_F(ConfigTest, NumbersThatTheValidatorsReplaceAreReported)
 
 TEST_F(ConfigTest, ProblemsComeInTheOrderOfTheSchema)
 {
-    SettingsStore store(write(QStringLiteral("config.json"),
-                              R"({"Window": {"blur": "x"}, "Terminal": {"cursorBlink": "x"}, "Animation": {"cursor": "x"}})"));
+    SettingsStore store(
+        write(QStringLiteral("config.json"),
+              R"({"Window": {"blur": "x"}, "Terminal": {"cursorBlink": "x"}, "Animation": {"cursor": "x"}})"));
     const QStringList problems = store.problems();
     ASSERT_EQ(problems.size(), 3) << problems.join(QLatin1Char('\n')).toStdString();
     EXPECT_TRUE(problems[0].startsWith(QLatin1String("Animation.cursor")));
@@ -2522,10 +3738,10 @@ TEST_F(ConfigTest, TransparentIsNotAColor)
 {
     EXPECT_FALSE(Themes::isColorName(QStringLiteral("transparent")));
     EXPECT_FALSE(Themes::isColorName(QStringLiteral("Transparent")));
-    // Qt drops the spaces and tabs of a colour name.
+    // No X11 name is transparent, in any spelling.
     EXPECT_FALSE(Themes::isColorName(QStringLiteral("trans parent")));
     EXPECT_FALSE(Themes::isColorName(QStringLiteral(" Transparent\t")));
-    EXPECT_TRUE(Themes::isColorName(QStringLiteral("r e d")));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("none")));
     SettingsStore store(write(QStringLiteral("config.json"), R"({"Colors": {"background": "transparent"}})"));
     EXPECT_TRUE(same(store.settings().terminal.defaultBackground, Settings{}.terminal.defaultBackground));
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Colors.background is not a color")));
@@ -2533,10 +3749,12 @@ TEST_F(ConfigTest, TransparentIsNotAColor)
 
 TEST_F(ConfigTest, FontFeaturesAndSymbolFamiliesAreChecked)
 {
-    SettingsStore store(write(QStringLiteral("config.json"), R"({"Font": {"features": ["liga", "cv01=2", "not-a-feature"],
+    SettingsStore store(
+        write(QStringLiteral("config.json"), R"({"Font": {"features": ["liga", "cv01=2", "not-a-feature"],
         "symbolMap": {"U+E000": 5, "U+E001": "Symbols"}}})"));
     EXPECT_EQ(store.settings().font.features, (std::vector<std::string>{"liga", "cv01=2"}));
-    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Font.features: \"not-a-feature\" is not an OpenType feature")));
+    EXPECT_TRUE(
+        mentions(store.problems(), QStringLiteral("Font.features: \"not-a-feature\" is not an OpenType feature")));
     ASSERT_EQ(store.settings().font.symbolMap.size(), 1u);
     EXPECT_EQ(store.settings().font.symbolMap[0].family, "Symbols");
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Font.symbolMap: ignoring U+E000")));
@@ -2550,7 +3768,8 @@ TEST_F(ConfigTest, QuickTerminalShortcutIsTrimmedAndChecked)
     write(QStringLiteral("config.json"), R"({"QuickTerminal": {"shortcut": "Meta+Nothing"}})");
     store.reload();
     EXPECT_EQ(store.settings().quickTerminal.shortcut, QuickTerminalSettings{}.shortcut);
-    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("QuickTerminal.shortcut \"Meta+Nothing\" is not a key combination")));
+    EXPECT_TRUE(
+        mentions(store.problems(), QStringLiteral("QuickTerminal.shortcut \"Meta+Nothing\" is not a key combination")));
     write(QStringLiteral("config.json"), R"({"QuickTerminal": {"shortcut": " "}})");
     store.reload();
     EXPECT_TRUE(store.settings().quickTerminal.shortcut.isEmpty());
@@ -2564,11 +3783,14 @@ TEST_F(ConfigTest, AHintCommandNeedsAProgram)
         {"pattern": "b+", "action": "command", "command": ["{match}"]},
         {"pattern": "c+"}
     ]}})"));
-    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Hints.patterns[0]: the first argument of command must name a program")));
+    EXPECT_TRUE(mentions(store.problems(),
+                         QStringLiteral("Hints.patterns[0]: the first argument of command must name a program")));
     ASSERT_EQ(store.settings().hintPatterns.size(), 2);
-    EXPECT_EQ(store.settings().hintPatterns[0].toMap().value(QStringLiteral("pattern")).toString(), QStringLiteral("b+"));
+    EXPECT_EQ(store.settings().hintPatterns[0].toMap().value(QStringLiteral("pattern")).toString(),
+              QStringLiteral("b+"));
     // Without an action, a hint copies.
-    EXPECT_EQ(store.settings().hintPatterns[1].toMap().value(QStringLiteral("pattern")).toString(), QStringLiteral("c+"));
+    EXPECT_EQ(store.settings().hintPatterns[1].toMap().value(QStringLiteral("pattern")).toString(),
+              QStringLiteral("c+"));
 }
 
 TEST_F(ConfigTest, EnvironmentWithANulIsRefused)
@@ -2629,7 +3851,9 @@ TEST_F(ConfigTest, AFileThatAnEditorEmptiesKeepsItsSettingsUntilItsTextComes)
     const QString path = write(QStringLiteral("config.json"), R"({"Window": {"padding": 9}})");
     SettingsStore store(path);
     int changes = 0;
-    QObject::connect(&store, &SettingsStore::changed, &store, [&] { ++changes; });
+    QObject::connect(&store, &SettingsStore::changed, &store, [&] {
+        ++changes;
+    });
     write(QStringLiteral("config.json"), "");
     store.reload();
     EXPECT_EQ(store.settings().window.padding, 9);
@@ -2657,4 +3881,372 @@ TEST_F(ConfigTest, AWriteRemakesAConfigDirectoryThatWasRemoved)
     ASSERT_TRUE(store.write(QStringLiteral("Window"), QStringLiteral("padding"), 11));
     EXPECT_EQ(QJsonDocument::fromJson(read(path)).object().value(QStringLiteral("Window")).toObject(),
               (QJsonObject{{QStringLiteral("padding"), 11}}));
+}
+
+// An empty file kept the settings while the backend's own last read was {}:
+// a file that stopped parsing next fell back to that, every default, and
+// turned scripts back on.
+TEST_F(ConfigTest, AFileThatStopsParsingAfterAnEmptySaveKeepsTheSettings)
+{
+    const QString path =
+        write(QStringLiteral("config.json"), R"({"Window": {"padding": 9}, "Scripts": {"enabled": false}})");
+    SettingsStore store(path);
+    write(QStringLiteral("config.json"), "");
+    store.reload();
+    ASSERT_EQ(store.settings().window.padding, 9);
+    write(QStringLiteral("config.json"), R"({"Window": )");
+    store.reload();
+    EXPECT_EQ(store.settings().window.padding, 9);
+    EXPECT_FALSE(store.settings().scripts);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("does not parse")));
+    // The file still cannot be replaced.
+    EXPECT_FALSE(store.write(QStringLiteral("Window"), QStringLiteral("padding"), 12));
+    EXPECT_EQ(read(path), QByteArray(R"({"Window": )"));
+    write(QStringLiteral("config.json"), R"({"Window": {"padding": 11}})");
+    store.reload();
+    EXPECT_EQ(store.settings().window.padding, 11);
+    EXPECT_TRUE(store.settings().scripts);
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+// The version stamp that a save adds is no setting: a file that held only it
+// and is empty now is a file with no settings, not a save in progress.
+TEST_F(ConfigTest, AnEmptiedFileThatHeldOnlyTheVersionIsEveryDefault)
+{
+    const QString path = write(QStringLiteral("config.json"), "{}");
+    SettingsStore store(path);
+    ASSERT_TRUE(store.write(QStringLiteral("Window"), QStringLiteral("padding"), 12));
+    ASSERT_TRUE(store.write(QStringLiteral("Window"), QStringLiteral("padding"), WindowSettings{}.padding));
+    ASSERT_EQ(QJsonDocument::fromJson(read(path)).object().keys(), QStringList{QStringLiteral("_version")});
+    write(QStringLiteral("config.json"), "\n");
+    store.reload();
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_TRUE(store.write(QStringLiteral("Window"), QStringLiteral("padding"), 13));
+    EXPECT_EQ(store.settings().window.padding, 13);
+}
+
+// The file may turn scripts and the control socket off: one that cannot be
+// read at the start must not turn them on.
+TEST_F(ConfigTest, AFileThatCannotBeReadAtTheStartKeepsScriptsAndControlOff)
+{
+    const QString path = write(QStringLiteral("config.json"), R"({"Scripts": {"enabled": false}, )");
+    SettingsStore store(path);
+    EXPECT_FALSE(store.settings().scripts);
+    EXPECT_FALSE(store.settings().control.enabled);
+    EXPECT_EQ(store.settings().window.padding, WindowSettings{}.padding);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("with Scripts.enabled and Control.enabled off")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
+    // The command line is the user's word, and wins.
+    QJsonObject overrides;
+    ASSERT_TRUE(SettingsStore::addOverride(overrides, QStringLiteral("Scripts.enabled=true")));
+    SettingsStore overridden(path, overrides);
+    EXPECT_TRUE(overridden.settings().scripts);
+    EXPECT_FALSE(overridden.settings().control.enabled);
+    // One that is no boolean says nothing: it must not read as the default on.
+    QJsonObject unclear;
+    ASSERT_TRUE(SettingsStore::addOverride(unclear, QStringLiteral("Scripts.enabled=maybe")));
+    ASSERT_TRUE(SettingsStore::addOverride(unclear, QStringLiteral("Control.enabled=2")));
+    SettingsStore unclearStore(path, unclear);
+    EXPECT_FALSE(unclearStore.settings().scripts);
+    EXPECT_FALSE(unclearStore.settings().control.enabled);
+    // It stays off, so the text must not say that it uses the default.
+    EXPECT_TRUE(
+        mentions(unclearStore.problems(), QStringLiteral("Scripts.enabled must be true or false. It stays off")))
+        << unclearStore.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_FALSE(
+        mentions(unclearStore.problems(), QStringLiteral("Scripts.enabled must be true or false. Using the default")));
+    // An editor that saves in place empties the file first: its text may
+    // still turn them off.
+    write(QStringLiteral("config.json"), "");
+    store.reload();
+    EXPECT_FALSE(store.settings().scripts);
+    EXPECT_FALSE(store.settings().control.enabled);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("is empty. Using the defaults, with Scripts.enabled")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
+    // It was read: only a file that holds a JSON object, or no file, ends the wait.
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("until it holds a JSON object. Delete it for the defaults")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_FALSE(mentions(store.problems(), QStringLiteral("does not parse")));
+    // The text of an unclear override fits the empty file as well.
+    unclearStore.reload();
+    EXPECT_FALSE(unclearStore.settings().scripts);
+    EXPECT_TRUE(
+        mentions(unclearStore.problems(), QStringLiteral("Scripts.enabled must be true or false. It stays off")))
+        << unclearStore.problems().join(QLatin1Char('\n')).toStdString();
+    // Text that parses but holds no object keeps them off.
+    write(QStringLiteral("config.json"), "[]");
+    store.reload();
+    EXPECT_FALSE(store.settings().scripts);
+    EXPECT_FALSE(store.settings().control.enabled);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("does not hold a JSON object")))
+        << store.problems().join(QLatin1Char('\n')).toStdString();
+    // An empty object ends the wait.
+    write(QStringLiteral("config.json"), "{}");
+    store.reload();
+    EXPECT_TRUE(store.settings().scripts);
+    EXPECT_TRUE(store.settings().control.enabled);
+    // Repaired: the file's own values.
+    write(QStringLiteral("config.json"), R"({"Window": {"padding": 9}})");
+    store.reload();
+    EXPECT_TRUE(store.settings().scripts);
+    EXPECT_TRUE(store.settings().control.enabled);
+    EXPECT_EQ(store.settings().window.padding, 9);
+    // Broken again later: the settings in use stay.
+    write(QStringLiteral("config.json"), "{");
+    store.reload();
+    EXPECT_TRUE(store.settings().scripts);
+    EXPECT_TRUE(store.settings().control.enabled);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Keeping the current settings")));
+}
+
+TEST_F(ConfigTest, PersistedReadsAValueAsReadDoes)
+{
+    const QString path = write(QStringLiteral("config.json"), R"({
+        "Shaders": {"window": "bloom", "pane": [" crt ", 5, "bloom"]},
+        "Window": {"padding": 6.7}
+    })");
+    SettingsStore store(path);
+    // A string where a list belongs is the default for read(), and so here.
+    EXPECT_TRUE(store.settings().shaders.window.isEmpty());
+    const QVariant window = store.persisted(QStringLiteral("Shaders"), QStringLiteral("window"));
+    EXPECT_EQ(window.typeId(), QMetaType::QVariantList);
+    EXPECT_TRUE(window.toList().isEmpty());
+    // An integer key drops the fraction, as read() does, and does not round.
+    EXPECT_EQ(store.settings().window.padding, 6);
+    EXPECT_EQ(store.persisted(QStringLiteral("Window"), QStringLiteral("padding")).toInt(), 6);
+    // A list keeps what the file holds: the caller skips what read() skips.
+    const QVariantList pane = store.persisted(QStringLiteral("Shaders"), QStringLiteral("pane")).toList();
+    ASSERT_EQ(pane.size(), 3);
+    EXPECT_NE(pane[1].typeId(), QMetaType::QString);
+    EXPECT_EQ(store.settings().shaders.pane, (QStringList{QStringLiteral("crt"), QStringLiteral("bloom")}));
+}
+
+TEST_F(ConfigTest, ShaderParamsOfAReferenceMustBeAnObject)
+{
+    SettingsStore store(write(QStringLiteral("config.json"),
+                              R"({"Shaders": {"params": {"bloom": {"strength": 0.5}, "crt": 3, "glow": [1]}}})"));
+    const QVariantMap params = store.settings().shaderParams;
+    EXPECT_TRUE(params.contains(QStringLiteral("bloom")));
+    EXPECT_FALSE(params.contains(QStringLiteral("crt")));
+    EXPECT_FALSE(params.contains(QStringLiteral("glow")));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Shaders.params.crt must be an object")));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Shaders.params.glow must be an object")));
+}
+
+TEST_F(ConfigTest, AFileTransferPasswordInAFileOthersCanReadIsReported)
+{
+    const QString path = write(QStringLiteral("config.json"), R"({"Terminal": {"fileTransferPassword": "secret"}})");
+    ASSERT_TRUE(QFile::setPermissions(
+        path, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ReadGroup | QFileDevice::ReadOther));
+    SettingsStore store(path);
+    EXPECT_EQ(store.settings().fileTransferPassword, QStringLiteral("secret"));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("other users can read it")));
+    ASSERT_TRUE(QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+    store.reload();
+    EXPECT_FALSE(mentions(store.problems(), QStringLiteral("other users can read it")));
+    // A password on the command line is not in the file.
+    const QString open = write(QStringLiteral("open.json"), "{}");
+    ASSERT_TRUE(QFile::setPermissions(open, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ReadOther));
+    QJsonObject overrides;
+    ASSERT_TRUE(SettingsStore::addOverride(overrides, QStringLiteral("Terminal.fileTransferPassword=secret")));
+    EXPECT_FALSE(mentions(SettingsStore(open, overrides).problems(), QStringLiteral("other users can read it")));
+}
+
+TEST_F(ConfigTest, EnvironmentNamesThatSettingsOrAfterglowSetAreNotUsed)
+{
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Terminal": {"env": {
+        "TERM": "dumb", "AFTERGLOW_SSH_TERMINFO": "fallback", "AFTERGLOW_SOCKET": "/tmp/x", "AFTERGLOW_OVERLAY": "1",
+        "AFTERGLOW_SESSION": "work", "EDITOR": "nvim", "AFTERGLOW_MINE": "x", "AFTERGLOW_ORIGINAL_ENV_SET": "1",
+        "AFTERGLOW_BASH_INJECT": "1", "AFTERGLOW_SHELL_INTEGRATION": "0"}}})"));
+    using Environment = std::vector<std::pair<std::string, std::string>>;
+    // AFTERGLOW_SHELL_INTEGRATION=0 turns shell integration off: the user's
+    // own name of the prefix, as docs/INPUT.md says.
+    EXPECT_EQ(store.settings().environment, (Environment{{"AFTERGLOW_SHELL_INTEGRATION", "0"}, {"EDITOR", "nvim"}}));
+    // The other names of the prefix are Afterglow's, as for
+    // Mux.updateEnvironment: shell integration and the daemon set, read and
+    // remove them for each pane.
+    for (const char* name : {"AFTERGLOW_MINE", "AFTERGLOW_ORIGINAL_ENV_SET", "AFTERGLOW_BASH_INJECT"}) {
+        EXPECT_TRUE(mentions(store.problems(),
+                             QStringLiteral("Terminal.env.%1 is not used. Afterglow keeps the names that start with "
+                                            "AFTERGLOW_ for itself")
+                                 .arg(QLatin1String(name))))
+            << name;
+    }
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.env.TERM is not used. Use Terminal.term")));
+    EXPECT_TRUE(mentions(store.problems(),
+                         QStringLiteral("Terminal.env.AFTERGLOW_SSH_TERMINFO is not used. Use Terminal.sshTerminfo")));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.env.AFTERGLOW_SOCKET is not used")));
+    // Afterglow sets AFTERGLOW_OVERLAY only for an overlay's program and
+    // AFTERGLOW_SESSION only in a pane of a mux session, and removes them in
+    // other panes: a value here would make a window pane claim an overlay
+    // (afterglow ssh reads it) or a mux session.
+    EXPECT_TRUE(mentions(store.problems(),
+                         QStringLiteral("Terminal.env.AFTERGLOW_OVERLAY is not used. Afterglow sets it for the "
+                                        "program of an overlay and removes it for other panes")));
+    EXPECT_TRUE(mentions(store.problems(),
+                         QStringLiteral("Terminal.env.AFTERGLOW_SESSION is not used. Afterglow sets it for each "
+                                        "pane of a mux session")));
+}
+
+TEST_F(ConfigTest, TheDividerWithoutAThemeFollowsTheConfigColors)
+{
+    SettingsStore light(
+        write(QStringLiteral("light.json"), R"({"Colors": {"background": "#ffffff", "foreground": "#000000"}})"));
+    EXPECT_EQ(light.settings().window.dividerColor,
+              AfterglowRender::packRgba(Themes::derivedDivider({0xff, 0xff, 0xff}, {0x00, 0x00, 0x00})));
+    SettingsStore defaults(write(QStringLiteral("defaults.json"), "{}"));
+    EXPECT_EQ(defaults.settings().window.dividerColor, WindowSettings{}.dividerColor);
+    SettingsStore set(
+        write(QStringLiteral("set.json"), R"({"Colors": {"divider": "#ff0000", "background": "#ffffff"}})"));
+    EXPECT_EQ(set.settings().window.dividerColor, AfterglowRender::packRgba(0xff, 0x00, 0x00));
+}
+
+TEST_F(ConfigTest, AConfigLinkWhoseTargetIsGoneIsCreatedAtTheTarget)
+{
+    const OpenUmask umask;
+    const QString target = m_home.filePath(QStringLiteral("dotfiles/afterglow.json"));
+    const QString link = m_home.filePath(QStringLiteral("linked/config.json"));
+    ASSERT_TRUE(QDir().mkpath(QFileInfo(link).absolutePath()));
+    ASSERT_TRUE(QFile::link(target, link));
+    SettingsStore store(link);
+    // PhosphorConfig cannot open the link, so it counts as a file that
+    // cannot be read: the target may turn scripts and control off.
+    EXPECT_FALSE(store.settings().scripts);
+    EXPECT_FALSE(store.settings().control.enabled);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("cannot be read")));
+    ASSERT_TRUE(store.ensureFile());
+    EXPECT_TRUE(QFileInfo(link).isSymLink());
+    EXPECT_TRUE(QFile::exists(target));
+    const auto others =
+        QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ReadOther | QFileDevice::WriteOther;
+    EXPECT_EQ(QFile::permissions(target) & others, QFileDevice::Permissions{});
+    ASSERT_TRUE(store.write(QStringLiteral("Window"), QStringLiteral("padding"), 11));
+    // The save goes through the link: it stays a link.
+    EXPECT_TRUE(QFileInfo(link).isSymLink());
+    EXPECT_TRUE(store.settings().scripts);
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_EQ(QJsonDocument::fromJson(read(target)).object().value(QStringLiteral("Window")).toObject(),
+              (QJsonObject{{QStringLiteral("padding"), 11}}));
+}
+
+// The watch of a link went with its target to the link's directory: a
+// target made again in its own directory was never seen.
+TEST_F(ConfigTest, AConfigLinkWhoseTargetComesBackReloads)
+{
+    const auto app = watchApplication();
+    ASSERT_TRUE(QDir().mkpath(m_home.filePath(QStringLiteral("dotfiles"))));
+    const QString target = write(QStringLiteral("dotfiles/config.json"), R"({"Window": {"padding": 9}})");
+    const QString link = m_home.filePath(QStringLiteral("linked/config.json"));
+    ASSERT_TRUE(QDir().mkpath(QFileInfo(link).absolutePath()));
+    ASSERT_TRUE(QFile::link(target, link));
+    SettingsStore store(link);
+    ASSERT_EQ(store.settings().window.padding, 9);
+    // A link without a target cannot be read (PhosphorConfig opens it), so
+    // the settings stay until the target comes back.
+    ASSERT_TRUE(QFile::remove(target));
+    EXPECT_TRUE(waitUntil([&] {
+        return mentions(store.problems(), QStringLiteral("cannot be read"));
+    }));
+    EXPECT_EQ(store.settings().window.padding, 9);
+    write(QStringLiteral("dotfiles/config.json"), R"({"Window": {"padding": 12}})");
+    EXPECT_TRUE(waitUntil([&] {
+        return store.settings().window.padding == 12;
+    }));
+}
+
+// Dotfile managers (Home Manager, stow, chezmoi) switch the link, or a
+// linked directory above the file, to a new target.
+TEST_F(ConfigTest, AConfigLinkOrALinkedDirectoryThatIsRetargetedReloads)
+{
+    const auto app = watchApplication();
+    for (const char* dir : {"one", "two", "three"})
+        ASSERT_TRUE(QDir().mkpath(m_home.filePath(QString::fromLatin1(dir))));
+    write(QStringLiteral("one/config.json"), R"({"Window": {"padding": 9}})");
+    write(QStringLiteral("two/config.json"), R"({"Window": {"padding": 12}})");
+    write(QStringLiteral("three/config.json"), R"({"Window": {"padding": 15}})");
+    // linked -> one, and config.json -> linked/config.json.
+    const QString linked = m_home.filePath(QStringLiteral("linked"));
+    const QString link = m_home.filePath(QStringLiteral("config.json"));
+    ASSERT_TRUE(QFile::link(m_home.filePath(QStringLiteral("one")), linked));
+    ASSERT_TRUE(QFile::link(linked + QStringLiteral("/config.json"), link));
+    SettingsStore store(link);
+    ASSERT_EQ(store.settings().window.padding, 9);
+    // As the tools switch a link: a new one renamed over the old.
+    const auto retarget = [&](const QString& path, const QString& target) {
+        const QString next = path + QStringLiteral(".next");
+        ASSERT_TRUE(QFile::link(target, next));
+        ASSERT_EQ(::rename(QFile::encodeName(next).constData(), QFile::encodeName(path).constData()), 0);
+    };
+    // A failed ASSERT in the lambda returns from the lambda only.
+    ASSERT_NO_FATAL_FAILURE(retarget(linked, m_home.filePath(QStringLiteral("two"))));
+    EXPECT_TRUE(waitUntil([&] {
+        return store.settings().window.padding == 12;
+    }));
+    ASSERT_NO_FATAL_FAILURE(retarget(link, m_home.filePath(QStringLiteral("three/config.json"))));
+    EXPECT_TRUE(waitUntil([&] {
+        return store.settings().window.padding == 15;
+    }));
+    // The new target is watched: an edit of it reloads.
+    write(QStringLiteral("three/config.json"), R"({"Window": {"padding": 18}})");
+    EXPECT_TRUE(waitUntil([&] {
+        return store.settings().window.padding == 18;
+    }));
+}
+
+// afterglow --config DIR/config.json takes DIR/themes, as it takes DIR/scripts.
+TEST_F(ConfigTest, ThemesComeFromBesideTheConfigFile)
+{
+    ASSERT_TRUE(QDir().mkpath(m_home.filePath(QStringLiteral("elsewhere/themes"))));
+    ASSERT_TRUE(QDir().mkpath(m_home.filePath(QStringLiteral("phosphor-works/afterglow/themes"))));
+    write(QStringLiteral("elsewhere/themes/mine.json"), R"({"foreground": "#102030"})");
+    write(QStringLiteral("phosphor-works/afterglow/themes/mine.json"), R"({"foreground": "#405060"})");
+    SettingsStore elsewhere(write(QStringLiteral("elsewhere/config.json"), R"({"Colors": {"theme": "mine"}})"));
+    EXPECT_TRUE(same(elsewhere.settings().terminal.defaultForeground, {0x10, 0x20, 0x30}));
+    const QStringList dirs = Themes::searchDirs(m_home.filePath(QStringLiteral("elsewhere")));
+    EXPECT_EQ(dirs.first(), m_home.filePath(QStringLiteral("elsewhere/themes")));
+    EXPECT_FALSE(dirs.contains(m_home.filePath(QStringLiteral("phosphor-works/afterglow/themes"))));
+    // The default config file has the user's own directory.
+    SettingsStore usual(
+        write(QStringLiteral("phosphor-works/afterglow/config.json"), R"({"Colors": {"theme": "mine"}})"));
+    EXPECT_TRUE(same(usual.settings().terminal.defaultForeground, {0x40, 0x50, 0x60}));
+}
+
+TEST_F(ConfigTest, ARelativeWorkingDirectoryIsReported)
+{
+    SettingsStore relative(write(QStringLiteral("relative.json"), R"({"Window": {"workingDirectory": "projects"}})"));
+    EXPECT_EQ(relative.settings().window.workingDirectory, QStringLiteral("inherit"));
+    EXPECT_TRUE(mentions(relative.problems(), QStringLiteral("must be an absolute path, ~, or start with ~/")));
+    for (const char* value : {"~/projects", "/srv/projects", "home", "~"}) {
+        SettingsStore store(
+            write(QStringLiteral("dir.json"), QByteArray(R"({"Window": {"workingDirectory": ")") + value + "\"}}"));
+        EXPECT_EQ(store.settings().window.workingDirectory, QString::fromLatin1(value));
+        EXPECT_TRUE(store.problems().isEmpty()) << value;
+    }
+}
+
+TEST_F(ConfigTest, ScriptCpuBudgetAndRemoteReadTextHaveDefaultsOverridesAndRanges)
+{
+    const auto path = write(QStringLiteral("cpu.json"), "{}");
+    const Settings defaults = SettingsStore(path).settings();
+    EXPECT_EQ(defaults.scriptCpuBudget, ScriptHost::DefaultCpuBudgetMs);
+    EXPECT_FALSE(defaults.control.allowRemoteReadText);
+    EXPECT_EQ(ScriptHost::CommandLimits{}.remoteReadText, defaults.control.allowRemoteReadText);
+    const Settings set =
+        SettingsStore(
+            path,
+            QJsonObject{{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("cpuBudget"), 100}}},
+                        {QStringLiteral("Control"), QJsonObject{{QStringLiteral("allowRemoteReadText"), true}}}})
+            .settings();
+    EXPECT_EQ(set.scriptCpuBudget, 100);
+    EXPECT_TRUE(set.control.allowRemoteReadText);
+    EXPECT_EQ(
+        SettingsStore(path, QJsonObject{{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("cpuBudget"), 1}}}})
+            .settings()
+            .scriptCpuBudget,
+        10);
+    EXPECT_EQ(
+        SettingsStore(path, QJsonObject{{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("cpuBudget"), 5000}}}})
+            .settings()
+            .scriptCpuBudget,
+        1000);
 }

@@ -7,11 +7,13 @@
 
 #include "Cli.h"
 #include "Commands.h"
+#include "Image.h"
 #include "Mime.h"
 #include "Tty.h"
 
 #include <AfterglowProto/Clipboard.h>
 #include <AfterglowProto/Fd.h>
+#include <AfterglowProto/Graphics.h>
 #include <AfterglowProto/Random.h>
 #include <AfterglowProto/Text.h>
 #include <AfterglowProto/TransferPath.h>
@@ -44,7 +46,7 @@ constexpr std::size_t MaxListed = 1024;
 // A password is a line of text.
 constexpr std::size_t MaxPassword = 64 * 1024;
 
-const Cli::Command command {
+const Cli::Command command{
     "clipboard",
     "[files to copy to or from]",
     "Read or write the system clipboard, also over SSH.",
@@ -57,40 +59,71 @@ const Cli::Command command {
     "  aglow clipboard --get-clipboard picture.png notes.txt\n"
     "  aglow clipboard --get-clipboard --mime . /dev/stdout\n"
     "\n"
+    "When a PNG is asked for and the clipboard holds none, aglow makes one from the first frame of another image "
+    "on it (TIFF, BMP, APNG, GIF, netPBM, WebP or JPEG), as kitten clipboard does.\n"
+    "\n"
     "The terminal can ask for permission before a program reads the clipboard. A terminal without OSC 5522 gets "
     "OSC 52, which carries plain text only.",
     {
-        { "--get-clipboard -g", Cli::Option::Kind::Flag, "", {},
-          "Write the contents of the clipboard to standard output, or to the files given. The terminal can ask "
-          "for permission first." },
-        { "--use-primary -p", Cli::Option::Kind::Flag, "", {},
-          "Use the primary selection rather than the clipboard, on systems that have one." },
-        { "--mime -m", Cli::Option::Kind::List, "", {},
-          "The MIME type of a file. Give it once for each file, in order, when the name does not tell the type. "
-          "When reading the clipboard, a wildcard matches types, so 'text/*' copies the first textual type. The "
-          "type . lists the types on the clipboard." },
-        { "--alias -a", Cli::Option::Kind::List, "", {},
-          "Two MIME types that mean the same data, as text/plain=text/x-rst. A write offers both types. A read "
-          "uses the other type when the first one is not on the clipboard. When the data has a textual type but "
-          "no text/plain, text/plain is added as an alias." },
-        { "--wait-for-completion", Cli::Option::Kind::Flag, "", {},
-          "Wait until the terminal has the data before exiting. This matters only for a terminal that gets OSC "
-          "52, in filter mode or with one text file. aglow always waits for the answer to an OSC 5522 write." },
-        { "--password", Cli::Option::Kind::String, "", {},
-          "A password for the clipboard. When the user accepts it, later requests with it need no permission in "
-          "this terminal. It is text:PASSWORD, fd:NUMBER (a file descriptor to read it from) or file:PATH. Give "
-          "--human-name as well." },
-        { "--human-name", Cli::Option::Kind::String, "", {},
-          "The name of the program that the terminal shows when it asks for permission." },
-        { "--detection-timeout", Cli::Option::Kind::Float, "10", {}, "Seconds to wait for the terminal's answer.",
-          0, 3600 },
+        {"--get-clipboard -g",
+         Cli::Option::Kind::Flag,
+         "",
+         {},
+         "Write the contents of the clipboard to standard output, or to the files given. The terminal can ask "
+         "for permission first."},
+        {"--use-primary -p",
+         Cli::Option::Kind::Flag,
+         "",
+         {},
+         "Use the primary selection rather than the clipboard, on systems that have one."},
+        {"--mime -m",
+         Cli::Option::Kind::List,
+         "",
+         {},
+         "The MIME type of a file. Give it once for each file, in order, when the name does not tell the type. "
+         "When reading the clipboard, a wildcard matches types, so 'text/*' copies the first textual type. The "
+         "type . lists the types on the clipboard."},
+        {"--alias -a",
+         Cli::Option::Kind::List,
+         "",
+         {},
+         "Two MIME types that mean the same data, as text/plain=text/x-rst. A write offers both types. A read "
+         "uses the other type when the first one is not on the clipboard. When the data has a textual type but "
+         "no text/plain, text/plain is added as an alias."},
+        {"--wait-for-completion",
+         Cli::Option::Kind::Flag,
+         "",
+         {},
+         "Wait until the terminal has the data before exiting. This matters only for a terminal that gets OSC "
+         "52, in filter mode or with one text file. aglow always waits for the answer to an OSC 5522 write."},
+        {"--password",
+         Cli::Option::Kind::String,
+         "",
+         {},
+         "A password for the clipboard. When the user accepts it, later requests with it need no permission in "
+         "this terminal. It is text:PASSWORD, fd:NUMBER (a file descriptor to read it from) or file:PATH. Give "
+         "--human-name as well."},
+        {"--human-name",
+         Cli::Option::Kind::String,
+         "",
+         {},
+         "The name of the program that the terminal shows when it asks for permission."},
+        {"--detection-timeout",
+         Cli::Option::Kind::Float,
+         "10",
+         {},
+         "Seconds to wait for the terminal's answer.",
+         0,
+         3600},
     },
 };
 
 // A MIME type as the protocol carries it: printable ASCII without spaces.
 bool typeName(std::string_view mime)
 {
-    return !mime.empty() && std::all_of(mime.begin(), mime.end(), [](char c) { return c > 0x20 && c < 0x7F; });
+    return !mime.empty() && std::all_of(mime.begin(), mime.end(), [](char c) {
+        return c > 0x20 && c < 0x7F;
+    });
 }
 
 bool textual(std::string_view mime)
@@ -101,8 +134,14 @@ bool textual(std::string_view mime)
 
 // Standard input as a source of data, and standard output and error as
 // places for it. Each name means only the stream that it names.
-bool inputStream(const std::string& arg) { return arg == "-" || arg == "/dev/stdin"; }
-bool outputStream(const std::string& arg) { return arg == "-" || arg == "/dev/stdout" || arg == "/dev/stderr"; }
+bool inputStream(const std::string& arg)
+{
+    return arg == "-" || arg == "/dev/stdin";
+}
+bool outputStream(const std::string& arg)
+{
+    return arg == "-" || arg == "/dev/stdout" || arg == "/dev/stderr";
+}
 
 // How a message names @p arg.
 std::string displayName(const std::string& arg, bool get)
@@ -137,7 +176,7 @@ std::string localPath(const std::string& arg)
 // larger fails with @p tooLarge.
 bool readInput(int fd, std::size_t limit, const std::string& tooLarge, std::string& out, std::string& error)
 {
-    struct stat st { };
+    struct stat st{};
     if (::fstat(fd, &st) != 0) {
         error = std::strerror(errno);
         return false;
@@ -214,7 +253,8 @@ bool readPassword(std::string spec, std::string& password, std::string& error)
     }
     std::string text;
     std::string reason;
-    if (!readInput(fd, MaxPassword, "it is larger than " + humanSize(MaxPassword) + ", the most that aglow takes", text, reason)) {
+    if (!readInput(fd, MaxPassword, "it is larger than " + humanSize(MaxPassword) + ", the most that aglow takes", text,
+                   reason)) {
         error = "Failed to read the password: " + reason;
         return false;
     }
@@ -255,21 +295,27 @@ public:
         m_tty.write("\x1b[?5522$p");
         m_tty.queryAttributes();
         bool supported = false;
-        const bool answered = wait([&](const Input& input) {
-            if (input.type != Input::Type::Csi) {
-                return Step::Ignore;
-            }
-            if (input.data.starts_with("?5522;") && input.data.ends_with("$y")) {
-                const char state = input.data.size() > 6 ? input.data[6] : '0';
-                supported = state != '0' && state != '4';
-                return Step::Ignore;
-            }
-            return input.data.starts_with('?') && input.data.ends_with('c') ? Step::Done : Step::Ignore;
-        }, error, Limit::Answer);
+        const bool answered = wait(
+            [&](const Input& input) {
+                if (input.type != Input::Type::Csi) {
+                    return Step::Ignore;
+                }
+                if (input.data.starts_with("?5522;") && input.data.ends_with("$y")) {
+                    const char state = input.data.size() > 6 ? input.data[6] : '0';
+                    supported = state != '0' && state != '4';
+                    return Step::Ignore;
+                }
+                return input.data.starts_with('?') && input.data.ends_with('c') ? Step::Done : Step::Ignore;
+            },
+            error, Limit::Answer);
         return answered && supported;
     }
 
-    enum class Step { Ignore, More, Done };
+    enum class Step {
+        Ignore,
+        More,
+        Done
+    };
     enum class Limit {
         Answer, ///< a query that every terminal answers at once: the timeout runs from the start
         Request, ///< a request the terminal may hold for a permission prompt: the timeout runs from its last packet
@@ -332,7 +378,41 @@ struct Output
     std::string mime;
     std::string remote;
     std::string data;
+    bool toPng = false; ///< remote is another image type, which aglow converts
 };
+
+// The image types that aglow can make a PNG of: the lossless ones first,
+// then WebP, which can be lossy, and JPEG, which is.
+constexpr std::string_view ConvertibleImages[] = {
+    "image/tiff",
+    "image/bmp",
+    "image/x-bmp",
+    "image/x-ms-bmp",
+    "image/apng",
+    "image/gif",
+    "image/x-portable-anymap",
+    "image/x-portable-pixmap",
+    "image/x-portable-graymap",
+    "image/x-portable-bitmap",
+    "image/x-portable-arbitrarymap",
+    "image/webp",
+    "image/jpeg",
+};
+
+// A PNG of the first frame of @p data, an image that aglow decodes in a
+// child process with its limits. Empty, with @p error set, when it cannot.
+std::string pngOf(std::string_view data, std::string& error)
+{
+    const auto image = decodeImage(data, AfterglowProto::GraphicsDefaultQuota, error, 1);
+    if (!image || image->frameCount() == 0) {
+        return {};
+    }
+    std::string png = encodePng(image->frame(0), image->width, image->height);
+    if (png.empty()) {
+        error = "no memory for the PNG";
+    }
+    return png;
+}
 
 // Once the terminal is restored, aglow has nothing left to undo: SIGINT,
 // SIGTERM and SIGHUP end it as they end a shell redirection, also while
@@ -340,8 +420,8 @@ struct Output
 // open(), so that Ctrl+C could not end it.
 void endOnSignals()
 {
-    for (const int number : { SIGINT, SIGTERM, SIGHUP }) {
-        struct sigaction current { };
+    for (const int number : {SIGINT, SIGTERM, SIGHUP}) {
+        struct sigaction current{};
         if (::sigaction(number, nullptr, &current) == 0 && current.sa_handler != SIG_IGN) {
             std::signal(number, SIG_DFL);
         }
@@ -447,11 +527,13 @@ int runClipboard(int argc, char** argv)
         const bool streamed = get ? outputStream(file.arg) : inputStream(file.arg);
         file.mime = i < mimes.size() ? mimes[i] : streamed ? "text/plain" : Mime::typeOfName(file.arg);
         if (file.mime.empty()) {
-            report("clipboard", "Could not detect the MIME type of " + displayName(file.arg, get) + ". Give it with --mime.");
+            report("clipboard",
+                   "Could not detect the MIME type of " + displayName(file.arg, get) + ". Give it with --mime.");
             return 1;
         }
         // A read takes "." and wildcards. Every type must be one that the protocol carries.
-        if (!typeName(file.mime) || (!get && (file.mime == "." || file.mime.find_first_of("*?[") != std::string::npos))) {
+        if (!typeName(file.mime)
+            || (!get && (file.mime == "." || file.mime.find_first_of("*?[") != std::string::npos))) {
             report("clipboard", printable(file.mime) + " is not a valid MIME type for " + displayName(file.arg, get));
             return 1;
         }
@@ -461,8 +543,10 @@ int runClipboard(int argc, char** argv)
         for (std::size_t i = 0; i < files.size(); ++i) {
             for (std::size_t j = 0; j < i; ++j) {
                 if (files[i].mime == files[j].mime) {
-                    report("clipboard", displayName(files[j].arg, get) + " and " + displayName(files[i].arg, get)
-                                            + " have the same MIME type " + files[i].mime + ". Give each a type of its own with --mime.");
+                    report("clipboard",
+                           displayName(files[j].arg, get) + " and " + displayName(files[i].arg, get)
+                               + " have the same MIME type " + files[i].mime
+                               + ". Give each a type of its own with --mime.");
                     return 1;
                 }
             }
@@ -487,7 +571,8 @@ int runClipboard(int argc, char** argv)
                 }
             }
             // A write carries at most MaxWrite bytes of all its types together.
-            const std::string limit = humanSize(ClipboardAssembler::MaxWrite) + ", the most that aglow copies at one time";
+            const std::string limit =
+                humanSize(ClipboardAssembler::MaxWrite) + ", the most that aglow copies at one time";
             const std::string tooLarge = total == 0 ? "it is larger than " + limit
                                                     : "with the inputs before it, the data is larger than " + limit;
             if (!readInput(fd, ClipboardAssembler::MaxWrite - total, tooLarge, file.data, error)) {
@@ -517,7 +602,9 @@ int runClipboard(int argc, char** argv)
     }
     if (!modern) {
         // OSC 52: plain text only.
-        const bool allText = std::all_of(files.begin(), files.end(), [](const Output& f) { return textual(f.mime) || f.mime == "."; });
+        const bool allText = std::all_of(files.begin(), files.end(), [](const Output& f) {
+            return textual(f.mime) || f.mime == ".";
+        });
         if (files.size() != 1 || !allText || files[0].mime == ".") {
             tty.restore();
             report("clipboard", "The terminal does not support OSC 5522, and OSC 52 carries a single text only");
@@ -530,9 +617,12 @@ int runClipboard(int argc, char** argv)
             tty.write(message.write());
             if (parsed->flag("wait-for-completion")) {
                 tty.queryAttributes();
-                session.wait([](const Input& input) {
-                    return input.type == Input::Type::Csi && input.data.ends_with('c') ? Session::Step::Done : Session::Step::Ignore;
-                }, error, Session::Limit::Answer);
+                session.wait(
+                    [](const Input& input) {
+                        return input.type == Input::Type::Csi && input.data.ends_with('c') ? Session::Step::Done
+                                                                                           : Session::Step::Ignore;
+                    },
+                    error, Session::Limit::Answer);
             }
             // The data is the terminal's only once it has taken all of it.
             if (!tty.restore() && error.empty()) {
@@ -549,25 +639,29 @@ int runClipboard(int argc, char** argv)
         tty.queryAttributes();
         std::string text;
         bool valid = false;
-        const bool ok = session.wait([&](const Input& input) {
-            if (input.type == Input::Type::Csi && input.data.starts_with('?') && input.data.ends_with('c')) {
-                return Session::Step::More;
-            }
-            if (input.type != Input::Type::Osc || !input.data.starts_with("52;")) {
-                return Session::Step::Ignore;
-            }
-            const auto reply = AfterglowProto::Osc52Message::parse(std::string_view(input.data).substr(3));
-            if (reply) {
-                valid = true;
-                text = reply->text;
-            }
-            return Session::Step::Done;
-        }, error, Session::Limit::Request);
+        const bool ok = session.wait(
+            [&](const Input& input) {
+                if (input.type == Input::Type::Csi && input.data.starts_with('?') && input.data.ends_with('c')) {
+                    return Session::Step::More;
+                }
+                if (input.type != Input::Type::Osc || !input.data.starts_with("52;")) {
+                    return Session::Step::Ignore;
+                }
+                const auto reply = AfterglowProto::Osc52Message::parse(std::string_view(input.data).substr(3));
+                if (reply) {
+                    valid = true;
+                    text = reply->text;
+                }
+                return Session::Step::Done;
+            },
+            error, Session::Limit::Request);
         tty.restore();
         if (!ok) {
-            report("clipboard", error.starts_with("Timed out")
-                                    ? "The terminal did not answer the OSC 52 read in time. It may not let programs read the clipboard."
-                                    : error);
+            report(
+                "clipboard",
+                error.starts_with("Timed out")
+                    ? "The terminal did not answer the OSC 52 read in time. It may not let programs read the clipboard."
+                    : error);
             return 1;
         }
         if (!valid) {
@@ -601,25 +695,29 @@ int runClipboard(int argc, char** argv)
             }
         }
         // The limits of a write, checked here: a terminal refuses a write that breaks them.
-        if (request.data.size() > ClipboardAssembler::MaxParts || request.aliases.size() > ClipboardAssembler::MaxParts) {
+        if (request.data.size() > ClipboardAssembler::MaxParts
+            || request.aliases.size() > ClipboardAssembler::MaxParts) {
             tty.restore();
-            report("clipboard", "A write takes at most " + std::to_string(ClipboardAssembler::MaxParts)
-                                    + " MIME types and as many aliases");
+            report("clipboard",
+                   "A write takes at most " + std::to_string(ClipboardAssembler::MaxParts)
+                       + " MIME types and as many aliases");
             return 1;
         }
         tty.write(AfterglowProto::clipboardWriteRequest(request));
         std::string status;
-        const bool ok = session.wait([&](const Input& input) {
-            if (input.type != Input::Type::Osc || !input.data.starts_with("5522;")) {
-                return Session::Step::Ignore;
-            }
-            const auto reply = ClipboardReply::parse(std::string_view(input.data).substr(5));
-            if (!reply || reply->type != "write" || reply->id != AfterglowProto::sanitizeId(request.id)) {
-                return Session::Step::Ignore;
-            }
-            status = reply->status;
-            return Session::Step::Done;
-        }, error, Session::Limit::Request);
+        const bool ok = session.wait(
+            [&](const Input& input) {
+                if (input.type != Input::Type::Osc || !input.data.starts_with("5522;")) {
+                    return Session::Step::Ignore;
+                }
+                const auto reply = ClipboardReply::parse(std::string_view(input.data).substr(5));
+                if (!reply || reply->type != "write" || reply->id != AfterglowProto::sanitizeId(request.id)) {
+                    return Session::Step::Ignore;
+                }
+                status = reply->status;
+                return Session::Step::Done;
+            },
+            error, Session::Limit::Request);
         tty.restore();
         if (!ok) {
             report("clipboard", error);
@@ -637,42 +735,46 @@ int runClipboard(int argc, char** argv)
     tty.drainOnRestore();
     request.kind = ClipboardRequest::Kind::Read;
     bool tooLarge = false;
-    auto read = [&](const std::vector<std::string>& types, std::map<std::string, std::string>& data, std::string& status) {
+    auto read = [&](const std::vector<std::string>& types, std::map<std::string, std::string>& data,
+                    std::string& status) {
         request.mimes = types;
         tty.write(AfterglowProto::clipboardReadRequest(request));
         std::size_t total = 0;
-        return session.wait([&](const Input& input) {
-            if (input.type != Input::Type::Osc || !input.data.starts_with("5522;")) {
-                return Session::Step::Ignore;
-            }
-            const auto reply = ClipboardReply::parse(std::string_view(input.data).substr(5));
-            if (!reply || reply->type != "read" || reply->id != AfterglowProto::sanitizeId(request.id)) {
-                return Session::Step::Ignore;
-            }
-            if (reply->status == "DATA") {
-                // Only the types asked for. Past what a terminal takes in a
-                // write the data is no clipboard, and the rest of it is read
-                // and dropped, so that none of it reaches the shell.
-                const bool wanted = std::find(types.begin(), types.end(), reply->mime) != types.end();
-                total += reply->data.size();
-                tooLarge |= total > ClipboardAssembler::MaxWrite;
-                if (wanted && !tooLarge) {
-                    data[reply->mime] += reply->data;
+        return session.wait(
+            [&](const Input& input) {
+                if (input.type != Input::Type::Osc || !input.data.starts_with("5522;")) {
+                    return Session::Step::Ignore;
                 }
-                return Session::Step::More;
-            }
-            if (reply->status == "OK") {
-                return Session::Step::More;
-            }
-            status = reply->status;
-            return Session::Step::Done;
-        }, error, Session::Limit::Request);
+                const auto reply = ClipboardReply::parse(std::string_view(input.data).substr(5));
+                if (!reply || reply->type != "read" || reply->id != AfterglowProto::sanitizeId(request.id)) {
+                    return Session::Step::Ignore;
+                }
+                if (reply->status == "DATA") {
+                    // Only the types asked for. Past what a terminal takes in a
+                    // write the data is no clipboard, and the rest of it is read
+                    // and dropped, so that none of it reaches the shell.
+                    const bool wanted = std::find(types.begin(), types.end(), reply->mime) != types.end();
+                    total += reply->data.size();
+                    tooLarge |= total > ClipboardAssembler::MaxWrite;
+                    if (wanted && !tooLarge) {
+                        data[reply->mime] += reply->data;
+                    }
+                    return Session::Step::More;
+                }
+                if (reply->status == "OK") {
+                    return Session::Step::More;
+                }
+                status = reply->status;
+                return Session::Step::Done;
+            },
+            error, Session::Limit::Request);
     };
     auto failed = [&](const std::string& status) {
         tty.restore();
         if (tooLarge) {
-            report("clipboard", "The clipboard holds more than " + humanSize(ClipboardAssembler::MaxWrite)
-                                    + ", the most that aglow reads");
+            report("clipboard",
+                   "The clipboard holds more than " + humanSize(ClipboardAssembler::MaxWrite)
+                       + ", the most that aglow reads");
         } else {
             report("clipboard", error.empty() ? statusError(status) : error);
         }
@@ -680,7 +782,7 @@ int runClipboard(int argc, char** argv)
     };
     std::map<std::string, std::string> listing;
     std::string status;
-    if (!read({ "." }, listing, status) || status != "DONE" || tooLarge) {
+    if (!read({"."}, listing, status) || status != "DONE" || tooLarge) {
         return failed(status);
     }
     std::vector<std::string> available;
@@ -706,7 +808,9 @@ int runClipboard(int argc, char** argv)
             file.remote = ".";
             continue;
         }
-        auto has = [&](const std::string& mime) { return listed.contains(mime); };
+        auto has = [&](const std::string& mime) {
+            return listed.contains(mime);
+        };
         if (has(file.mime)) {
             file.remote = file.mime;
         }
@@ -724,9 +828,20 @@ int runClipboard(int argc, char** argv)
         if (file.remote.empty() && textual(file.mime) && has("text/plain")) {
             file.remote = "text/plain";
         }
+        // A PNG from another image, as kitten clipboard makes one.
+        if (file.remote.empty() && file.mime == "image/png") {
+            for (const auto type : ConvertibleImages) {
+                if (has(std::string(type))) {
+                    file.remote = type;
+                    file.toPng = true;
+                    break;
+                }
+            }
+        }
         if (file.remote.empty()) {
             tty.restore();
-            report("clipboard", "The MIME type " + file.mime + " for " + displayName(file.arg, get) + " is not on the clipboard");
+            report("clipboard",
+                   "The MIME type " + file.mime + " for " + displayName(file.arg, get) + " is not on the clipboard");
             return 1;
         }
         if (std::find(wanted.begin(), wanted.end(), file.remote) == wanted.end()) {
@@ -753,7 +868,16 @@ int runClipboard(int argc, char** argv)
             for (const auto& mime : available) {
                 file.data += mime + "\n";
             }
-        } else if (const auto it = data.find(file.remote); it != data.end()) {
+        } else if (const auto it = data.find(file.remote); it != data.end() && file.toPng) {
+            file.data = pngOf(it->second, error);
+            if (file.data.empty()) {
+                report("clipboard",
+                       "Could not make a PNG of the " + file.remote + " on the clipboard for "
+                           + displayName(file.arg, get) + ": " + error);
+                code = 1;
+                continue;
+            }
+        } else if (it != data.end()) {
             file.data = it->second;
         } else {
             report("clipboard", "No data for " + displayName(file.arg, get) + " with MIME type " + file.mime);

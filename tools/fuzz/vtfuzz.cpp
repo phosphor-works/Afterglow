@@ -7,21 +7,30 @@
 // control records that do what the application does between reads: resize
 // (odd cell sizes and very large grids too), scroll the viewport, copy a
 // selection, search the text as the search bar does, advance animations,
-// reset, clear, read text, reload options, end the program, change
-// visibility, encode a paste, and read the images as the renderer does.
+// reset, clear, read text, reload options (the replica's view options too),
+// end the program, change visibility, encode a paste, and read the images as
+// the renderer does. The host that supports everything answers aglow's remote
+// socket query too, decodes iTerm2 animations, and asks before a download,
+// which a control record answers or stops. One
+// record gives the rest of the input to the reader of the mux state codec
+// (StateSync.h), as a frame for a fresh replica.
 //
 //   clang++ -std=c++20 -g -O1 -fsanitize=fuzzer,address,undefined ...
 
 #include <AfterglowVt/Input.h>
 #include <AfterglowVt/Selection.h>
+#include <AfterglowVt/StateSync.h>
 #include <AfterglowVt/Terminal.h>
 #include <AfterglowVt/TextSearch.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -32,16 +41,64 @@ struct Host : AfterglowVt::ITerminalHost
 {
     bool permissive = false;
 
-    void writeToPty(std::string_view) override { }
-    bool requestResize(int, int) override { return permissive; }
+    /// A remote socket reply reads back as the answer that remoteSocket()
+    /// gave for it: the path with a control byte must have become error=off.
+    void writeToPty(std::string_view bytes) override
+    {
+        constexpr std::string_view Introducer = "\x1b]24569;";
+        if (!bytes.starts_with(Introducer)) {
+            return;
+        }
+        const std::size_t end = bytes.ends_with('\x07') ? bytes.size() - 1 : bytes.size() - 2;
+        const auto answer =
+            AfterglowProto::Remote::parseReply(bytes.substr(Introducer.size(), end - Introducer.size()));
+        const auto expected = std::exchange(expectedReply, std::nullopt);
+        if (!answer || !expected || *answer != *expected) {
+            __builtin_trap();
+        }
+    }
+    bool requestResize(int, int) override
+    {
+        return permissive;
+    }
     bool screenSize(int& width, int& height) override
     {
         width = 1920;
         height = 1080;
         return permissive;
     }
-    bool clipboardRequest(const AfterglowVt::ClipboardRequest&) override { return permissive; }
-    std::string notificationCapabilities() override { return permissive ? "a=focus,report:o=always:p=title,body" : ""; }
+    bool clipboardRequest(const AfterglowVt::ClipboardRequest&) override
+    {
+        return permissive;
+    }
+    /// The answers of a pane with remote commands, in turn: a socket path, a
+    /// reason for none, and a path the reply must refuse (a control byte).
+    std::optional<AfterglowProto::Remote::Answer> remoteSocket() override
+    {
+        using AfterglowProto::Remote::Error;
+        if (!permissive) {
+            return std::nullopt;
+        }
+        switch (remoteAnswers++ % 3) {
+        case 0:
+            expectedReply =
+                AfterglowProto::Remote::Answer{"/run/user/1000/afterglow/0123456789abcdef.sock", Error::Off};
+            return expectedReply;
+        case 1:
+            expectedReply = AfterglowProto::Remote::Answer{{}, Error::Forward};
+            return expectedReply;
+        default:
+            expectedReply = AfterglowProto::Remote::Answer{{}, Error::Off};
+            return AfterglowProto::Remote::Answer{"/tmp/a\x1b]2;x\x07.sock", Error::Off};
+        }
+    }
+    unsigned remoteAnswers = 0;
+    /// What the reply to the last answer must parse back to.
+    std::optional<AfterglowProto::Remote::Answer> expectedReply;
+    std::string notificationCapabilities() override
+    {
+        return permissive ? "a=focus,report:o=always:p=title,body" : "";
+    }
     bool decodeImage(std::string_view, std::uint32_t& width, std::uint32_t& height,
                      std::vector<std::uint8_t>& rgba) override
     {
@@ -57,6 +114,36 @@ struct Host : AfterglowVt::ITerminalHost
                    std::vector<std::uint8_t>& rgba) override
     {
         return decodeImage(png, width, height, rgba);
+    }
+    /// An animation for an iTerm2 image of an even length: three frames, of
+    /// no time, a short one and one past INT_MAX, which the terminal bounds.
+    bool decodeImageFrames(std::string_view data, std::size_t maxBytes, std::vector<AfterglowVt::ImageFrame>& frames,
+                           std::vector<std::uint32_t>& delays) override
+    {
+        if (!permissive || data.size() % 2 == 1) {
+            return ITerminalHost::decodeImageFrames(data, maxBytes, frames, delays);
+        }
+        for (const std::uint32_t delay : {0u, 50u, 0xffffffffu}) {
+            if ((frames.size() + 1) * 16 > maxBytes)
+                break;
+            AfterglowVt::ImageFrame frame;
+            frame.width = 2;
+            frame.height = 2;
+            frame.rgba.assign(16, std::uint8_t(0x40 * (frames.size() + 1)));
+            frames.push_back(std::move(frame));
+            delays.push_back(delay);
+        }
+        return !frames.empty();
+    }
+    /// A permissive host asks before a download, as a window does: the
+    /// terminal holds the output until a control record answers.
+    bool downloadBegin(std::string_view, std::int64_t) override
+    {
+        return permissive;
+    }
+    bool downloadData(std::string_view) override
+    {
+        return true;
     }
 };
 
@@ -88,6 +175,228 @@ void checkPaste(std::string_view text, bool bracketed)
     }
 }
 
+/// A replica's host, and the host of the terminal that the replica copies:
+/// neither has a program to answer.
+struct QuietHost : AfterglowVt::ITerminalHost
+{
+    void writeToPty(std::string_view) override
+    {
+    }
+};
+
+/// As a window's session pane does after each frame: the replica animates
+/// its images on its own clock, and the renderer draws them. The window
+/// reads it too: a click on the command line, the command of a row, the
+/// text with its styles. The marks and regions there came from the frame.
+void showReplica(AfterglowVt::Terminal& replica)
+{
+    for (const std::uint64_t now : {std::uint64_t(1000), std::uint64_t(1100), std::uint64_t(5000)}) {
+        (void)replica.advanceAnimations(now);
+    }
+    const auto placements = replica.graphics().visible(replica.screen(), 8, 16, 1);
+    for (const auto& placement : replica.graphics().placements()) {
+        if (placement.isVirtual)
+            (void)replica.graphics().placeholderSlice(placement.imageId, 0, 0, 0, 0, 0, 8, 16);
+    }
+    (void)placements;
+    const int cols = replica.cols();
+    const int rows = replica.rows();
+    for (const auto& [x, y] : {std::pair{0, 0}, std::pair{cols - 1, rows - 1}, std::pair{cols / 2, rows / 2},
+                               std::pair{replica.screen().cursor.x, replica.screen().cursor.y}}) {
+        (void)replica.promptClickInput(x, y);
+    }
+    const AfterglowVt::Screen& s = replica.primaryScreen();
+    const std::uint64_t first = s.rowsDropped();
+    const std::uint64_t last = first + s.totalRows() - 1;
+    (void)replica.commandOutputAt(first);
+    (void)replica.commandOutputAt(last);
+    (void)replica.firstCommandOutputIn(first, last);
+    for (const auto& region : replica.semanticRegions()) {
+        (void)replica.commandOutputAt(region.start.row);
+        (void)replica.commandOutputAt(region.end.row);
+    }
+    AfterglowVt::TextFormat format;
+    format.ansi = true;
+    format.wrapMarkers = true;
+    format.cursor = true;
+    using Scope = AfterglowVt::Terminal::TextScope;
+    for (const Scope scope : {Scope::Screen, Scope::All, Scope::LastOutput}) {
+        const std::string text = replica.text(scope, 97, nullptr, format);
+        if (text.size() > 97) {
+            __builtin_trap();
+        }
+    }
+}
+
+/// @p frame to the StateReader of a fresh replica, as a window applies what a
+/// session sends. A refused frame must leave the reader able to take the first
+/// frame of a writer that starts over, since that is how a window recovers
+/// (StateSyncTest's ReaderRefusesBrokenFrames).
+void checkStateFrame(std::string_view frame, int cols, int rows, std::size_t scrollback)
+{
+    QuietHost replicaHost;
+    AfterglowVt::TerminalOptions opts;
+    opts.maxScrollback = scrollback;
+    AfterglowVt::Terminal replica(cols, rows, replicaHost, opts);
+    AfterglowVt::StateReader reader;
+    std::string error;
+    if (reader.apply(replica, frame, &error)) {
+        showReplica(replica);
+        return;
+    }
+    QuietHost sourceHost;
+    AfterglowVt::TerminalOptions sourceOpts;
+    sourceOpts.maxScrollback = 10;
+    AfterglowVt::Terminal source(20, 4, sourceHost, sourceOpts);
+    source.feed("\x1b[31mred\x1b[0m\r\nmore");
+    AfterglowVt::StateWriter writer;
+    if (!reader.apply(replica, writer.update(source, 1 << 20), &error)) {
+        __builtin_trap();
+    }
+    using Scope = AfterglowVt::Terminal::TextScope;
+    if (replica.text(Scope::Screen) != source.text(Scope::Screen)) {
+        __builtin_trap();
+    }
+}
+
+/// A replica of the fuzzed terminal, as a window of a session keeps one:
+/// a frame of the writer after each control record, so that images are
+/// replaced and dropped while their pixels go. Some frames are held, as for
+/// a pane that nobody sees, and some mark the text, as a read does. Each
+/// frame that a writer makes must apply.
+struct Mirror
+{
+    QuietHost host;
+    AfterglowVt::Terminal replica;
+    AfterglowVt::StateWriter writer;
+    AfterglowVt::StateReader reader;
+
+    explicit Mirror(const AfterglowVt::TerminalOptions& options)
+        : replica(20, 8, host, options)
+    {
+    }
+
+    /// Small frames for a small screen, with config's scrollback bits, so
+    /// that rows, history and images wait. A screen of thousands of cells at
+    /// that budget takes thousands of frames, too slow an input to fuzz.
+    static std::size_t budget(const AfterglowVt::Terminal& source, bool small)
+    {
+        const bool smallScreen = std::size_t(source.cols()) * std::size_t(source.rows()) <= 4096;
+        return small && smallScreen ? 4096 : std::size_t(1) << 20;
+    }
+
+    void step(const AfterglowVt::Terminal& source, bool small, bool held, bool mark)
+    {
+        if (mark) {
+            writer.markText();
+            marked = true;
+            markWanted = true;
+        }
+        // A held frame leaves the mark for the next update().
+        if (!held) {
+            takeMark(source);
+        }
+        std::string error;
+        const std::string frame = held ? writer.updateHeld(source) : writer.update(source, budget(source, small));
+        if (!reader.apply(replica, frame, &error)) {
+            __builtin_trap();
+        }
+        checkMark(source);
+    }
+
+    /// The rows of the main screen that the next update() marks: its history
+    /// and the rows that are visible then, in stable ids.
+    void takeMark(const AfterglowVt::Terminal& source)
+    {
+        if (!markWanted) {
+            return;
+        }
+        markWanted = false;
+        markChecked = false;
+        const AfterglowVt::Screen& s = source.primaryScreen();
+        markFloor = s.rowsDropped();
+        markLast = s.rowsDropped() + s.historySize() + std::uint64_t(s.rows()) - 1;
+        markEpoch = s.layoutEpoch();
+    }
+
+    /// Once textMarked() turns true, also while newer rows wait: the replica
+    /// has every row of the mark, unless a reflow or a reset numbered the
+    /// rows anew since, or the replica's history let them go.
+    void checkMark(const AfterglowVt::Terminal& source)
+    {
+        if (markChecked || !writer.textMarked()) {
+            return;
+        }
+        markChecked = true;
+        if (source.primaryScreen().layoutEpoch() != markEpoch) {
+            return;
+        }
+        const std::uint64_t first = std::max(markFloor, replica.primaryScreen().rowsDropped());
+        if (first <= markLast && !reader.received(first, markLast)) {
+            __builtin_trap();
+        }
+    }
+
+    bool marked = false; ///< markText() ran
+    bool markWanted = false; ///< the next update() takes the mark
+    bool markChecked = true;
+    std::uint64_t markFloor = 0;
+    std::uint64_t markLast = 0;
+    std::uint64_t markEpoch = 0;
+
+    /// The rest, then the replica shows what the source does.
+    void finish(const AfterglowVt::Terminal& source, bool small)
+    {
+        int guard = 0;
+        for (; guard < 4096; ++guard) {
+            takeMark(source);
+            const std::string frame = writer.update(source, budget(source, small));
+            if (frame.empty() && !writer.pending())
+                break;
+            std::string error;
+            if (!reader.apply(replica, frame, &error)) {
+                __builtin_trap();
+            }
+            checkMark(source);
+        }
+        // A writer that never catches up, at a budget that its content fits
+        // many times over, is stuck.
+        if (guard == 4096 && budget(source, small) > 4096) {
+            __builtin_trap();
+        }
+        using Scope = AfterglowVt::Terminal::TextScope;
+        if (guard < 4096 && replica.text(Scope::Screen) != source.text(Scope::Screen)) {
+            __builtin_trap();
+        }
+        // The shell's facts, which a window's pane objects and an agent's
+        // runs read from the replica.
+        if (guard < 4096
+            && (replica.shellState() != source.shellState() || replica.lastExitCode() != source.lastExitCode()
+                || replica.lastPromptId() != source.lastPromptId()
+                || replica.semanticRegions().size() != source.semanticRegions().size())) {
+            __builtin_trap();
+        }
+        // Nothing waits: the text of any mark went.
+        if (guard < 4096 && marked && !writer.textMarked()) {
+            __builtin_trap();
+        }
+        if (guard < 4096) {
+            for (const bool alternate : {false, true}) {
+                const auto& a = source.graphics(alternate).images();
+                const auto& b = replica.graphics(alternate).images();
+                if (a.size() != b.size())
+                    __builtin_trap();
+                for (const auto& [id, image] : a) {
+                    const auto it = b.find(id);
+                    if (it == b.end() || it->second.frames.size() != image.frames.size())
+                        __builtin_trap();
+                }
+            }
+        }
+        showReplica(replica);
+    }
+};
+
 } // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size)
@@ -113,9 +422,13 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     AfterglowVt::Terminal t(20, 8, host, opts);
     t.resize(20, 8, 8, 16);
     std::uint64_t now = 0;
+    Mirror mirror(opts);
+    const bool smallFrames = (config & 0x18) != 0;
 
     // 0xFF introduces a control record: [0xFF, op, a, b]. Op 13 feeds a raw
     // 0xFF, which the record marker would otherwise keep out of the stream.
+    // Op 11 with bit 4 set ends the stream: the rest of the input, 0xFF bytes
+    // included, is a state frame.
     std::size_t start = 0;
     for (std::size_t i = 0; i < size; ++i) {
         if (data[i] != 0xFF || i + 3 >= size) {
@@ -195,6 +508,10 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             o.graphicsQuota = std::size_t(1 + b) << 16;
             o.graphicsFileTransfer = (a & 0x20) != 0;
             t.setOptions(o);
+            // The window's replica takes the view options at once, and its
+            // daemon then sends no more history than the replica keeps.
+            mirror.replica.setViewOptions(o);
+            mirror.writer.setReplicaHistory(o.maxScrollback);
             break;
         }
         case 8:
@@ -204,9 +521,23 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             t.programExited();
             break;
         case 10:
-            t.setVisible((a & 1) != 0);
+            // The answer to a download's question, or a stop, as the window
+            // gives them, else a change of visibility.
+            if ((op / 16) & 1) {
+                t.answerDownload((a & 1) != 0);
+            } else if ((op / 16) & 2) {
+                t.stopDownload();
+            } else {
+                t.setVisible((a & 1) != 0);
+            }
             break;
         case 11: {
+            if ((op / 16) & 1) {
+                // An a by b replica, with the scrollback of bits 5-6.
+                checkStateFrame(std::string_view(reinterpret_cast<const char*>(data + i + 4), size - (i + 4)),
+                                1 + a % 60, 1 + b % 30, Scrollbacks[(op / 32) & 3]);
+                return 0;
+            }
             // The next chunk as a paste.
             std::size_t end = i + 4;
             while (end < size && data[end] != 0xFF) {
@@ -245,11 +576,18 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             t.setViewportOffset(std::size_t(a) * 4);
             break;
         }
+        // A quarter of the frames held, and an eighth marking the text, from
+        // bits of different bytes: a mark can come with a held frame, and
+        // wait for the update() after it.
+        mirror.step(t, smallFrames, (b >> 6) == 3, (a >> 5) == 5);
         start = i + 4;
         i += 3;
     }
     if (start < size) {
         t.feed(std::string_view(reinterpret_cast<const char*>(data + start), size - start));
     }
+    // The codec carries no viewport: the replica's shows the live rows.
+    t.resetViewport();
+    mirror.finish(t, smallFrames);
     return 0;
 }

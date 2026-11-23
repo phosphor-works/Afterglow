@@ -11,8 +11,9 @@
 
 namespace AfterglowProto {
 
-/// SHA-256 (FIPS 180-4), for the protocol values that kitty defines with it:
-/// the file transfer password hash and the drag and drop machine ID.
+/// SHA-256 (FIPS 180-4), for the protocol values that kitty defines with it
+/// (the file transfer password hash and the drag and drop machine ID), and
+/// for the keyed hash of the machine ID in the name of the mux state socket.
 class Sha256
 {
 public:

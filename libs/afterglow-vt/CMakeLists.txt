@@ -6,6 +6,7 @@ add_library(AfterglowVt SHARED
     src/ITerm2.cpp
     src/ShellContext.cpp
     src/Input.cpp
+    src/KeyNames.cpp
     src/Notifications.cpp
     src/ProgramStatus.cpp
     src/Screen.cpp
@@ -13,6 +14,7 @@ add_library(AfterglowVt SHARED
     src/Search.cpp
     src/Selection.cpp
     src/Sixel.cpp
+    src/StateSync.cpp
     src/Style.cpp
     src/Terminal.cpp
     src/Unicode.cpp
@@ -30,10 +32,12 @@ target_include_directories(AfterglowVt PUBLIC
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PCRE2 REQUIRED IMPORTED_TARGET libpcre2-32)
 # The wire formats of the protocols the terminal parses: images, clipboard,
-# base64, the text checks, and the command limits of drag and drop and file
-# transfer. PUBLIC, because the public headers include them: Terminal.h holds
-# a ClipboardAssembler from AfterglowProto/Clipboard.h, and Graphics.h keeps
-# the pending transmission's GraphicsCommand from AfterglowProto/Graphics.h.
+# base64, the text checks, the command limits of drag and drop and file
+# transfer, and the remote socket query of aglow. PUBLIC, because the public
+# headers include them: Terminal.h holds a ClipboardAssembler from
+# AfterglowProto/Clipboard.h and its host answers the OSC 24569 query with a
+# Remote::Answer from AfterglowProto/RemoteOsc.h, and Graphics.h keeps the
+# pending transmission's GraphicsCommand from AfterglowProto/Graphics.h.
 target_link_libraries(AfterglowVt PUBLIC Afterglow::Proto PRIVATE PkgConfig::PCRE2)
 # XTVERSION reports the project's version. A generated header, not a compile
 # definition, so tools/fuzz, which compiles these sources itself, has it too.
@@ -44,8 +48,15 @@ file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/include/AfterglowVt/afterglowv
 # functions: let calls inside the library go straight to their targets (no
 # PLT, nothing interposes them) and be inlined across files.
 target_compile_options(AfterglowVt PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-fno-semantic-interposition>)
+# CMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF turns it off here too, as for every
+# other target. The aglow_only_build test does so: GCC's -flto=auto runs a job
+# for each processor under a build tool that offers no jobserver, beyond the
+# jobs that ctest counts for the test.
 include(CheckIPOSupported)
 check_ipo_supported(RESULT AFTERGLOW_VT_IPO LANGUAGES CXX)
+if(DEFINED CMAKE_INTERPROCEDURAL_OPTIMIZATION AND NOT CMAKE_INTERPROCEDURAL_OPTIMIZATION)
+    set(AFTERGLOW_VT_IPO OFF)
+endif()
 if(AFTERGLOW_VT_IPO)
     set_target_properties(AfterglowVt PROPERTIES
         INTERPROCEDURAL_OPTIMIZATION_RELEASE ON
@@ -55,7 +66,8 @@ endif()
 set_target_properties(AfterglowVt PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR}
-    AUTOMOC OFF)
+    AUTOMOC OFF
+    AUTOUIC OFF)
 
 if(BUILD_TESTING)
     add_subdirectory(tests)

@@ -18,15 +18,24 @@ namespace {
 struct StatusHost : RecordingHost
 {
     int changes = 0;
-    void programStatusChanged() override { ++changes; }
+    void programStatusChanged() override
+    {
+        ++changes;
+    }
 };
 
 struct Term
 {
     StatusHost host;
     Terminal t{20, 5, host};
-    void feed(std::string_view s) { t.feed(s); }
-    const std::vector<StatusRecord>& records() const { return t.programStatus().records(); }
+    void feed(std::string_view s)
+    {
+        t.feed(s);
+    }
+    const std::vector<StatusRecord>& records() const
+    {
+        return t.programStatus().records();
+    }
 };
 
 } // namespace
@@ -123,7 +132,9 @@ TEST(ProgramStatus, TitleIsCheckedLikeMsg)
     for (const std::string& bad : {
              "state=done:title=" + base64Encode(std::string(193, 'x')), // over 256 encoded bytes
              "state=done:title=" + base64Encode("a\nb"),
-             "state=done:msg=" + base64Encode("ok\xe2\x80\xa8" "Approve? Press y"), // U+2028
+             "state=done:msg="
+                 + base64Encode("ok\xe2\x80\xa8"
+                                "Approve? Press y"), // U+2028
          }) {
         t.feed("\x1b]7501;" + bad + "\x1b\\");
         EXPECT_EQ(t.records()[0].serial, serial) << bad;
@@ -189,7 +200,9 @@ TEST(ProgramStatus, PromptAndExitEndActivityButKeepResults)
     // Screens do not matter; RIS clears everything.
     t.feed("\x1b[?1049h\x1b[?1049l");
     EXPECT_EQ(t.records().size(), 2u);
-    t.feed("\x1b" "c");
+    t.feed(
+        "\x1b"
+        "c");
     EXPECT_TRUE(t.records().empty());
 }
 
@@ -260,8 +273,9 @@ TEST(ProgramStatus, RecordCapEvictsTheLeastRecentlyUpdated)
     }
     EXPECT_FALSE(hasFirst);
     EXPECT_TRUE(hasLast);
-    EXPECT_TRUE(std::is_sorted(t.records().begin(), t.records().end(),
-                               [](const auto& a, const auto& b) { return a.id < b.id; }));
+    EXPECT_TRUE(std::is_sorted(t.records().begin(), t.records().end(), [](const auto& a, const auto& b) {
+        return a.id < b.id;
+    }));
 }
 
 TEST(ProgramStatus, InvalidNativeReportDoesNotDisableLegacy)
@@ -271,7 +285,8 @@ TEST(ProgramStatus, InvalidNativeReportDoesNotDisableLegacy)
     EXPECT_TRUE(status.applyLegacyProgress(1, 40));
     EXPECT_EQ(status.apply("state=working:msg=invalid!"), ProgramStatus::Result::Ignored);
     EXPECT_TRUE(status.applyLegacyProgress(1, 50));
-    for (int i = 0; i < 300; ++i) status.apply("state=working:id=" + std::to_string(i));
+    for (int i = 0; i < 300; ++i)
+        status.apply("state=working:id=" + std::to_string(i));
     EXPECT_EQ(status.records().size(), ProgramStatus::MaxRecords);
 }
 
@@ -284,7 +299,9 @@ TEST(ProgramStatus, RecordCapEvictsByUpdateNotByCreation)
     status.apply("state=done:id=r0"); // r0 is now the most recent
     status.apply("state=working:id=r256");
     auto has = [&](std::string_view id) {
-        return std::any_of(status.records().begin(), status.records().end(), [&](const auto& r) { return r.id == id; });
+        return std::any_of(status.records().begin(), status.records().end(), [&](const auto& r) {
+            return r.id == id;
+        });
     };
     EXPECT_TRUE(has("r0"));
     EXPECT_FALSE(has("r1"));

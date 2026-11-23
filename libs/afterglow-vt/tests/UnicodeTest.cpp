@@ -36,10 +36,21 @@ TEST(Unicode, Widths)
     EXPECT_EQ(props(U'­').width, 1); // soft hyphen
     EXPECT_EQ(props(U'ᅠ').width, 0); // Hangul medial vowel filler
     EXPECT_TRUE(props(U'❤').widensWithVs16);
+    EXPECT_TRUE(props(U'\U0001F600').narrowsWithVs15);
+    EXPECT_TRUE(props(U'⌚').narrowsWithVs15);
+    EXPECT_FALSE(props(U'❤').narrowsWithVs15); // narrow already
+    EXPECT_TRUE(props(U'〰').narrowsWithVs15); // wide, text presentation by default
+    EXPECT_FALSE(props(U'中').narrowsWithVs15); // wide, but no emoji
+    EXPECT_FALSE(props(U'\U0001F1EF').narrowsWithVs15); // a regional indicator
+    EXPECT_EQ(props(U'\U00018E00').width, 2); // wide since Unicode 18
+    EXPECT_EQ(props(U'\u0600').width, 1); // a prepended concatenation mark, as in glibc
+    EXPECT_EQ(props(U'\U000110BD').width, 1);
+    EXPECT_EQ(props(U'\u200B').width, 0); // other format characters stay zero width
+    EXPECT_EQ(props(U'\u093E').width, 1); // a spacing mark, as in glibc
     // Past the last code point: the replacement character's width.
     EXPECT_EQ(props(char32_t(0x110000)).width, props(ReplacementCharacter).width);
     EXPECT_EQ(props(char32_t(0xFFFFFFFF)).width, props(ReplacementCharacter).width);
-    EXPECT_STREQ(ucdVersion(), "17.0.0");
+    EXPECT_STREQ(ucdVersion(), "18.0.0");
 }
 
 TEST(Unicode, EastAsianAmbiguous)

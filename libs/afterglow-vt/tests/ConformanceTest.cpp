@@ -3,7 +3,9 @@
 
 // The VT features esctest exercises, checked without the suite: reports and
 // queries, rectangles, column editing, protection, reverse wrap, modes,
-// colours and their stacks, character sets, VT52 and key modifiers.
+// colours and their stacks, character sets, VT52 and key modifiers. Also
+// kitty's extensions of them: DECCARA with every SGR code, and SGR 221 and
+// 222.
 
 #include "TestUtil.h"
 
@@ -20,7 +22,10 @@ namespace {
 
 struct ResizingHost : RecordingHost
 {
-    bool requestResize(int, int) override { return true; }
+    bool requestResize(int, int) override
+    {
+        return true;
+    }
 };
 
 /// As the esctest host runs it: screen readback (DECRQCRA) on.
@@ -41,7 +46,10 @@ struct Term
     {
         t.resize(cols, rows, 10, 20);
     }
-    void feed(std::string_view s) { t.feed(s); }
+    void feed(std::string_view s)
+    {
+        t.feed(s);
+    }
     std::string take()
     {
         std::string out;
@@ -115,9 +123,13 @@ TEST(Conformance, InsertAndDeleteColumns)
 TEST(Conformance, BackAndForwardIndex)
 {
     Term t(4, 1);
-    t.feed("abcd\x1b[1;1H\x1b" "6"); // DECBI at the left margin scrolls right
+    t.feed(
+        "abcd\x1b[1;1H\x1b"
+        "6"); // DECBI at the left margin scrolls right
     EXPECT_EQ(rowText(t.t, 0), " abc");
-    t.feed("\x1b[1;4H\x1b" "9"); // DECFI at the right margin scrolls left
+    t.feed(
+        "\x1b[1;4H\x1b"
+        "9"); // DECFI at the right margin scrolls left
     EXPECT_EQ(rowText(t.t, 0), "abc");
 }
 
@@ -183,9 +195,13 @@ TEST(Conformance, SoftResetClearsCursorsSavedCursorMarginsAndProtection)
     EXPECT_TRUE(t.t.extraCursors().empty());
 
     // The saved cursor goes, and the style its pen held is released.
-    t.feed("\x1b[3;5H\x1b[31m\x1b" "7\x1b[0m");
+    t.feed(
+        "\x1b[3;5H\x1b[31m\x1b"
+        "7\x1b[0m");
     ASSERT_GT(t.t.screen().styles().liveCount(), 1u);
-    t.feed("\x1b[!p\x1b" "8X"); // DECRC with nothing saved: home, default rendition
+    t.feed(
+        "\x1b[!p\x1b"
+        "8X"); // DECRC with nothing saved: home, default rendition
     EXPECT_EQ(t.t.screen().row(0).at(0).codepoint(), U'X');
     EXPECT_EQ(t.t.screen().row(0).at(0).styleId(), StyleTable::DefaultId);
     t.feed("\x1b[2J");
@@ -242,6 +258,91 @@ TEST(Conformance, SaveAndRestoreModes)
     EXPECT_EQ(t.take(), "\x1b[?7;2$y");
 }
 
+TEST(Conformance, RestoreOfAnUnchangedReportModeReportsNothing)
+{
+    // The size and visibility reports come when a set turns them on. A
+    // restore that leaves them on sends no report, one that turns them back
+    // on does.
+    Term t(10, 2);
+    t.feed("\x1b[?2048h\x1b[?2033h");
+    t.take();
+    t.feed("\x1b[?2048;2033s\x1b[?2048;2033r\x1b[?s\x1b[?r");
+    EXPECT_EQ(t.take(), "");
+    t.feed("\x1b[?2048;2033l\x1b[?2048;2033r");
+    EXPECT_EQ(t.take(), "\x1b[48;2;10;40;100t\x1b[?999;1n");
+    t.feed("\x1b[?2048;2033l\x1b[?r");
+    EXPECT_EQ(t.take(), "\x1b[?999;1n\x1b[48;2;10;40;100t");
+}
+
+TEST(Conformance, XtsaveOf1048SavesTheCursor)
+{
+    // 1048 is an action (xterm): XTSAVE saves the cursor and XTRESTORE
+    // restores that one, not one DECSC saved before.
+    Term t(20, 6);
+    t.feed(
+        "\x1b[4;4H\x1b"
+        "7\x1b[2;3H\x1b[?1048s\x1b[5;9H\x1b[?1048r\x1b[6n");
+    EXPECT_EQ(t.take(), "\x1b[2;3R");
+}
+
+TEST(Conformance, ResetReports132ColumnsWhileThePageKeepsThem)
+{
+    // The host refuses to go back to 80 columns: DECRQM reports the width
+    // the page has, as after DECCOLM.
+    Term t(132, 4);
+    t.feed("\x1b[?40h\x1b[?3h\x1b[?3$p");
+    ASSERT_EQ(t.take(), "\x1b[?3;1$y");
+    t.feed(
+        "\x1b"
+        "c\x1b[?3$p");
+    EXPECT_EQ(t.t.cols(), 132);
+    EXPECT_EQ(t.take(), "\x1b[?3;1$y");
+}
+
+TEST(Conformance, ThemeReportsKeepTheirPlaceInTheStream)
+{
+    // Light, a status report, dark again, in one read: each change is
+    // reported where it happened, not once at the end of the read.
+    Term t(10, 3);
+    t.feed("\x1b[?2031h");
+    t.feed("\x1b]11;#ffffff\x07\x1b[5n\x1b]11;#000000\x07");
+    EXPECT_EQ(t.take(), "\x1b[?997;2n\x1b[0n\x1b[?997;1n");
+    // XTPUSHCOLORS and XTPOPCOLORS change it too.
+    t.feed("\x1b[#P\x1b]11;#ffffff\x07\x1b[#Q");
+    EXPECT_EQ(t.take(), "\x1b[?997;2n\x1b[?997;1n");
+}
+
+TEST(Conformance, Osc4AnswersAreCappedButItsSetsGoOn)
+{
+    Term t(10, 3);
+    std::string sequence = "\x1b]4";
+    for (int i = 0; i < 300; ++i) {
+        sequence += ";1;?";
+    }
+    t.feed(sequence + ";2;#010203\x07");
+    std::size_t replies = 0;
+    for (std::size_t pos = 0; (pos = t.host.written.find("\x1b]4;1;", pos)) != std::string::npos; ++pos) {
+        ++replies;
+    }
+    EXPECT_EQ(replies, 256u);
+    t.take();
+    t.feed("\x1b]4;2;?\x07");
+    EXPECT_EQ(t.take(), "\x1b]4;2;rgb:0101/0202/0303\x07");
+}
+
+TEST(Conformance, ColourSpecsAreNamesOrBoundedFields)
+{
+    Term t(10, 3);
+    t.feed("\x1b]10;Light Goldenrod Yellow\x07\x1b]10;?\x07");
+    EXPECT_EQ(t.take(), "\x1b]10;rgb:fafa/fafa/d2d2\x07");
+    // A spec longer than any name is none, and an OSC 10 over its limit goes
+    // whole, with the query after the long field.
+    t.feed("\x1b]10;" + std::string(300, 'a') + "\x07\x1b]10;?\x07");
+    EXPECT_EQ(t.take(), "\x1b]10;rgb:fafa/fafa/d2d2\x07");
+    t.feed("\x1b]10;" + std::string(5000, 'a') + ";?\x07");
+    EXPECT_EQ(t.take(), "");
+}
+
 TEST(Conformance, ColumnModeNeedsPermissionAndClears)
 {
     Term<ResizingHost> t(80, 4);
@@ -250,7 +351,9 @@ TEST(Conformance, ColumnModeNeedsPermissionAndClears)
     t.feed("\x1b[?40h\x1b[?3h");
     EXPECT_EQ(t.t.cols(), 132);
     EXPECT_EQ(rowText(t.t, 0), "");
-    t.feed("\x1b" "c"); // RIS returns to 80
+    t.feed(
+        "\x1b"
+        "c"); // RIS returns to 80
     EXPECT_EQ(t.t.cols(), 80);
 }
 
@@ -302,14 +405,19 @@ TEST(Conformance, Vt52Mode)
 {
     Term t(20, 5);
     t.feed("\x1b[?2l"); // into VT52 mode
-    t.feed("\x1bY\"%ab\x1b" "D\x1b" "DX"); // row 2, column 5; back twice
+    t.feed(
+        "\x1bY\"%ab\x1b"
+        "D\x1b"
+        "DX"); // row 2, column 5; back twice
     EXPECT_EQ(rowText(t.t, 2), "     Xb");
     t.feed("\x1bY~#"); // row off the screen: only the column moves
     EXPECT_EQ(t.t.screen().cursor.y, 2);
     EXPECT_EQ(t.t.screen().cursor.x, 3);
     t.feed("\x1bZ");
     EXPECT_EQ(t.take(), "\x1b/Z");
-    t.feed("\x1bH\x1b" "Fa\x1bGa"); // graphics character set on and off
+    t.feed(
+        "\x1bH\x1b"
+        "Fa\x1bGa"); // graphics character set on and off
     EXPECT_EQ(rowText(t.t, 0), "\u2592a");
     t.feed("\x1b<\x1b[?2$p"); // back to ANSI; DECRQM works again
     EXPECT_EQ(t.take(), "\x1b[?2;1$y");
@@ -334,7 +442,8 @@ TEST(Conformance, KittyColorControl)
     Term t(10, 2);
     t.feed("\x1b]21;foreground=#102030;7=rgb:ff/00/00\x1b\\");
     t.feed("\x1b]21;foreground=?;7=?;cursor=?;selection_background=?;bogus=?\x1b\\");
-    EXPECT_EQ(t.take(), "\x1b]21;foreground=rgb:10/20/30;7=rgb:ff/00/00;cursor=;selection_background=;unknown=Ym9ndXM\x1b\\");
+    EXPECT_EQ(t.take(),
+              "\x1b]21;foreground=rgb:10/20/30;7=rgb:ff/00/00;cursor=;selection_background=;unknown=Ym9ndXM\x1b\\");
     t.feed("\x1b]21;foreground;cursor=#abcdef\x07\x1b]21;cursor=?\x07"); // bare key resets
     EXPECT_EQ(t.take(), "\x1b]21;cursor=rgb:ab/cd/ef\x07");
     EXPECT_EQ(t.t.defaultForeground(), TerminalOptions{}.defaultForeground);
@@ -374,7 +483,8 @@ TEST(Conformance, ConfiguredSelectionAndCursorTextColours)
     o.cursorTextColor = Rgb{0x01, 0x02, 0x03};
     t.t.setOptions(o);
     t.feed("\x1b]17;?\x07\x1b]21;selection_background=?;cursor_text=?\x07");
-    EXPECT_EQ(t.take(), "\x1b]17;rgb:2020/4040/6060\x07\x1b]21;selection_background=rgb:20/40/60;cursor_text=rgb:01/02/03\x07");
+    EXPECT_EQ(t.take(),
+              "\x1b]17;rgb:2020/4040/6060\x07\x1b]21;selection_background=rgb:20/40/60;cursor_text=rgb:01/02/03\x07");
     // Programs override the configured colour, and resetting returns to it.
     t.feed("\x1b]17;#ffffff\x07");
     EXPECT_EQ(t.t.selectionBackground()->r, 0xff);
@@ -388,7 +498,9 @@ TEST(Conformance, RectangleAttributes)
 {
     Term t(10, 3);
     t.feed("abcdefghij\r\nabcdefghij\r\nabcdefghij");
-    auto styleAt = [&](int x, int y) { return t.t.screen().styles().get(t.t.screen().row(y).at(x).styleId()); };
+    auto styleAt = [&](int x, int y) {
+        return t.t.screen().styles().get(t.t.screen().row(y).at(x).styleId());
+    };
     t.feed("\x1b[2*x\x1b[1;2;2;3;1;4$r"); // rectangle: bold and underline on rows 1-2, columns 2-3
     EXPECT_TRUE(styleAt(1, 0).has(Attr::Bold));
     EXPECT_EQ(styleAt(2, 1).underline, UnderlineStyle::Single);
@@ -400,6 +512,73 @@ TEST(Conformance, RectangleAttributes)
     EXPECT_TRUE(styleAt(9, 0).has(Attr::Inverse));
     EXPECT_TRUE(styleAt(0, 1).has(Attr::Inverse));
     EXPECT_FALSE(styleAt(2, 1).has(Attr::Inverse));
+}
+
+TEST(Conformance, RectangleAttributesTakeEverySgrCode)
+{
+    // kitty extends DECCARA to every SGR code (deccara.rst): its example
+    // sets a blue background in a rectangle.
+    Term t(10, 3);
+    t.feed("abcdefghij\r\nabcdefghij\r\n");
+    // A protected character and a link on the last row.
+    t.feed("\x1b[1\"qP\x1b[0\"q\x1b]8;;http://example.com\x1b\\L\x1b]8;;\x1b\\");
+    auto styleAt = [&](int x, int y) {
+        return t.t.screen().styles().get(t.t.screen().row(y).at(x).styleId());
+    };
+    t.feed("\x1b[2*x\x1b[1;2;2;3;44;3;38:2::1:2:3$r\x1b[*x");
+    EXPECT_EQ(styleAt(1, 0).bg, Color::palette(4));
+    EXPECT_EQ(styleAt(2, 1).fg, Color::rgb(1, 2, 3));
+    EXPECT_TRUE(styleAt(2, 1).has(Attr::Italic));
+    EXPECT_EQ(styleAt(3, 0).bg, Color{});
+    EXPECT_EQ(styleAt(1, 2).bg, Color{});
+    // 0 resets every rendition, as SGR 0 does, and leaves the link and
+    // DECSCA's protection.
+    t.feed("\x1b[2*x\x1b[1;1;3;10;7;31$r\x1b[1;1;3;10;0$r");
+    EXPECT_EQ(styleAt(1, 0), Style{});
+    EXPECT_TRUE(styleAt(0, 2).has(Attr::Protected));
+    EXPECT_NE(styleAt(1, 2).link, 0u);
+    EXPECT_FALSE(styleAt(1, 2).has(Attr::Inverse));
+    EXPECT_EQ(styleAt(1, 2).fg, Color{});
+}
+
+// DECCARA works out once what its codes do to any style: over cells of many
+// styles, each keeps what the codes leave and takes what they set, also with
+// a list of thousands of codes.
+TEST(Conformance, RectangleAttributesOverManyStylesKeepWhatTheCodesLeave)
+{
+    Term t(40, 2);
+    // Each cell a style of its own: bold or italic, and its own foreground.
+    for (int x = 0; x < 40; ++x)
+        t.feed("\x1b[0;" + std::string(x % 2 ? "1" : "3") + ";38;5;" + std::to_string(x) + "mx");
+    std::string codes;
+    for (int i = 0; i < 1000; ++i)
+        codes += ";4;24";
+    t.feed("\x1b[2*x\x1b[1;1;1;40" + codes + ";48;5;9;27;2;4:3$r");
+    auto styleAt = [&](int x) {
+        return t.t.screen().styles().get(t.t.screen().row(0).at(x).styleId());
+    };
+    for (int x = 0; x < 40; ++x) {
+        const Style st = styleAt(x);
+        EXPECT_EQ(st.fg, Color::palette(std::uint8_t(x))) << x;
+        EXPECT_EQ(st.bg, Color::palette(9)) << x;
+        EXPECT_EQ(st.underline, UnderlineStyle::Curly) << x;
+        EXPECT_EQ(st.has(Attr::Bold), x % 2 == 1) << x;
+        EXPECT_EQ(st.has(Attr::Italic), x % 2 == 0) << x;
+        EXPECT_TRUE(st.has(Attr::Faint)) << x;
+        EXPECT_FALSE(st.has(Attr::Inverse)) << x;
+    }
+}
+
+TEST(Conformance, KittyBoldOffAndFaintOffAlone)
+{
+    // kitty's SGR 221 and 222 (misc-protocol.rst): 22 turns off both.
+    Term t(10, 3);
+    t.feed("\x1b[1;2m\x1b[221m");
+    EXPECT_FALSE(t.t.screen().cursor.pen.has(Attr::Bold));
+    EXPECT_TRUE(t.t.screen().cursor.pen.has(Attr::Faint));
+    t.feed("\x1b[1;2m\x1b[222m");
+    EXPECT_TRUE(t.t.screen().cursor.pen.has(Attr::Bold));
+    EXPECT_FALSE(t.t.screen().cursor.pen.has(Attr::Faint));
 }
 
 TEST(Conformance, ThemeVisibilityAndSizeReports)
@@ -430,7 +609,10 @@ TEST(Conformance, LegacySynchronizedUpdatesAndFlash)
     struct FlashHost : RecordingHost
     {
         int flashes = 0;
-        void flash() override { ++flashes; }
+        void flash() override
+        {
+            ++flashes;
+        }
     };
     FlashHost host;
     Terminal t(10, 2, host);
@@ -500,6 +682,32 @@ TEST(Conformance, CursorBackWithReverseWrapStepsLikeBackspace)
     EXPECT_EQ(plain.t.screen().cursor.x, 0);
 }
 
+TEST(Conformance, InsertModeOutsideTheMarginsOverwrites)
+{
+    // IRM inserts as ICH does (xterm), and ICH does nothing outside the left
+    // and right margins: there a character overwrites the cell.
+    Term t(10, 2);
+    t.feed("abcdefghij\x1b[?69h\x1b[3;6s\x1b[4h");
+    t.feed("\x1b[1;1HX");
+    EXPECT_EQ(rowText(t.t, 0), "Xbcdefghij");
+    t.feed("\x1b[1;8HY\x1b[b"); // right of the margins, also with REP
+    EXPECT_EQ(rowText(t.t, 0), "XbcdefgYYj");
+    t.feed("\x1b[1;4HZ"); // inside them the text up to the right margin moves
+    EXPECT_EQ(rowText(t.t, 0), "XbcZdegYYj");
+}
+
+TEST(Conformance, PositionBackwardMovesLeftAndUp)
+{
+    // HPB and VPB (ECMA-48), the backward pair of HPR and VPR.
+    Term t(10, 6);
+    t.feed("\x1b[4;6H\x1b[2j\x1b[6n");
+    EXPECT_EQ(t.take(), "\x1b[4;4R");
+    t.feed("\x1b[k\x1b[6n");
+    EXPECT_EQ(t.take(), "\x1b[3;4R");
+    t.feed("\x1b[9j\x1b[9k\x1b[6n"); // clamped at the edges
+    EXPECT_EQ(t.take(), "\x1b[1;1R");
+}
+
 TEST(Conformance, ColorStackSlotsStoreWithoutPushing)
 {
     Term t(10, 2);
@@ -541,14 +749,47 @@ TEST(Conformance, ModifyOtherKeysResetsWithoutParameters)
 TEST(Conformance, CursorRestoreKeepsOriginModeInsideTheMargins)
 {
     Term t(10, 12);
-    t.feed("\x1b[5;10r\x1b[?6h\x1b" "7\x1b[8;10r\x1b" "8\x1b[6n");
+    t.feed(
+        "\x1b[5;10r\x1b[?6h\x1b"
+        "7\x1b[8;10r\x1b"
+        "8\x1b[6n");
     EXPECT_EQ(t.take(), "\x1b[1;1R");
+}
+
+TEST(Conformance, CursorReportsInOriginModeCountFromTheMargins)
+{
+    // kitty 0.50.0 fixed its reports in origin mode. With left and right
+    // margins (DECLRMM, DECSLRM) the column counts from the left margin too.
+    Term t(20, 12);
+    t.feed("\x1b[5;10r\x1b[?69h\x1b[4;15s\x1b[?6h\x1b[2;3H\x1b[6n");
+    EXPECT_EQ(t.take(), "\x1b[2;3R");
+    t.feed("\x1b[?6n");
+    EXPECT_TRUE(t.take().starts_with("\x1b[?2;3")) << "DECXCPR";
+    t.feed("\x1b[99;99H\x1b[6n"); // clamped to the bottom right of the margins
+    EXPECT_EQ(t.take(), "\x1b[6;12R");
+    t.feed("\x1b[?6l\x1b[6n"); // origin mode off: the page origin again
+    EXPECT_EQ(t.take(), "\x1b[1;1R");
+}
+
+TEST(Conformance, Decst8cResetsTheTabStopsToEveryEightColumns)
+{
+    Term t(40, 2);
+    t.feed("\x1b[3g\x1b[4G\x1bH"); // only one stop, at column 4
+    t.feed("\r\tA");
+    EXPECT_EQ(t.t.screen().cursor.x, 4);
+    t.feed("\x1b[?5W\r\tB\tC");
+    EXPECT_EQ(rowText(t.t, 0), "   A    B       C");
+    // Another parameter is not DECST8C: the stops stay.
+    t.feed("\x1b[3g\x1b[?4W\r\tD");
+    EXPECT_EQ(t.t.screen().cursor.x, 39);
 }
 
 TEST(Conformance, CursorRestoreWithNothingSavedResetsCharsets)
 {
     Term t(10, 2);
-    t.feed("\x1b(0\x1b" "8q");
+    t.feed(
+        "\x1b(0\x1b"
+        "8q");
     EXPECT_EQ(rowText(t.t, 0), "q");
 }
 

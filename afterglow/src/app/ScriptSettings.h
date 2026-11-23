@@ -10,11 +10,11 @@
 
 namespace Afterglow {
 
-/// The Scripts.command* limits as the script host takes them.
+/// The Scripts.command* limits and Control.allowRemoteReadText as the script host takes them.
 inline ScriptHost::CommandLimits commandLimits(const Settings& settings)
 {
     return {settings.scriptCommandTimeout, settings.scriptCommandStdinLimit, settings.scriptCommandRunLimit,
-            settings.scriptCommandOutputLimit};
+            settings.scriptCommandOutputLimit, settings.control.allowRemoteReadText};
 }
 
 /// Applies Scripts.enabled and the command limits to @p scripts now, and on
@@ -27,6 +27,7 @@ inline void followScriptSettings(ScriptHost& scripts, SettingsStore& settings)
 {
     const auto apply = [&scripts, &settings] {
         scripts.setCommandLimits(commandLimits(settings.settings()));
+        scripts.setCpuBudget(settings.settings().scriptCpuBudget);
         scripts.setEnabled(settings.settings().scripts);
     };
     apply();

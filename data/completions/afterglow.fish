@@ -14,7 +14,8 @@ set -g __afterglow_actions swap_left swap_right swap_up swap_down rotate_panes_c
     detach_tab save_project switch_project end_script_key_mode cancel_overlay split_right split_down split_left \
     split_up rename_pane close_pane new_window new_tab close_tab rename_tab move_tab_left move_tab_right \
     goto_tab_1 goto_tab_2 goto_tab_3 goto_tab_4 goto_tab_5 goto_tab_6 goto_tab_7 goto_tab_8 goto_tab_9 \
-    close_window toggle_fullscreen next_tab previous_tab show_hints show_last_output copy_mode copy paste \
+    close_window toggle_fullscreen next_tab previous_tab show_hints show_last_output show_first_output_on_screen \
+    show_last_visited_output copy_mode copy paste \
     select_all clear_screen reset notify_on_finish focus_left focus_right focus_up focus_down equalize_splits \
     toggle_pane_zoom resize_left resize_right resize_up resize_down font_bigger font_smaller font_reset \
     scroll_page_up scroll_page_down scroll_top scroll_bottom jump_prompt_up jump_prompt_down search \
@@ -72,7 +73,9 @@ function __afterglow_window
         set i (math $i + 1)
     end
     if test $n -eq 0; and not string match -q -- '-*' "$cur"
-        __afterglow_print ctl\t'Drive a running Afterglow' run\t'Run a command of a script' \
+        __afterglow_print ctl\t'Drive a running Afterglow' mux\t'Keep terminal sessions running, and show them in windows' \
+            mcp\t'Give an agent a terminal session of its own (MCP server)' \
+            run\t'Run a command of a script' \
             ssh\t'ssh with the remote side prepared' \
             transfer\t'Copy files to and from the computer of the terminal' \
             dnd\t'Drag files and data out of the terminal, and drop them in' \
@@ -106,21 +109,49 @@ function __afterglow_window
     __afterglow_print $offer
 end
 
+# The options of a launch that $argv does not give yet; --env and --var can come again.
+function __afterglow_launch_offer
+    printf '%s\n' --env\t'A variable for the program' --var\t'A user variable of the pane'
+    contains -- --hold $argv; or printf '%s\n' --hold\t'Keep the pane after the program exits'
+    contains -- --no-focus $argv; or printf '%s\n' --no-focus\t'Keep the focus where it is'
+    contains -- --stdin-text $argv; or printf '%s\n' --stdin-text\t'Pane text as standard input'
+    contains -- --stdin-ansi $argv; or printf '%s\n' --stdin-ansi\t'With its styles'
+end
+
 function __afterglow_ctl
     set -l cur (commandline -ct)
+    set -l options -h\t'Show the usage' --help\t'Show the usage' --session\t'Act on a mux session'
+    # --session NAME comes before the command. afterglow mux ls lists the
+    # names, but a completion runs no program but aglow run --complete. In a
+    # pane of a session, the commands act on it as with --session.
+    set -l session (set -q AFTERGLOW_SESSION; and test -n "$AFTERGLOW_SESSION"; and echo 1)
+    if test "$argv[1]" = --session
+        set -q argv[2]; or return
+        set -e argv[1..2]
+        set session 1
+        # The usage only comes first: a command follows.
+        set options
+    end
     if not set -q argv[1]
         if string match -q -- '-*' "$cur"
-            __afterglow_print -h\t'Show the usage' --help\t'Show the usage'
+            __afterglow_print $options
         else
-            __afterglow_print ls\t'List panes' send-text\t'Type text into the pane' get-text\t'Print pane text' \
+            __afterglow_print ls\t'List panes' send-text\t'Type text into the pane' paste\t'Paste text into the pane' get-text\t'Print pane text' \
                 split\t'Split the pane' move-pane\t'Move the pane beside another' \
                 detach-tab\t"Move the pane's tab to a new window" new-tab\t'Open a tab' new-window\t'Open a window' \
                 focus\t'Focus the pane' close\t'Close the pane' set-title\t"Set the pane's title" \
+                set-tab-title\t"Set the title of the pane's tab" resize\t'Move an edge of the pane' \
+                send-key\t'Type keys by name' scroll\t'Scroll the pane' \
+                colors\t"Print the pane's colors" set-colors\t'Set colors of the pane' \
+                set-font-size\t'Set the font size' set-opacity\t"Set the window's background opacity" \
+                set-user-var\t'Set user variables of the pane' \
+                signal-program\t'Send a signal to the program in the foreground' window\t"Change the pane's window" \
                 signal\t'Set a shader signal' notify\t'Show a desktop notification' \
                 scripts\t'Show script diagnostics' open-directory\t'Open a directory' \
                 projects\t'List saved projects' save-project\t'Save the window layout' \
                 open-project\t'Open a saved project' action\t'Run a keybind action or start a script command' \
-                watch\t'Print events' overlay\t'Run a command over the pane and print its result'
+                watch\t'Print events' overlay\t'Run a command over the pane and print its result' \
+                screenshot\t'Save the pane, its tab or its window as PNG'
         end
         return
     end
@@ -138,20 +169,32 @@ function __afterglow_ctl
                     complete -C (string join ' ' -- $rest "$cur")
                 end
                 return
-            case --pane --cwd --layout --capture --title -w --width -h --height --position
+            case --pane --cwd --layout --direction --cells --pages --prompt --env --var --stdin-text --size --capture --title -w --width -h --height --position
                 # The options after --layout are those of overlay. Elsewhere they are no option of ctl.
                 if test $command = overlay; or not contains -- $argv[$i] --capture --title -w --width -h --height --position
                     if test $i -eq $n
                         # The cursor is at the option's value.
                         test $argv[$i] = --cwd; and __fish_complete_directories "$cur"
                         test $argv[$i] = --capture; and __afterglow_print stdout file none
+                        test $argv[$i] = --direction; and __afterglow_print left right up down
+                        test $argv[$i] = --stdin-text; and __afterglow_print screen scrollback selection last-output first-output-on-screen last-visited-output
                         test $argv[$i] = --position
                         and __afterglow_print center top bottom left right top-left top-right bottom-left bottom-right
                         return
                     end
                     set i (math $i + 1)
+                else if contains -- $argv[$i] -w -h
+                    # Words outside overlay, as -x.png is.
+                    set positional (math $positional + 1)
                 end
+            case '-'
+                # A lone - is a word for every command: the standard output of
+                # screenshot, text for send-text.
+                set positional (math $positional + 1)
+            case '--*'
             case '-*'
+                # -x.png is a word too, except where overlay takes -n, -w and -h.
+                test $command != overlay; and set positional (math $positional + 1)
             case '*'
                 set positional (math $positional + 1)
         end
@@ -162,11 +205,22 @@ function __afterglow_ctl
             case open-directory:0
                 __fish_complete_directories "$cur"
                 return
+            case screenshot:0
+                __fish_complete_path "$cur"
+                return
             case move-pane:1
                 __afterglow_print left right up down new-tab new-window
                 return
             case signal:0
                 __afterglow_print 0 1 2 3 4 5 6 7
+                return
+            case signal-program:0
+                __afterglow_print INT TERM HUP KILL QUIT USR1 USR2 STOP CONT TSTP WINCH
+                return
+            case 'send-key:*'
+                # Of the many names that send-key takes.
+                __afterglow_print enter escape tab backspace space up down left right home end page_up page_down \
+                    insert delete f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12 ctrl+c ctrl+d ctrl+l ctrl+z
                 return
             case action:0
                 __afterglow_print $__afterglow_actions
@@ -188,13 +242,17 @@ function __afterglow_ctl
         end
     end
     set -l offer
+    # set-colors --all sets every pane: no --pane with it.
     if not contains -- $command ls watch scripts projects open-directory open-project new-window
-        contains -- --pane $argv; or set -a offer --pane\t'The pane'
+        contains -- --pane $argv; or begin; test $command = set-colors; and contains -- --all $argv; end
+        or set -a offer --pane\t'The pane'
     end
     switch $command
         case ls
             contains -- --json $argv; or set -a offer --json\t'Print JSON'
-        case send-text
+        case watch
+            contains -- --text-changes $argv; or set -a offer --text-changes\t'Print textChanged too'
+        case send-text paste
             # --stdin takes no text, and the text takes no --stdin.
             if not contains -- --stdin $argv
                 contains -- --raw $argv; or set -a offer --raw\t'Send the text as it is'
@@ -202,14 +260,50 @@ function __afterglow_ctl
                 and set -a offer --stdin\t'Send standard input'
             end
         case get-text
-            string match -q -r -- '^--(screen|scrollback|selection|last-output)$' $argv
+            string match -q -r -- '^--(screen|scrollback|selection|last-output|first-output-on-screen|last-visited-output)$' $argv
             or set -a offer --screen\t'The screen' --scrollback\t'The scrollback' --selection\t'The selection' \
-                --last-output\t'The output of the last command'
+                --last-output\t'The output of the last command' \
+                --first-output-on-screen\t'The first command output on the screen' \
+                --last-visited-output\t'The output that a prompt jump visited last'
+            for flag in --ansi --cursor --wrap-markers
+                contains -- $flag $argv; or set -a offer $flag
+            end
+        case screenshot
+            string match -q -r -- '^--(tab|window)$' $argv
+            or set -a offer --tab\t'The panes of its tab' --window\t'The whole window'
         case split
             string match -q -r -- '^--(left|right|up|down)$' $argv
             or set -a offer --left --right --up --down
+            set -a offer (__afterglow_launch_offer $argv)
+            # A pane of a mux session takes only --env: its daemon starts the program.
+            test -n "$session"; and set offer (string match -v -r -- '^--(var|hold|no-focus|stdin-text|stdin-ansi)' $offer)
         case new-tab new-window
             contains -- --cwd $argv; or set -a offer --cwd\t'Working directory'
+            set -a offer (__afterglow_launch_offer $argv)
+            # new-window reads no pane, and takes the focus.
+            test $command = new-window; and set offer (string match -v -r -- '^--(no-focus|stdin-text|stdin-ansi)' $offer)
+            test $command = new-tab; and test -n "$session"
+            and set offer (string match -v -r -- '^--(var|hold|no-focus|stdin-text|stdin-ansi)' $offer)
+        case focus
+            contains -- --direction $argv; or set -a offer --direction\t'Focus the pane on that side'
+        case colors
+            contains -- --json $argv; or set -a offer --json\t'Print JSON'
+        case set-colors
+            contains -- --all $argv; or contains -- --pane $argv; or set -a offer --all\t'Every pane'
+            contains -- --reset $argv; or set -a offer --reset\t'The configured colors first'
+        case window
+            string match -q -r -- '^--(fullscreen|maximized|normal)$' $argv
+            or set -a offer --fullscreen --maximized --normal
+            contains -- --size $argv; or set -a offer --size\t'The cells of one pane'
+        case resize
+            contains -- --direction $argv; or set -a offer --direction\t'The edge that moves'
+            contains -- --cells $argv; or set -a offer --cells\t'Cells to move it (2)'
+        case scroll
+            # LINES or one of the options.
+            if test $positional -eq 0; and not string match -q -r -- '^--(pages|prompt|top|bottom)$' $argv
+                set -a offer --pages\t'Pages down, up when negative' --prompt\t'Prompts down, up when negative' \
+                    --top\t'To the top' --bottom\t'To the bottom'
+            end
         case overlay
             contains -- --capture $argv; or set -a offer --capture\t'Where the result comes from'
             contains -- --cwd $argv; or set -a offer --cwd\t'Working directory'
@@ -224,13 +318,118 @@ function __afterglow_ctl
             contains -- --position $argv; or set -a offer --position\t'Where the popup sits'
             contains -- --border $argv; or contains -- --no-border $argv
             or set -a offer --border\t'Draw a border' --no-border\t'Draw no border'
+            contains -- --stdin-text $argv; or set -a offer --stdin-text\t'Pane text as standard input'
+            contains -- --stdin-ansi $argv; or set -a offer --stdin-ansi\t'With its styles'
         case open-directory
             contains -- --layout $argv; or set -a offer --layout\t'A saved layout'
         case save-project
             contains -- --overwrite $argv; or set -a offer --overwrite\t'Replace a project with the name'
         case open-project
             contains -- --new $argv; or set -a offer --new\t'Launch the layout again'
+            if not contains -- --into-session $argv; and not contains -- --no-session $argv
+                set -a offer --into-session\t'Open into a mux session' --no-session\t'Open into a window'
+            end
     end
+    __afterglow_print $offer
+end
+
+function __afterglow_mux
+    set -l cur (commandline -ct)
+    if not set -q argv[1]
+        if string match -q -- '-*' "$cur"
+            __afterglow_print -h\t'Show the usage' --help\t'Show the usage'
+        else
+            __afterglow_print server\t'Run aglow-mux in the foreground' new\t'Create a session' \
+                attach\t'Show a session in a window' detach\t'Close the window of a session, and keep the session' \
+                ls\t'List the sessions' kill\t'End a session and its programs'
+        end
+        return
+    end
+    set -l command $argv[1]
+    set -e argv[1]
+    set -l n (count $argv)
+    set -l i 1
+    while test $i -le $n
+        switch $argv[$i]
+            case --
+                if test $command = new
+                    set -l rest (string escape -- $argv[(math $i + 1)..])
+                    complete -C (string join ' ' -- $rest "$cur")
+                end
+                return
+            case --name --cwd
+                if test $command = new
+                    if test $i -eq $n
+                        # The cursor is at the option's value. With --ssh,
+                        # also after the cursor, it is a directory of that host.
+                        test $argv[$i] = --cwd
+                        and not contains -- --ssh (commandline -xp)
+                        and __fish_complete_directories "$cur"
+                        return
+                    end
+                    set i (math $i + 1)
+                end
+            case --ssh
+                # server takes no option.
+                if contains -- $command new attach detach ls kill
+                    if test $i -eq $n
+                        __fish_print_hostnames
+                        return
+                    end
+                    set i (math $i + 1)
+                end
+        end
+        set i (math $i + 1)
+    end
+    set -l offer
+    switch $command
+        case new
+            contains -- --name $argv; or set -a offer --name\t'The session name'
+            contains -- --cwd $argv; or set -a offer --cwd\t'Start in the directory'
+            contains -- --detach $argv; or set -a offer --detach\t'Create the session without a window'
+            contains -- --agent $argv; or set -a offer --agent\t'Create an agent session'
+        case attach
+            string match -q -- '-*' "$cur"
+            and not contains -- --no-takeover $argv
+            and set -a offer --no-takeover\t'Refuse when another window shows the session'
+        case kill
+            # An empty word is the name of the session.
+            string match -q -- '-*' "$cur"
+            and not contains -- --force $argv
+            and set -a offer --force\t'End it without a question'
+    end
+    # A session of another host. An empty word is the name of the session,
+    # or nothing for ls.
+    if contains -- $command new attach detach ls kill; and not contains -- --ssh $argv
+        if test $command = new; or string match -q -- '-*' "$cur"
+            set -a offer --ssh\t'A session of another host'
+        end
+    end
+    __afterglow_print $offer
+end
+
+# afterglow mcp [--session NAME] [--adopt] [--cwd DIR]. No session name is
+# offered for --session: a completion runs no program but aglow run --complete.
+function __afterglow_mcp
+    set -l cur (commandline -ct)
+    set -l n (count $argv)
+    if test $n -ge 1
+        switch $argv[$n]
+            case --cwd
+                __fish_complete_directories "$cur"
+                return
+            case --session
+                return
+        end
+    end
+    # The usage is the whole command line.
+    contains -- -h $argv; or contains -- --help $argv; and return
+    set -l offer
+    test $n -eq 0; and string match -q -- '-*' "$cur"
+    and set -a offer -h\t'Show the usage' --help\t'Show the usage'
+    contains -- --session $argv; or set -a offer --session\t'Use or create the session'
+    contains -- --adopt $argv; or set -a offer --adopt\t'With --session, make your own session an agent session'
+    contains -- --cwd $argv; or set -a offer --cwd\t'Start the first pane in the directory'
     __afterglow_print $offer
 end
 
@@ -242,6 +441,10 @@ function __afterglow_complete
             __fish_complete_subcommand
         case ctl
             __afterglow_ctl $words[2..]
+        case mux
+            __afterglow_mux $words[2..]
+        case mcp
+            __afterglow_mcp $words[2..]
         case run transfer dnd icat clipboard
             # These run aglow, which completes the same arguments. Fish loads
             # the completion of aglow only when aglow is on PATH, and afterglow

@@ -26,7 +26,10 @@ public:
 
     /// The signal that quit the event loop, or 0. The process should end
     /// with it after its shutdown, so that its parent sees why it ended.
-    int signal() const { return m_signal; }
+    int signal() const
+    {
+        return m_signal;
+    }
 
 private:
     void deliver();

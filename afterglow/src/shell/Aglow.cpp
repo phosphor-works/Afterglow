@@ -2,13 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "shell/Aglow.h"
+#include "shell/Sibling.h"
 
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
-#include <filesystem>
 #include <string>
-#include <system_error>
 #include <unistd.h>
 #include <vector>
 
@@ -37,24 +36,20 @@ int run(int argc, char** argv)
 {
     // 127, as a shell answers for a command that it cannot find.
     if (!built()) {
-        std::fprintf(stderr, "afterglow %s: this build of Afterglow has no aglow (AFTERGLOW_BUILD_AGLOW=OFF)\n", argv[1]);
+        std::fprintf(stderr, "afterglow %s: this build of Afterglow has no aglow (AFTERGLOW_BUILD_AGLOW=OFF)\n",
+                     argv[1]);
         return 127;
     }
-    // The aglow of the same build or package: never another one on PATH,
-    // which could be another program of that name. read_symlink grows its
-    // buffer for a long path, where a fixed one would cut it short.
-    std::error_code error;
-    const auto self = std::filesystem::read_symlink("/proc/self/exe", error);
-    if (error || self.empty()) {
-        std::fprintf(stderr, "afterglow %s: cannot find its own executable: %s\n", argv[1],
-                     error ? error.message().c_str() : "the link is empty");
+    std::string error;
+    const std::string path = siblingExecutable("aglow", &error);
+    if (path.empty()) {
+        std::fprintf(stderr, "afterglow %s: %s\n", argv[1], error.c_str());
         return 127;
     }
-    const std::string path = (self.parent_path() / "aglow").string();
     // argv[0] names the program in aglow's usage and messages: "afterglow
     // icat", not "aglow icat". It is "afterglow" whatever the name that
     // started this executable, as the commands in afterglow --help say.
-    std::vector<char*> args { const_cast<char*>("afterglow") };
+    std::vector<char*> args{const_cast<char*>("afterglow")};
     for (int i = 1; i < argc; ++i) {
         args.push_back(argv[i]);
     }

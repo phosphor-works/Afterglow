@@ -35,10 +35,12 @@ std::vector<std::pair<DndMeta, std::string>> readAll(const std::vector<std::stri
 TEST(DragDrop, MessagesRoundTrip)
 {
     DndAssembler assembler(1 << 20, 1 << 20);
-    const DndMeta meta{{"t", "m"}, {"i", "42"}, {"x", "3"}, {"y", "-1"}, {"X", "4294967295"}, {"Y", "-2147483648"}, {"o", "3"}};
+    const DndMeta meta{{"t", "m"},          {"i", "42"},          {"x", "3"}, {"y", "-1"},
+                       {"X", "4294967295"}, {"Y", "-2147483648"}, {"o", "3"}};
     const auto packets = writeDnd(meta, "text/plain text/uri-list");
     ASSERT_EQ(packets.size(), 1u);
-    EXPECT_EQ(packets[0], "\x1b]72;X=4294967295:Y=-2147483648:i=42:m=0:o=3:t=m:x=3:y=-1;text/plain text/uri-list\x1b\\");
+    EXPECT_EQ(packets[0],
+              "\x1b]72;X=4294967295:Y=-2147483648:i=42:m=0:o=3:t=m:x=3:y=-1;text/plain text/uri-list\x1b\\");
     const auto messages = readAll(packets, assembler);
     ASSERT_EQ(messages.size(), 1u);
     DndMeta expected = meta;

@@ -23,6 +23,7 @@ namespace AfterglowVt {
 
 class ITerminalHost;
 class Screen;
+class StateReader;
 struct Row;
 
 /// One decoded placeholder cell: which image and placement it shows, and
@@ -50,26 +51,73 @@ public:
     /// also ends the run. Call it for each cell of a row in order.
     std::optional<PlaceholderCell> next(const Screen& screen, const Row& row, int x);
     /// Starts a new row.
-    void reset() noexcept { m_previous = false; }
+    void reset() noexcept
+    {
+        m_previous = false;
+    }
 
 private:
     bool m_previous = false;
     PlaceholderCell m_last;
 };
 
-/// One frame of an image, RGBA8, immutable once published so renderers can
-/// hold it without a lock.
+/// How a frame holds its pixels. Indexed frames (kitty f=8 and f=16) hold
+/// palette indices, so an image follows the colour scheme: a renderer gives
+/// each index the pane's colour before it draws the frame.
+enum class PixelFormat : std::uint8_t {
+    Rgba,
+    Indexed, ///< one index for each pixel, opaque
+    IndexedAlpha, ///< an index and an alpha for each pixel
+};
+
+/// The bytes that a frame of @p format keeps for each pixel.
+constexpr std::size_t bytesPerPixel(PixelFormat format) noexcept
+{
+    return format == PixelFormat::Indexed ? 1 : format == PixelFormat::IndexedAlpha ? 2 : 4;
+}
+
+/// One frame of an image, immutable once published so renderers can hold it
+/// without a lock.
 struct ImageFrame
 {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
-    std::vector<std::uint8_t> rgba;
+    PixelFormat format = PixelFormat::Rgba;
+    std::vector<std::uint8_t> rgba; ///< Rgba frames only: R, G, B, A for each pixel
+    /// Indexed and IndexedAlpha frames only: the index of each pixel, or for
+    /// IndexedAlpha the index and then the alpha of each pixel.
+    std::vector<std::uint8_t> indices;
+
+    bool indexed() const noexcept
+    {
+        return format != PixelFormat::Rgba;
+    }
+    /// The bytes that the frame holds: rgba, or indices for an indexed frame.
+    std::vector<std::uint8_t>& pixels() noexcept
+    {
+        return indexed() ? indices : rgba;
+    }
+    const std::vector<std::uint8_t>& pixels() const noexcept
+    {
+        return indexed() ? indices : rgba;
+    }
+    /// What the frame counts for in the image quota: its RGBA size. An
+    /// indexed frame keeps fewer bytes, but it is drawn as RGBA, and the
+    /// quota bounds what the images of a screen cost when they show.
+    std::size_t byteSize() const noexcept
+    {
+        return indexed() ? std::size_t(width) * height * 4 : rgba.size();
+    }
 };
 using FramePtr = std::shared_ptr<const ImageFrame>;
 
 struct Image
 {
-    enum class Animation : std::uint8_t { Stopped, Loading, Running };
+    enum class Animation : std::uint8_t {
+        Stopped,
+        Loading,
+        Running
+    };
 
     std::uint32_t id = 0;
     std::uint32_t number = 0;
@@ -77,6 +125,9 @@ struct Image
     /// Sent with neither i= nor I=: no command can name it again, so it goes
     /// with its last placement, as internal images do.
     bool anonymous = false;
+    /// Sent with the transient usage hint (N=1): when room is needed, it goes
+    /// before the other images that nothing shows.
+    bool transient = false;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::vector<FramePtr> frames;
@@ -94,6 +145,12 @@ struct Image
     std::uint32_t loopsDone = 0;
     std::size_t currentFrame = 0;
     std::uint64_t frameShownAtMs = 0;
+    /// The a=a commands that set the state (s=) and the current frame (c=):
+    /// a replica (StateSync.h) runs the animation on its own clock, and
+    /// takes the state or the frame of the terminal that it mirrors only for
+    /// a command, also one that changes no value there.
+    std::uint32_t stateCommands = 0;
+    std::uint32_t frameCommands = 0;
     std::uint64_t sequence = 0; ///< transmission order, for eviction
     /// When an image first had this id: placements at one z draw in this
     /// order, as in kitty. Sending the id again keeps it.
@@ -130,7 +187,7 @@ struct Placement
 /// What a renderer needs to draw one placement.
 struct VisiblePlacement
 {
-    FramePtr frame;
+    FramePtr frame; ///< can be indexed: give it colours before an RGBA upload
     std::uint32_t imageId = 0;
     /// Destination in pixels relative to cell (0, 0) of the viewport.
     int x = 0;
@@ -164,6 +221,10 @@ public:
     };
 
     static constexpr std::size_t DefaultQuota = AfterglowProto::GraphicsDefaultQuota;
+    /// The largest quota that a terminal of the application takes
+    /// (Graphics.quota): what a store of a session's terminal can hold.
+    static constexpr std::size_t MaxQuota = std::size_t(4096) << 20;
+    static_assert(sizeof(std::size_t) >= 8, "a 4 GiB quota needs a 64-bit size");
     static constexpr std::size_t MaxImages = 4096;
     static constexpr std::size_t MaxPlacements = 4096;
     /// Frame edits (a=f on a frame, a=c) copy a whole frame for a command of
@@ -173,6 +234,11 @@ public:
     static constexpr std::size_t DefaultWorkBurst = std::size_t(1) << 30;
     static constexpr std::size_t DefaultWorkBytesPerSecond = std::size_t(1) << 30;
     static constexpr std::size_t MaxFrames = AfterglowProto::GraphicsMaxFrames;
+    /// The most frames of all the images of a store. The quota counts the
+    /// pixels, and a frame of one pixel costs far more than its four bytes
+    /// to keep, and to mirror in a replica: past this, images are evicted as
+    /// past the quota.
+    static constexpr std::size_t MaxStoreFrames = 16384;
 
     /// Handles an APC payload that starts with 'G'.
     void handle(std::string_view payload, Context& ctx);
@@ -187,9 +253,8 @@ public:
     /// the text and the cursor (z -1, as in kitty). @p placementId 0 takes
     /// any virtual placement of the image. A side of the grid that the
     /// placement leaves out is the image's own size in cells.
-    std::optional<VisiblePlacement> placeholderSlice(std::uint32_t imageId, std::uint32_t placementId, int row,
-                                                     int col, int cellX, int cellY, int cellWidth,
-                                                     int cellHeight) const;
+    std::optional<VisiblePlacement> placeholderSlice(std::uint32_t imageId, std::uint32_t placementId, int row, int col,
+                                                     int cellX, int cellY, int cellWidth, int cellHeight) const;
 
     /// Advances the running animations of images drawn in @p screen's
     /// viewport at the cell size: a placement in the scrollback, or a virtual
@@ -200,6 +265,8 @@ public:
     /// animation started by a command begins on the next call.
     bool advanceAnimations(const Screen& screen, int cellWidth, int cellHeight, std::uint64_t nowMs,
                            std::uint64_t& nextDeadlineMs);
+    /// The images that @p screen's viewport draws at the cell size.
+    std::unordered_set<std::uint32_t> shownImages(const Screen& screen, int cellWidth, int cellHeight) const;
 
     /// A clear of the screen (ED 2, DECCOLM): drops the placements that
     /// reach into the active area, and those whose rows have all left the
@@ -226,11 +293,26 @@ public:
     /// (its source rectangle and size shrink) and goes when none remain.
     /// Rows below the screen's last row are not cut by an upward scroll: they
     /// come into view as it moves, as with a line feed into the history.
-    /// The cell size measures the rows an image covers; 0 counts only its
-    /// top row, which goes when it leaves. A relative child moves with its
-    /// parent and is cut the same way; it goes with its parent. Virtual
-    /// placements follow their placeholder cells, so they are not moved here.
-    void scrollRegion(const RegionScroll& scroll, const Screen& screen, int cellWidth, int cellHeight);
+    /// With page margins (a region smaller than the screen), a kitty image
+    /// that reaches past a margin stays where it is, as kitty's spec says;
+    /// sixel and iTerm2 images move and are cut. @p drop marks rows that
+    /// leave the screen (kitty's unscroll): every image anchored on them
+    /// goes, with no margin rule. The cell size measures the rows an image
+    /// covers; 0 counts only its top row, which goes when it leaves. A
+    /// relative child moves with its parent and is cut the same way; it goes
+    /// with its parent. Virtual placements follow their placeholder cells,
+    /// so they are not moved here.
+    void scrollRegion(const RegionScroll& scroll, const Screen& screen, int cellWidth, int cellHeight,
+                      bool drop = false);
+    /// An erase of part of the screen (EL, ED 0 and ED 1), in visible rows
+    /// from @p firstRow to @p lastRow and columns from @p firstCol to
+    /// @p lastCol: drops the sixel and iTerm2 images whose cells overlap
+    /// them, as xterm erases its graphics with their cells. Kitty images
+    /// stay, as kitty's spec says: a program deletes them with the delete
+    /// commands. The cell size measures the cells an image covers; 0 counts
+    /// only its first cell.
+    void eraseInternalCells(int firstRow, int lastRow, int firstCol, int lastCol, const Screen& screen, int cellWidth,
+                            int cellHeight);
 
     /// Drops every image, placement and unfinished upload: a reset, or the
     /// alternate screen's clear, after which no id names an old image.
@@ -239,7 +321,15 @@ public:
     void setQuota(std::size_t bytes);
     /// Whether transmissions may read files, temporary files and shared
     /// memory (t=f, t=t, t=s). Off, they are refused and nothing is opened.
-    void setFileTransfer(bool allowed) noexcept { m_fileTransfer = allowed; }
+    void setFileTransfer(bool allowed) noexcept
+    {
+        m_fileTransfer = allowed;
+    }
+    /// The $TMPDIR of the programs (Terminal::setTemporaryDirectory).
+    void setTemporaryDirectory(std::string directory)
+    {
+        m_temporaryDirectory = std::move(directory);
+    }
     /// Sets the work budget (chargeWork()) and fills it: @p burst bytes at
     /// once, refilled at @p bytesPerSecond.
     void setWorkBudget(std::size_t burst, std::size_t bytesPerSecond);
@@ -251,12 +341,36 @@ public:
     /// An image larger than the quota is not stored, and replaces nothing.
     void addSixel(ImageFrame frame, const Screen& screen, int row, int col, int cellWidth, int cellHeight,
                   std::uint32_t displayWidth = 0, std::uint32_t displayHeight = 0);
+    /// addSixel() with the frames of an animation (an iTerm2 GIF), which
+    /// runs and loops while it shows. @p gaps holds the milliseconds of
+    /// each frame. Every frame has the size of the first. Frames past
+    /// MaxFrames are dropped, and a gap above INT_MAX is INT_MAX.
+    void addInternalImage(std::vector<ImageFrame> frames, std::vector<std::uint32_t> gaps, const Screen& screen,
+                          int row, int col, int cellWidth, int cellHeight, std::uint32_t displayWidth = 0,
+                          std::uint32_t displayHeight = 0);
 
-    const std::map<std::uint32_t, Image>& images() const noexcept { return m_images; }
-    const std::vector<Placement>& placements() const noexcept { return m_placements; }
+    const std::map<std::uint32_t, Image>& images() const noexcept
+    {
+        return m_images;
+    }
+    const std::vector<Placement>& placements() const noexcept
+    {
+        return m_placements;
+    }
     std::size_t totalBytes() const;
+    /// Grows with each change that may have changed the images or the
+    /// placements: a writer of the codec (StateSync.h) looks at a store
+    /// again only when it grew.
+    std::uint64_t changes() const noexcept
+    {
+        return m_changes;
+    }
 
 private:
+    /// A replica takes the images and placements of the terminal that it
+    /// mirrors (StateSync.h). The codec is part of this library: it keeps the
+    /// invariants of the store itself (m_virtual through indexVirtual()).
+    friend class StateReader;
     struct Command;
     class Origins;
     struct Pending
@@ -265,6 +379,8 @@ private:
         /// its q, as in kitty.
         AfterglowProto::GraphicsCommand first;
         std::string data;
+        /// Decoded bytes received, also those past what data keeps.
+        std::size_t received = 0;
         bool active = false;
         bool failed = false;
     };
@@ -295,8 +411,6 @@ private:
     /// A query with e= (a feature query): the keys of its action that the
     /// store supports, with no other effect.
     void featureQuery(const Command& cmd, Context& ctx);
-    /// The images that @p screen's viewport draws at the cell size.
-    std::unordered_set<std::uint32_t> shownImages(const Screen& screen, int cellWidth, int cellHeight) const;
     /// Answers a command that names an image; an a=f or a=a reply also
     /// names the frame (r=).
     void respond(const Command& cmd, Context& ctx, std::string_view status, bool isError);
@@ -310,8 +424,9 @@ private:
     /// Drops placements whose rows have all left the scrollback.
     void pruneDead(const Screen& screen, int cellWidth, int cellHeight);
     void pruneOrphans();
-    /// Evicts images until the quota and the image limit hold, unused ones
-    /// and older ones first. Image @p keep (being added to) is never evicted.
+    /// Evicts images until the quota, the image limit and MaxStoreFrames
+    /// hold, unused ones and older ones first. Image @p keep (being added
+    /// to) is never evicted.
     void enforceQuota(std::uint32_t keep = 0);
     /// Evicts the oldest image without placements. False if there is none.
     bool evictUnusedImage();
@@ -319,6 +434,8 @@ private:
     /// After each change: drops orphans and the images nothing can name or
     /// show any more, and rebuilds the lookups that queries use.
     void settle();
+    /// Rebuilds m_virtual from the placements.
+    void indexVirtual();
     /// Charges @p bytes of frame copying, or of a file or shared memory read,
     /// against a budget that refills over time. Both run on the thread that
     /// feeds the terminal. False when the budget is spent.
@@ -339,8 +456,10 @@ private:
     std::uint32_t m_nextPlacementId = 1u << 31;
     std::uint32_t m_nextInternalId = 3u << 29; ///< preferred range; occupied IDs are skipped
     std::uint64_t m_sequence = 0;
+    std::uint64_t m_changes = 0;
     std::size_t m_quota = DefaultQuota;
     bool m_fileTransfer = true;
+    std::string m_temporaryDirectory;
     double m_workBytes = -1; ///< work budget left; below 0 before first use
     double m_workBurst = double(DefaultWorkBurst);
     double m_workRate = double(DefaultWorkBytesPerSecond);

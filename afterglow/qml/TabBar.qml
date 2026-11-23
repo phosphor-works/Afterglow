@@ -14,13 +14,22 @@ QQC.ToolBar {
 
     required property QtObject controller
 
-    SystemPalette { id: systemPalette }
+    SystemPalette {
+        id: systemPalette
+    }
 
     readonly property color ink: systemPalette.windowText
+    // The badge of an agent session's window (ChromeController::agentMarker),
+    // which gives both or neither.
+    readonly property var agent: controller.agentMarker || ({})
+    readonly property string agentLabel: agent.label || ""
+    readonly property color agentColor: agent.color ?? "transparent"
     readonly property int count: controller.tabTitles.length
     readonly property real minTab: 110
     readonly property real maxTab: 220
-    readonly property real available: width - addButton.width - 4
+    // The tabs start after the badge.
+    readonly property real stripX: agentBadge.visible ? agentBadge.x + agentBadge.width + 6 : 0
+    readonly property real available: width - stripX - addButton.width - 4
     readonly property real tabWidth: Math.max(minTab, Math.min(maxTab, available / Math.max(1, count)))
 
     // Dragging: the tab being moved, where it would land, and where it is drawn.
@@ -44,37 +53,37 @@ QQC.ToolBar {
     // True when this press, on tab @p index (-1 for the empty bar), is the
     // second of a double-click.
     function secondClick(index: int): bool {
-        const now = Date.now()
-        const second = lastPressTab === index && now - lastPress < Qt.styleHints.mouseDoubleClickInterval
-        lastPress = second ? 0 : now
-        lastPressTab = index
-        return second
+        const now = Date.now();
+        const second = lastPressTab === index && now - lastPress < Qt.styleHints.mouseDoubleClickInterval;
+        lastPress = second ? 0 : now;
+        lastPressTab = index;
+        return second;
     }
 
     padding: 0
 
     // The colour for a context kind: elevated, remote or container.
     function contextColor(kind: string): color {
-        return kind === "elevated" ? controller.badColor : kind === "remote" ? controller.warnColor : systemPalette.highlight
+        return kind === "elevated" ? controller.badColor : kind === "remote" ? controller.warnColor : systemPalette.highlight;
     }
 
     // Where tab @p i is drawn while another is being dragged.
     function slotOf(i: int): int {
         if (dragFrom < 0 || i === dragFrom)
-            return i
+            return i;
         if (dragFrom < dragTo && i > dragFrom && i <= dragTo)
-            return i - 1
+            return i - 1;
         if (dragTo < dragFrom && i >= dragTo && i < dragFrom)
-            return i + 1
-        return i
+            return i + 1;
+        return i;
     }
 
     function revealCurrent() {
-        const left = controller.currentTab * tabWidth
+        const left = controller.currentTab * tabWidth;
         if (left < strip.contentX)
-            strip.contentX = left
+            strip.contentX = left;
         else if (left + tabWidth > strip.contentX + strip.width)
-            strip.contentX = left + tabWidth - strip.width
+            strip.contentX = left + tabWidth - strip.width;
     }
 
     // Scroll to the current tab when it or the number of tabs changes. Titles
@@ -82,28 +91,28 @@ QQC.ToolBar {
     Connections {
         target: bar.controller
         function onTabsChanged() {
-            const current = bar.controller.currentTab
-            const count = bar.controller.tabTitles.length
+            const current = bar.controller.currentTab;
+            const count = bar.controller.tabTitles.length;
             if (current === bar.revealedTab && count === bar.revealedCount)
-                return
-            bar.revealedTab = current
-            bar.revealedCount = count
-            Qt.callLater(bar.revealCurrent)
+                return;
+            bar.revealedTab = current;
+            bar.revealedCount = count;
+            Qt.callLater(bar.revealCurrent);
         }
         // A key or a script moved a tab: the press now holds another tab's
         // place, so the drag stops until the next press.
         function onTabsMoved() {
-            bar.dragFrom = -1
-            bar.dragTo = -1
-            bar.dragCut = true
+            bar.dragFrom = -1;
+            bar.dragTo = -1;
+            bar.dragCut = true;
         }
     }
     // The delegates are made again when the count changes, and a drag under
     // way gets neither its release nor a cancel.
     onCountChanged: {
-        dragFrom = -1
-        dragTo = -1
-        settling = false
+        dragFrom = -1;
+        dragTo = -1;
+        settling = false;
     }
     onWidthChanged: Qt.callLater(revealCurrent)
 
@@ -112,13 +121,52 @@ QQC.ToolBar {
         anchors.fill: parent
         onPressed: {
             if (bar.secondClick(-1))
-                bar.controller.newTab()
+                bar.controller.newTab();
+        }
+    }
+
+    // The window shows an agent session: once for the window, before its
+    // tabs. Its own area takes the clicks, so a double-click on it opens no
+    // tab.
+    Rectangle {
+        id: agentBadge
+        objectName: "agentBadge"
+        visible: bar.agentLabel.length > 0
+        x: 8
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.verticalCenterOffset: 1
+        // A long label is cut short: the tabs keep most of the bar.
+        width: visible ? Math.min(agentText.implicitWidth + 10, Math.max(40, bar.width * 0.2)) : 0
+        height: 16
+        radius: 4
+        color: Qt.rgba(bar.agentColor.r, bar.agentColor.g, bar.agentColor.b, 0.18)
+        border.color: Qt.rgba(bar.agentColor.r, bar.agentColor.g, bar.agentColor.b, 0.6)
+        Accessible.role: Accessible.StaticText
+        Accessible.name: qsTr("Agent session: %1").arg(bar.agentLabel)
+        Text {
+            id: agentText
+            // The badge's name says it once.
+            Accessible.ignored: true
+            anchors.centerIn: parent
+            width: Math.min(implicitWidth, parent.width - 8)
+            text: bar.agentLabel
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: bar.agentColor
+            font.pixelSize: 10
+            font.bold: true
+        }
+        MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            QQC.ToolTip.visible: containsMouse
+            QQC.ToolTip.text: qsTr("An agent drives this session")
         }
     }
 
     Flickable {
         id: strip
-        x: 0
+        x: bar.stripX
         width: Math.min(bar.available, contentWidth)
         height: bar.height
         contentWidth: bar.count * bar.tabWidth
@@ -129,14 +177,17 @@ QQC.ToolBar {
 
         Behavior on contentX {
             enabled: bar.dragFrom < 0
-            NumberAnimation { duration: bar.scrollDuration; easing.type: Easing.OutCubic }
+            NumberAnimation {
+                duration: bar.scrollDuration
+                easing.type: Easing.OutCubic
+            }
         }
 
         WheelHandler {
             onWheel: event => {
-                const delta = event.angleDelta.y !== 0 ? event.angleDelta.y : event.angleDelta.x
-                const max = Math.max(0, strip.contentWidth - strip.width)
-                strip.contentX = Math.max(0, Math.min(max, strip.contentX - delta))
+                const delta = event.angleDelta.y !== 0 ? event.angleDelta.y : event.angleDelta.x;
+                const max = Math.max(0, strip.contentWidth - strip.width);
+                strip.contentX = Math.max(0, Math.min(max, strip.contentX - delta));
             }
         }
 
@@ -162,7 +213,10 @@ QQC.ToolBar {
 
                 Behavior on x {
                     enabled: !tab.dragged && !bar.settling
-                    NumberAnimation { duration: bar.slideDuration; easing.type: Easing.OutCubic }
+                    NumberAnimation {
+                        duration: bar.slideDuration
+                        easing.type: Easing.OutCubic
+                    }
                 }
 
                 QQC.TabButton {
@@ -178,8 +232,7 @@ QQC.ToolBar {
                 // A separator between two tabs that are neither current nor hovered.
                 Rectangle {
                     readonly property int next: tab.index + 1
-                    visible: !tab.current && !tab.hovered && !tab.dragged && next < bar.count
-                             && next !== bar.controller.currentTab && bar.dragFrom < 0
+                    visible: !tab.current && !tab.hovered && !tab.dragged && next < bar.count && next !== bar.controller.currentTab && bar.dragFrom < 0
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     anchors.verticalCenterOffset: 1
@@ -253,61 +306,59 @@ QQC.ToolBar {
 
                     onPressed: mouse => {
                         if (mouse.button === Qt.LeftButton) {
-                            bar.dragCut = false
-                            pressPosition = mapToItem(bar, mouse.x, mouse.y)
-                            grabOffset = mouse.x
+                            bar.dragCut = false;
+                            pressPosition = mapToItem(bar, mouse.x, mouse.y);
+                            grabOffset = mouse.x;
                             if (bar.secondClick(tab.index))
-                                bar.controller.renameTab(tab.index)
+                                bar.controller.renameTab(tab.index);
                             else if (!tab.current)
-                                bar.controller.activateTab(tab.index)
+                                bar.controller.activateTab(tab.index);
                         }
                     }
                     onPositionChanged: mouse => {
                         if (!(mouse.buttons & Qt.LeftButton) || bar.dragCut)
-                            return
-                        const at = mapToItem(strip.contentItem, mouse.x, 0).x
-                        const position = mapToItem(bar, mouse.x, mouse.y)
-                        if (bar.dragFrom < 0
-                            && Math.hypot(position.x - pressPosition.x, position.y - pressPosition.y) < Qt.styleHints.startDragDistance)
-                            return
-                        const max = (bar.count - 1) * bar.tabWidth
-                        bar.dragX = Math.max(0, Math.min(max, at - grabOffset))
-                        bar.dragTo = Math.max(0, Math.min(bar.count - 1, Math.round(bar.dragX / bar.tabWidth)))
-                        bar.dragFrom = tab.index
-                        bar.lastPress = 0
-                        bar.lastPressTab = -2
+                            return;
+                        const at = mapToItem(strip.contentItem, mouse.x, 0).x;
+                        const position = mapToItem(bar, mouse.x, mouse.y);
+                        if (bar.dragFrom < 0 && Math.hypot(position.x - pressPosition.x, position.y - pressPosition.y) < Qt.styleHints.startDragDistance)
+                            return;
+                        const max = (bar.count - 1) * bar.tabWidth;
+                        bar.dragX = Math.max(0, Math.min(max, at - grabOffset));
+                        bar.dragTo = Math.max(0, Math.min(bar.count - 1, Math.round(bar.dragX / bar.tabWidth)));
+                        bar.dragFrom = tab.index;
+                        bar.lastPress = 0;
+                        bar.lastPressTab = -2;
                     }
                     onReleased: mouse => {
                         if (mouse.button === Qt.LeftButton && bar.dragFrom >= 0) {
-                            const from = bar.dragFrom
-                            const to = bar.dragTo
-                            const position = mapToItem(bar, mouse.x, mouse.y)
-                            const margin = Qt.styleHints.startDragDistance
-                            const detach = position.x < -margin || position.x > bar.width + margin
-                                           || position.y < -margin || position.y > bar.height + margin
-                            bar.settling = true
-                            bar.dragFrom = -1
-                            bar.dragTo = -1
+                            const from = bar.dragFrom;
+                            const to = bar.dragTo;
+                            const position = mapToItem(bar, mouse.x, mouse.y);
+                            const margin = Qt.styleHints.startDragDistance;
+                            const detach = position.x < -margin || position.x > bar.width + margin || position.y < -margin || position.y > bar.height + margin;
+                            bar.settling = true;
+                            bar.dragFrom = -1;
+                            bar.dragTo = -1;
                             if (detach) {
-                                bar.settling = false
-                                bar.controller.detachTab(from)
+                                bar.settling = false;
+                                bar.controller.detachTab(from);
                             } else {
                                 if (to !== from)
-                                    bar.controller.moveTab(from, to)
-                                Qt.callLater(() => bar.settling = false)
+                                    bar.controller.moveTab(from, to);
+                                Qt.callLater(() => bar.settling = false);
                             }
                         }
                     }
                     onCanceled: {
-                        bar.dragFrom = -1
-                        bar.dragTo = -1
+                        bar.dragFrom = -1;
+                        bar.dragTo = -1;
                     }
                     onClicked: mouse => {
                         if (mouse.button === Qt.MiddleButton)
-                            bar.controller.closeTab(tab.index)
+                            bar.controller.closeTab(tab.index);
                         else if (mouse.button === Qt.RightButton) {
-                            const p = mapToItem(bar, mouse.x, mouse.y)
-                            bar.controller.tabMenu(tab.index, p.x, p.y)
+                            const p = mapToItem(bar, mouse.x, mouse.y);
+                            bar.controller.tabMenu(tab.index, p.x, p.y);
                         }
                     }
                 }

@@ -12,13 +12,13 @@ Item {
 
     function syncVisibility() {
         if (visible) {
-            input.text = controller.titlePrompt.text || ""
-            input.selectAll()
+            input.text = controller.titlePrompt.text || "";
+            input.selectAll();
         }
     }
 
     function takeFocus() {
-        input.forceActiveFocus()
+        input.forceActiveFocus();
     }
 
     onVisibleChanged: syncVisibility()
@@ -30,7 +30,7 @@ Item {
         target: prompt.controller
         function onTitlePromptChanged() {
             if (prompt.visible && prompt.controller.titlePrompt.open === true)
-                prompt.syncVisibility()
+                prompt.syncVisibility();
         }
     }
 

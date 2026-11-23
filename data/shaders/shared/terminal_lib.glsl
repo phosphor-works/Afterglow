@@ -4,11 +4,12 @@
 // Shared helpers for TERMINAL shader packs. Pulls in the uniform contract
 // (terminal_uniforms.glsl) and the colour helpers (terminal_color.glsl), and
 // names the idioms packs would otherwise re-derive from raw uniforms. The host
-// includes this file ahead of every pack stage (pTerminal(), pVertex() and
-// pMesh()), so a pack needs no includes of its own. Buffers, audio, the
-// previous text frame, mesh scenes and the window's panes are opt-in modules:
-// terminal_multipass.glsl, terminal_audio.glsl, terminal_history.glsl,
-// terminal_scene.glsl and terminal_panes.glsl.
+// includes this file ahead of every pack stage (pTerminal(), pVertex(),
+// pMesh() and the pointer map pPointerMap()), so a pack needs no includes of
+// its own. Buffers, audio, the previous text frame, mesh scenes and the
+// window's panes are opt-in modules: terminal_multipass.glsl,
+// terminal_audio.glsl, terminal_history.glsl, terminal_scene.glsl and
+// terminal_panes.glsl.
 
 #ifndef AFTERGLOW_TERMINAL_LIB_GLSL
 #define AFTERGLOW_TERMINAL_LIB_GLSL

@@ -10,14 +10,20 @@ Afterglow is a Linux terminal with GPU rendering, tabs, splits, shell integratio
 | Build or install | [Build instructions](BUILD.md) |
 | Set fonts, colors or themes | [Appearance](APPEARANCE.md) |
 | Find a setting or default binding | [Configuration reference](CONFIGURATION.md) |
-| Use keybindings, selection, search or hints | [Input](INPUT.md) |
+| Use keybindings, the mouse, touchpads, touchscreens, selection, search or hints | [Input](INPUT.md) |
 | Move panes or save layouts | [Projects](PROJECTS.md) |
+| Keep terminal sessions running, and show them in windows | [The mux daemon](MUX.md) |
 | Control a running instance | [Command line and control socket](CONTROL.md) |
+| Give an agent such as Claude Code a terminal session of its own | [The MCP server](MCP.md) |
+| Run the commands of scripts from a shell with `aglow run` | [Script commands](CONTROL.md#script-commands) |
+| Run script commands from a remote host in an `afterglow ssh` session | [Remote commands](CONTROL.md#remote-commands) |
+| Run a program such as fzf over a pane, or in a popup | [Overlays](SCRIPTING.md#overlays) and [`afterglow ctl overlay`](CONTROL.md#overlays) |
+| Save a picture of a pane as it shows on the screen | [Screenshots](CONTROL.md#screenshots) |
 | Write scripts | [Luau API](SCRIPTING.md) |
 | Install or write packages | [Packages and state](PACKAGES.md) |
 | Configure reactive effects | [Shaders](SHADERS.md) |
 | Write shader passes | [Shader API](SHADER-API.md) |
-| Use accessibility, input methods, file drops, Kitty file transfer and drag and drop, or the `aglow` client | [Desktop integration](DESKTOP.md) |
+| Use accessibility, input methods, file and text drops, Kitty file transfer and drag and drop, or the `aglow` client | [Desktop integration](DESKTOP.md) |
 | Use bidirectional text | [Bidirectional text](BIDI.md) |
 | Check protocol support | [Compatibility](COMPATIBILITY.md) |
 | Read what Afterglow supports | [Release notes](../CHANGELOG.md) |
@@ -27,7 +33,7 @@ Afterglow is a Linux terminal with GPU rendering, tabs, splits, shell integratio
 
 ## First configuration
 
-The usual configuration path is `~/.config/afterglow/config.json`.
+The usual configuration path is `~/.config/phosphor-works/afterglow/config.json`.
 See the [configuration file](APPEARANCE.md#configuration-file) for its format and an example.
 
 Afterglow reloads configuration changes automatically.
@@ -35,12 +41,14 @@ Shell integration starts automatically for supported Bash, Zsh and Fish versions
 The command palette contains prompt navigation, output, search and project actions.
 
 Example files do not activate themselves.
-Copy a complete package directory into `~/.config/afterglow/scripts/` to install it.
+Copy a complete package directory into `~/.config/phosphor-works/afterglow/scripts/` to install it.
 Keep the directory name, manifest ID and module filenames unchanged.
 Follow the package's instructions for required settings.
 Reopen the palette after reload to see new commands.
 
 `afterglow --help` lists launch options.
 `afterglow ctl --help` lists live control commands.
+`afterglow mux --help` lists the commands of `afterglow mux`, which create, list and end the sessions of the mux daemon.
+`afterglow mcp --help` lists the options of the MCP server for agents.
 `afterglow --config-reference` prints the runtime schema without a window or user configuration.
 Use the option alone.

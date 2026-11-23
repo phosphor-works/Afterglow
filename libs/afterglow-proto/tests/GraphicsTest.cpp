@@ -69,14 +69,18 @@ Received read(std::string_view stream)
 
 TEST(Graphics, KeysRoundTrip)
 {
-    for (std::string_view keys : {"a=T,f=100,t=f,i=31,I=7,p=2,q=2,x=-5,y=3,w=10,h=20,X=1,Y=4294967295,c=80,r=24,C=1,z=-1073741825,U=1",
-                                  "a=d,d=r,x=4000000000,y=4294967295", "a=a,s=3,v=2,r=1,z=40", "a=c,r=2,c=1,x=0,Y=-1,H=-3,V=4,P=9,Q=8",
-                                  "a=f,s=4,v=4,S=64,O=8,o=z,i=1", "i=0", "m=1,q=1", "a=q,i=31,e=T,U=1,C=1"}) {
+    for (std::string_view keys :
+         {"a=T,f=100,t=f,i=31,I=7,p=2,q=2,x=-5,y=3,w=10,h=20,X=1,Y=4294967295,c=80,r=24,C=1,z=-1073741825,U=1",
+          "a=d,d=r,x=4000000000,y=4294967295", "a=a,s=3,v=2,r=1,z=40", "a=c,r=2,c=1,x=0,Y=-1,H=-3,V=4,P=9,Q=8",
+          "a=f,s=4,v=4,S=64,O=8,o=z,i=1", "i=0", "m=1,q=1", "a=q,i=31,e=T,U=1,C=1", "a=t,i=2,N=1", "a=t,f=0",
+          "a=t,f=-1"}) {
         const auto cmd = GraphicsCommand::parse(keys);
         EXPECT_EQ(GraphicsCommand::parse(cmd.keys()), cmd) << keys << " -> " << cmd.keys();
     }
     // Defaults are not written.
     EXPECT_EQ(GraphicsCommand{}.keys(), "");
+    EXPECT_EQ(GraphicsCommand::parse("f=0").format, 32u);
+    EXPECT_EQ(GraphicsCommand::parse("f=-1").format, 0xFFFFFFFFu);
     GraphicsCommand place;
     place.action = 'p';
     place.id = 5;
@@ -149,11 +153,10 @@ TEST(Graphics, FrameChunksCarryTheFrameAction)
 
 TEST(Graphics, RepliesRoundTrip)
 {
-    for (const GraphicsReply& reply : {GraphicsReply{3, 0, 0, "OK"}, GraphicsReply{0, 7, 0, "ENOENT:no such image"},
-                                       GraphicsReply{3, 7, 2, "EINVAL:bad"}, GraphicsReply{0, 0, 2, "OK"},
-                                       GraphicsReply{3, 0, 0, "OK", "r=2"},
-                                       GraphicsReply{31, 0, 0, "OK", "e=T,U=1,C=1"},
-                                       GraphicsReply{0, 0, 0, "OK", "e=q"}}) {
+    for (const GraphicsReply& reply :
+         {GraphicsReply{3, 0, 0, "OK"}, GraphicsReply{0, 7, 0, "ENOENT:no such image"},
+          GraphicsReply{3, 7, 2, "EINVAL:bad"}, GraphicsReply{0, 0, 2, "OK"}, GraphicsReply{3, 0, 0, "OK", "r=2"},
+          GraphicsReply{31, 0, 0, "OK", "e=T,U=1,C=1"}, GraphicsReply{0, 0, 0, "OK", "e=q"}}) {
         const std::string out = reply.write();
         if (!out.starts_with("\x1b_G") || !out.ends_with("\x1b\\")) {
             ADD_FAILURE() << "not a whole APC G reply: " << out;
@@ -188,14 +191,14 @@ TEST(Graphics, FlagsThatAreNotLettersRefuseTheCommand)
     EXPECT_TRUE(cmd.flagsAreLetters());
     EXPECT_EQ(cmd.keys(), "a=p,t=f,o=z,i=4");
     for (const char bad : {';', ',', '\x1b', '\0', '1'}) {
-        for (char GraphicsCommand::*flag : {&GraphicsCommand::action, &GraphicsCommand::medium, &GraphicsCommand::del,
-                                            &GraphicsCommand::compression, &GraphicsCommand::feature}) {
+        for (char GraphicsCommand::* flag : {&GraphicsCommand::action, &GraphicsCommand::medium, &GraphicsCommand::del,
+                                             &GraphicsCommand::compression, &GraphicsCommand::feature}) {
             GraphicsCommand broken = cmd;
             broken.*flag = bad;
             // A zero o is no compression, and a zero e no feature query:
             // both are valid commands.
-            const bool valid
-                = bad == '\0' && (flag == &GraphicsCommand::compression || flag == &GraphicsCommand::feature);
+            const bool valid =
+                bad == '\0' && (flag == &GraphicsCommand::compression || flag == &GraphicsCommand::feature);
             EXPECT_EQ(broken.flagsAreLetters(), valid) << int(bad);
             EXPECT_EQ(broken.keys().empty(), !valid) << int(bad);
             EXPECT_EQ(writeGraphics(broken, "data").empty(), !valid) << int(bad);

@@ -1,15 +1,18 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: CC0-1.0
 #
-# Licences for files that cannot carry an SPDX header, and for third-party
-# files that keep the notices of their upstream instead of one. The
-# application is GPL-3.0-or-later, the libraries (libs/) LGPL-2.1-or-later;
-# see each file.
+# Licenses for files that cannot carry an SPDX header: data, and the notices
+# that install as they are. The application is GPL-3.0-or-later, the
+# libraries (libs/) LGPL-2.1-or-later; see each file.
 
 version = 1
 
 [[annotations]]
-path = ["data/shaders/**/metadata.json", "data/examples/packages/*/shaders/**/metadata.json"]
+path = [
+    "data/shaders/**/metadata.json",
+    "examples/shaders/**/metadata.json",
+    "examples/packages/*/shaders/**/metadata.json",
+]
 SPDX-FileCopyrightText = "2026 fuddlesworth"
 SPDX-License-Identifier = "LGPL-2.1-or-later"
 
@@ -17,9 +20,9 @@ SPDX-License-Identifier = "LGPL-2.1-or-later"
 # annotation wins.
 [[annotations]]
 path = [
-    "data/shaders/depth-trails/metadata.json",
-    "data/shaders/feedback-glow/metadata.json",
-    "data/shaders/mesh-reactor/metadata.json",
+    "examples/shaders/depth-trails/metadata.json",
+    "examples/shaders/feedback-glow/metadata.json",
+    "examples/shaders/mesh-reactor/metadata.json",
 ]
 SPDX-FileCopyrightText = "2026 fuddlesworth"
 SPDX-License-Identifier = "GPL-3.0-or-later"
@@ -28,6 +31,7 @@ SPDX-License-Identifier = "GPL-3.0-or-later"
 path = [
     ".claude/settings.json",
     "CMakePresets.json",
+    "flake.lock",
     "data/benchmarks/*.json",
     "data/benchmarks/*.json.gz",
 ]
@@ -35,18 +39,18 @@ SPDX-FileCopyrightText = "2026 fuddlesworth"
 SPDX-License-Identifier = "CC0-1.0"
 
 [[annotations]]
-path = ["data/examples/glasshouse/**/*.json", "data/examples/glasshouse/preview.webp"]
+path = ["examples/glasshouse/**/*.json", "examples/glasshouse/preview.webp"]
 SPDX-FileCopyrightText = "2026 fuddlesworth"
 SPDX-License-Identifier = "GPL-3.0-or-later"
 # Glasshouse palettes after Dsaquel/dots.
 
 [[annotations]]
 path = [
-    "data/examples/phosphor/*.json",
-    "data/examples/phosphor/**/*.json",
-    "data/examples/phosphor/preview.webp",
-    "data/examples/packages/*/package.json",
-    "data/examples/projects/*.json",
+    "examples/phosphor/*.json",
+    "examples/phosphor/**/*.json",
+    "examples/phosphor/preview.webp",
+    "examples/packages/*/package.json",
+    "examples/projects/*.json",
     "data/themes/afterglow-dark.json",
     "data/themes/afterglow-light.json",
 ]
@@ -92,21 +96,25 @@ SPDX-License-Identifier = "MIT"
 # Converted from mbadolato/iTerm2-Color-Schemes (ghostty/), which collects
 # each scheme from its upstream project.
 
-[[annotations]]
-path = ["tools/aglow/stb/stb_image.h"]
-SPDX-FileCopyrightText = ["2017 Sean Barrett", "2026 fuddlesworth"]
-SPDX-License-Identifier = "MIT"
-# stb_image from nothings/stb, at the upstream commit that
-# cmake/AfterglowDependencies.cmake pins, with aglow's patches. The top of
-# tools/aglow/StbImage.cpp lists the patches, which are MIT like the file.
-# Upstream offers MIT or the Unlicense: Afterglow takes it under MIT.
-
-# The notices that install with a static aglow (tools/aglow/CMakeLists.txt).
-# The text of the GCC Runtime Library Exception goes with them as
+# The notices that install with a static aglow (tools/aglow/CMakeLists.txt),
+# and the acknowledgment of the Independent JPEG Group that installs with
+# the image codecs (libs/afterglow-image/CMakeLists.txt). The text of the
+# GCC Runtime Library Exception goes with the first as
 # notices/COPYING.RUNTIME, its name in the GCC sources. It is not in LICENSES/:
-# no file of Afterglow is under the exception, and REUSE allows no licence
+# no file of Afterglow is under the exception, and REUSE allows no license
 # file there that no file uses. REUSE covers no COPYING.* file.
 [[annotations]]
-path = ["tools/aglow/notices/*.txt"]
+path = ["tools/aglow/notices/*.txt", "libs/afterglow-image/notices/*.txt"]
 SPDX-FileCopyrightText = "2026 fuddlesworth"
 SPDX-License-Identifier = "CC0-1.0"
+
+# The tables that tools/gen_unicode_tables.py generates from the Unicode
+# Character Database. The file's own header gives Afterglow's part; this adds
+# the Unicode License v3 of the data ("aggregate": both apply). Its text
+# installs with the binaries as LICENSE.Unicode
+# (afterglow_install_bundled_notices in cmake/AfterglowDependencies.cmake).
+[[annotations]]
+path = "libs/afterglow-vt/src/UnicodeTables.inc"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "1991-2026 Unicode, Inc."
+SPDX-License-Identifier = "Unicode-3.0"

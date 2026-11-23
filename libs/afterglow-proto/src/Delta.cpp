@@ -45,11 +45,20 @@ public:
             XXH3_128bits_reset(m_state);
         }
     }
-    ~StreamHash() { XXH3_freeState(m_state); }
-    bool valid() const { return m_state != nullptr; }
+    ~StreamHash()
+    {
+        XXH3_freeState(m_state);
+    }
+    bool valid() const
+    {
+        return m_state != nullptr;
+    }
     StreamHash(const StreamHash&) = delete;
     StreamHash& operator=(const StreamHash&) = delete;
-    void update(std::string_view bytes) { XXH3_128bits_update(m_state, bytes.data(), bytes.size()); }
+    void update(std::string_view bytes)
+    {
+        XXH3_128bits_update(m_state, bytes.data(), bytes.size());
+    }
     std::array<std::uint8_t, 16> digest() const
     {
         XXH128_canonical_t canonical{};
@@ -264,14 +273,17 @@ bool DeltaGenerator::produce(ByteSource& file, std::string& out, std::size_t wan
         bool hashed = false;
         const std::uint32_t weak = m_a | (m_b << 16);
         if (mayHold(weak)) {
-            const auto first = std::lower_bound(m_records.begin(), m_records.end(), weak,
-                                                [](const Record& record, std::uint32_t key) { return record.weak < key; });
+            const auto first =
+                std::lower_bound(m_records.begin(), m_records.end(), weak, [](const Record& record, std::uint32_t key) {
+                    return record.weak < key;
+                });
             if (first != m_records.end() && first->weak == weak) {
                 hashed = true;
                 const std::uint64_t strong = XXH3_64bits(data + m_position, length);
-                const auto found = std::lower_bound(first, m_records.end(), strong, [weak](const Record& record, std::uint64_t key) {
-                    return record.weak == weak && record.strong < key;
-                });
+                const auto found =
+                    std::lower_bound(first, m_records.end(), strong, [weak](const Record& record, std::uint64_t key) {
+                        return record.weak == weak && record.strong < key;
+                    });
                 if (found != m_records.end() && found->weak == weak && found->strong == strong) {
                     match = found->index;
                 }

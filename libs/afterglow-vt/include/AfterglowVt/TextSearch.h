@@ -23,8 +23,14 @@ struct TextCell
     std::int32_t col = 0;
     std::int32_t lastCol = 0;
 
-    SelectionPoint start() const { return {row, col}; }
-    SelectionPoint end() const { return {row, lastCol}; }
+    SelectionPoint start() const
+    {
+        return {row, col};
+    }
+    SelectionPoint end() const
+    {
+        return {row, lastCol};
+    }
 };
 
 /// A logical line: the text of soft-wrapped rows, each code point mapped to
@@ -52,10 +58,13 @@ struct TextSnapshot
 AFTERGLOWVT_EXPORT bool appendTextRow(TextSnapshot& out, const Screen& screen, std::size_t index,
                                       std::size_t maxCharacters = 4 * 1024 * 1024);
 
+/// The longest pattern that searchText takes, in code points.
+inline constexpr std::size_t MaxSearchPattern = 4096;
+
 /// Why a search stopped. Callers translate this, not the English text.
 enum class SearchError : std::uint8_t {
     None,
-    PatternTooLong, ///< over 4096 characters
+    PatternTooLong, ///< over MaxSearchPattern characters
     NoMemory,
     TimeLimit,
     ComplexityLimit,

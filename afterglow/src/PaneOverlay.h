@@ -60,18 +60,36 @@ public:
     /// Whom the answer goes to, and the script's request ID, for closing
     /// the overlays of an owner or of a run.
     void setReply(const QString& owner, const QString& request, Reply reply);
-    const QString& owner() const { return m_owner; }
-    const QString& request() const { return m_request; }
+    const QString& owner() const
+    {
+        return m_owner;
+    }
+    const QString& request() const
+    {
+        return m_request;
+    }
 
     /// The overlay's own terminal.
-    Pane* pane() const { return m_pane; }
+    Pane* pane() const
+    {
+        return m_pane;
+    }
 
     /// The spec's title in UTF-8, which a popup's border shows.
-    const std::string& borderTitle() const { return m_borderTitle; }
+    const std::string& borderTitle() const
+    {
+        return m_borderTitle;
+    }
     /// A box over its host, which shows around it (OverlaySpec::popup).
-    bool popup() const { return m_shape.popup(); }
+    bool popup() const
+    {
+        return m_shape.popup();
+    }
     /// Where its program's grid is in the host's grid, and its border.
-    const OverlaySpec::Placement& placement() const { return m_placement; }
+    const OverlaySpec::Placement& placement() const
+    {
+        return m_placement;
+    }
     /// Places it anew in a host grid of @p cols by @p rows and resizes its
     /// program, which hears of a change.
     void place(int cols, int rows, int cellWidth, int cellHeight);

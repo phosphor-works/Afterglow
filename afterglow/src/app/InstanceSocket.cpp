@@ -3,6 +3,7 @@
 
 #include "InstanceSocket.h"
 
+#include <AfterglowProto/Lock.h>
 #include <AfterglowProto/Socket.h>
 #include <PhosphorIpc/IpcRouter.h>
 
@@ -13,10 +14,9 @@
 #include <QLoggingCategory>
 #include <QSet>
 
-#include <cerrno>
+#include <string>
+#include <utility>
 
-#include <fcntl.h>
-#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -28,64 +28,46 @@ namespace {
 
 QString g_processPath;
 
-// Where the sockets are, as AfterglowProto::sharedSocketPath finds them: no
-// directory without an absolute XDG_RUNTIME_DIR, and then no socket to clean up.
-// A leading '/' as there: QDir::isAbsolutePath takes a Qt resource path too.
-QString runtimeDirectory()
+std::string lockPath(const QString& socket)
 {
-    const QString directory = qEnvironmentVariable("XDG_RUNTIME_DIR");
-    return directory.startsWith(QLatin1Char('/')) ? directory : QString();
+    return QFile::encodeName(socket + QStringLiteral(".lock")).toStdString();
 }
 
-QByteArray lockPath(const QString& socket)
-{
-    return QFile::encodeName(socket + QStringLiteral(".lock"));
-}
-
-// The lock on @p socket's lock file. -1 while another process holds it, -2
-// when the file cannot be opened.
+// The lock on @p socket's lock file, as aglow-mux takes the lock of its
+// sockets: AfterglowProto::LockHeld while another holder has it,
+// AfterglowProto::LockFailed when the file cannot be opened or locked.
 int lockSocket(const QString& socket)
 {
-    const QByteArray path = lockPath(socket);
-    // A holder that lets go removes the file. A lock taken on the removed
-    // file guards nothing, so take it again on the file that is there.
-    for (int attempt = 0; attempt < 8; ++attempt) {
-        const int fd = ::open(path.constData(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
-        if (fd < 0) {
-            qCWarning(lcApp) << "cannot open" << QFile::decodeName(path) << "-" << qt_error_string(errno);
-            return -2;
-        }
-        if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
-            ::close(fd);
-            return -1;
-        }
-        struct stat held{}, named{};
-        if (::fstat(fd, &held) == 0 && ::stat(path.constData(), &named) == 0 && held.st_dev == named.st_dev
-            && held.st_ino == named.st_ino) {
-            return fd;
-        }
-        ::close(fd);
-    }
-    return -1;
+    std::string error;
+    const int fd = AfterglowProto::lockFile(lockPath(socket), &error);
+    if (fd == AfterglowProto::LockFailed)
+        qCWarning(lcApp).noquote() << QString::fromStdString(error);
+    return fd;
 }
 
 void unlockSocket(const QString& socket, int fd)
 {
-    ::unlink(lockPath(socket).constData());
-    ::close(fd);
+    AfterglowProto::unlockFile(lockPath(socket), fd);
 }
 
-enum class SocketFile { None, Ours, Other };
+enum class SocketFile {
+    None,
+    Ours,
+    Other
+};
 
 SocketFile socketFile(const QString& path)
 {
     struct stat info{};
-    if (::lstat(QFile::encodeName(path).constData(), &info) != 0) return SocketFile::None;
+    if (::lstat(QFile::encodeName(path).constData(), &info) != 0)
+        return SocketFile::None;
     return S_ISSOCK(info.st_mode) && info.st_uid == ::getuid() ? SocketFile::Ours : SocketFile::Other;
 }
 
-// A listener without the lock (an older build) still answers: only a refused
-// connection proves that none is there. A busy listener times out.
+// A listener can hold no lock file: one that something removed while the
+// listener ran (a cleaner of the runtime directory) lets the next process
+// take a new lock. It still answers: only a refused connection proves that
+// none is there. A busy listener times out.
 bool refusesConnections(const QString& path)
 {
     QLocalSocket probe;
@@ -106,19 +88,30 @@ InstanceSocket::InstanceSocket()
 
 InstanceSocket::~InstanceSocket()
 {
+    close();
+}
+
+void InstanceSocket::close()
+{
     // The socket file goes first: while the lock is held, no other process
     // can take the path and lose its file to this one.
     m_router->stop();
-    if (m_lock >= 0) unlockSocket(m_path, m_lock);
-    if (g_processPath == m_path) g_processPath.clear();
+    if (m_lock >= 0)
+        unlockSocket(m_path, std::exchange(m_lock, -1));
+    if (!m_path.isEmpty() && g_processPath == m_path)
+        g_processPath.clear();
+    m_path.clear();
 }
 
 InstanceSocket::Listen InstanceSocket::listen(const QString& path)
 {
-    if (path.isEmpty() || listening()) return Listen::Failed;
+    if (path.isEmpty() || listening())
+        return Listen::Failed;
     const int lock = lockSocket(path);
-    if (lock == -1) return Listen::Held;
-    if (lock < 0) return Listen::Failed;
+    if (lock == AfterglowProto::LockHeld)
+        return Listen::Held;
+    if (lock == AfterglowProto::LockFailed)
+        return Listen::Failed;
     // The last holder of the lock is gone. What it left is removed.
     switch (socketFile(path)) {
     case SocketFile::None:
@@ -128,7 +121,7 @@ InstanceSocket::Listen InstanceSocket::listen(const QString& path)
             QFile::remove(path);
             break;
         }
-        // A listener without the lock: an older build.
+        // A listener whose lock file went.
         unlockSocket(path, lock);
         return Listen::Held;
     case SocketFile::Other:
@@ -149,24 +142,48 @@ InstanceSocket::Listen InstanceSocket::listen(const QString& path)
 void InstanceSocket::removeStaleSockets()
 {
     const QString runtime = runtimeDirectory();
-    if (runtime.isEmpty()) return;
+    if (runtime.isEmpty())
+        return;
     const QDir dir(runtime);
     const QString lockSuffix = QStringLiteral(".lock");
     QSet<QString> sockets;
-    const QStringList names = dir.entryList({QStringLiteral("afterglow-*.sock"), QStringLiteral("afterglow-*.sock.lock")},
-                                            QDir::Files | QDir::System | QDir::Hidden);
+    const QStringList names =
+        dir.entryList({QStringLiteral("afterglow-*.sock"), QStringLiteral("afterglow-*.sock.lock")},
+                      QDir::Files | QDir::System | QDir::Hidden);
     for (QString name : names) {
-        if (name.endsWith(lockSuffix)) name.chop(lockSuffix.size());
+        if (name.endsWith(lockSuffix))
+            name.chop(lockSuffix.size());
         sockets.insert(dir.filePath(name));
     }
     for (const QString& path : std::as_const(sockets)) {
         const SocketFile file = socketFile(path);
-        if (file == SocketFile::Other) continue;
+        if (file == SocketFile::Other)
+            continue;
         const int lock = lockSocket(path);
-        if (lock < 0) continue;
-        if (file == SocketFile::Ours && refusesConnections(path)) QFile::remove(path);
+        if (lock < 0)
+            continue;
+        if (file == SocketFile::Ours && refusesConnections(path))
+            QFile::remove(path);
         unlockSocket(path, lock);
     }
+}
+
+QString InstanceSocket::runtimeDirectory()
+{
+    // A leading '/' as AfterglowProto::sharedSocketPath takes it:
+    // QDir::isAbsolutePath takes a Qt resource path too.
+    const QString directory = qEnvironmentVariable("XDG_RUNTIME_DIR");
+    return directory.startsWith(QLatin1Char('/')) ? directory : QString();
+}
+
+int InstanceSocket::lock(const QString& socket)
+{
+    return lockSocket(socket);
+}
+
+void InstanceSocket::unlock(const QString& socket, int fd)
+{
+    unlockSocket(socket, fd);
 }
 
 QString InstanceSocket::processPath()
@@ -182,7 +199,8 @@ QString InstanceSocket::sharedPath()
 
 QString InstanceSocket::ownPath()
 {
-    return QFile::decodeName(QByteArray::fromStdString(AfterglowProto::ownSocketPath(QCoreApplication::applicationPid())));
+    return QFile::decodeName(
+        QByteArray::fromStdString(AfterglowProto::ownSocketPath(QCoreApplication::applicationPid())));
 }
 
 } // namespace Afterglow

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Native AT-SPI text, selection and pane actions, and OSC 1337 save and cancel acceptance.
+"""Native AT-SPI text, selection and pane actions, and the question of an OSC 1337 download: Refuse, Save As with a
+name typed in the Save dialog, and Save As then Cancel.
 Requires python-dbus and the nested_desktop dependencies. Runs on a private bus.
 """
 import argparse
@@ -14,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 import dbus
-from nested_desktop import NestedDesktop, check, wait_for
+from nested_desktop import NestedDesktop, check, exit_on_sigterm, run_on_private_bus, wait_for
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('binary', type=Path)
@@ -23,11 +24,11 @@ parser.add_argument('--it2dl', type=Path, help='Optional upstream it2dl script t
 args = parser.parse_args()
 binary = str(args.binary.resolve())
 if not args.private_bus:
-    try:
-        sys.exit(subprocess.call(['dbus-run-session', '--', sys.executable, '-u', __file__, binary, '--private-bus']
-                                 + (['--it2dl', str(args.it2dl.resolve())] if args.it2dl else []), timeout=600))
-    except subprocess.TimeoutExpired:
-        sys.exit('desktop acceptance did not finish in 600 seconds')
+    # At the time limit, the whole run stops: KWin, Afterglow and the registry too (run_on_private_bus).
+    sys.exit(run_on_private_bus([sys.executable, '-u', __file__, binary, '--private-bus']
+                                + (['--it2dl', str(args.it2dl.resolve())] if args.it2dl else []), 600))
+# A SIGTERM of the time limit runs the finally blocks below, which stop what this run started.
+exit_on_sigterm()
 REGISTRY_PATHS = ('/usr/lib/at-spi2-registryd', '/usr/libexec/at-spi2-registryd',
                   '/usr/lib/at-spi2-core/at-spi2-registryd', '/usr/libexec/at-spi2-core/at-spi2-registryd')
 registryd = next((path for path in REGISTRY_PATHS if os.access(path, os.X_OK)), shutil.which('at-spi2-registryd'))
@@ -38,16 +39,14 @@ T = 'org.a11y.atspi.Text'
 P = 'org.freedesktop.DBus.Properties'
 with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
     root = Path(tmp)
-    config = root / 'afterglow'
-    config.mkdir()
+    config = root / 'phosphor-works/afterglow'
+    config.mkdir(parents=True)
     (config / 'config.json').write_text(json.dumps({
         'Terminal': {'shell': '/bin/bash', 'env': {'HOME': tmp}, 'confirmClose': False},
         'Control': {'allowReadText': True}, 'QuickTerminal': {'shortcut': ''},
         'Animation': {'cursor': False, 'scroll': False},
     }))
     (root / '.bashrc').write_text("PS1='desktop> '\nprintf 'ACCESSIBLE-READY\\n'\n")
-    # The download directory under HOME, where the Save dialog opens.
-    (root / 'Downloads').mkdir()
     # Logs outlive the temporary root. A private directory avoids collisions in a shared /tmp.
     logs = Path(tempfile.mkdtemp(prefix='afterglow-desktop-logs-'))
     print('Logs:', logs)
@@ -55,8 +54,9 @@ with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
         address = dbus.Interface(dbus.SessionBus().get_object('org.a11y.Bus', '/org/a11y/bus'), 'org.a11y.Bus').GetAddress()
         return address, dbus.bus.BusConnection(str(address))
     with NestedDesktop(root) as desktop, open(logs / 'native.log', 'w') as log:
-        # HOME is the temporary root, so that the Save dialog, which opens in
-        # the download directory, cannot reach the user's own.
+        # HOME is the temporary root, and the download directory, where the
+        # Save dialog opens, is root/downloads (NestedDesktop's
+        # user-dirs.dirs): no download can reach the user's own files.
         env = dict(desktop.env, HOME=tmp, QT_LINUX_ACCESSIBILITY_ALWAYS_ON='1', QT_ACCESSIBILITY='1', QT_QPA_PLATFORMTHEME='generic', QT_LOGGING_TO_CONSOLE='1', QT_FORCE_STDERR_LOGGING='1')
         registry_process = app = None
         def ctl(*items):
@@ -139,17 +139,21 @@ with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
                 else:
                     for ref in dbus.Interface(registry, A).GetChildren(): visit(bus.get_object(str(ref[0]), str(ref[1])))
                 return result
-            def save_dialog():
-                return next((obj for obj, name, role, interfaces in nodes() if name.startswith('Save file received from')), None)
-            # The dialog's own buttons: the window's chrome has a Cancel and a
+            def dialog(prefix):
+                return next((obj for obj, name, role, interfaces in nodes() if name.startswith(prefix)), None)
+            def save_dialog(): return dialog('Save file received from')
+            # The question of a download comes first, before its data
+            # (Terminal.downloads is ask): a box named Download.
+            def question(): return dialog('Download')
+            # A dialog's own buttons: the window's chrome has a Cancel and a
             # Save of its own prompts too.
-            def button(name):
-                dialog = save_dialog()
-                for obj, label, role, interfaces in (nodes(dialog) if dialog is not None else []):
+            def button(name, of=save_dialog):
+                found = of()
+                for obj, label, role, interfaces in (nodes(found) if found is not None else []):
                     if label.replace('&', '').lower() == name and role == 'push button': return obj
                 return None
-            def press(name):
-                obj = wait_for(lambda: button(name))
+            def press(name, of=save_dialog):
+                obj = wait_for(lambda: button(name, of))
                 check(dbus.Interface(obj, 'org.a11y.atspi.Action').DoAction(0))
             # A real protocol download; receiving alone must not write a file.
             fixture = root / 'download.sh'
@@ -160,26 +164,24 @@ with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
                 source = root / offered
                 source.write_bytes(b'hello')
                 fixture.write_text(shlex.join(['bash', str(args.it2dl.resolve()), str(source)]) + '\n')
-            def offer(): ctl('send-text', '--pane', panes()[0]['id'], shlex.join(['bash', str(fixture)]) + '\n')
-            offer()
-            wait_for(save_dialog)
-            press('cancel')
-            # The dialog holds the one download slot until it is destroyed: a
-            # file sent before then is dropped, not offered.
-            wait_for(lambda: save_dialog() is None)
+            # The download, then a marker that its shell prints after it. The output after the download waits for
+            # the answer: once the marker shows, the answer has gone. The marker is arithmetic, so that the command
+            # line that the shell echoes does not show it.
+            def offer(marker):
+                ctl('send-text', '--pane', panes()[0]['id'], shlex.join(['bash', str(fixture)]) + f'; echo {marker}-$((40+2))\n')
+            def answered(marker): wait_for(lambda: f'{marker}-42' in str(text.GetText(0, -1)), timeout=10)
+            def written(): return [p for p in root.rglob(offered) if p != source]
+            offer('REFUSED')
+            wait_for(question)
+            press('refuse', question)
+            wait_for(lambda: question() is None)
+            answered('REFUSED')
             # HOME is the temporary root, so every place that a download can go is under it.
-            written = [p for p in root.rglob(offered) if p != source]
-            check(not written, written)
+            check(not written(), written())
             check(not (root / 'accepted.txt').exists())
-            # The dialog frees the download slot when it is destroyed, an event
-            # after it leaves the tree: an offer in between is dropped.
-            for attempt in range(3):
-                offer()
-                try:
-                    wait_for(lambda: button('save'), timeout=10)
-                    break
-                except AssertionError:
-                    if attempt == 2: raise
+            offer('SAVED')
+            press('save as…', question)
+            wait_for(lambda: button('save'), timeout=10)
             destination = root / 'accepted.txt'
             fields = [(obj, name) for obj, name, role, interfaces in nodes(save_dialog()) if 'org.a11y.atspi.EditableText' in interfaces]
             print('Save dialog fields:', [name for _, name in fields])
@@ -189,7 +191,18 @@ with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
             press('save')
             wait_for(destination.exists)
             check(destination.read_bytes() == b'hello')
-            print('PASS: OSC 1337 cancellation and explicit save')
+            answered('SAVED')
+            check(not list(root.rglob('*.part')), list(root.rglob('*.part')))
+            # Save As, then Cancel in the Save dialog: no file, and the program goes on.
+            offer('CANCELLED')
+            press('save as…', question)
+            wait_for(lambda: button('cancel'), timeout=10)
+            press('cancel')
+            wait_for(lambda: save_dialog() is None)
+            answered('CANCELLED')
+            check(not written(), written())
+            check(not list(root.rglob('*.part')), list(root.rglob('*.part')))
+            print('PASS: OSC 1337 question, refusal, explicit save, and a cancelled Save dialog')
         finally:
             if (root / 'kwin.log').exists():
                 shutil.copyfile(root / 'kwin.log', logs / 'kwin.log')

@@ -68,14 +68,15 @@ constexpr std::size_t MaxRemoteEntries = 1 << 20;
 constexpr std::size_t ThumbnailBudget = 64 * 1024 * 1024;
 constexpr std::size_t ThumbnailFileLimit = 64 * 1024 * 1024;
 // A drag image comes from one of the first dragged files: each is probed
-// with one read of its first bytes, which hold the image size in every format
-// that aglow decodes.
+// with one read of its first bytes, which hold the image size of nearly
+// every file. A JPEG whose metadata comes first and passes them gets no drag
+// image.
 constexpr std::size_t ThumbnailProbes = 8;
 constexpr std::size_t ThumbnailHeader = 64 * 1024;
 // The prefix of the staging directory of a drop, in the drop directory.
 constexpr std::string_view StagingPrefix = ".aglow-dnd-drop-";
 
-const Cli::Command command {
+const Cli::Command command{
     "dnd",
     "[files to drag]",
     "Drag and drop files and data between the shell and other programs, even over SSH.",
@@ -89,40 +90,72 @@ const Cli::Command command {
     "\n"
     "Press Ctrl+C to quit, which cancels a drag in progress. Esc quits too, unless --exit-on leaves out esc-key.",
     {
-        { "--drag", Cli::Option::Kind::List, "", {},
-          "When a drag starts, offer this file as the data of this MIME type, as MIME:PATH, for example "
-          "image/jpeg:picture.jpg. Give it again for more types. Give the path as - or as /dev/stdin to offer "
-          "standard input." },
-        { "--drop", Cli::Option::Kind::List, "", {},
-          "Write the dropped data of this MIME type to this file, as MIME:PATH. Give it again for more types. "
-          "Without a path, the type is not accepted. For example, text/plain: and text/uri-list: turn those types "
-          "off." },
-        { "--drop-dest", Cli::Option::Kind::String, "", {},
-          "The directory where dropped files go. The default is the working directory." },
-        { "--copy-mode", Cli::Option::Kind::Choice, "auto", { "auto", "independent" },
-          "How a copy drop copies local files. auto makes hard links where it can, and copies the data where it "
-          "cannot. independent always copies, so that a change to a dropped file never changes its source. A move "
-          "always uses hard links where it can." },
-        { "--confirm-drop-overwrite", Cli::Option::Kind::Flag, "", {},
-          "Ask before a drop of files replaces existing files. Files that replace nothing are copied without a "
-          "question." },
-        { "--confirm-drop-timeout", Cli::Option::Kind::Float, "20", {},
-          "The seconds that the question of --confirm-drop-overwrite waits for an answer, counted from the last "
-          "message of the drop, so the time that aglow takes to copy the files counts too. Then the drop is "
-          "canceled. Afterglow stops waiting for a drop after 30 seconds without a message from aglow.",
-          1, 25 },
-        { "--drop-anywhere", Cli::Option::Kind::Choice, "disallowed", { "disallowed", "copy", "move" },
-          "Accept drops anywhere in the window, not only on the Copy and Move boxes, with this action." },
-        { "--drag-thumbnail", Cli::Option::Kind::String, "", {},
-          "An image to show under the pointer while dragging. Without it, an image that is dragged is shown, or "
-          "an icon." },
-        { "--drag-thumbnail-size", Cli::Option::Kind::Int, "512", {},
-          "The largest side of the drag image in pixels. A larger image is scaled down. A terminal can refuse a "
-          "drag with an image that is too large.",
-          16, 4096 },
-        { "--exit-on", Cli::Option::Kind::String, "esc-key", {},
-          "The events to exit on, separated by commas: drag-finish, drop-finish and esc-key. The first two are a "
-          "completed drag and a completed drop." },
+        {"--drag",
+         Cli::Option::Kind::List,
+         "",
+         {},
+         "When a drag starts, offer this file as the data of this MIME type, as MIME:PATH, for example "
+         "image/jpeg:picture.jpg. Give it again for more types. Give the path as - or as /dev/stdin to offer "
+         "standard input."},
+        {"--drop",
+         Cli::Option::Kind::List,
+         "",
+         {},
+         "Write the dropped data of this MIME type to this file, as MIME:PATH. Give it again for more types. "
+         "Without a path, the type is not accepted. For example, text/plain: and text/uri-list: turn those types "
+         "off."},
+        {"--drop-dest",
+         Cli::Option::Kind::String,
+         "",
+         {},
+         "The directory where dropped files go. The default is the working directory."},
+        {"--copy-mode",
+         Cli::Option::Kind::Choice,
+         "auto",
+         {"auto", "independent"},
+         "How a copy drop copies local files. auto makes hard links where it can, and copies the data where it "
+         "cannot. independent always copies, so that a change to a dropped file never changes its source. A move "
+         "always uses hard links where it can."},
+        {"--confirm-drop-overwrite",
+         Cli::Option::Kind::Flag,
+         "",
+         {},
+         "Ask before a drop of files replaces existing files. Files that replace nothing are copied without a "
+         "question."},
+        {"--confirm-drop-timeout",
+         Cli::Option::Kind::Float,
+         "20",
+         {},
+         "The seconds that the question of --confirm-drop-overwrite waits for an answer, counted from the last "
+         "message of the drop, so the time that aglow takes to copy the files counts too. Then the drop is "
+         "canceled. Afterglow stops waiting for a drop after 30 seconds without a message from aglow.",
+         1,
+         25},
+        {"--drop-anywhere",
+         Cli::Option::Kind::Choice,
+         "disallowed",
+         {"disallowed", "copy", "move"},
+         "Accept drops anywhere in the window, not only on the Copy and Move boxes, with this action."},
+        {"--drag-thumbnail",
+         Cli::Option::Kind::String,
+         "",
+         {},
+         "An image to show under the pointer while dragging. Without it, an image that is dragged is shown, or "
+         "an icon."},
+        {"--drag-thumbnail-size",
+         Cli::Option::Kind::Int,
+         "512",
+         {},
+         "The largest side of the drag image in pixels. A larger image is scaled down. A terminal can refuse a "
+         "drag with an image that is too large.",
+         16,
+         4096},
+        {"--exit-on",
+         Cli::Option::Kind::String,
+         "esc-key",
+         {},
+         "The events to exit on, separated by commas: drag-finish, drop-finish and esc-key. The first two are a "
+         "completed drag and a completed drop."},
     },
 };
 
@@ -147,9 +180,9 @@ std::pair<std::string, std::optional<std::string>> splitSpec(const std::string& 
 {
     const auto colon = spec.find(':');
     if (colon == std::string::npos) {
-        return { spec, std::nullopt };
+        return {spec, std::nullopt};
     }
-    return { spec.substr(0, colon), spec.substr(colon + 1) };
+    return {spec.substr(0, colon), spec.substr(colon + 1)};
 }
 
 // The events of --exit-on, without the spaces around them.
@@ -181,7 +214,10 @@ bool validUtf8(std::string_view text)
     return true;
 }
 
-std::string errorText(int error) { return std::strerror(error); }
+std::string errorText(int error)
+{
+    return std::strerror(error);
+}
 
 // A coordinate or an operation of the metadata, which parseDndMeta() bounds
 // to INT32_MIN..UINT32_MAX.
@@ -196,7 +232,7 @@ struct UriItem
 {
     std::string path;
     std::string uri;
-    struct stat st { };
+    struct stat st{};
 };
 
 struct DragSource
@@ -210,7 +246,7 @@ struct DragSource
 // Creates the missing directories of @p path, as mkdir -p does.
 bool makeDirectories(const std::string& path)
 {
-    struct stat st { };
+    struct stat st{};
     if (::stat(path.c_str(), &st) == 0) {
         if (S_ISDIR(st.st_mode)) {
             return true;
@@ -262,7 +298,7 @@ struct DropDest
         if (!makeDirectories(Path::dirName(path))) {
             return false;
         }
-        struct stat st { };
+        struct stat st{};
         const bool exists = ::lstat(path.c_str(), &st) == 0;
         if (!exists && errno != ENOENT) {
             return false;
@@ -335,7 +371,10 @@ struct Region
     int top = 0;
     int width = 0;
     int height = 0;
-    bool has(int x, int y) const { return left <= x && x < left + width && top <= y && y < top + height; }
+    bool has(int x, int y) const
+    {
+        return left <= x && x < left + width && top <= y && y < top + height;
+    }
 };
 
 // A file, link or directory that went to the drop target, as it was then:
@@ -348,7 +387,7 @@ struct Transferred
     ino_t ino = 0;
     bool directory = false;
     off_t size = 0;
-    timespec mtime { };
+    timespec mtime{};
 
     Transferred() = default;
     Transferred(std::string p, const struct stat& st)
@@ -466,7 +505,7 @@ bool copyFile(const std::string& from, const std::string& to, const struct stat&
     if (in < 0) {
         return false;
     }
-    struct stat opened { };
+    struct stat opened{};
     if (::fstat(in, &opened) != 0 || opened.st_dev != st.st_dev || opened.st_ino != st.st_ino) {
         ::close(in);
         errno = EAGAIN;
@@ -497,7 +536,7 @@ bool copyFile(const std::string& from, const std::string& to, const struct stat&
             break;
         }
     }
-    const timespec times[2] = { st.st_atim, st.st_mtim };
+    const timespec times[2] = {st.st_atim, st.st_mtim};
     if (error == 0 && (::fchmod(out, st.st_mode & 0777 & ~umask) != 0 || ::futimens(out, times) != 0)) {
         error = errno;
     }
@@ -530,13 +569,13 @@ struct TreeCopy
             error = "the copy was interrupted";
             return false;
         }
-        struct stat st { };
+        struct stat st{};
         if (::lstat(from.c_str(), &st) != 0) {
             error = from + ": " + errorText(errno);
             return false;
         }
         const auto dest = to + "/" + Path::baseName(from);
-        const timespec times[2] = { st.st_atim, st.st_mtim };
+        const timespec times[2] = {st.st_atim, st.st_mtim};
         if (S_ISDIR(st.st_mode)) {
             // Writable while it fills, whatever the source's mode. An entry
             // that is there already (a link of a name that two drops share)
@@ -590,7 +629,7 @@ struct TreeCopy
 
 bool removeTree(const std::string& path)
 {
-    struct stat st { };
+    struct stat st{};
     if (::lstat(path.c_str(), &st) != 0) {
         return errno == ENOENT;
     }
@@ -615,7 +654,7 @@ Removal removeTransferred(const std::vector<Transferred>& entries)
 {
     Removal result;
     for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
-        struct stat st { };
+        struct stat st{};
         if (::lstat(it->path.c_str(), &st) != 0 || !it->same(st)) {
             ++result.kept;
             continue;
@@ -638,12 +677,13 @@ Removal removeTransferred(const std::vector<Transferred>& entries)
 }
 
 // The paths under @p staging that exist under @p dest, except directories that exist in both.
-void overwrites(const std::string& staging, const std::string& dest, const std::string& relative, std::vector<std::string>& out)
+void overwrites(const std::string& staging, const std::string& dest, const std::string& relative,
+                std::vector<std::string>& out)
 {
     for (const auto& name : listDirectory(staging + relative).value_or(std::vector<std::string>())) {
         const auto rel = relative + "/" + name;
-        struct stat src { };
-        struct stat dst { };
+        struct stat src{};
+        struct stat dst{};
         if (::lstat((dest + rel).c_str(), &dst) != 0 || ::lstat((staging + rel).c_str(), &src) != 0) {
             continue;
         }
@@ -660,7 +700,8 @@ void overwrites(const std::string& staging, const std::string& dest, const std::
 // a link that another program puts in the drop directory meanwhile cannot
 // take the drop out of it. @p fromPath and @p toPath name them in messages,
 // and for a copy across file systems.
-bool renameContents(int from, int to, const std::string& fromPath, const std::string& toPath, mode_t umask, std::string& error)
+bool renameContents(int from, int to, const std::string& fromPath, const std::string& toPath, mode_t umask,
+                    std::string& error)
 {
     const auto names = listDirectory(fromPath);
     if (!names) {
@@ -669,7 +710,7 @@ bool renameContents(int from, int to, const std::string& fromPath, const std::st
     }
     for (const auto& name : *names) {
         const auto there = toPath + "/" + name;
-        struct stat st { };
+        struct stat st{};
         if (::fstatat(from, name.c_str(), &st, AT_SYMLINK_NOFOLLOW) != 0) {
             error = fromPath + "/" + name + ": " + errorText(errno);
             return false;
@@ -677,7 +718,7 @@ bool renameContents(int from, int to, const std::string& fromPath, const std::st
         if (::renameat(from, name.c_str(), to, name.c_str()) == 0) {
             // Two links of one file: rename does nothing and both stay. The
             // drop would then remove the only copy with its source.
-            struct stat left { };
+            struct stat left{};
             if (::fstatat(from, name.c_str(), &left, AT_SYMLINK_NOFOLLOW) == 0) {
                 error = there + " is the dropped file itself";
                 return false;
@@ -691,8 +732,8 @@ bool renameContents(int from, int to, const std::string& fromPath, const std::st
             const int child = ::openat(from, name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
             const int target = ::openat(to, name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
             const int openError = errno;
-            const bool ok = child >= 0 && target >= 0
-                && renameContents(child, target, fromPath + "/" + name, there, umask, error);
+            const bool ok =
+                child >= 0 && target >= 0 && renameContents(child, target, fromPath + "/" + name, there, umask, error);
             if (child >= 0) {
                 ::close(child);
             }
@@ -700,12 +741,13 @@ bool renameContents(int from, int to, const std::string& fromPath, const std::st
                 ::close(target);
             }
             if (child < 0 || target < 0) {
-                error = there + ": " + (openError == ELOOP ? std::string("a symbolic link is in the way") : errorText(openError));
+                error = there + ": "
+                    + (openError == ELOOP ? std::string("a symbolic link is in the way") : errorText(openError));
             }
             return ok;
         };
         auto directoryThere = [&] {
-            struct stat existing { };
+            struct stat existing{};
             return ::fstatat(to, name.c_str(), &existing, AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(existing.st_mode);
         };
         if (renameError == EXDEV) {
@@ -776,7 +818,10 @@ public:
     }
     // A command that ends with an exception still leaves no staging
     // directory, and tells the terminal that it takes no more drags and drops.
-    ~Dnd() { shutdown(); }
+    ~Dnd()
+    {
+        shutdown();
+    }
     Dnd(const Dnd&) = delete;
     Dnd& operator=(const Dnd&) = delete;
 
@@ -853,7 +898,10 @@ private:
     void dropFailed(std::string notice);
     void resetDrop();
     void confirmDrop(bool accepted);
-    bool confirming() const { return !m_drop.overwrites.empty(); }
+    bool confirming() const
+    {
+        return !m_drop.overwrites.empty();
+    }
     void fail(std::string message)
     {
         m_error = std::move(message);
@@ -989,7 +1037,7 @@ void Dnd::render()
             }
         }
     };
-    m_copy = m_move = Region {};
+    m_copy = m_move = Region{};
     if (!m_notice.empty()) {
         paragraph(m_notice);
         out += "\r\n";
@@ -1007,10 +1055,11 @@ void Dnd::render()
     }
     if (confirming()) {
         const auto seconds = std::max(0LL, (m_drop.deadline - nowMs() + 999) / 1000);
-        paragraph("Some of the dropped files will overwrite existing files, listed below. Press Enter to drop anyway "
-                  "or Esc to cancel the drop. The drop is canceled in "
-                      + std::to_string(seconds) + (seconds == 1 ? " second." : " seconds."),
-                  { { "Enter", "\x1b[32m" }, { "Esc", "\x1b[31m" } });
+        paragraph(
+            "Some of the dropped files will overwrite existing files, listed below. Press Enter to drop anyway "
+            "or Esc to cancel the drop. The drop is canceled in "
+                + std::to_string(seconds) + (seconds == 1 ? " second." : " seconds."),
+            {{"Enter", "\x1b[32m"}, {"Esc", "\x1b[31m"}});
         out += "\r\n";
         ++y;
         std::size_t shown = 0;
@@ -1036,8 +1085,9 @@ void Dnd::render()
     const std::string quitKey = exitOn("esc-key") ? "Esc" : "Ctrl+C";
     if (m_drop.inWindow) {
         if (m_drop.action == 0) {
-            paragraph("A drag is active. Drop it into one of the boxes below to perform that action on the dragged data. "
-                      "Available MIME types in the drag:");
+            paragraph(
+                "A drag is active. Drop it into one of the boxes below to perform that action on the dragged data. "
+                "Available MIME types in the drag:");
             out += "\r\n";
             paragraph(joinWords(m_drop.offered));
         } else if (m_drop.accepted.empty()) {
@@ -1051,9 +1101,10 @@ void Dnd::render()
         }
     } else {
         if (m_allowDrags) {
-            paragraph("Start dragging anywhere in this window to initiate a drag and drop. If you start the drag in one of "
-                      "the Copy or Move boxes below, only that action is allowed when dropping. Elsewhere, the drop "
-                      "destination can pick either copy or move.");
+            paragraph(
+                "Start dragging anywhere in this window to initiate a drag and drop. If you start the drag in one of "
+                "the Copy or Move boxes below, only that action is allowed when dropping. Elsewhere, the drop "
+                "destination can pick either copy or move.");
             out += "\r\n";
         }
         if (m_allowDrops) {
@@ -1066,7 +1117,8 @@ void Dnd::render()
                     what += (what.empty() ? "" : " and ") + std::string("the data of ") + std::to_string(m_droppedData)
                         + (m_droppedData == 1 ? " MIME type" : " MIME types");
                 }
-                paragraph("The last drop brought " + what + ". You can drop more data or press " + quitKey + " to quit.");
+                paragraph("The last drop brought " + what + ". You can drop more data or press " + quitKey
+                          + " to quit.");
             } else {
                 paragraph("Drag some data from another application into this window to transfer the files here.");
             }
@@ -1077,7 +1129,7 @@ void Dnd::render()
     const int boxWidth = 10;
     const int top = 1 + std::max(0, height - boxHeight);
     auto box = [&](int x, std::string_view text, Region& region, bool active) {
-        region = { x - 1, top - 1, boxWidth, boxHeight };
+        region = {x - 1, top - 1, boxWidth, boxHeight};
         if (active) {
             out += "\x1b[32m";
         }
@@ -1125,19 +1177,19 @@ void Dnd::potentialDrag(int x, int y)
     for (const auto& s : dragSources) {
         mimes.push_back(s.mime);
     }
-    send({ { "t", "o" }, { "o", std::to_string(actions) } }, joinWords(mimes));
+    send({{"t", "o"}, {"o", std::to_string(actions)}}, joinWords(mimes));
     // Data in memory goes before the drag starts: some desktops need it then.
     std::size_t preSent = 0;
     for (std::size_t i = 0; i < dragSources.size(); ++i) {
         const auto& s = dragSources[i];
         if (s.path.empty() && s.data && !s.data->empty() && preSent + s.data->size() < MaxPreSent) {
             preSent += s.data->size();
-            sendPackets(AfterglowProto::dndDataPackets({ { "t", "p" }, { "x", std::to_string(i) } }, *s.data));
+            sendPackets(AfterglowProto::dndDataPackets({{"t", "p"}, {"x", std::to_string(i)}}, *s.data));
         }
     }
     m_drag.mimes = mimes;
     dragImage();
-    send({ { "t", "P" }, { "x", "-1" } });
+    send({{"t", "P"}, {"x", "-1"}});
     m_drag.active = true;
     render();
 }
@@ -1152,7 +1204,7 @@ std::optional<Picture> Dnd::makePicture()
             return;
         }
         const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
-        struct stat st { };
+        struct stat st{};
         if (fd < 0 || ::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || std::size_t(st.st_size) > ThumbnailFileLimit) {
             if (fd >= 0) {
                 ::close(fd);
@@ -1174,7 +1226,7 @@ std::optional<Picture> Dnd::makePicture()
         ::close(fd);
         std::string error;
         if (read) {
-            image = decodeImage(bytes, ThumbnailBudget, error);
+            image = decodeImage(bytes, ThumbnailBudget, error, 1);
         }
         // One image file is read whole at most, decoded or not.
         probes = ThumbnailProbes;
@@ -1205,14 +1257,14 @@ std::optional<Picture> Dnd::makePicture()
     std::string pixels = resizeFrame(image->frame(0), image->width, image->height, width, height);
     const bool opaque = frameOpaque(pixels);
     if (opaque) {
-        pixels = dropAlpha(pixels);
+        dropAlpha(pixels);
     }
-    return Picture { AfterglowProto::dndDataPackets({ { "t", "p" },
-                                                      { "x", "-1" },
-                                                      { "y", opaque ? "24" : "32" },
-                                                      { "X", std::to_string(width) },
-                                                      { "Y", std::to_string(height) } },
-                                                    pixels) };
+    return Picture{AfterglowProto::dndDataPackets({{"t", "p"},
+                                                   {"x", "-1"},
+                                                   {"y", opaque ? "24" : "32"},
+                                                   {"X", std::to_string(width)},
+                                                   {"Y", std::to_string(height)}},
+                                                  pixels)};
 }
 
 void Dnd::dragImage()
@@ -1231,8 +1283,8 @@ void Dnd::dragImage()
     if (const auto* uris = source("text/uri-list")) {
         directory = !uris->uris.empty() && S_ISDIR(uris->uris.front().st.st_mode);
     }
-    sendPackets(AfterglowProto::dndDataPackets({ { "t", "p" }, { "x", "-1" }, { "X", "6" }, { "Y", "1" } },
-                                               directory ? "📁" : "📄"));
+    sendPackets(
+        AfterglowProto::dndDataPackets({{"t", "p"}, {"x", "-1"}, {"X", "6"}, {"Y", "1"}}, directory ? "📁" : "📄"));
 }
 
 void Dnd::resetDrag()
@@ -1257,9 +1309,9 @@ void Dnd::resetDrag()
 void Dnd::finishDrag(std::string_view error)
 {
     if (error.empty()) {
-        send({ { "t", "E" }, { "y", "-1" } });
+        send({{"t", "E"}, {"y", "-1"}});
     } else {
-        send({ { "t", "E" } }, error);
+        send({{"t", "E"}}, error);
     }
     resetDrag();
 }
@@ -1306,7 +1358,7 @@ void Dnd::dragEvent(std::int64_t x, std::int64_t y, std::int64_t operation)
             }
             dragSources.clear();
             m_allowDrags = false;
-            send({ { "t", "o" }, { "x", "2" } });
+            send({{"t", "o"}, {"x", "2"}});
             if (!m_allowDrops) {
                 m_quit = true;
             }
@@ -1340,19 +1392,20 @@ void Dnd::dataRequest(std::int64_t index)
         return;
     }
     Job job;
-    job.meta = { { "t", "e" }, { "y", std::to_string(index) } };
+    job.meta = {{"t", "e"}, {"y", std::to_string(index)}};
     if (s->path.empty()) {
         job.memory = s->data.get();
     } else {
         // Not blocking: a FIFO that no program writes must not stop the drag.
         job.fd = ::open(s->path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
-        struct stat st { };
+        struct stat st{};
         if (job.fd < 0 || ::fstat(job.fd, &st) != 0 || !S_ISREG(st.st_mode)) {
             const int error = job.fd < 0 ? errno : EINVAL;
             if (job.fd >= 0) {
                 ::close(job.fd);
             }
-            dragFailed("EIO", "Cannot read " + s->path + ": "
+            dragFailed("EIO",
+                       "Cannot read " + s->path + ": "
                            + (error == EINVAL ? std::string("it is not a regular file") : errorText(error)));
             return;
         }
@@ -1373,7 +1426,7 @@ void Dnd::remoteRequest(std::int64_t index)
     if (!m_drag.remoteRequested.insert(index).second) {
         return;
     }
-    m_drag.remote.push_back({ uris->uris[std::size_t(index)].path, index + 1, 0, 0 });
+    m_drag.remote.push_back({uris->uris[std::size_t(index)].path, index + 1, 0, 0});
 }
 
 // Sends file data and remote entries while the terminal takes them.
@@ -1384,7 +1437,7 @@ void Dnd::pump()
             // The next entry of a remote tree, breadth first.
             const auto item = m_drag.remote.front();
             m_drag.remote.pop_front();
-            struct stat st { };
+            struct stat st{};
             if (::lstat(item.path.c_str(), &st) != 0) {
                 dragFailed("EIO", "Cannot read " + item.path + ": " + errorText(errno));
                 return;
@@ -1400,7 +1453,7 @@ void Dnd::pump()
                 const auto handle = m_drag.handles++;
                 std::vector<std::string> names;
                 for (const auto& name : *all) {
-                    struct stat child { };
+                    struct stat child{};
                     const auto path = item.path + "/" + name;
                     if (::lstat(path.c_str(), &child) != 0
                         || !(S_ISDIR(child.st_mode) || S_ISREG(child.st_mode) || S_ISLNK(child.st_mode))) {
@@ -1414,7 +1467,7 @@ void Dnd::pump()
                     names.push_back(name);
                 }
                 for (std::size_t i = 0; i < names.size(); ++i) {
-                    m_drag.remote.push_back({ item.path + "/" + names[i], item.root, handle, std::int64_t(i + 1) });
+                    m_drag.remote.push_back({item.path + "/" + names[i], item.root, handle, std::int64_t(i + 1)});
                 }
                 job.meta = AfterglowProto::dndRemoteEntry(item.root, item.parent, item.child, handle);
                 job.data = AfterglowProto::dndJoinNames(names);
@@ -1423,19 +1476,23 @@ void Dnd::pump()
                     dragFailed("EIO", "Cannot read the link " + item.path + ": " + errorText(errno));
                     return;
                 }
-                job.meta = AfterglowProto::dndRemoteEntry(item.root, item.parent, item.child, AfterglowProto::DndLinkKind);
+                job.meta =
+                    AfterglowProto::dndRemoteEntry(item.root, item.parent, item.child, AfterglowProto::DndLinkKind);
             } else {
-                job.meta = AfterglowProto::dndRemoteEntry(item.root, item.parent, item.child, AfterglowProto::DndFileKind);
+                job.meta =
+                    AfterglowProto::dndRemoteEntry(item.root, item.parent, item.child, AfterglowProto::DndFileKind);
                 job.fd = ::open(item.path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-                struct stat opened { };
-                if (job.fd < 0 || ::fstat(job.fd, &opened) != 0 || !S_ISREG(opened.st_mode) || opened.st_dev != st.st_dev
-                    || opened.st_ino != st.st_ino) {
+                struct stat opened{};
+                if (job.fd < 0 || ::fstat(job.fd, &opened) != 0 || !S_ISREG(opened.st_mode)
+                    || opened.st_dev != st.st_dev || opened.st_ino != st.st_ino) {
                     const int error = job.fd < 0 ? errno : EAGAIN;
                     if (job.fd >= 0) {
                         ::close(job.fd);
                     }
-                    dragFailed("EIO", "Cannot read " + item.path + ": "
-                                   + (error == EAGAIN ? std::string("it changed while it was dragged") : errorText(error)));
+                    dragFailed(
+                        "EIO",
+                        "Cannot read " + item.path + ": "
+                            + (error == EAGAIN ? std::string("it changed while it was dragged") : errorText(error)));
                     return;
                 }
             }
@@ -1472,7 +1529,8 @@ void Dnd::pump()
             continue;
         }
         for (std::size_t at = 0; at < chunk.size(); at += AfterglowProto::DndDataChunk) {
-            send(job.meta, AfterglowProto::base64Encode(std::string_view(chunk).substr(at, AfterglowProto::DndDataChunk)));
+            send(job.meta,
+                 AfterglowProto::base64Encode(std::string_view(chunk).substr(at, AfterglowProto::DndDataChunk)));
         }
     }
 }
@@ -1498,7 +1556,7 @@ void Dnd::resetDrop()
     m_drop.sourceOps = 0;
     m_drop.uris.clear();
     m_drop.staging.clear();
-    m_drop.copy = TreeCopy {};
+    m_drop.copy = TreeCopy{};
     m_drop.inPlace = m_drop.failed = m_drop.others = 0;
     m_drop.uriIndex = 0;
     m_drop.root.reset();
@@ -1542,7 +1600,7 @@ void Dnd::endDrop(bool success)
                 action = m_drop.sourceOps == 0 || (m_drop.sourceOps & CopyOnDrop) ? CopyOnDrop : 0;
             }
         }
-        send({ { "t", "r" }, { "o", std::to_string(action) } });
+        send({{"t", "r"}, {"o", std::to_string(action)}});
         if (success) {
             m_droppedFiles = files;
             m_droppedData = 0;
@@ -1557,10 +1615,12 @@ void Dnd::endDrop(bool success)
                 m_notice = std::to_string(m_drop.failed) + " dropped entries could not be read.";
             }
             if (m_drop.copy.specials > 0 && m_notice.empty()) {
-                m_notice = std::to_string(m_drop.copy.specials) + " special files (devices, sockets or FIFOs) were left out.";
+                m_notice =
+                    std::to_string(m_drop.copy.specials) + " special files (devices, sockets or FIFOs) were left out.";
             }
             if (m_drop.others > 0 && m_notice.empty()) {
-                m_notice = std::to_string(m_drop.others) + " dropped items were left out. They are not files of this computer.";
+                m_notice = std::to_string(m_drop.others)
+                    + " dropped items were left out. They are not files of this computer.";
             }
         }
     }
@@ -1616,7 +1676,8 @@ void Dnd::dropMove(int x, int y, bool more, std::string_view mimes, bool drop, i
             if (end > start) {
                 const auto mime = all.substr(start, end - start);
                 m_drop.offered.push_back(mime);
-                if (dest(mime) && std::find(m_drop.accepted.begin(), m_drop.accepted.end(), mime) == m_drop.accepted.end()) {
+                if (dest(mime)
+                    && std::find(m_drop.accepted.begin(), m_drop.accepted.end(), mime) == m_drop.accepted.end()) {
                     m_drop.accepted.push_back(mime);
                 }
             }
@@ -1655,7 +1716,7 @@ void Dnd::dropMove(int x, int y, bool more, std::string_view mimes, bool drop, i
         m_notice.clear();
         if (answer == 0) {
             // The terminal waits for the end of the drop: it ends now.
-            send({ { "t", "r" }, { "o", "0" } });
+            send({{"t", "r"}, {"o", "0"}});
             resetDrop();
             render();
             return;
@@ -1667,7 +1728,7 @@ void Dnd::dropMove(int x, int y, bool more, std::string_view mimes, bool drop, i
             if (std::find(m_drop.accepted.begin(), m_drop.accepted.end(), mime) != m_drop.accepted.end()
                 && std::find(m_drop.requested.begin(), m_drop.requested.end(), mime) == m_drop.requested.end()) {
                 m_drop.requested.push_back(mime);
-                send({ { "t", "r" }, { "x", std::to_string(i + 1) } });
+                send({{"t", "r"}, {"x", std::to_string(i + 1)}});
             }
         }
         render();
@@ -1676,7 +1737,7 @@ void Dnd::dropMove(int x, int y, bool more, std::string_view mimes, bool drop, i
     // A move that carries the types (an enter, or new types) waits for an
     // answer in the terminal, also when the answer is the one before.
     if (!leave && (hasList || answer != m_drop.answered || answerList != m_drop.answeredList)) {
-        send({ { "t", "m" }, { "o", std::to_string(answer) } }, answerList);
+        send({{"t", "m"}, {"o", std::to_string(answer)}}, answerList);
         m_drop.answered = answer;
         m_drop.answeredList = answerList;
     }
@@ -1800,7 +1861,7 @@ void Dnd::allMimeDataDropped()
             continue;
         }
         std::string name;
-        struct stat st { };
+        struct stat st{};
         do {
             name = "data-uri-" + std::to_string(++m_dataCounter) + Mime::extensionOf(uri.mime);
         } while (names.contains(name) || ::lstat((dropDir + "/" + name).c_str(), &st) == 0);
@@ -1822,7 +1883,8 @@ void Dnd::allMimeDataDropped()
         // Files of another computer: read them through the terminal, depth
         // first, so that few directory handles are open there at one time.
         m_drop.root = std::make_unique<RemoteEntry>();
-        m_drop.uriIndex = std::find(m_drop.offered.begin(), m_drop.offered.end(), "text/uri-list") - m_drop.offered.begin();
+        m_drop.uriIndex =
+            std::find(m_drop.offered.begin(), m_drop.offered.end(), "text/uri-list") - m_drop.offered.begin();
         for (const auto& uri : m_drop.uris) {
             auto entry = std::make_unique<RemoteEntry>();
             entry->parent = m_drop.root.get();
@@ -1847,7 +1909,7 @@ void Dnd::allMimeDataDropped()
     // the drop directory would be copied into its own copy without end. A
     // file that is in the drop directory already stays: its copy would be
     // the file itself, which the move would then remove.
-    struct stat into { };
+    struct stat into{};
     if (::stat(dropDir.c_str(), &into) != 0) {
         dropFailed("The drop failed. " + dropDir + ": " + errorText(errno));
         return;
@@ -1859,21 +1921,24 @@ void Dnd::allMimeDataDropped()
         if (uri.kind != DndUri::Kind::File) {
             continue;
         }
-        struct stat parent { };
-        struct stat st { };
+        struct stat parent{};
+        struct stat st{};
         if (::lstat(uri.path.c_str(), &st) != 0) {
             dropFailed("The drop failed. " + uri.path + ": " + errorText(errno));
             return;
         }
-        if (::stat(Path::dirName(uri.path).c_str(), &parent) == 0 && parent.st_dev == into.st_dev && parent.st_ino == into.st_ino) {
+        if (::stat(Path::dirName(uri.path).c_str(), &parent) == 0 && parent.st_dev == into.st_dev
+            && parent.st_ino == into.st_ino) {
             ++m_drop.inPlace;
             continue;
         }
         // A link is copied as a link: only a directory can hold the drop directory.
         if (S_ISDIR(st.st_mode)) {
             const std::string source = ::realpath(uri.path.c_str(), resolved) ? std::string(resolved) : uri.path;
-            const std::string staging = ::realpath(m_drop.staging.c_str(), resolved) ? std::string(resolved) : m_drop.staging;
-            if (source == "/" || intoPath == source || intoPath.starts_with(source + "/") || source.starts_with(staging + "/")) {
+            const std::string staging =
+                ::realpath(m_drop.staging.c_str(), resolved) ? std::string(resolved) : m_drop.staging;
+            if (source == "/" || intoPath == source || intoPath.starts_with(source + "/")
+                || source.starts_with(staging + "/")) {
                 dropFailed("The drop failed. " + uri.path + " holds the drop directory.");
                 return;
             }
@@ -2255,10 +2320,10 @@ void Dnd::shutdown()
     }
     endDrop(false);
     if (m_allowDrops) {
-        send({ { "t", "A" } });
+        send({{"t", "A"}});
     }
     if (m_allowDrags) {
-        send({ { "t", "o" }, { "x", "2" } });
+        send({{"t", "o"}, {"x", "2"}});
     }
 }
 
@@ -2279,7 +2344,7 @@ int Dnd::run()
     // Chunks of a read can still be on their way when the program ends.
     m_tty.drainOnRestore();
     // A terminal that answers DA1 before the query has no drag and drop.
-    send({ { "t", "q" } });
+    send({{"t", "q"}});
     m_tty.queryAttributes();
     const auto& machine = m_machine;
     if (m_allowDrops) {
@@ -2287,13 +2352,13 @@ int Dnd::run()
         for (const auto& d : dropDests) {
             mimes.push_back(d.mime);
         }
-        send({ { "t", "a" } }, joinWords(mimes));
+        send({{"t", "a"}}, joinWords(mimes));
         if (!machine.empty()) {
-            send({ { "t", "a" }, { "x", "1" } }, machine);
+            send({{"t", "a"}, {"x", "1"}}, machine);
         }
     }
     if (m_allowDrags) {
-        send({ { "t", "o" }, { "x", "1" } }, machine);
+        send({{"t", "o"}, {"x", "1"}}, machine);
     }
     render();
     bool answered = false;
@@ -2317,8 +2382,9 @@ int Dnd::run()
                 packet(std::string_view(input.data).substr(3));
             } else if (input.type == Input::Type::Csi && input.data.starts_with('?') && input.data.ends_with('c')) {
                 if (!answered && !m_supported) {
-                    m_notice = "The terminal did not answer the drag and drop query. It may not support drag and drop "
-                               "(OSC 72).";
+                    m_notice =
+                        "The terminal did not answer the drag and drop query. It may not support drag and drop "
+                        "(OSC 72).";
                     render();
                 }
                 answered = true;
@@ -2415,7 +2481,9 @@ int runDnd(int argc, char** argv)
             report("dnd", "The --drop type " + mime + " is not a MIME type.");
             return 1;
         }
-        std::erase_if(dnd.dropDests, [&](const DropDest& d) { return d.mime == mime; });
+        std::erase_if(dnd.dropDests, [&](const DropDest& d) {
+            return d.mime == mime;
+        });
         if (path && !path->empty()) {
             DropDest d;
             d.mime = mime;
@@ -2448,7 +2516,7 @@ int runDnd(int argc, char** argv)
             s.data = stdinData;
         } else {
             s.path = Path::absolute(*path, home, cwd);
-            struct stat st { };
+            struct stat st{};
             if (::stat(s.path.c_str(), &st) != 0) {
                 report("dnd", *path + ": " + errorText(errno));
                 return 1;
@@ -2458,19 +2526,23 @@ int runDnd(int argc, char** argv)
                 return 1;
             }
         }
-        std::erase_if(dnd.dragSources, [&](const DragSource& d) { return d.mime == s.mime; });
+        std::erase_if(dnd.dragSources, [&](const DragSource& d) {
+            return d.mime == s.mime;
+        });
         dnd.dragSources.push_back(std::move(s));
     }
-    const bool hasPlain = std::any_of(dnd.dragSources.begin(), dnd.dragSources.end(), [](const DragSource& s) { return s.mime == "text/plain"; });
+    const bool hasPlain = std::any_of(dnd.dragSources.begin(), dnd.dragSources.end(), [](const DragSource& s) {
+        return s.mime == "text/plain";
+    });
     if (!stdinData && !hasPlain && !::isatty(STDIN_FILENO)) {
-        struct stat st { };
+        struct stat st{};
         // A pipe can keep the program waiting: it says why.
         if (::fstat(STDIN_FILENO, &st) == 0 && (S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode))) {
             report("dnd", "Reading standard input to offer it as text/plain. The drag starts when it ends.");
         }
         std::string data;
         if (readAll(STDIN_FILENO, data) && !data.empty()) {
-            dnd.dragSources.push_back({ "text/plain", "", std::make_shared<const std::string>(std::move(data)), {} });
+            dnd.dragSources.push_back({"text/plain", "", std::make_shared<const std::string>(std::move(data)), {}});
         }
     }
     std::vector<UriItem> uris;
@@ -2501,13 +2573,16 @@ int runDnd(int argc, char** argv)
         for (const auto& item : uris) {
             list += item.uri + "\r\n";
         }
-        std::erase_if(dnd.dragSources, [](const DragSource& d) { return d.mime == "text/uri-list"; });
-        dnd.dragSources.push_back({ "text/uri-list", "", std::make_shared<const std::string>(std::move(list)), std::move(uris) });
+        std::erase_if(dnd.dragSources, [](const DragSource& d) {
+            return d.mime == "text/uri-list";
+        });
+        dnd.dragSources.push_back(
+            {"text/uri-list", "", std::make_shared<const std::string>(std::move(list)), std::move(uris)});
     }
     if (const auto thumbnail = parsed->value("drag-thumbnail"); !thumbnail.empty()) {
         std::string bytes;
         const int fd = ::open(Path::absolute(thumbnail, home, cwd).c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
-        struct stat st { };
+        struct stat st{};
         bool ok = fd >= 0 && ::fstat(fd, &st) == 0;
         int readError = errno;
         if (ok && (!S_ISREG(st.st_mode) || std::size_t(st.st_size) > ThumbnailFileLimit)) {
@@ -2522,11 +2597,12 @@ int runDnd(int argc, char** argv)
             ::close(fd);
         }
         if (!ok) {
-            report("dnd", "Cannot read " + thumbnail + ": "
+            report("dnd",
+                   "Cannot read " + thumbnail + ": "
                        + (readError == EINVAL ? std::string("it is not a regular file") : errorText(readError)));
             return 1;
         }
-        dnd.thumbnail = decodeImage(bytes, ThumbnailBudget, error);
+        dnd.thumbnail = decodeImage(bytes, ThumbnailBudget, error, 1);
         if (!dnd.thumbnail) {
             report("dnd", "Cannot decode " + thumbnail + ": " + error);
             return 1;
@@ -2538,7 +2614,7 @@ int runDnd(int argc, char** argv)
     }
     const auto dropDest = parsed->value("drop-dest");
     dnd.dropDir = dropDest.empty() ? cwd : Path::absolute(dropDest, home, cwd);
-    struct stat st { };
+    struct stat st{};
     if (::stat(dnd.dropDir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
         report("dnd", "The drop directory " + dnd.dropDir + " is not a directory.");
         return 1;

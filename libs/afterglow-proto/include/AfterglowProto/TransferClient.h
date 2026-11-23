@@ -33,7 +33,11 @@ struct TransferClientOptions
         /// both computers, and an absolute path as the same path.
         Mirror,
     };
-    enum class Compress : std::uint8_t { Auto, Never, Always };
+    enum class Compress : std::uint8_t {
+        Auto,
+        Never,
+        Always
+    };
     Mode mode = Mode::Normal;
     Compress compress = Compress::Auto;
     /// Send deltas against the files that exist at the destination (tt=rsync).
@@ -57,7 +61,12 @@ struct TransferClientOptions
 /// One file, directory or link of a session.
 struct TransferItem
 {
-    enum class Type : std::uint8_t { Regular, Directory, Symlink, Link };
+    enum class Type : std::uint8_t {
+        Regular,
+        Directory,
+        Symlink,
+        Link
+    };
     Type type = Type::Regular;
     /// The absolute path on this computer.
     std::string local;
@@ -88,19 +97,40 @@ public:
     TransferClient(const TransferClient&) = delete;
     TransferClient& operator=(const TransferClient&) = delete;
 
-    const std::string& id() const { return m_id; }
-    State state() const { return m_state; }
+    const std::string& id() const
+    {
+        return m_id;
+    }
+    State state() const
+    {
+        return m_state;
+    }
     /// Done, Failed or Canceled, and nothing is left to send.
     bool over() const;
     /// Why the session failed or was canceled.
-    const std::string& error() const { return m_error; }
-    const std::vector<TransferItem>& items() const { return m_items; }
+    const std::string& error() const
+    {
+        return m_error;
+    }
+    const std::vector<TransferItem>& items() const
+    {
+        return m_items;
+    }
     /// Bytes of signatures and of deltas that crossed the terminal, as they
     /// went (after compression), in either direction. deltaFileBytes() is the
     /// size of the files that arrived as deltas.
-    std::uint64_t signatureBytes() const { return m_signatureBytes; }
-    std::uint64_t deltaBytes() const { return m_deltaBytes; }
-    std::uint64_t deltaFileBytes() const { return m_deltaFileBytes; }
+    std::uint64_t signatureBytes() const
+    {
+        return m_signatureBytes;
+    }
+    std::uint64_t deltaBytes() const
+    {
+        return m_deltaBytes;
+    }
+    std::uint64_t deltaFileBytes() const
+    {
+        return m_deltaFileBytes;
+    }
 
     /// Reads one reply of the terminal: the text after "5113;". Replies of
     /// other sessions are ignored. The work of one call is bounded: a delta
@@ -115,7 +145,10 @@ public:
     void pull(std::string& out, std::size_t budget);
     /// The last pull() or receive() stopped at its bound with work left:
     /// call pull() again without waiting for the terminal.
-    bool hasWork() const { return m_hasWork; }
+    bool hasWork() const
+    {
+        return m_hasWork;
+    }
     /// The answer in State::Confirm: go on, or cancel the session.
     void confirm(bool proceed);
     /// Asks the terminal to end the session. It ends when the terminal
@@ -124,7 +157,10 @@ public:
 
 protected:
     TransferClient(TransferClientOptions options, std::string id);
-    void queue(std::string message) { m_output += std::move(message); }
+    void queue(std::string message)
+    {
+        m_output += std::move(message);
+    }
     /// Queues the first message of the session (ac=send or ac=receive), with
     /// the password hash when there is a password.
     void start(std::string_view action, std::string_view count = {});
@@ -134,11 +170,18 @@ protected:
     virtual void proceed() = 0;
     /// A reply started work that goes on in steps (a delta that copies much
     /// of the old file). Later replies wait until it ends.
-    virtual bool busy() const { return false; }
+    virtual bool busy() const
+    {
+        return false;
+    }
     /// One more step of that work.
-    virtual void resume() { }
+    virtual void resume()
+    {
+    }
     /// Ends that work: the session no longer runs.
-    virtual void abandon() { }
+    virtual void abandon()
+    {
+    }
 
     TransferClientOptions m_options;
     std::string m_id;

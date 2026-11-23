@@ -39,10 +39,10 @@ constexpr std::string_view PopKeyboard = "\x1b[<u";
 // Sets the flags of the mode that the push made, and leaves the stack as it is.
 constexpr std::string_view SetKeyboard = "\x1b[=1;1u";
 
-int signalPipe[2] = { -1, -1 };
-std::atomic<int> caughtSignal { 0 };
-std::atomic<bool> resized { false };
-std::atomic<bool> continued { false };
+int signalPipe[2] = {-1, -1};
+std::atomic<int> caughtSignal{0};
+std::atomic<bool> resized{false};
+std::atomic<bool> continued{false};
 
 void onSignal(int number)
 {
@@ -69,14 +69,14 @@ void catchSignals()
     if (::pipe2(signalPipe, O_CLOEXEC | O_NONBLOCK) != 0) {
         signalPipe[0] = signalPipe[1] = -1;
     }
-    struct sigaction action { };
+    struct sigaction action{};
     action.sa_handler = onSignal;
     // The self-pipe wakes poll(): every other call goes on where it was.
     action.sa_flags = SA_RESTART;
     sigemptyset(&action.sa_mask);
-    for (const int number : { SIGINT, SIGTERM, SIGHUP, SIGWINCH, SIGCONT }) {
+    for (const int number : {SIGINT, SIGTERM, SIGHUP, SIGWINCH, SIGCONT}) {
         // A signal that the program started with ignored (nohup) stays ignored.
-        struct sigaction inherited { };
+        struct sigaction inherited{};
         if (::sigaction(number, nullptr, &inherited) == 0 && inherited.sa_handler == SIG_IGN) {
             continue;
         }
@@ -88,7 +88,9 @@ void catchSignals()
 
 bool allDigits(std::string_view text)
 {
-    return std::all_of(text.begin(), text.end(), [](char c) { return c >= '0' && c <= '9'; });
+    return std::all_of(text.begin(), text.end(), [](char c) {
+        return c >= '0' && c <= '9';
+    });
 }
 
 // The number before the first ':' of a field of a key code, or -1.
@@ -118,13 +120,16 @@ std::vector<std::string_view> fields(std::string_view text)
 }
 
 // Ctrl alone, with Caps Lock and Num Lock (64 and 128) left out.
-bool onlyCtrl(int modifiers) { return modifiers >= 1 && ((modifiers - 1) & ~(64 | 128)) == 4; }
+bool onlyCtrl(int modifiers)
+{
+    return modifiers >= 1 && ((modifiers - 1) & ~(64 | 128)) == 4;
+}
 
 } // namespace
 
 long long nowMs()
 {
-    timespec now { };
+    timespec now{};
     ::clock_gettime(CLOCK_MONOTONIC, &now);
     return (long long)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
@@ -132,7 +137,7 @@ long long nowMs()
 void InputParser::flushText(std::vector<Input>& out)
 {
     if (!m_text.empty()) {
-        out.push_back({ Input::Type::Text, std::move(m_text) });
+        out.push_back({Input::Type::Text, std::move(m_text)});
         m_text.clear();
     }
 }
@@ -144,7 +149,8 @@ bool InputParser::waitingAfterEscape() const
     }
     // ESC, or ESC and an introducer with nothing after it: Alt+[ sends ESC [.
     return m_state == State::Escape
-        || ((m_state == State::Csi || m_state == State::Ss3 || m_state == State::String) && m_buffer.empty() && !m_overflow);
+        || ((m_state == State::Csi || m_state == State::Ss3 || m_state == State::String) && m_buffer.empty()
+            && !m_overflow);
 }
 
 void InputParser::endCsi(std::vector<Input>& out)
@@ -160,7 +166,8 @@ void InputParser::endCsi(std::vector<Input>& out)
     }
     // The answer to CSI ? u: the terminal speaks kitty's keyboard protocol,
     // with these flags on.
-    if (data.size() >= 2 && data.front() == '?' && data.back() == 'u' && allDigits(std::string_view(data).substr(1, data.size() - 2))) {
+    if (data.size() >= 2 && data.front() == '?' && data.back() == 'u'
+        && allDigits(std::string_view(data).substr(1, data.size() - 2))) {
         m_keyboardReply = std::max(0, keyField(std::string_view(data).substr(1, data.size() - 2)));
         return;
     }
@@ -180,11 +187,11 @@ void InputParser::endCsi(std::vector<Input>& out)
         }
     }
     if (code == 27) {
-        out.push_back({ Input::Type::Escape, {} });
+        out.push_back({Input::Type::Escape, {}});
     } else if (code == 99 && onlyCtrl(modifiers)) {
-        out.push_back({ Input::Type::Interrupt, {} });
+        out.push_back({Input::Type::Interrupt, {}});
     } else {
-        out.push_back({ Input::Type::Csi, std::move(data) });
+        out.push_back({Input::Type::Csi, std::move(data)});
     }
 }
 
@@ -210,7 +217,7 @@ void InputParser::feed(std::string_view bytes, std::vector<Input>& out)
                 m_state = State::Escape;
             } else if (byte == 0x03) {
                 flushText(out);
-                out.push_back({ Input::Type::Interrupt, {} });
+                out.push_back({Input::Type::Interrupt, {}});
             } else {
                 m_text += c;
             }
@@ -228,7 +235,7 @@ void InputParser::feed(std::string_view bytes, std::vector<Input>& out)
                 m_state = State::String;
             } else {
                 // Alt and a key, or Esc and then a key: the Esc key first.
-                out.push_back({ Input::Type::Escape, {} });
+                out.push_back({Input::Type::Escape, {}});
                 m_state = State::Ground;
                 --i;
             }
@@ -242,7 +249,7 @@ void InputParser::feed(std::string_view bytes, std::vector<Input>& out)
                 m_buffer.clear();
                 m_state = State::Ground;
             } else if (byte == 0x03) {
-                out.push_back({ Input::Type::Interrupt, {} });
+                out.push_back({Input::Type::Interrupt, {}});
             } else if (byte < 0x20 || byte == 0x7f) {
                 // A control character inside a code is no part of it.
             } else {
@@ -257,14 +264,14 @@ void InputParser::feed(std::string_view bytes, std::vector<Input>& out)
             break;
         case State::Ss3:
             if (byte >= 0x40 && byte <= 0x7e) {
-                out.push_back({ Input::Type::Key, "O" + m_buffer + c });
+                out.push_back({Input::Type::Key, "O" + m_buffer + c});
                 m_buffer.clear();
                 m_state = State::Ground;
             } else if (byte >= 0x20 && byte < 0x40 && m_buffer.size() < 16) {
                 m_buffer += c;
             } else {
                 // Not a key: Alt+O, then this byte.
-                out.push_back({ Input::Type::Escape, {} });
+                out.push_back({Input::Type::Escape, {}});
                 m_text += 'O' + m_buffer;
                 m_buffer.clear();
                 m_state = State::Ground;
@@ -274,7 +281,7 @@ void InputParser::feed(std::string_view bytes, std::vector<Input>& out)
         case State::String:
             if (byte == 0x07 && m_string == Input::Type::Osc) {
                 if (!m_overflow) {
-                    out.push_back({ m_string, std::move(m_buffer) });
+                    out.push_back({m_string, std::move(m_buffer)});
                 }
                 m_buffer.clear();
                 m_state = State::Ground;
@@ -284,7 +291,8 @@ void InputParser::feed(std::string_view bytes, std::vector<Input>& out)
                 m_buffer.clear();
                 m_state = State::Ground;
             } else if (m_buffer.size() < MaxEscape
-                       || (m_string == Input::Type::Osc && m_buffer.size() < m_longLimit && m_buffer.starts_with(m_longPrefix))) {
+                       || (m_string == Input::Type::Osc && m_buffer.size() < m_longLimit
+                           && m_buffer.starts_with(m_longPrefix))) {
                 m_buffer += c;
             } else {
                 m_overflow = true;
@@ -294,7 +302,7 @@ void InputParser::feed(std::string_view bytes, std::vector<Input>& out)
             // ST ends the string. Any other byte after ESC ends it too, and
             // starts an escape code: ESC ESC is no Esc key.
             if (!m_overflow) {
-                out.push_back({ m_string, std::move(m_buffer) });
+                out.push_back({m_string, std::move(m_buffer)});
             }
             m_buffer.clear();
             m_state = State::Ground;
@@ -309,7 +317,7 @@ void InputParser::feed(std::string_view bytes, std::vector<Input>& out)
             if (c == PasteEnd[m_pasteMatch]) {
                 if (++m_pasteMatch == PasteEnd.size()) {
                     if (!m_overflow) {
-                        out.push_back({ Input::Type::Paste, std::move(m_buffer) });
+                        out.push_back({Input::Type::Paste, std::move(m_buffer)});
                     }
                     m_buffer.clear();
                     m_pasteMatch = 0;
@@ -347,14 +355,17 @@ void InputParser::timeout(std::vector<Input>& out)
     if (!waitingAfterEscape()) {
         return;
     }
-    out.push_back({ Input::Type::Escape, {} });
+    out.push_back({Input::Type::Escape, {}});
     if (m_state != State::Escape) {
-        out.push_back({ Input::Type::Text, std::string(1, m_introducer) });
+        out.push_back({Input::Type::Text, std::string(1, m_introducer)});
     }
     m_state = State::Ground;
 }
 
-Tty::~Tty() { restore(); }
+Tty::~Tty()
+{
+    restore();
+}
 
 bool Tty::open(std::string& error)
 {
@@ -400,7 +411,7 @@ bool Tty::open(std::string& error)
 void Tty::query(bool own)
 {
     m_out += "\x1b[c";
-    m_queries.push_back({ own, m_written + pending() });
+    m_queries.push_back({own, m_written + pending()});
 }
 
 void Tty::enterModes(std::string_view set, std::string reset, std::string resume)
@@ -432,7 +443,9 @@ bool Tty::restore()
         m_out.assign("\x1b\\");
         m_outAt = 0;
         // The queries that did not go out get no answer.
-        std::erase_if(m_queries, [&](const Query& q) { return q.end > m_written; });
+        std::erase_if(m_queries, [&](const Query& q) {
+            return q.end > m_written;
+        });
     }
     // A continue that no step() took yet: a poll that it woke returns
     // EINTR, and with nothing queued flush() makes no step(). Its modes go
@@ -450,10 +463,20 @@ bool Tty::restore()
     }
     if (m_raw) {
         // TCSAFLUSH: replies that arrive late are dropped, not typed into the shell.
+        // FreeBSD's TCSAFLUSH first waits, with no limit, until the terminal
+        // read the output that flush() gave up on: there the input is
+        // flushed alone, and the modes change at once.
         int result;
+#if defined(__FreeBSD__)
+        ::tcflush(m_fd, TCIFLUSH);
+        do {
+            result = ::tcsetattr(m_fd, TCSANOW, &m_saved);
+        } while (result != 0 && errno == EINTR);
+#else
         do {
             result = ::tcsetattr(m_fd, TCSAFLUSH, &m_saved);
         } while (result != 0 && errno == EINTR);
+#endif
         ok = result == 0 && ok;
         m_raw = false;
     }
@@ -510,7 +533,8 @@ void Tty::takeReplies(std::vector<Input>& inputs, std::size_t from)
     // Each DA1 answer belongs to the oldest query: the answers to this Tty's
     // own queries never reach the commands.
     const auto own = std::remove_if(inputs.begin() + std::ptrdiff_t(from), inputs.end(), [&](const Input& input) {
-        if (m_queries.empty() || input.type != Input::Type::Csi || !input.data.starts_with('?') || !input.data.ends_with('c')) {
+        if (m_queries.empty() || input.type != Input::Type::Csi || !input.data.starts_with('?')
+            || !input.data.ends_with('c')) {
             return false;
         }
         const bool mine = m_queries.front().own;
@@ -542,15 +566,14 @@ void Tty::takeContinue()
 
 bool Tty::step(int timeoutMs, std::vector<Input>& inputs)
 {
-    pollfd fds[2] = { { m_fd, short(POLLIN | (pending() ? POLLOUT : 0)), 0 }, { signalPipe[0], POLLIN, 0 } };
+    pollfd fds[2] = {{m_fd, short(POLLIN | (pending() ? POLLOUT : 0)), 0}, {signalPipe[0], POLLIN, 0}};
     const int ready = ::poll(fds, signalPipe[0] >= 0 ? 2 : 1, timeoutMs);
     if (ready < 0) {
         return errno == EINTR;
     }
     if (fds[1].revents & POLLIN) {
         char drain[64];
-        while (::read(signalPipe[0], drain, sizeof drain) > 0) {
-        }
+        while (::read(signalPipe[0], drain, sizeof drain) > 0) { }
     }
     takeContinue();
     if (fds[0].revents & POLLOUT) {
@@ -642,17 +665,29 @@ bool Tty::drain(int timeoutMs)
 
 winsize Tty::size() const
 {
-    winsize size { };
+    winsize size{};
     ::ioctl(m_fd, TIOCGWINSZ, &size);
     return size;
 }
 
-void Tty::watchSignals() { catchSignals(); }
+void Tty::watchSignals()
+{
+    catchSignals();
+}
 
-int Tty::takeSignal() { return caughtSignal.exchange(0); }
+int Tty::takeSignal()
+{
+    return caughtSignal.exchange(0);
+}
 
-bool Tty::signalPending() { return caughtSignal.load() != 0; }
+bool Tty::signalPending()
+{
+    return caughtSignal.load() != 0;
+}
 
-bool Tty::takeResize() { return resized.exchange(false); }
+bool Tty::takeResize()
+{
+    return resized.exchange(false);
+}
 
 } // namespace Aglow

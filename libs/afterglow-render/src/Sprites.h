@@ -8,9 +8,10 @@
 namespace AfterglowRender::Sprites {
 
 /// Characters drawn procedurally to fill the cell exactly instead of taken
-/// from the font: box drawing, block elements, Braille and Powerline
-/// separators. Font versions follow the font's own metrics and leave gaps
-/// between rows.
+/// from the font: box drawing, block elements, Braille, Powerline separators,
+/// and the mosaics, wedges, partial blocks and diagonals of Symbols for
+/// Legacy Computing and its Supplement. Font versions follow the font's own
+/// metrics and leave gaps between rows, and few fonts have the legacy ones.
 bool isSprite(char32_t cp);
 
 /// Draws @p cp into @p canvas (Format_Alpha8, the sprite's cells). @p thickness

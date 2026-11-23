@@ -23,8 +23,9 @@ inline constexpr std::size_t GraphicsDefaultQuota = std::size_t(320) << 20;
 /// The most frames that Afterglow keeps for one image, the root frame included.
 inline constexpr std::size_t GraphicsMaxFrames = 1024;
 /// The terminal deletes a temporary file (t=t) with this string in its path
-/// below the temporary directory, and a shared memory object (t=s) with it
-/// in its name, once it has read it.
+/// below the temporary directory once it has read it. Clients put it in the
+/// names of their shared memory objects (t=s) too, which the terminal
+/// deletes whatever their name.
 inline constexpr std::string_view GraphicsTemporaryTag = "tty-graphics-protocol";
 
 /// The control keys of one command. A key that is absent has the default.
@@ -63,6 +64,7 @@ struct GraphicsCommand
     std::uint32_t Q = 0;
     int H = 0;
     int V = 0;
+    std::uint32_t hints = 0; // N, usage hints: bit 1 is transient
     // Which keys the command carried, to tell a new command from a chunk.
     bool hasAction = false;
     bool hasId = false;
@@ -73,6 +75,8 @@ struct GraphicsCommand
     /// first other character and clamped to its field: a negative value of
     /// an unsigned field reads as 0. A number outside the range of a 64-bit
     /// integer is skipped. a, t, d, o and e take the first character.
+    /// f=0 reads as the default, 32, as in kitty, and a negative f as
+    /// 0xFFFFFFFF, a format that no terminal knows.
     static GraphicsCommand parse(std::string_view keys);
     /// True when each of a, t, d, o and e that keys() writes is an ASCII
     /// letter. Any other character could end the command, or the keys.
@@ -117,7 +121,10 @@ struct GraphicsReply
     /// then keys.
     std::string write() const;
 
-    bool ok() const { return status == "OK"; }
+    bool ok() const
+    {
+        return status == "OK";
+    }
     bool operator==(const GraphicsReply&) const = default;
 };
 

@@ -11,117 +11,147 @@
 
 namespace Afterglow {
 
-bool Keybinds::isStructural(Action action)
-{
-    switch (action) {
-    case Action::MovePaneToTab:
-    case Action::MovePaneToWindow:
-    case Action::SwitchProject:
-    case Action::DetachTab:
-    case Action::SplitRight:
-    case Action::SplitDown:
-    case Action::SplitLeft:
-    case Action::SplitUp:
-    case Action::ClosePane:
-    case Action::NewWindow:
-    case Action::ShowLastOutput:
-    case Action::NewTab:
-    case Action::CloseTab:
-    case Action::CloseWindow:
-        return true;
-    default:
-        return false;
-    }
-}
-
 namespace {
+
+// What an action reaches (ActionInfo::traits): every action states it, 0
+// for none, so that a new action takes a side for each gate.
+enum : unsigned {
+    OfPane = 1u << 0, ///< Keybinds::isPaneAction
+    ReadsText = 1u << 1, ///< Keybinds::readsPaneText
+    ThisComputer = 1u << 2, ///< Keybinds::reachesThisComputer
+    Structural = 1u << 3, ///< Keybinds::isStructural
+};
+
+// No default: an entry of Actions without its traits does not compile, where
+// an unsigned would be 0, and a session of another host could run it here.
+struct Traits
+{
+    constexpr Traits(unsigned value)
+        : bits(value)
+    {
+    }
+    unsigned bits;
+};
 
 struct ActionInfo
 {
     Action action;
     const char* token;
     const char* title;
+    Traits traits;
     std::initializer_list<const char*> defaults;
 };
 
 const ActionInfo Actions[] = {
-    {Action::SwapLeft, "swap_left", "Swap Pane Left", {}},
-    {Action::SwapRight, "swap_right", "Swap Pane Right", {}},
-    {Action::SwapUp, "swap_up", "Swap Pane Above", {}},
-    {Action::SwapDown, "swap_down", "Swap Pane Below", {}},
-    {Action::RotatePanesClockwise, "rotate_panes_clockwise", "Rotate Panes Clockwise", {"Ctrl+Shift+]"}},
-    {Action::RotatePanesCounterclockwise, "rotate_panes_counterclockwise", "Rotate Panes Counterclockwise", {"Ctrl+Shift+["}},
-    {Action::PaneOverview, "pane_overview", "Pane Overview", {"Ctrl+Shift+D"}},
-    {Action::UsePackageShaders, "use_package_shaders", "Use Package Shaders…", {}},
-    {Action::MovePaneToTab, "move_pane_to_tab", "Move Pane to New Tab", {}},
-    {Action::MovePaneToWindow, "move_pane_to_window", "Move Pane to New Window", {}},
-    {Action::DetachTab, "detach_tab", "Detach Tab to New Window", {}},
-    {Action::SaveProject, "save_project", "Save Project", {}},
-    {Action::SwitchProject, "switch_project", "Switch Project", {}},
-    {Action::EndScriptKeyMode, "end_script_key_mode", "End Script Key Mode", {"Ctrl+Shift+Escape"}},
-    {Action::CancelOverlay, "cancel_overlay", "Cancel Overlay", {"Ctrl+Shift+Alt+Escape"}},
-    {Action::SplitRight, "split_right", "Split Right", {"Ctrl+Shift+E"}},
-    {Action::SplitDown, "split_down", "Split Down", {"Ctrl+Shift+O"}},
-    {Action::SplitLeft, "split_left", "Split Left", {}},
-    {Action::SplitUp, "split_up", "Split Up", {}},
-    {Action::RenamePane, "rename_pane", "Change Pane Title", {}},
-    {Action::ClosePane, "close_pane", "Close Pane", {"Ctrl+Shift+W"}},
-    {Action::NewWindow, "new_window", "New Window", {"Ctrl+Shift+N"}},
-    {Action::NewTab, "new_tab", "New Tab", {"Ctrl+Shift+T"}},
-    {Action::CloseTab, "close_tab", "Close Tab", {"Ctrl+Shift+Q"}},
-    {Action::RenameTab, "rename_tab", "Change Tab Title", {}},
-    {Action::MoveTabLeft, "move_tab_left", "Move Tab Left", {"Ctrl+Shift+Alt+PgUp"}},
-    {Action::MoveTabRight, "move_tab_right", "Move Tab Right", {"Ctrl+Shift+Alt+PgDown"}},
-    {Action::GotoTab1, "goto_tab_1", "Go to Tab 1", {"Alt+1"}},
-    {Action::GotoTab2, "goto_tab_2", "Go to Tab 2", {"Alt+2"}},
-    {Action::GotoTab3, "goto_tab_3", "Go to Tab 3", {"Alt+3"}},
-    {Action::GotoTab4, "goto_tab_4", "Go to Tab 4", {"Alt+4"}},
-    {Action::GotoTab5, "goto_tab_5", "Go to Tab 5", {"Alt+5"}},
-    {Action::GotoTab6, "goto_tab_6", "Go to Tab 6", {"Alt+6"}},
-    {Action::GotoTab7, "goto_tab_7", "Go to Tab 7", {"Alt+7"}},
-    {Action::GotoTab8, "goto_tab_8", "Go to Tab 8", {"Alt+8"}},
-    {Action::GotoTab9, "goto_tab_9", "Go to the Last Tab", {"Alt+9"}},
-    {Action::CloseWindow, "close_window", "Close Window", {}},
-    {Action::ToggleFullscreen, "toggle_fullscreen", "Toggle Fullscreen", {"F11"}},
-    {Action::NextTab, "next_tab", "Next Tab", {"Ctrl+Tab", "Ctrl+PgDown"}},
-    {Action::PreviousTab, "previous_tab", "Previous Tab", {"Ctrl+Shift+Tab", "Ctrl+PgUp"}},
-    {Action::ShowHints, "show_hints", "Select Text or File Reference", {"Ctrl+Shift+H"}},
-    {Action::ShowLastOutput, "show_last_output", "View Last Command Output in Pager", {}},
-    {Action::CopyMode, "copy_mode", "Keyboard Copy Mode", {"Ctrl+Shift+Space"}},
-    {Action::Copy, "copy", "Copy", {"Ctrl+Shift+C"}},
-    {Action::Paste, "paste", "Paste", {"Ctrl+Shift+V"}},
-    {Action::SelectAll, "select_all", "Select All", {"Ctrl+Shift+A"}},
-    {Action::ClearScreen, "clear_screen", "Clear Screen and Scrollback", {"Ctrl+Shift+K"}},
-    {Action::ResetTerminal, "reset", "Reset Terminal", {}},
-    {Action::NotifyOnFinish, "notify_on_finish", "Notify When the Next Command Finishes", {}},
-    {Action::FocusLeft, "focus_left", "Focus Pane Left", {"Ctrl+Shift+Left"}},
-    {Action::FocusRight, "focus_right", "Focus Pane Right", {"Ctrl+Shift+Right"}},
-    {Action::FocusUp, "focus_up", "Focus Pane Above", {"Ctrl+Shift+Up"}},
-    {Action::FocusDown, "focus_down", "Focus Pane Below", {"Ctrl+Shift+Down"}},
+    {Action::SwapLeft, "swap_left", "Swap Pane Left", OfPane, {}},
+    {Action::SwapRight, "swap_right", "Swap Pane Right", OfPane, {}},
+    {Action::SwapUp, "swap_up", "Swap Pane Above", OfPane, {}},
+    {Action::SwapDown, "swap_down", "Swap Pane Below", OfPane, {}},
+    {Action::RotatePanesClockwise, "rotate_panes_clockwise", "Rotate Panes Clockwise", 0, {"Ctrl+Shift+]"}},
+    {Action::RotatePanesCounterclockwise,
+     "rotate_panes_counterclockwise",
+     "Rotate Panes Counterclockwise",
+     0,
+     {"Ctrl+Shift+["}},
+    {Action::PaneOverview, "pane_overview", "Pane Overview", 0, {"Ctrl+Shift+D"}},
+    {Action::UsePackageShaders, "use_package_shaders", "Use Package Shaders…", ThisComputer, {}},
+    {Action::MovePaneToTab, "move_pane_to_tab", "Move Pane to New Tab", OfPane | Structural, {}},
+    {Action::MovePaneToWindow, "move_pane_to_window", "Move Pane to New Window", OfPane | Structural, {}},
+    {Action::DetachTab, "detach_tab", "Detach Tab to New Window", Structural, {}},
+    {Action::SaveProject, "save_project", "Save Project", ThisComputer, {}},
+    {Action::SwitchProject, "switch_project", "Switch Project", ThisComputer | Structural, {}},
+    {Action::EndScriptKeyMode, "end_script_key_mode", "End Script Key Mode", ThisComputer, {"Ctrl+Shift+Escape"}},
+    {Action::CancelOverlay, "cancel_overlay", "Cancel Overlay", ThisComputer, {"Ctrl+Shift+Alt+Escape"}},
+    {Action::SplitRight, "split_right", "Split Right", OfPane | Structural, {"Ctrl+Shift+E"}},
+    {Action::SplitDown, "split_down", "Split Down", OfPane | Structural, {"Ctrl+Shift+O"}},
+    {Action::SplitLeft, "split_left", "Split Left", OfPane | Structural, {}},
+    {Action::SplitUp, "split_up", "Split Up", OfPane | Structural, {}},
+    {Action::RenamePane, "rename_pane", "Change Pane Title", OfPane, {}},
+    {Action::ClosePane, "close_pane", "Close Pane", OfPane | Structural, {"Ctrl+Shift+W"}},
+    {Action::NewWindow, "new_window", "New Window", OfPane | ThisComputer | Structural, {"Ctrl+Shift+N"}},
+    {Action::NewTab, "new_tab", "New Tab", OfPane | Structural, {"Ctrl+Shift+T"}},
+    {Action::CloseTab, "close_tab", "Close Tab", Structural, {"Ctrl+Shift+Q"}},
+    {Action::RenameTab, "rename_tab", "Change Tab Title", 0, {}},
+    {Action::MoveTabLeft, "move_tab_left", "Move Tab Left", 0, {"Ctrl+Shift+Alt+PgUp"}},
+    {Action::MoveTabRight, "move_tab_right", "Move Tab Right", 0, {"Ctrl+Shift+Alt+PgDown"}},
+    {Action::GotoTab1, "goto_tab_1", "Go to Tab 1", 0, {"Alt+1"}},
+    {Action::GotoTab2, "goto_tab_2", "Go to Tab 2", 0, {"Alt+2"}},
+    {Action::GotoTab3, "goto_tab_3", "Go to Tab 3", 0, {"Alt+3"}},
+    {Action::GotoTab4, "goto_tab_4", "Go to Tab 4", 0, {"Alt+4"}},
+    {Action::GotoTab5, "goto_tab_5", "Go to Tab 5", 0, {"Alt+5"}},
+    {Action::GotoTab6, "goto_tab_6", "Go to Tab 6", 0, {"Alt+6"}},
+    {Action::GotoTab7, "goto_tab_7", "Go to Tab 7", 0, {"Alt+7"}},
+    {Action::GotoTab8, "goto_tab_8", "Go to Tab 8", 0, {"Alt+8"}},
+    {Action::GotoTab9, "goto_tab_9", "Go to the Last Tab", 0, {"Alt+9"}},
+    {Action::CloseWindow, "close_window", "Close Window", Structural, {}},
+    {Action::ToggleFullscreen, "toggle_fullscreen", "Toggle Fullscreen", 0, {"F11"}},
+    {Action::NextTab, "next_tab", "Next Tab", 0, {"Ctrl+Tab", "Ctrl+PgDown"}},
+    {Action::PreviousTab, "previous_tab", "Previous Tab", 0, {"Ctrl+Shift+Tab", "Ctrl+PgUp"}},
+    {Action::ShowHints, "show_hints", "Select Text or File Reference", OfPane, {"Ctrl+Shift+H"}},
+    {Action::ShowLastOutput,
+     "show_last_output",
+     "View Last Command Output in Pager",
+     OfPane | ReadsText | ThisComputer | Structural,
+     {}},
+    {Action::ShowFirstOutputOnScreen,
+     "show_first_output_on_screen",
+     "View First Command Output on Screen in Pager",
+     OfPane | ReadsText | ThisComputer | Structural,
+     {}},
+    {Action::ShowLastVisitedOutput,
+     "show_last_visited_output",
+     "View Last Visited Command Output in Pager",
+     OfPane | ReadsText | ThisComputer | Structural,
+     {}},
+    {Action::CopyMode, "copy_mode", "Keyboard Copy Mode", OfPane, {"Ctrl+Shift+Space"}},
+    {Action::Copy, "copy", "Copy", OfPane | ReadsText | ThisComputer, {"Ctrl+Shift+C"}},
+    {Action::Paste, "paste", "Paste", OfPane | ReadsText | ThisComputer, {"Ctrl+Shift+V"}},
+    {Action::SelectAll, "select_all", "Select All", OfPane | ReadsText | ThisComputer, {"Ctrl+Shift+A"}},
+    {Action::ClearScreen, "clear_screen", "Clear Screen and Scrollback", OfPane, {"Ctrl+Shift+K"}},
+    {Action::ResetTerminal, "reset", "Reset Terminal", OfPane, {}},
+    {Action::NotifyOnFinish, "notify_on_finish", "Notify When the Next Command Finishes", OfPane, {}},
+    {Action::FocusLeft, "focus_left", "Focus Pane Left", OfPane, {"Ctrl+Shift+Left"}},
+    {Action::FocusRight, "focus_right", "Focus Pane Right", OfPane, {"Ctrl+Shift+Right"}},
+    {Action::FocusUp, "focus_up", "Focus Pane Above", OfPane, {"Ctrl+Shift+Up"}},
+    {Action::FocusDown, "focus_down", "Focus Pane Below", OfPane, {"Ctrl+Shift+Down"}},
     // Not Ctrl+Shift+=: on most layouts that chord types "+", so it is Ctrl++ (font_bigger).
-    {Action::EqualizeSplits, "equalize_splits", "Equalize Splits", {"Ctrl+Shift+Alt+="}},
-    {Action::TogglePaneZoom, "toggle_pane_zoom", "Toggle Pane Zoom", {"Ctrl+Shift+Return"}},
-    {Action::ResizeLeft, "resize_left", "Resize Pane Left", {"Ctrl+Shift+Alt+Left"}},
-    {Action::ResizeRight, "resize_right", "Resize Pane Right", {"Ctrl+Shift+Alt+Right"}},
-    {Action::ResizeUp, "resize_up", "Resize Pane Up", {"Ctrl+Shift+Alt+Up"}},
-    {Action::ResizeDown, "resize_down", "Resize Pane Down", {"Ctrl+Shift+Alt+Down"}},
-    {Action::FontBigger, "font_bigger", "Increase Font Size", {"Ctrl+=", "Ctrl++"}},
-    {Action::FontSmaller, "font_smaller", "Decrease Font Size", {"Ctrl+-"}},
-    {Action::FontReset, "font_reset", "Reset Font Size", {"Ctrl+0"}},
-    {Action::ScrollPageUp, "scroll_page_up", "Scroll Page Up", {"Shift+PgUp"}},
-    {Action::ScrollPageDown, "scroll_page_down", "Scroll Page Down", {"Shift+PgDown"}},
-    {Action::ScrollTop, "scroll_top", "Scroll to Top", {"Shift+Home"}},
-    {Action::ScrollBottom, "scroll_bottom", "Scroll to Bottom", {"Shift+End"}},
-    {Action::JumpPromptUp, "jump_prompt_up", "Jump to Previous Prompt", {"Ctrl+Shift+Z"}},
-    {Action::JumpPromptDown, "jump_prompt_down", "Jump to Next Prompt", {"Ctrl+Shift+X"}},
-    {Action::Search, "search", "Search", {"Ctrl+Shift+F"}},
-    {Action::CommandPalette, "command_palette", "Command Palette", {"Ctrl+Shift+P"}},
-    {Action::ReloadConfig, "reload_config", "Reload Config", {"Ctrl+Shift+R"}},
-    {Action::OpenConfig, "open_config", "Open Config File", {"Ctrl+Shift+,"}},
-    {Action::UrlsOpen, "show_urls_open", "Open a URL on Screen", {"Ctrl+Shift+G"}},
-    {Action::UrlsCopy, "show_urls_copy", "Copy a URL on Screen", {"Ctrl+Shift+Y"}},
-    {Action::UnicodeInput, "unicode_input", "Insert Unicode Character", {"Ctrl+Shift+U"}},
+    {Action::EqualizeSplits, "equalize_splits", "Equalize Splits", 0, {"Ctrl+Shift+Alt+="}},
+    {Action::TogglePaneZoom, "toggle_pane_zoom", "Toggle Pane Zoom", OfPane, {"Ctrl+Shift+Return"}},
+    {Action::ResizeLeft, "resize_left", "Resize Pane Left", OfPane, {"Ctrl+Shift+Alt+Left"}},
+    {Action::ResizeRight, "resize_right", "Resize Pane Right", OfPane, {"Ctrl+Shift+Alt+Right"}},
+    {Action::ResizeUp, "resize_up", "Resize Pane Up", OfPane, {"Ctrl+Shift+Alt+Up"}},
+    {Action::ResizeDown, "resize_down", "Resize Pane Down", OfPane, {"Ctrl+Shift+Alt+Down"}},
+    {Action::FontBigger, "font_bigger", "Increase Font Size", 0, {"Ctrl+=", "Ctrl++"}},
+    {Action::FontSmaller, "font_smaller", "Decrease Font Size", 0, {"Ctrl+-"}},
+    {Action::FontReset, "font_reset", "Reset Font Size", 0, {"Ctrl+0"}},
+    {Action::ScrollPageUp, "scroll_page_up", "Scroll Page Up", OfPane, {"Shift+PgUp"}},
+    {Action::ScrollPageDown, "scroll_page_down", "Scroll Page Down", OfPane, {"Shift+PgDown"}},
+    {Action::ScrollTop, "scroll_top", "Scroll to Top", OfPane, {"Shift+Home"}},
+    {Action::ScrollBottom, "scroll_bottom", "Scroll to Bottom", OfPane, {"Shift+End"}},
+    {Action::JumpPromptUp, "jump_prompt_up", "Jump to Previous Prompt", OfPane, {"Ctrl+Shift+Z"}},
+    {Action::JumpPromptDown, "jump_prompt_down", "Jump to Next Prompt", OfPane, {"Ctrl+Shift+X"}},
+    {Action::Search, "search", "Search", OfPane, {"Ctrl+Shift+F"}},
+    {Action::CommandPalette, "command_palette", "Command Palette", 0, {"Ctrl+Shift+P"}},
+    {Action::ReloadConfig, "reload_config", "Reload Config", ThisComputer, {"Ctrl+Shift+R"}},
+    {Action::OpenConfig, "open_config", "Open Config File", ThisComputer, {"Ctrl+Shift+,"}},
+    {Action::UrlsOpen, "show_urls_open", "Open a URL on Screen", OfPane, {"Ctrl+Shift+G"}},
+    {Action::UrlsCopy, "show_urls_copy", "Copy a URL on Screen", OfPane, {"Ctrl+Shift+Y"}},
+    {Action::UnicodeInput, "unicode_input", "Insert Unicode Character", OfPane, {"Ctrl+Shift+U"}},
 };
+
+const ActionInfo* infoOf(Action action)
+{
+    const auto it = std::find_if(std::begin(Actions), std::end(Actions), [&](const ActionInfo& a) {
+        return a.action == action;
+    });
+    return it == std::end(Actions) ? nullptr : it;
+}
+
+bool hasTrait(Action action, unsigned trait)
+{
+    const ActionInfo* info = infoOf(action);
+    return info && (info->traits.bits & trait) != 0;
+}
 
 QString keyText(int combo)
 {
@@ -131,9 +161,12 @@ QString keyText(int combo)
 int hexDigit(QChar c)
 {
     const char16_t u = c.unicode();
-    if (u >= '0' && u <= '9') return u - '0';
-    if (u >= 'a' && u <= 'f') return u - 'a' + 10;
-    if (u >= 'A' && u <= 'F') return u - 'A' + 10;
+    if (u >= '0' && u <= '9')
+        return u - '0';
+    if (u >= 'a' && u <= 'f')
+        return u - 'a' + 10;
+    if (u >= 'A' && u <= 'F')
+        return u - 'A' + 10;
     return -1;
 }
 
@@ -141,22 +174,42 @@ int hexDigit(QChar c)
 
 QString Keybinds::token(Action action)
 {
-    for (const ActionInfo& a : Actions) {
-        if (a.action == action) {
-            return QLatin1String(a.token);
-        }
-    }
-    return {};
+    const ActionInfo* info = infoOf(action);
+    return info ? QLatin1String(info->token) : QString();
+}
+
+Action Keybinds::fromToken(const QString& token)
+{
+    const auto it = std::find_if(std::begin(Actions), std::end(Actions), [&](const ActionInfo& a) {
+        return token == QLatin1String(a.token);
+    });
+    return it == std::end(Actions) ? Action::None : it->action;
 }
 
 QString Keybinds::title(Action action)
 {
-    for (const ActionInfo& a : Actions) {
-        if (a.action == action) {
-            return QString::fromUtf8(a.title);
-        }
-    }
-    return {};
+    const ActionInfo* info = infoOf(action);
+    return info ? QString::fromUtf8(info->title) : QString();
+}
+
+bool Keybinds::isPaneAction(Action action)
+{
+    return hasTrait(action, OfPane);
+}
+
+bool Keybinds::readsPaneText(Action action)
+{
+    return hasTrait(action, ReadsText);
+}
+
+bool Keybinds::reachesThisComputer(Action action)
+{
+    return hasTrait(action, ThisComputer);
+}
+
+bool Keybinds::isStructural(Action action)
+{
+    return hasTrait(action, Structural);
 }
 
 QList<Action> Keybinds::allActions()
@@ -195,7 +248,8 @@ Keybinds Keybinds::defaults()
 bool Keybinds::usesLeader(const QString& sequence)
 {
     const QString text = sequence.trimmed();
-    if (!text.startsWith(QLatin1String("Leader"), Qt::CaseInsensitive)) return false;
+    if (!text.startsWith(QLatin1String("Leader"), Qt::CaseInsensitive))
+        return false;
     const QString rest = text.mid(6).trimmed();
     return rest.isEmpty() || rest.startsWith(QLatin1Char(','));
 }
@@ -213,7 +267,8 @@ std::optional<int> Keybinds::parse(const QString& sequence, const QString& targe
         }
         return std::nullopt;
     }
-    if (seq.count() > 1) return std::nullopt; // handled by KeyModes
+    if (seq.count() > 1)
+        return std::nullopt; // handled by KeyModes
     return QKeyCombination(seq[0].keyboardModifiers() & RelevantMods, seq[0].key()).toCombined();
 }
 
@@ -227,16 +282,21 @@ void Keybinds::unbind(int combo)
 Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
 {
     auto error = [errors](const QString& text) {
-        if (errors) errors->append(text);
+        if (errors)
+            errors->append(text);
     };
     auto sequencesOf = [&](const QString& target, const QVariant& v) {
-        if (v.typeId() == QMetaType::QString) return QStringList{v.toString()};
+        if (v.typeId() == QMetaType::QString)
+            return QStringList{v.toString()};
         QStringList out;
-        if (v.typeId() == QMetaType::QStringList) return v.toStringList();
+        if (v.typeId() == QMetaType::QStringList)
+            return v.toStringList();
         if (v.typeId() == QMetaType::QVariantList) {
             for (const QVariant& item : v.toList()) {
-                if (item.typeId() == QMetaType::QString) out << item.toString();
-                else error(QStringLiteral("binding for %1 must be a key string or a list of them").arg(target));
+                if (item.typeId() == QMetaType::QString)
+                    out << item.toString();
+                else
+                    error(QStringLiteral("binding for %1 must be a key string or a list of them").arg(target));
             }
             return out;
         }
@@ -248,7 +308,8 @@ Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
     // Defaults first: a key the config binds explicitly then takes the key
     // away from the default that held it, whatever the table order.
     for (const ActionInfo& a : Actions) {
-        if (map.contains(QLatin1String(a.token))) continue;
+        if (map.contains(QLatin1String(a.token)))
+            continue;
         for (const char* d : a.defaults) {
             if (const auto combo = parse(QString::fromLatin1(d), QLatin1String(a.token), errors)) {
                 kb.unbind(*combo);
@@ -260,7 +321,8 @@ Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
     QHash<int, QString> explicitOwner;
     auto claim = [&](const QString& sequence, const QString& target) -> std::optional<int> {
         const auto combo = parse(sequence, target, errors);
-        if (!combo) return std::nullopt;
+        if (!combo)
+            return std::nullopt;
         if (const auto owner = explicitOwner.constFind(*combo); owner != explicitOwner.constEnd()) {
             if (*owner != target) {
                 error(QStringLiteral("%1 binds %2, which %3 already uses").arg(target, keyText(*combo), *owner));
@@ -275,12 +337,15 @@ Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
     for (auto it = map.constBegin(); it != map.constEnd(); ++it) {
         const QString& target = it.key();
         // Key tables and their exit live in KeyModes.
-        if (target.startsWith(TablePrefix) || target == PopKeyTable) continue;
-        const auto action = std::find_if(std::begin(Actions), std::end(Actions),
-                                          [&](const ActionInfo& a) { return target == QLatin1String(a.token); });
+        if (target.startsWith(TablePrefix) || target == PopKeyTable)
+            continue;
+        const auto action = std::find_if(std::begin(Actions), std::end(Actions), [&](const ActionInfo& a) {
+            return target == QLatin1String(a.token);
+        });
         if (action != std::end(Actions)) {
             for (const QString& s : sequencesOf(target, it.value())) {
-                if (const auto combo = claim(s, target)) kb.m_byKey.insert(*combo, action->action);
+                if (const auto combo = claim(s, target))
+                    kb.m_byKey.insert(*combo, action->action);
             }
         } else if (target.startsWith(ScriptPrefix)) {
             // "script:foo" would bind a key that only ever fails to run.
@@ -300,7 +365,8 @@ Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
                 continue;
             }
             for (const QString& s : sequencesOf(target, it.value())) {
-                if (const auto combo = claim(s, target)) kb.m_textByKey.insert(*combo, bytes);
+                if (const auto combo = claim(s, target))
+                    kb.m_textByKey.insert(*combo, bytes);
             }
         } else {
             error(QStringLiteral("unknown action \"%1\"").arg(target));
@@ -316,10 +382,12 @@ QList<int> Keybinds::combinations(const QKeyEvent* event, char32_t base)
     QList<int> result{QKeyCombination(mods, Qt::Key(key)).toCombined()};
     auto add = [&result](Qt::KeyboardModifiers m, int k) {
         const int combined = QKeyCombination(m, Qt::Key(k)).toCombined();
-        if (!result.contains(combined)) result << combined;
+        if (!result.contains(combined))
+            result << combined;
     };
     // Qt reports Shift+Tab as Backtab, while bindings name it Shift+Tab.
-    if (key == Qt::Key_Backtab) add(mods | Qt::ShiftModifier, Qt::Key_Tab);
+    if (key == Qt::Key_Backtab)
+        add(mods | Qt::ShiftModifier, Qt::Key_Tab);
     int baseKey = 0;
     if (base >= 0x20 && base < 0x7F) {
         baseKey = (base >= 'a' && base <= 'z') ? int(base - 'a' + 'A') : int(base);
@@ -329,14 +397,16 @@ QList<int> Keybinds::combinations(const QKeyEvent* event, char32_t base)
     // also matches a binding that names the symbol alone. A letter's key is
     // the same with and without Shift, so Ctrl+Shift+A never matches Ctrl+A.
     const bool symbol = key > 0x20 && key < 0x7F && !(key >= Qt::Key_A && key <= Qt::Key_Z);
-    if ((mods & Qt::ShiftModifier) && symbol && key != baseKey) add(mods & ~Qt::ShiftModifier, key);
+    if ((mods & Qt::ShiftModifier) && symbol && key != baseKey)
+        add(mods & ~Qt::ShiftModifier, key);
     return result;
 }
 template<typename T>
 static const T* lookup(const QHash<int, T>& map, const QKeyEvent* event, char32_t base)
 {
     for (int key : Keybinds::combinations(event, base)) {
-        if (auto it = map.constFind(key); it != map.constEnd()) return &*it;
+        if (auto it = map.constFind(key); it != map.constEnd())
+            return &*it;
     }
     return nullptr;
 }
@@ -365,11 +435,13 @@ QByteArray Keybinds::unescape(const QString& text)
     for (qsizetype i = 0; i < text.size(); ++i) {
         if (text[i] != QLatin1Char('\\')) {
             if (text[i].isHighSurrogate()) {
-                if (i + 1 >= text.size() || !text[i + 1].isLowSurrogate()) return {};
+                if (i + 1 >= text.size() || !text[i + 1].isLowSurrogate())
+                    return {};
                 out += text.mid(i, 2).toUtf8();
                 ++i;
             } else {
-                if (text[i].isLowSurrogate()) return {};
+                if (text[i].isLowSurrogate())
+                    return {};
                 out += QString(text[i]).toUtf8();
             }
             continue;
@@ -419,14 +491,18 @@ QByteArray Keybinds::unescape(const QString& text)
             break;
         case 'u': {
             auto value = hex(4);
-            if (!value) return {};
+            if (!value)
+                return {};
             if (*value >= 0xD800 && *value <= 0xDBFF) {
-                if (text.mid(i + 1, 2) != QLatin1String("\\u")) return {};
+                if (text.mid(i + 1, 2) != QLatin1String("\\u"))
+                    return {};
                 i += 2;
                 const auto low = hex(4);
-                if (!low || *low < 0xDC00 || *low > 0xDFFF) return {};
+                if (!low || *low < 0xDC00 || *low > 0xDFFF)
+                    return {};
                 *value = 0x10000 + ((*value - 0xD800) << 10) + (*low - 0xDC00);
-            } else if (*value >= 0xDC00 && *value <= 0xDFFF) return {};
+            } else if (*value >= 0xDC00 && *value <= 0xDFFF)
+                return {};
             out += QString::fromUcs4(&*value, 1).toUtf8();
             break;
         }
@@ -439,7 +515,8 @@ QByteArray Keybinds::unescape(const QString& text)
 
 bool Keybinds::isScriptTarget(const QString& target)
 {
-    if (!target.startsWith(ScriptPrefix)) return false;
+    if (!target.startsWith(ScriptPrefix))
+        return false;
     // ScriptHost splits the command at the first dot, as here.
     const qsizetype dot = target.indexOf(QLatin1Char('.'), ScriptPrefix.size());
     return dot > ScriptPrefix.size() && dot < target.size() - 1;

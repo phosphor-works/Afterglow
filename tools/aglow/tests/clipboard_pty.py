@@ -28,15 +28,16 @@ def check(condition, *detail):
         raise AssertionError(*detail)
 
 
-def b64(text):
-    return base64.b64encode(text.encode()).decode()
+def b64(data):
+    return base64.b64encode(data if isinstance(data, bytes) else data.encode()).decode()
 
 
 def run(aglow, arguments, cwd, clipboard, modern=True, prompt=0.0, osc52_reply=None, umask=0o022, timeout=20,
-        written=None):
-    """Runs aglow clipboard ARGUMENTS against a terminal whose clipboard holds CLIPBOARD (MIME -> text).
-    PROMPT seconds pass before the terminal answers a read, as a permission prompt takes. What aglow
-    writes to the clipboard goes into the dict WRITTEN (MIME -> bytes, "OSC 52" for an OSC 52 write)."""
+        written=None, transcript=None):
+    """Runs aglow clipboard ARGUMENTS against a terminal whose clipboard holds CLIPBOARD (MIME -> text or
+    bytes). PROMPT seconds pass before the terminal answers a read, as a permission prompt takes. What aglow
+    writes to the clipboard goes into the dict WRITTEN (MIME -> bytes, "OSC 52" for an OSC 52 write). All that
+    aglow writes to the terminal, its messages too, goes into the bytearray TRANSCRIPT."""
     pid, master = pty.fork()
     if pid == 0:
         # The child must never return into this script, even when exec fails.
@@ -77,6 +78,8 @@ def run(aglow, arguments, cwd, clipboard, modern=True, prompt=0.0, osc52_reply=N
                         time.sleep(0.01)
                     break
                 buffer += data
+                if transcript is not None:
+                    transcript += data
             while True:
                 found = re.search(rb"\x1b\[\?5522\$p|\x1b\[c|\x1b\]5522;([^;\x1b]*);?([^\x1b]*)\x1b\\"
                                   rb"|\x1b\]52;([a-z0-9]*);([^\x1b]*)\x1b\\", buffer)
@@ -126,9 +129,9 @@ def run(aglow, arguments, cwd, clipboard, modern=True, prompt=0.0, osc52_reply=N
                             out += f"\x1b]5522;type=read:status=DATA:mime={b64(mime)}:id={ident};{b64(clipboard[mime])}\x1b\\"
                     out += f"\x1b]5522;type=read:status=DONE:id={ident}\x1b\\"
                     os.write(master, out.encode())
-            code = wait_exit()
-            if code is not None:
-                return code
+            # No exit check here: aglow can write its last sequence and exit
+            # between this select and the next. The end of the terminal's
+            # output, after every byte has been read and parsed, gives the exit.
         raise AssertionError("aglow clipboard did not finish: " + repr(buffer[-500:]))
     finally:
         if not reaped:

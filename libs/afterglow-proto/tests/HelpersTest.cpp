@@ -32,7 +32,8 @@ TEST(Sha256, NistVectors)
     EXPECT_EQ(hex("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     EXPECT_EQ(hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
               "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
-    EXPECT_EQ(hex("abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"),
+    EXPECT_EQ(hex("abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnop"
+                  "qrstnopqrstu"),
               "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1");
     EXPECT_EQ(hex(std::string(1000000, 'a')), "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
 }
@@ -67,7 +68,8 @@ TEST(Sha256, UpdatesOfAnySizeGiveOneDigest)
 // RFC 4231, test cases 1 to 7.
 TEST(HmacSha256, Rfc4231Vectors)
 {
-    EXPECT_EQ(hmac(std::string(20, '\x0b'), "Hi There"), "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7");
+    EXPECT_EQ(hmac(std::string(20, '\x0b'), "Hi There"),
+              "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7");
     EXPECT_EQ(hmac("Jefe", "what do ya want for nothing?"),
               "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
     EXPECT_EQ(hmac(std::string(20, '\xaa'), std::string(50, '\xdd')),
@@ -81,10 +83,11 @@ TEST(HmacSha256, Rfc4231Vectors)
     EXPECT_EQ(hmac(std::string(20, '\x0c'), "Test With Truncation").substr(0, 32), "a3b6167473100ee06e0c796c2955552b");
     EXPECT_EQ(hmac(std::string(131, '\xaa'), "Test Using Larger Than Block-Size Key - Hash Key First"),
               "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54");
-    EXPECT_EQ(hmac(std::string(131, '\xaa'),
-                   "This is a test using a larger than block-size key and a larger than block-size data. The key needs to "
-                   "be hashed before being used by the HMAC algorithm."),
-              "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2");
+    EXPECT_EQ(
+        hmac(std::string(131, '\xaa'),
+             "This is a test using a larger than block-size key and a larger than block-size data. The key needs to "
+             "be hashed before being used by the HMAC algorithm."),
+        "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2");
     // An empty key, also as a view with a null pointer. Only UBSan (the debug
     // preset) reports a memcpy from that pointer.
     EXPECT_EQ(hmac("", ""), "b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad");
@@ -103,6 +106,14 @@ TEST(Random, FillsTheBufferWithDifferentBytes)
     ASSERT_TRUE(token);
     EXPECT_EQ(token->size(), 32u);
     EXPECT_EQ(token->find_first_not_of("0123456789abcdef"), std::string::npos);
+}
+
+TEST(Zlib, Crc32IsThatOfPngChunks)
+{
+    // The check value of CRC-32 and the checksum of an IEND chunk.
+    EXPECT_EQ(crc32Of("123456789"), 0xCBF43926u);
+    EXPECT_EQ(crc32Of("IEND"), 0xAE426082u);
+    EXPECT_EQ(crc32Of(""), 0u);
 }
 
 TEST(Zlib, StreamsInSmallSteps)

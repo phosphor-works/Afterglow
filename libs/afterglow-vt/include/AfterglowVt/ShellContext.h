@@ -11,6 +11,8 @@
 
 namespace AfterglowVt {
 
+class StateReader;
+
 /// One context a pane's output comes from (systemd's OSC 3008): a shell, a
 /// command, an elevated (sudo, run0) or remote (ssh) session, a container.
 /// https://uapi-group.org/specifications/specs/osc_context/
@@ -20,7 +22,8 @@ struct ShellContext
     /// The entry iTerm2's RemoteHost (OSC 1337) keeps, apart from the OSC 3008
     /// ids, so that no OSC 3008 sequence can end or replace it.
     bool iterm2RemoteHost = false;
-    std::string type; ///< boot, container, vm, elevate, chpriv, subcontext, remote, shell, command, app, service, session
+    std::string
+        type; ///< boot, container, vm, elevate, chpriv, subcontext, remote, shell, command, app, service, session
     std::string user;
     std::string hostname;
     std::string targetUser; ///< elevate, chpriv: who the context becomes
@@ -37,6 +40,8 @@ class AFTERGLOWVT_EXPORT ShellContexts
 {
 public:
     static constexpr std::size_t MaxDepth = 64;
+    /// The longest field of a context, in bytes: a longer one is cut.
+    static constexpr std::size_t MaxField = 256;
 
     /// Applies an OSC 3008 payload. A field that is not clean text is
     /// dropped; a sequence whose id is not clean does nothing. Returns true
@@ -47,11 +52,18 @@ public:
     /// context; an identical repeat changes nothing. A value that is not clean
     /// text is ignored. Returns true if the contexts changed.
     bool setRemoteHost(std::string_view userAtHost);
-    void clear() { m_stack.clear(); }
+    void clear()
+    {
+        m_stack.clear();
+    }
 
-    const std::vector<ShellContext>& stack() const noexcept { return m_stack; }
+    const std::vector<ShellContext>& stack() const noexcept
+    {
+        return m_stack;
+    }
 
 private:
+    friend class StateReader; ///< a replica takes the contexts of the terminal that it mirrors
     std::vector<ShellContext> m_stack;
 };
 

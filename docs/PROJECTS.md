@@ -22,18 +22,22 @@ The pane overview shows the panes of every tab in the window as live cards, up t
 Panes after the 32nd, in tab order, do not appear in the overview.
 The overview does not open when the focused pane is one of them.
 Each tab's cards form a group, in tab order. The focused pane starts highlighted.
+The default overview shows each tab as a small picture of its panes, each pane in its place. The tabs are in a grid.
 
 | Key | Function |
 | --- | --- |
-| Right, Tab or `l` | Highlights the next pane |
-| Left, Shift+Tab or `h` | Highlights the previous pane |
-| Down or `j`, Up or `k` | Highlights the first pane of the next or previous tab |
+| Left, Right, Up, Down, or `h`, `l`, `k`, `j` | Highlights the pane in that direction. At the edge of a tab, the highlight goes on to the tab in that direction. With no pane there, it stays. |
+| Tab, Shift+Tab | Highlights the next or previous pane in order, and wraps round |
 | Home, End | Highlights the first or last pane |
 | Enter, Space or a left click | Focuses the highlighted pane and closes the overview |
 | 1 to 9 | Focuses that numbered card and closes the overview |
 | Escape, the `pane_overview` key, or a right or middle click | Closes the overview and keeps the focus |
 
-The mouse wheel also moves the highlight.
+The mouse wheel also moves the highlight, in order.
+An overview pack that shows the cards in a row or round a ring has other arrow keys. [Pane Deck](../examples/shaders/README.md) is one example.
+With such a pack, Right or `l` and Left or `h` highlight the next and the previous pane.
+Down or `j` and Up or `k` highlight the first pane of the next and the previous tab.
+A pack chooses the arrow keys with [`overviewNavigation`](SHADER-API.md#metadata) in its metadata.
 A pane in another tab switches to that tab as the overview closes.
 Keys do not reach the panes while the overview is open. Programs in the panes keep running.
 A zoomed tab shows all of its panes in the overview, and returns zoomed on the chosen pane.
@@ -56,9 +60,22 @@ afterglow ctl detach-tab --pane 12
 
 A move can cross tab and window boundaries.
 Use target `0` with the placement `new-tab` or `new-window`, as in `afterglow ctl move-pane 0 new-tab --pane 12`.
+With a target pane, `new-tab` puts the pane in a new tab after the tab of that target, in the window of that target.
+Afterglow refuses a move to a new tab of its own window for a pane that is alone in its tab.
+The `move_pane_to_tab` action then shows a notice, and `afterglow ctl action` reports an error.
+A held key tries the move one time.
 Luau supplies matching `move_pane` and `detach_tab` effects.
 Their results contain the pane snapshot and destination IDs.
 `on_pane_moved` reports the new location. A move does not cause creation or closure events.
+
+In the window of a [mux session](MUX.md#move-panes-and-tabs), a pane or a tab that moves to a new window goes to a new session.
+A new window shows that session, and the programs keep running.
+The pane gets a new pane ID, and the tab gets a new tab ID.
+Control clients and scripts get a closure event and then a creation event, not a move event.
+Afterglow refuses a move of the last panes of a session out of its window to a new window.
+Afterglow also refuses a move of a session pane into a window that shows no session or a session of another daemon.
+It refuses a move of another pane into the window of a session too.
+A pane that moves into the window of another session of the same daemon joins that session (see [move a pane to another session](MUX.md#move-a-pane-to-another-session)).
 
 ## Save and open projects
 
@@ -68,23 +85,26 @@ Their results contain the pane snapshot and destination IDs.
 
 A project stores one window's tabs, split trees, ratios, focus, titles, directories and explicit launch arguments.
 Replacing an existing project requires confirmation.
+You can also save the window of a mux session (see [projects and mux sessions](#projects-and-mux-sessions)).
 **Switch Project** searches saved names.
 It focuses an open instance or starts the saved layout in a new window.
 Other windows remain open.
 The keybinding action names are `save_project` and `switch_project`.
 
-```sh
-afterglow ctl save-project development --pane 12
-afterglow ctl projects
-afterglow ctl open-project development          # focus existing, or launch
-afterglow ctl open-project development --new    # launch another instance
-afterglow ctl save-project development --pane 12 --overwrite
-```
+| Command | Result |
+| --- | --- |
+| `afterglow ctl save-project development --pane 12` | Saves the window of pane 12 as the project `development` |
+| `afterglow ctl projects` | Lists the saved projects |
+| `afterglow ctl open-project development` | Focuses the open instance, or starts the project |
+| `afterglow ctl open-project development --new` | Starts another instance of the project |
+| `afterglow ctl open-project development --into-session` | Opens the project into a mux session, whatever the project says |
+| `afterglow ctl open-project development --no-session` | Opens the project into a window outside a session, whatever the project says |
+| `afterglow ctl save-project development --pane 12 --overwrite` | Saves the window of pane 12 in place of the saved project `development` |
 
 ## Project files
 
 Layouts are in `projects/` beside the active configuration file.
-The usual path is `~/.config/afterglow/projects/`.
+The usual path is `~/.config/phosphor-works/afterglow/projects/`.
 Names contain 1–64 letters, digits, underscores or hyphens.
 Saves replace files atomically. Symlink files are not permitted.
 
@@ -95,17 +115,22 @@ Saves replace files atomically. Symlink files are not permitted.
 | Panes | 32 |
 | Tree depth | 16 |
 | File size | 1 MiB |
+| Tab and pane IDs | 1–64 characters |
+| Pane directory | 4,096 characters, an absolute path or one that starts with `~` |
+| Tab and pane titles | 256 characters |
+| Pane command | 64 arguments, each of at most 4,096 bytes in UTF-8, with a program name first |
 
 Afterglow validates the layout before it creates windows or runs commands.
-A save or an open that a limit stops names that limit.
+A save or an open that a limit stops names that limit and the count of the layout.
+A save keeps a pane command that is over the command limits as an empty command, and gives a warning.
 
-1. Copy [development.json](../data/examples/projects/development.json) into the project directory.
+1. Copy [development.json](../examples/projects/development.json) into the project directory.
 2. Set the directories and commands for your system.
 3. Open the `development` project.
 
 | Object | Fields |
 | --- | --- |
-| Document | `version`, `active_tab`, `tabs` |
+| Document | `version`, `active_tab`, `tabs`, and the optional `session` (true or false) |
 | Tab | `id`, `title`, `active_pane`, `tree` |
 | Leaf | `pane: {id, cwd, title, command}` |
 | Split | `direction`, `ratio`, `first`, `second` |
@@ -130,9 +155,41 @@ Explicit commands remain visible after exit, with their exit status.
 A restored shell also remains visible after an unsuccessful exit.
 Press a key to close a held pane.
 
-Projects store launch layouts, not running sessions.
-They do not save scrollback, environment snapshots, remote sessions or process state.
+A project file stores a launch layout, not running programs.
+It does not save scrollback, environment snapshots, remote sessions or process state.
+For a project with `"session": true`, the mux daemon keeps the programs of its session running (see [projects and mux sessions](#projects-and-mux-sessions)).
 Examine commands in imported layouts before you open them.
+
+## Projects and mux sessions
+
+A project with `"session": true` opens into a session of the [mux daemon](MUX.md) of this computer.
+The session has the name of the project.
+A window that opened from a project into its session keeps that session running when it closes, also with `--new`.
+For these windows, `Mux.onClose` does not apply. It also does not apply to the window of an [agent session](MUX.md#agent-sessions), which always keeps its session. It decides for the other windows of sessions.
+A save under a project name does not change what a close does.
+To end the session, run `afterglow mux kill NAME`, or end its programs.
+`--into-session` and `--no-session` of `afterglow ctl open-project` choose for one open.
+The global `--session NAME` of `afterglow ctl` is another option. It names the session that a command acts on.
+**Switch Project** and the `open_project` effect of scripts follow the project.
+
+| The session of the project | Open the project |
+| --- | --- |
+| A window shows it | Focuses that window |
+| It runs, and no window shows it | A new window shows it again, with its programs as they are |
+| It does not run | Starts it with all the panes of the project, and a new window lays them out. A pane whose program ended before the window opened is left out, with a warning. |
+| It runs, with `--new` | Starts another session, whose name the daemon gives |
+
+A save writes the kind of the window that it saves.
+A save of a window that shows a session of this computer sets `session` to true.
+A save of any other window removes it, also for a project that you opened with `--no-session`.
+Thus a save of the window of a session of another host writes no `session`, and the project opens into a window of this computer.
+The daemon keeps the command and the title of each pane, so a window that shows the session again saves them too.
+Afterglow starts the daemon, the session and the panes of the project in the background, and connects to the session there. The windows go on responding while the session starts.
+The `afterglow ctl open-project` call, and the result of the `open_project` effect, come when the window of the session opens.
+While the session of a project starts, a second open of the project waits for it, and then focuses its window.
+A pane of a session closes when its program exits. The project does not hold it, as it holds a pane outside a session.
+A project whose name starts with `-` cannot name a session, and opens into a window.
+With `--into-session`, its open fails with `project NAME cannot name a session: the name of a session must be` and the rule for names.
 
 ## Script and control results
 
@@ -140,20 +197,24 @@ Examine commands in imported layouts before you open them.
 | --- | --- |
 | `save_project(pane, name, overwrite?)` | `name`, `window_id` |
 | `list_projects()` | `names` |
-| `open_project(name, newInstance?)` | `name`, `window_id`, `reused` |
+| `open_project(name, newInstance?)` | `name`, `window_id`, `reused`, and `session` for a project that opens into a session |
 
 Wait for the result with `afterglow.await`.
-A new project instance also returns `pane_ids`, `tab_ids` and `warnings`.
+`reused` is true when a window of the project, or of its session, was there already and came to the front.
+A new project instance also returns `pane_ids`, `tab_ids` and `warnings`. A window that shows a session that ran already returns no ID maps.
 The ID maps connect saved labels to runtime IDs.
 Project creation uses the structural action budget.
 Window snapshots contain `project`. An unnamed window has an empty project name.
 
-The [project script](../data/examples/scripts/projects.luau) shows a native selector.
+The `open_project` tool of the [MCP server](MCP.md#open_project) opens a project in the agent's own mux session.
+The `save_project` tool saves that session as a project, also when no window shows it.
+The [project script](../examples/scripts/projects.luau) shows a native selector.
 The [control socket](CONTROL.md#control-calls) supplies `projects`, `saveProject` and `openProject`.
 The CLI prints save and open results as JSON.
 
 `open_directory(path, layout?)` starts a shell or saved layout in a directory.
 All template panes use that directory.
+It opens a window, also for a layout whose project opens into a mux session.
 An existing window for the canonical directory receives focus without a restart.
 Results contain `window_id`, `pane_id`, `cwd` and `reused`.
 A layout restore also returns ID maps and warnings.

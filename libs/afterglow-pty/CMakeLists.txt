@@ -10,14 +10,15 @@ generate_export_header(AfterglowPty
     EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/include/AfterglowPty/afterglowpty_export.h)
 
 find_package(Threads REQUIRED)
-target_link_libraries(AfterglowPty PRIVATE Threads::Threads util)
+target_link_libraries(AfterglowPty PRIVATE Threads::Threads)
 target_include_directories(AfterglowPty PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>)
 set_target_properties(AfterglowPty PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR}
-    AUTOMOC OFF)
+    AUTOMOC OFF
+    AUTOUIC OFF)
 
 if(BUILD_TESTING)
     add_subdirectory(tests)

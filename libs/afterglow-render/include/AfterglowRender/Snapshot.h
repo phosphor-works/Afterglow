@@ -11,7 +11,9 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -74,16 +76,33 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     class Identity
     {
     public:
-        Identity() : m_value(next()) {}
-        Identity(const Identity&) : m_value(next()) {}
-        Identity(Identity&& other) noexcept : m_value(std::exchange(other.m_value, next())) {}
-        Identity& operator=(const Identity&) { m_value = next(); return *this; }
-        Identity& operator=(Identity&& other) noexcept
+        Identity()
+            : m_value(next())
         {
-            if (this != &other) m_value = std::exchange(other.m_value, next());
+        }
+        Identity(const Identity&)
+            : m_value(next())
+        {
+        }
+        Identity(Identity&& other) noexcept
+            : m_value(std::exchange(other.m_value, next()))
+        {
+        }
+        Identity& operator=(const Identity&)
+        {
+            m_value = next();
             return *this;
         }
-        std::uint64_t value() const noexcept { return m_value; }
+        Identity& operator=(Identity&& other) noexcept
+        {
+            if (this != &other)
+                m_value = std::exchange(other.m_value, next());
+            return *this;
+        }
+        std::uint64_t value() const noexcept
+        {
+            return m_value;
+        }
 
     private:
         static std::uint64_t next() noexcept;
@@ -109,7 +128,12 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     std::uint32_t selectionForegroundColor = 0;
     std::uint32_t selectionBackgroundColor = 0;
 
-    struct ExtraCursor { int x, y; AfterglowVt::CursorShape shape; std::uint32_t color = 0, textColor = 0; };
+    struct ExtraCursor
+    {
+        int x, y;
+        AfterglowVt::CursorShape shape;
+        std::uint32_t color = 0, textColor = 0;
+    };
     std::vector<ExtraCursor> extraCursors;
     bool cursorVisible = false;
     int cursorX = 0;
@@ -122,6 +146,8 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     /// Text under a block cursor once it has arrived.
     std::uint32_t cursorTextColor = 0;
 
+    /// The terminal's textGeneration() at the capture: the text that the
+    /// snapshot shows, which a frame of an animated image does not change.
     std::uint64_t generation = 0;
     /// Bumped by every capture, so renderers can reuse work for unchanged snapshots.
     std::uint64_t version = 0;
@@ -130,7 +156,20 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     std::array<std::uint32_t, 256> palette{};
 
     /// Kitty graphics placements in the viewport, in pixels from cell (0, 0).
+    /// Their frames are RGBA: capture() gives indexed frames their colours.
     std::vector<AfterglowVt::VisiblePlacement> images;
+
+    /// An indexed frame in indexColors. A frame keeps its RGBA frame, and so
+    /// its texture, until the colours change or no placement shows it.
+    struct ColoredFrame
+    {
+        std::weak_ptr<const AfterglowVt::ImageFrame> source;
+        AfterglowVt::FramePtr rgba;
+        std::uint64_t seen = 0; ///< the version of the last capture that showed it
+    };
+    std::unordered_map<const AfterglowVt::ImageFrame*, ColoredFrame> coloredFrames;
+    /// The colours of the 256 indices that coloredFrames are in.
+    std::array<std::uint32_t, 256> indexColors{};
 
     /// DEC line size per captured row.
     std::vector<AfterglowVt::LineSize> lineSizes;
@@ -138,10 +177,16 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
 
     int visualColumn(int logical, int row) const;
     int logicalColumn(int visual, int row) const;
-    const SnapshotCell& logicalAt(int x, int y) const { return at(visualColumn(x, y), y); }
+    const SnapshotCell& logicalAt(int x, int y) const
+    {
+        return at(visualColumn(x, y), y);
+    }
     void applyBidi(const AfterglowVt::Terminal& terminal);
 
-    const SnapshotCell& at(int x, int y) const { return cells[std::size_t(y) * std::size_t(cols) + std::size_t(x)]; }
+    const SnapshotCell& at(int x, int y) const
+    {
+        return cells[std::size_t(y) * std::size_t(cols) + std::size_t(x)];
+    }
     AfterglowVt::LineSize lineSize(int y) const
     {
         return std::size_t(y) < lineSizes.size() ? lineSizes[std::size_t(y)] : AfterglowVt::LineSize::Single;
@@ -158,6 +203,9 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     /// @param reorder applies bidirectional reordering (applyBidi()).
     void capture(const AfterglowVt::Terminal& terminal, const AfterglowVt::Selection* selection = nullptr,
                  const SearchHighlight& search = {}, int extraRows = 0, bool reorder = true);
+
+private:
+    void colorIndexedImages();
 };
 
 } // namespace AfterglowRender

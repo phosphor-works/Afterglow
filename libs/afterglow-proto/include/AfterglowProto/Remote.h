@@ -1,0 +1,78 @@
+// SPDX-FileCopyrightText: 2026 fuddlesworth
+// SPDX-License-Identifier: LGPL-2.1-or-later
+
+#pragma once
+
+#include <AfterglowProto/RemoteOsc.h>
+
+#include <cstddef>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include <sys/types.h>
+
+/// Package commands from a remote host. `afterglow ssh` forwards a socket of
+/// the terminal to the remote host, and `aglow run` there finds it with OSC
+/// 24569: the pane that runs the ssh session answers with the socket's path
+/// on the remote host, or with the reason why there is none. The pane and
+/// aglow both write and read the sequence (RemoteOsc.h).
+namespace AfterglowProto::Remote {
+
+/// The only target of a forwarded socket. It has the calls of a run (list,
+/// input, run, ack and cancel), for the commands that declare "remote".
+inline constexpr const char* Target = "remote";
+/// The random bytes of a session's token, which names its socket on both
+/// hosts. It only has to be unique: the socket's permissions are the boundary.
+inline constexpr std::size_t TokenBytes = 8;
+/// aglow run waits this long for the answer to its query at most. The guard
+/// query (DA1, or a status report inside tmux) ends the wait before that.
+inline constexpr int GuardTimeoutMs = 2000;
+
+/// The limits of the local sockets of ssh sessions, the same for a window
+/// (RemoteSockets) and for the mux daemon, which keeps those of session
+/// panes.
+/// ssh sessions of one pane at most: those in the background and the one in
+/// front. A client in a loop opens no more.
+inline constexpr std::size_t MaxSessionsPerPane = 16;
+/// Sessions of the process at most, each a socket and a pidfd. A window
+/// counts its endpoints here too.
+inline constexpr std::size_t MaxSessions = 256;
+/// Connections open at once on the socket of one session, at most. Each
+/// `aglow run` takes one.
+inline constexpr std::size_t MaxConnections = 64;
+/// The options of `ssh -O cancel` that a client can give, at most.
+inline constexpr std::size_t MaxOptions = 256;
+/// UTF-16 units of the host name of a session (ev.remote.host) at most.
+inline constexpr std::size_t MaxHostLength = 255;
+
+/// The part of @p osc after "24569;", where @p osc is an OSC string without
+/// its introducer and terminator. Nothing for another OSC.
+std::optional<std::string_view> oscPayload(std::string_view osc);
+
+/// @p sequences wrapped in tmux's passthrough (DCS tmux; ... ST, each ESC
+/// doubled), so that tmux sends them on to the terminal that it runs in.
+/// Only with allow-passthrough on, which is off by default.
+std::string tmuxPassthrough(std::string_view sequences);
+
+/// DIRECTORY/TOKEN.sock. The probe of `afterglow ssh` chooses the directory.
+std::string socketPath(std::string_view directory, std::string_view token);
+
+/// What prune() did.
+struct Pruned
+{
+    std::vector<std::string> removed; ///< the file names, without the directory
+    std::string error; ///< the directory could not be read
+};
+/// Removes the sockets in @p directory that belong to @p owner, are named
+/// *.sock and that no process holds. They are left over from sessions that
+/// ended: sshd leaves the file of a forward that was cancelled. Where the
+/// kernel lists the bound sockets (/proc/net/unix on Linux), a socket there
+/// stays without a connection to it: one that sshd has bound but does not
+/// listen on yet is live. Elsewhere, and for a socket that the list does not
+/// name, only a refused connection tells that nothing holds it. Files that
+/// are not sockets or belong to another user stay. `aglow remote-prune`.
+Pruned prune(const std::string& directory, uid_t owner);
+
+} // namespace AfterglowProto::Remote

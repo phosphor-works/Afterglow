@@ -17,7 +17,16 @@
 //   7 the text checks that sanitize ids and names, and printable text
 //   8 JSON for the phosphor-ipc client, written and read again, and the
 //     stdin parts of `aglow run`
-//   9 X11 colour specs (parseColorSpec), and the colour read written again
+//   9 X11 colour specs, OKLCH and LAB (parseColorSpec), and the colour read
+//     written again
+//  10 OSC 24569 strings (oscPayload, isQuery, parseReply), and the answer
+//     read written again as the pane's reply
+//  11 phosphor-ipc request lines of aglow-mux: each message parsed as a
+//     request, and the whole input as the stream of one connection, read by
+//     the server side (IpcServerConnection) in parts
+//  12 phosphor-ipc lines of a server, as a client reads them
+//     (IpcConnection on an adopted socket, as over `aglow-mux proxy`) in
+//     parts, and the release of the connection to the next protocol
 
 #include <AfterglowProto/Base64.h>
 #include <AfterglowProto/Clipboard.h>
@@ -25,19 +34,27 @@
 #include <AfterglowProto/Delta.h>
 #include <AfterglowProto/DragDrop.h>
 #include <AfterglowProto/Graphics.h>
+#include <AfterglowProto/Ipc.h>
+#include <AfterglowProto/IpcServer.h>
 #include <AfterglowProto/Json.h>
+#include <AfterglowProto/Remote.h>
 #include <AfterglowProto/Run.h>
 #include <AfterglowProto/Text.h>
 #include <AfterglowProto/Transfer.h>
 #include <AfterglowProto/Zlib.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
+
+#include <sys/socket.h>
+#include <unistd.h>
 
 namespace {
 
@@ -347,7 +364,8 @@ void json(std::string_view input)
     // A stdin part is a start of the input, under the limit once written,
     // and ends on a piece: never inside a UTF-8 sequence. The first byte
     // gives the limit, so that short input fills parts too.
-    if (input.empty()) return;
+    if (input.empty())
+        return;
     namespace Run = AfterglowProto::Run;
     const std::size_t limit = 8 + std::uint8_t(input[0]) % 64;
     const std::string_view data = input.substr(1);
@@ -358,7 +376,8 @@ void json(std::string_view input)
         std::size_t bytes = 2;
         while (end < part) {
             const std::size_t piece = Json::nextStringPiece(data, end);
-            if (!piece) break;
+            if (!piece)
+                break;
             bytes += piece;
         }
         if (part > data.size() || end != part || bytes > limit) {
@@ -377,7 +396,8 @@ void json(std::string_view input)
         if (!eof && part == 0) {
             std::size_t position = 0;
             std::size_t total = 2;
-            while (data.size() - position >= 4) total += Json::nextStringPiece(data, position);
+            while (data.size() - position >= 4)
+                total += Json::nextStringPiece(data, position);
             if (total > limit) {
                 __builtin_trap();
             }
@@ -415,6 +435,183 @@ void color(std::string_view input)
     }
 }
 
+/// The payload of the pane's reply @p sequence, as aglow reads it: without
+/// the introducer, the terminator and the OSC number.
+std::optional<std::string_view> replyPayload(std::string_view sequence, bool bel)
+{
+    const std::size_t terminator = bel ? 1 : 2;
+    if (!sequence.starts_with("\x1b]") || sequence.size() < 2 + terminator) {
+        return std::nullopt;
+    }
+    return AfterglowProto::Remote::oscPayload(sequence.substr(2, sequence.size() - 2 - terminator));
+}
+
+void remote(std::string_view input)
+{
+    namespace Remote = AfterglowProto::Remote;
+    for (const std::string_view message : messages(input)) {
+        const std::optional<std::string_view> payload = Remote::oscPayload(message);
+        if (payload) {
+            const std::optional<Remote::Answer> answer = Remote::parseReply(*payload);
+            // The query is never an answer, and an answer's path is one a
+            // reply may carry: aglow connects to it.
+            if (answer && (Remote::isQuery(*payload) || (!answer->path.empty() && !Remote::validPath(answer->path)))) {
+                __builtin_trap();
+            }
+            // An answer read gives a reply that reads back the same.
+            if (answer) {
+                for (const bool bel : {false, true}) {
+                    const std::string sequence = Remote::reply(*answer, bel);
+                    const auto again = replyPayload(sequence, bel);
+                    if (!again || Remote::parseReply(*again) != answer) {
+                        __builtin_trap();
+                    }
+                }
+            }
+        }
+        // Any string as the pane's path: the reply carries it when it is
+        // valid, else says error=off, and either reads back.
+        const Remote::Answer given{std::string(message), Remote::Error::Forward};
+        const std::string sequence = Remote::reply(given);
+        const auto sent = replyPayload(sequence, false);
+        const auto read = sent ? Remote::parseReply(*sent) : std::nullopt;
+        const Remote::Answer expected = Remote::validPath(given.path) ? Remote::Answer{given.path, Remote::Error::Off}
+            : given.path.empty()                                      ? Remote::Answer{{}, Remote::Error::Forward}
+                                                                      : Remote::Answer{{}, Remote::Error::Off};
+        if (read != expected) {
+            __builtin_trap();
+        }
+    }
+}
+
+/// @p text is one JSON line: its '\n' at the end and nowhere else.
+void checkLine(const std::string& text)
+{
+    if (text.empty() || text.back() != '\n' || text.find('\n') != text.size() - 1
+        || !AfterglowProto::Json::parse(std::string_view(text).substr(0, text.size() - 1))) {
+        __builtin_trap();
+    }
+}
+
+void ipcServer(std::string_view input)
+{
+    for (const std::string_view message : messages(input)) {
+        std::string error;
+        std::optional<std::int64_t> id;
+        const std::optional<AfterglowProto::IpcRequest> request = AfterglowProto::parseIpcRequest(message, &error, &id);
+        if (request) {
+            // What the daemon then reads is there, and the id is the one
+            // that an error would name.
+            if (request->type.empty() || (request->type == "call" && (request->target.empty() || request->fn.empty()))
+                || (request->type == "subscribe" && (request->target.empty() || request->signal.empty()))
+                || (request->type == "unsubscribe" && request->subscriptionId == 0) || request->args.size() > 4096
+                || request->id != id) {
+                __builtin_trap();
+            }
+            checkLine(AfterglowProto::ipcReply(request->id.value_or(0), request->target));
+            // An event carries the request's arguments as its own, whatever
+            // they hold.
+            checkLine(AfterglowProto::ipcEvent(request->id.value_or(0), request->args));
+        } else if (error.empty()) {
+            __builtin_trap();
+        }
+        checkLine(AfterglowProto::ipcError(id, AfterglowProto::IpcErrorCode::MalformedRequest, error));
+    }
+
+    // The input as one connection's stream, sent in parts while the server
+    // reads: each call returns, and the connection ends.
+    int pair[2];
+    if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, pair) != 0) {
+        return;
+    }
+    AfterglowProto::IpcServerConnection server(pair[0]);
+    constexpr std::size_t Part = 4096;
+    const std::size_t newlines = std::size_t(std::count(input.begin(), input.end(), '\n'));
+    const std::size_t bound = newlines + 4 * (input.size() / Part + 1) + 64;
+    std::size_t sent = 0;
+    bool ended = false;
+    char answers[65536];
+    for (std::size_t calls = 0; server.open(); ++calls) {
+        if (calls > bound) {
+            __builtin_trap();
+        }
+        if (sent < input.size()) {
+            const ssize_t n = ::send(pair[1], input.data() + sent, std::min(Part, input.size() - sent), MSG_NOSIGNAL);
+            if (n > 0) {
+                sent += std::size_t(n);
+            }
+        } else if (!ended) {
+            ::shutdown(pair[1], SHUT_WR);
+            ended = true;
+        }
+        AfterglowProto::IpcRequest request;
+        if (server.nextRequest(request) == AfterglowProto::IpcServerConnection::Read::Request) {
+            server.send(AfterglowProto::ipcReply(request.id.value_or(0), nullptr));
+        }
+        // The client reads the answers, so the server's output never waits long.
+        while (::recv(pair[1], answers, sizeof answers, MSG_DONTWAIT) > 0) { }
+        server.flush();
+    }
+    ::close(pair[1]);
+}
+
+/// What a server sends, as a client reads it: each frame is a JSON object,
+/// and the reads end. A connection that holds bytes no frame took gives no
+/// descriptor to the next protocol, and one that holds none does.
+void ipcClient(std::string_view input)
+{
+    int pair[2];
+    if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, pair) != 0) {
+        return;
+    }
+    using Read = AfterglowProto::IpcConnection::Read;
+    AfterglowProto::IpcConnection client;
+    client.adopt(pair[0]);
+    constexpr std::size_t Part = 4096;
+    const std::size_t bound = 2 * (input.size() / Part + 1) + 8;
+    std::size_t sent = 0;
+    Read got = Read::Timeout;
+    for (std::size_t rounds = 0;; ++rounds) {
+        if (rounds > bound) {
+            __builtin_trap();
+        }
+        if (sent < input.size()) {
+            const ssize_t n = ::send(pair[1], input.data() + sent, std::min(Part, input.size() - sent), MSG_NOSIGNAL);
+            if (n > 0) {
+                sent += std::size_t(n);
+            }
+        }
+        // A timeout of 0: the reads take what the socket holds, and wait for nothing.
+        AfterglowProto::Json::Value frame;
+        while ((got = client.next(frame, 0)) == Read::Frame) {
+            if (!frame.isObject()) {
+                __builtin_trap();
+            }
+            AfterglowProto::IpcConnection::Error error;
+            (void)AfterglowProto::IpcConnection::answers(frame, 1);
+            (void)AfterglowProto::IpcConnection::connectionError(frame);
+            (void)AfterglowProto::IpcConnection::answer(std::move(frame), &error);
+        }
+        if (got == Read::Closed || sent == input.size()) {
+            break;
+        }
+    }
+    if (got != Read::Closed) {
+        // Every byte came: what follows the last line feed waits.
+        const std::size_t newline = input.rfind('\n');
+        const bool waits = input.size() > (newline == std::string_view::npos ? 0 : newline + 1);
+        AfterglowProto::IpcConnection::Error error;
+        const int fd = client.release(&error);
+        if (waits != (fd < 0)) {
+            __builtin_trap();
+        }
+        if (fd >= 0) {
+            ::close(fd);
+        }
+    }
+    ::close(pair[1]);
+}
+
 } // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size)
@@ -423,7 +620,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         return 0;
     }
     const std::string_view input(reinterpret_cast<const char*>(data + 1), size - 1);
-    switch (data[0] % 10) {
+    switch (data[0] % 13) {
     case 0:
         transfer(input);
         break;
@@ -453,6 +650,15 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         break;
     case 9:
         color(input);
+        break;
+    case 10:
+        remote(input);
+        break;
+    case 11:
+        ipcServer(input);
+        break;
+    case 12:
+        ipcClient(input);
         break;
     }
     return 0;

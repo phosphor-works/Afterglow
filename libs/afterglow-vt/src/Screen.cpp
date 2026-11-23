@@ -4,14 +4,13 @@
 #include <AfterglowVt/Screen.h>
 
 #include <algorithm>
+#include <limits>
 #include <utility>
 #include <vector>
 
 namespace AfterglowVt {
 
 namespace {
-constexpr std::size_t MaxGraphemeExtra = 32;
-
 bool isBlank(const Cell& c)
 {
     return c.isEmpty() && c.styleId() == StyleTable::DefaultId && !c.hasGrapheme() && c.width() == 1;
@@ -24,8 +23,9 @@ bool rowIsBlank(const Row& row)
 
 bool hasOnlyDefaultStyle(const Row& row)
 {
-    return std::all_of(row.cells.begin(), row.cells.end(),
-                       [](const Cell& c) { return c.styleId() == StyleTable::DefaultId; });
+    return std::all_of(row.cells.begin(), row.cells.end(), [](const Cell& c) {
+        return c.styleId() == StyleTable::DefaultId;
+    });
 }
 
 // A blank cell that a compact row does not store. A spacer head is kept:
@@ -37,8 +37,8 @@ bool isDroppableBlank(const Cell& c)
 } // namespace
 
 Screen::Screen(int cols, int rows, std::size_t maxScrollback)
-    : m_cols(std::clamp(cols, 2, 4096))
-    , m_rowCount(std::clamp(rows, 1, 1048576 / m_cols))
+    : m_cols(std::clamp(cols, 2, MaxColumns))
+    , m_rowCount(std::clamp(rows, 1, int(MaxCells) / m_cols))
     , m_maxScrollback(maxScrollback)
 {
     for (int y = 0; y < m_rowCount; ++y) {
@@ -87,6 +87,7 @@ void Screen::breakWideAt(Row& row, int x, std::uint32_t fillStyleId)
 
 void Screen::writeCell(Row& row, int x, char32_t cp, std::uint32_t styleId, int width)
 {
+    ++m_contentSerial;
     if (row.cells[std::size_t(x)].isMulticell()) {
         eraseMulticellAt(row, x);
     }
@@ -118,6 +119,7 @@ void Screen::writeCell(Row& row, int x, char32_t cp, std::uint32_t styleId, int 
 
 void Screen::appendGrapheme(Row& row, int x, char32_t cp)
 {
+    ++m_contentSerial;
     if (!row.graphemes) {
         row.graphemes = std::make_unique<GraphemeMap>();
     }
@@ -139,6 +141,7 @@ std::u32string_view Screen::graphemeExtra(const Row& row, int x) const
 
 void Screen::eraseCells(Row& row, int x0, int x1, std::uint32_t fillStyleId)
 {
+    ++m_contentSerial;
     x0 = std::clamp(x0, 0, m_cols);
     x1 = std::clamp(x1, 0, m_cols);
     if (x0 >= x1) {
@@ -211,6 +214,7 @@ const MulticellParams* Screen::multicellParams(const Row& r, int x) const
 void Screen::writeMulticell(int y, int x, char32_t cp, std::u32string_view extra, std::uint32_t styleId,
                             const MulticellParams& params)
 {
+    ++m_contentSerial;
     const int cols = params.columns();
     for (int dy = 0; dy < params.scale; ++dy) {
         Row& r = row(y + dy);
@@ -246,7 +250,8 @@ void Screen::writeMulticell(int y, int x, char32_t cp, std::u32string_view extra
         }
         (*r.multicell)[std::uint16_t(x)] = params;
         if (!extra.empty()) {
-            if (!r.graphemes) r.graphemes = std::make_unique<GraphemeMap>();
+            if (!r.graphemes)
+                r.graphemes = std::make_unique<GraphemeMap>();
             (*r.graphemes)[std::uint16_t(x)] = std::u32string(extra.substr(0, keep));
             r.cells[std::size_t(x)].setHasGrapheme(true);
         }
@@ -255,6 +260,7 @@ void Screen::writeMulticell(int y, int x, char32_t cp, std::u32string_view extra
 
 void Screen::eraseMulticell(int y, int x, bool spaces)
 {
+    ++m_contentSerial;
     Row& start = row(y);
     const Cell c = start.cells[std::size_t(x)];
     if (!c.isMulticell()) {
@@ -396,20 +402,61 @@ void moveGrapheme(Row& row, int from, int to)
 }
 } // namespace
 
+std::vector<std::uint16_t> Screen::settleMulticellsForShift(Row& row, int x, int right, int shift)
+{
+    std::vector<std::uint16_t> moved;
+    if (!row.multicell) {
+        return moved;
+    }
+    // kitty's text sizing spec: a block of more than one row that reaches
+    // x..right goes, and so does a one-row block that the shift splits: one
+    // that x cuts, one past the right margin, one that the shift pushes out
+    // (ICH) or that the deleted cells take a part of (DCH). The rest moves whole.
+    std::vector<int> doomed;
+    for (const auto& [left, params] : *row.multicell) {
+        const int end = left + params.columns() - 1;
+        if (end < x || left > right)
+            continue;
+        const int to = left + shift;
+        if (params.scale > 1 || left < x || end > right || to < x || to + params.columns() - 1 > right) {
+            doomed.push_back(left);
+        } else {
+            moved.push_back(left);
+        }
+    }
+    for (const int left : doomed) {
+        if (row.cells[std::size_t(left)].isMulticell())
+            eraseMulticellAt(row, left);
+    }
+    return moved;
+}
+
+void Screen::shiftMulticellKeys(Row& row, const std::vector<std::uint16_t>& moved, int shift)
+{
+    if (moved.empty() || !row.multicell) {
+        return;
+    }
+    // Take them all out first: a block can move onto another's old column.
+    std::vector<std::pair<std::uint16_t, MulticellParams>> entries;
+    entries.reserve(moved.size());
+    for (const std::uint16_t left : moved) {
+        if (auto node = row.multicell->extract(left))
+            entries.emplace_back(std::uint16_t(left + shift), node.mapped());
+    }
+    for (const auto& [left, params] : entries) {
+        (*row.multicell)[left] = params;
+    }
+}
+
 void Screen::insertCells(Row& row, int x, int right, int n, std::uint32_t fillStyleId)
 {
+    ++m_contentSerial;
     right = std::min(right, m_cols - 1);
     if (x > right || n <= 0) {
         return;
     }
     n = std::min(n, right - x + 1);
-    if (row.multicell) {
-        for (int i = x; i <= right; ++i) {
-            if (row.cells[std::size_t(i)].isMulticell()) {
-                eraseMulticellAt(row, i);
-            }
-        }
-    }
+    const std::vector<std::uint16_t> moved = settleMulticellsForShift(row, x, right, n);
     // A glyph that starts at x moves whole; only one that x cuts in half breaks.
     if (row.cells[std::size_t(x)].isTail()) {
         breakWideAt(row, x, fillStyleId);
@@ -436,22 +483,18 @@ void Screen::insertCells(Row& row, int x, int right, int n, std::uint32_t fillSt
     if (row.cells[std::size_t(right)].width() == 2) {
         clearCell(row, right, fillStyleId);
     }
+    shiftMulticellKeys(row, moved, n);
 }
 
 void Screen::deleteCells(Row& row, int x, int right, int n, std::uint32_t fillStyleId)
 {
+    ++m_contentSerial;
     right = std::min(right, m_cols - 1);
     if (x > right || n <= 0) {
         return;
     }
     n = std::min(n, right - x + 1);
-    if (row.multicell) {
-        for (int i = x; i <= right; ++i) {
-            if (row.cells[std::size_t(i)].isMulticell()) {
-                eraseMulticellAt(row, i);
-            }
-        }
-    }
+    const std::vector<std::uint16_t> moved = settleMulticellsForShift(row, x, right, -n);
     breakWideAt(row, x, fillStyleId);
     // The first cell kept moves to x: a glyph starting there moves whole, and
     // only a tail (its head deleted) is left without a partner.
@@ -484,6 +527,7 @@ void Screen::deleteCells(Row& row, int x, int right, int n, std::uint32_t fillSt
         c.setStyleId(fillStyleId);
         m_styles.retain(fillStyleId);
     }
+    shiftMulticellKeys(row, moved, -n);
 }
 
 void Screen::copyRowSpan(Row& dst, const Row& src, int left, int right)
@@ -509,7 +553,9 @@ void Screen::copyRowSpan(Row& dst, const Row& src, int left, int right)
         }
     }
     if (dst.multicell) {
-        std::erase_if(*dst.multicell, [left, right](const auto& kv) { return kv.first >= left && kv.first <= right; });
+        std::erase_if(*dst.multicell, [left, right](const auto& kv) {
+            return kv.first >= left && kv.first <= right;
+        });
     }
     if (src.multicell) {
         for (const auto& [col, params] : *src.multicell) {
@@ -595,6 +641,7 @@ void Screen::releaseRow(Row& row) noexcept
 
 bool Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool intoHistory)
 {
+    ++m_contentSerial;
     const int height = r.bottom - r.top + 1;
     n = std::clamp(n, 0, height);
     if (n == 0) {
@@ -676,13 +723,40 @@ bool Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool in
         copyRowSpan(row(y), row(y + n), r.left, r.right);
     }
     for (int y = r.bottom - n + 1; y <= r.bottom; ++y) {
-        eraseCells(row(y), r.left, r.right + 1, fillStyleId);
+        clearVacatedSpan(row(y), r.left, r.right, fillStyleId);
     }
     return true;
 }
 
+int Screen::unscroll(int n)
+{
+    const int k = int(std::min<std::size_t>(std::size_t(std::clamp(n, 0, m_rowCount)), historySize()));
+    if (k == 0) {
+        return 0;
+    }
+    ++m_contentSerial;
+    for (int i = 0; i < k; ++i) {
+        releaseRow(m_rows.back());
+        m_rows.pop_back();
+    }
+    for (int y = 0; y < k; ++y) {
+        expand(row(y)); // history rows return to the screen
+    }
+    // A block across the cut lost its lower rows: it now reaches past the
+    // last row of the screen, and goes. Erased after the history rows came
+    // back, it takes its top rows that were in the history too. A block
+    // whose top is still in the history keeps those rows there, as a scroll
+    // into the history leaves it.
+    eraseMulticellsCrossing(std::numeric_limits<int>::min(), m_rowCount - 1, 0, m_cols - 1, m_rowCount);
+    ++m_historyRewinds;
+    // A view scrolled back stays on its rows, as kitty's does.
+    m_viewportOffset = m_viewportOffset > std::size_t(k) ? m_viewportOffset - std::size_t(k) : 0;
+    return k;
+}
+
 bool Screen::scrollDown(const Region& r, int n, std::uint32_t fillStyleId)
 {
+    ++m_contentSerial;
     const int height = r.bottom - r.top + 1;
     n = std::clamp(n, 0, height);
     if (n == 0) {
@@ -704,13 +778,39 @@ bool Screen::scrollDown(const Region& r, int n, std::uint32_t fillStyleId)
         copyRowSpan(row(y), row(y - n), r.left, r.right);
     }
     for (int y = r.top; y < r.top + n; ++y) {
-        eraseCells(row(y), r.left, r.right + 1, fillStyleId);
+        clearVacatedSpan(row(y), r.left, r.right, fillStyleId);
     }
     return true;
 }
 
+void Screen::clearVacatedSpan(Row& row, int left, int right, std::uint32_t fillStyleId)
+{
+    // eraseMulticellsCrossing() took the blocks that a margin cut: every
+    // block cell left in the span is a copy of one that moved, or the
+    // remnant of a block that left, whose other rows the copy overwrote.
+    // Erased as a block, it would take the parameters of the block from the
+    // rows that hold one now.
+    if (row.multicell) {
+        std::erase_if(*row.multicell, [left, right](const auto& kv) {
+            return kv.first >= left && kv.first <= right;
+        });
+        for (int x = left; x <= right; ++x) {
+            Cell& c = row.cells[std::size_t(x)];
+            if (!c.isMulticell())
+                continue;
+            if (c.hasGrapheme() && row.graphemes)
+                row.graphemes->erase(std::uint16_t(x));
+            m_styles.release(c.styleId());
+            c = Cell{};
+        }
+    }
+    eraseCells(row, left, right + 1, fillStyleId);
+}
+
 void Screen::trimHistory()
 {
+    if (historySize() > m_maxScrollback)
+        ++m_contentSerial; // the text of the whole history loses its first rows
     while (historySize() > m_maxScrollback) {
         releaseRow(m_rows.front());
         m_rows.pop_front();
@@ -721,6 +821,8 @@ void Screen::trimHistory()
 
 void Screen::clearHistory()
 {
+    if (historySize() > 0)
+        ++m_contentSerial;
     while (historySize() > 0) {
         releaseRow(m_rows.front());
         m_rows.pop_front();
@@ -746,12 +848,14 @@ void Screen::scrollViewport(long delta) noexcept
 void Screen::resize(int cols, int rows, bool reflow, std::optional<std::size_t> promptStart,
                     std::vector<std::size_t>* trackedRows, std::vector<int>* trackedColumns)
 {
-    cols = std::clamp(cols, 2, 4096);
-    rows = std::clamp(rows, 1, 1048576 / cols);
-    if (trackedColumns && (!trackedRows || trackedColumns->size() != trackedRows->size())) trackedColumns = nullptr;
+    cols = std::clamp(cols, 2, MaxColumns);
+    rows = std::clamp(rows, 1, int(MaxCells) / cols);
+    if (trackedColumns && (!trackedRows || trackedColumns->size() != trackedRows->size()))
+        trackedColumns = nullptr;
     if (cols == m_cols && rows == m_rowCount) {
         return;
     }
+    ++m_contentSerial;
     if (cols != m_cols) {
         // Only a width change can move content between rows. A height change
         // keeps every stable id on its row, so selections and searches stay.
@@ -892,6 +996,8 @@ void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracke
         for (int k = 1; k <= pulled; ++k) {
             expand(m_rows[historySize() - std::size_t(k)]); // history rows return to the screen
         }
+        if (pulled > 0)
+            ++m_historyRewinds;
         m_rowCount += pulled;
         cursor.y += pulled;
         savedCursor.y += pulled;
@@ -901,7 +1007,9 @@ void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracke
         }
     }
     trimHistory();
-    if (trackedColumns) for (auto& col : *trackedColumns) col = std::clamp(col, 0, cols);
+    if (trackedColumns)
+        for (auto& col : *trackedColumns)
+            col = std::clamp(col, 0, cols);
     if (tracked) {
         const std::size_t dropped = std::size_t(m_rowsDropped - droppedBefore);
         for (std::size_t& t : *tracked) {
@@ -910,7 +1018,8 @@ void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracke
     }
 }
 
-void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptStart, std::vector<std::size_t>* tracked, std::vector<int>* trackedColumns)
+void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptStart, std::vector<std::size_t>* tracked,
+                          std::vector<int>* trackedColumns)
 {
     const std::size_t cursorAbs = historySize() + std::size_t(cursor.y);
     // Reflow output above a redrawable prompt, preserving the prompt's row
@@ -952,7 +1061,9 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
     auto trackedOffset = [&](const Row& r, std::size_t index, std::size_t lineCells) {
         const int col = trackedColumns ? std::clamp((*trackedColumns)[index], 0, m_cols) : 0;
         std::size_t offset = lineCells;
-        for (int x = 0; x < col; ++x) if (!r.at(x).isSpacerHead()) ++offset;
+        for (int x = 0; x < col; ++x)
+            if (!r.at(x).isSpacerHead())
+                ++offset;
         return offset;
     };
 
@@ -1215,7 +1326,8 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
             mappedColumns[k] = trackedColumns ? std::clamp((*trackedColumns)[k], 0, cols) : 0;
         }
     }
-    if (trackedColumns) *trackedColumns = std::move(mappedColumns);
+    if (trackedColumns)
+        *trackedColumns = std::move(mappedColumns);
 
     // Trim blank rows below the cursor, pad to the screen height.
     while (out.size() > cursorRow + 1 && rowIsBlank(out.back()) && !out[out.size() - 2].wrapped) {
@@ -1256,8 +1368,8 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
     if (tracked) {
         for (std::size_t k = 0; k < trackedNew.size(); ++k) {
             const std::size_t t = trackedNew[k];
-            (*tracked)[k] = (t == TrackedRowGone || t < dropped || t - dropped >= m_rows.size()) ? TrackedRowGone
-                                                                                                : t - dropped;
+            (*tracked)[k] =
+                (t == TrackedRowGone || t < dropped || t - dropped >= m_rows.size()) ? TrackedRowGone : t - dropped;
         }
     }
 }

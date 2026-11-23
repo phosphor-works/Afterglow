@@ -51,12 +51,29 @@ public:
     explicit GpuDevice(const FontSpec& fontSpec, QObject* parent = nullptr);
     ~GpuDevice() override;
 
-    QVulkanInstance* vulkanInstance() noexcept { return &m_vulkan; }
+    /// Whether the machine has Vulkan: an instance of the API version this
+    /// device asks for can be made, and it lists a physical device. The
+    /// device's own API version is not checked. A caller that could not make
+    /// a device uses it to tell a machine without Vulkan (a test skips) from
+    /// a device that failed (a test fails). Call it after QGuiApplication:
+    /// QVulkanInstance needs the platform plugin.
+    static bool vulkanAvailable();
+
+    QVulkanInstance* vulkanInstance() noexcept
+    {
+        return &m_vulkan;
+    }
     /// The shared device, created on first use. @p window picks a queue that
     /// can present to it.
     QRhi* rhi(QWindow* window);
-    QRhi* rhi() const noexcept { return m_rhi.get(); }
-    QRhiSampler* atlasSampler() const noexcept { return m_sampler; }
+    QRhi* rhi() const noexcept
+    {
+        return m_rhi.get();
+    }
+    QRhiSampler* atlasSampler() const noexcept
+    {
+        return m_sampler;
+    }
 
     /// The resources for @p devicePixelRatio, made on first use. A set no
     /// window has asked for in FontResourcesUnusedFor is freed by
@@ -69,18 +86,28 @@ public:
 
     /// Texture for an image frame, uploaded on first use and shared by every
     /// window. @p serial receives an id that changes if the texture is replaced.
-    /// Null when the frame is larger than the GPU allows or the texture cannot
-    /// be made: the image is not drawn.
+    /// Null when the frame is larger than the GPU allows, the texture cannot
+    /// be made, or the frame has no whole RGBA data (an indexed frame that the
+    /// snapshot did not colour): the image is not drawn.
     QRhiTexture* imageTexture(const AfterglowVt::FramePtr& frame, QRhiResourceUpdateBatch* updates,
                               std::uint64_t& serial);
-    QRhiSampler* imageSampler() const noexcept { return m_imageSampler; }
+    QRhiSampler* imageSampler() const noexcept
+    {
+        return m_imageSampler;
+    }
     /// Releases textures of frames nobody references any more, and font
     /// resources no window uses. Call once per frame.
     void pruneUnused();
 
-    const FontSpec& fontSpec() const noexcept { return m_fontSpec; }
+    const FontSpec& fontSpec() const noexcept
+    {
+        return m_fontSpec;
+    }
     /// Bumped on every font change; face indices from before are invalid.
-    std::uint64_t fontEpoch() const noexcept { return m_fontEpoch; }
+    std::uint64_t fontEpoch() const noexcept
+    {
+        return m_fontEpoch;
+    }
     /// Rebuilds the fonts when @p spec differs in more than the gamma, which is
     /// only a shader input: then windows just render again. Emits
     /// fontsChanged() only for a change.
@@ -91,9 +118,18 @@ public:
     static constexpr int AudioBars = 64;
     void setAudioSpectrum(std::span<const float> spectrum);
     void prepareAudio(QRhiResourceUpdateBatch* updates);
-    QRhiTexture* audioTexture() const noexcept { return m_audioTexture; }
-    const std::array<float, 4>& audioLevels() const noexcept { return m_audioLevels; }
-    int audioSpectrumSize() const noexcept { return m_audioSize; }
+    QRhiTexture* audioTexture() const noexcept
+    {
+        return m_audioTexture;
+    }
+    const std::array<float, 4>& audioLevels() const noexcept
+    {
+        return m_audioLevels;
+    }
+    int audioSpectrumSize() const noexcept
+    {
+        return m_audioSize;
+    }
 
 Q_SIGNALS:
     void audioChanged();
@@ -121,6 +157,7 @@ private:
     };
     std::unordered_map<const AfterglowVt::ImageFrame*, ImageTexture> m_imageTextures;
     bool m_imageLimitWarned = false;
+    bool m_imageFormatWarned = false;
     std::map<int, std::unique_ptr<FontResources>> m_fonts; // keyed by dpr * 100
     std::uint64_t m_textureSerial = 0;
     std::uint64_t m_fontEpoch = 1;

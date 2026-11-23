@@ -41,22 +41,37 @@ public:
     };
 
     /// phosphor-ipc's router closes the connection on a longer request line.
-    static constexpr qsizetype MaxLineBytes = qsizetype(AfterglowProto::IpcConnection::MaxRequestBytes); ///< the router's
+    static constexpr qsizetype MaxLineBytes =
+        qsizetype(AfterglowProto::IpcConnection::MaxRequestBytes); ///< the router's
 
     bool connectTo(const QString& path, int timeoutMs, Error* error);
-    bool connected() const { return m_socket.state() == QLocalSocket::ConnectedState; }
+    bool connected() const
+    {
+        return m_socket.state() == QLocalSocket::ConnectedState;
+    }
+    /// Drops the connection, if any: connectTo can reach another socket then.
+    void disconnect()
+    {
+        m_socket.abort();
+        m_frames.clear();
+        m_subscriptions.clear();
+    }
     /// The process at the other end (SO_PEERCRED), or 0 when it runs as
     /// another user.
     pid_t peerPid() const;
 
     /// The result of @p target.@p fn, or nothing with @p error set.
     /// @p timeoutMs bounds the whole call, whatever arrives meanwhile.
-    std::optional<QJsonValue> call(const QString& target, const QString& fn, const QJsonArray& args, int timeoutMs, Error* error);
+    std::optional<QJsonValue> call(const QString& target, const QString& fn, const QJsonArray& args, int timeoutMs,
+                                   Error* error);
     bool subscribe(const QString& target, const QString& event, int timeoutMs, Error* error);
     /// The names of the targets on the socket.
     std::optional<QStringList> targets(int timeoutMs, Error* error);
     /// The event name of a subscription.
-    QString eventName(qint64 subscription) const { return m_subscriptions.value(subscription); }
+    QString eventName(qint64 subscription) const
+    {
+        return m_subscriptions.value(subscription);
+    }
 
     /// The next event, or nothing when the server closed the connection or
     /// ended the stream (@p error then says why).

@@ -14,7 +14,11 @@
 #include <fcntl.h>
 #include <functional>
 #include <poll.h>
+#if defined(__FreeBSD__)
+#include <libutil.h>
+#else
 #include <pty.h>
+#endif
 #include <string>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
@@ -42,17 +46,17 @@ std::optional<Cli::Parsed> run(const Cli::Command& command, std::vector<std::str
     return Cli::parse(command, int(argv.size()), argv.data(), error, help);
 }
 
-const Cli::Command command {
+const Cli::Command command{
     "test",
     "",
     "",
     "",
     {
-        { "--flag -f", Cli::Option::Kind::Flag, "", {}, "" },
-        { "--other -o", Cli::Option::Kind::Flag, "", {}, "" },
-        { "--direction -d", Cli::Option::Kind::String, "", {}, "" },
-        { "--size", Cli::Option::Kind::Int, "512", {}, "", 16, 4096 },
-        { "--timeout", Cli::Option::Kind::Float, "10", {}, "" },
+        {"--flag -f", Cli::Option::Kind::Flag, "", {}, ""},
+        {"--other -o", Cli::Option::Kind::Flag, "", {}, ""},
+        {"--direction -d", Cli::Option::Kind::String, "", {}, ""},
+        {"--size", Cli::Option::Kind::Int, "512", {}, "", 16, 4096},
+        {"--timeout", Cli::Option::Kind::Float, "10", {}, ""},
     },
 };
 
@@ -77,7 +81,7 @@ struct PlayedTerminal
     }
     bool start(const std::function<int()>& program)
     {
-        winsize size { 24, 80, 0, 0 };
+        winsize size{24, 80, 0, 0};
         pid = ::forkpty(&master, nullptr, nullptr, &size);
         if (pid == 0) {
             ::_exit(program());
@@ -93,7 +97,7 @@ struct PlayedTerminal
             if (left <= 0) {
                 return false;
             }
-            pollfd fd { master, POLLIN, 0 };
+            pollfd fd{master, POLLIN, 0};
             if (::poll(&fd, 1, int(left)) > 0) {
                 char buffer[4096];
                 const auto n = ::read(master, buffer, sizeof buffer);
@@ -105,8 +109,18 @@ struct PlayedTerminal
         }
         return true;
     }
-    void settle(int ms) { readUntil([] { return false; }, ms); }
-    void say(std::string_view bytes) { ASSERT_EQ(::write(master, bytes.data(), bytes.size()), ssize_t(bytes.size())); }
+    void settle(int ms)
+    {
+        readUntil(
+            [] {
+                return false;
+            },
+            ms);
+    }
+    void say(std::string_view bytes)
+    {
+        ASSERT_EQ(::write(master, bytes.data(), bytes.size()), ssize_t(bytes.size()));
+    }
     std::size_t count(std::string_view text, std::size_t from = 0) const
     {
         std::size_t n = 0;
@@ -248,7 +262,12 @@ TEST(AglowInput, LongOscOnlyWhenAllowed)
 
 TEST(AglowInput, PrintableHidesBidiControls)
 {
-    EXPECT_EQ(printable("a" "\u202e" "b" "\u2066" "c\x1b"), "a?b?c?");
+    EXPECT_EQ(printable("a"
+                        "\u202e"
+                        "b"
+                        "\u2066"
+                        "c\x1b"),
+              "a?b?c?");
     EXPECT_EQ(cellWidth(U'a'), 1);
     EXPECT_EQ(cellWidth(U'一'), 2);
     EXPECT_EQ(cellWidth(U'́'), 0);
@@ -257,20 +276,20 @@ TEST(AglowInput, PrintableHidesBidiControls)
 TEST(AglowCli, NumbersAreCheckedAtParseTime)
 {
     std::string error;
-    EXPECT_TRUE(run(command, { "--size=16", "--timeout=2.5" }, error)) << error;
-    EXPECT_FALSE(run(command, { "--size=8" }, error));
-    EXPECT_FALSE(run(command, { "--size=99999" }, error));
-    EXPECT_FALSE(run(command, { "--timeout=inf" }, error));
-    EXPECT_FALSE(run(command, { "--timeout=nan" }, error));
-    EXPECT_FALSE(run(command, { "--timeout=1e30" }, error));
-    EXPECT_FALSE(run(command, { "--timeout=1e400" }, error));
+    EXPECT_TRUE(run(command, {"--size=16", "--timeout=2.5"}, error)) << error;
+    EXPECT_FALSE(run(command, {"--size=8"}, error));
+    EXPECT_FALSE(run(command, {"--size=99999"}, error));
+    EXPECT_FALSE(run(command, {"--timeout=inf"}, error));
+    EXPECT_FALSE(run(command, {"--timeout=nan"}, error));
+    EXPECT_FALSE(run(command, {"--timeout=1e30"}, error));
+    EXPECT_FALSE(run(command, {"--timeout=1e400"}, error));
 }
 
 TEST(AglowCli, IntegerBoundsPrintInFull)
 {
-    const Cli::Command wide { "test", "", "", "", { { "--id", Cli::Option::Kind::Int, "0", {}, "", 0, 4294967295.0 } } };
+    const Cli::Command wide{"test", "", "", "", {{"--id", Cli::Option::Kind::Int, "0", {}, "", 0, 4294967295.0}}};
     std::string error;
-    EXPECT_FALSE(run(wide, { "--id=-1" }, error));
+    EXPECT_FALSE(run(wide, {"--id=-1"}, error));
     EXPECT_EQ(error, "The value of --id must be from 0 to 4294967295, not -1");
     EXPECT_NE(Cli::helpText(wide).find("From 0 to 4294967295."), std::string::npos);
 }
@@ -278,24 +297,24 @@ TEST(AglowCli, IntegerBoundsPrintInFull)
 TEST(AglowCli, ShortOptionsTogether)
 {
     std::string error;
-    auto parsed = run(command, { "-fod", "send" }, error);
+    auto parsed = run(command, {"-fod", "send"}, error);
     ASSERT_TRUE(parsed) << error;
     EXPECT_TRUE(parsed->flag("flag"));
     EXPECT_TRUE(parsed->flag("other"));
     EXPECT_EQ(parsed->value("direction"), "send");
-    parsed = run(command, { "-fdsend" }, error);
+    parsed = run(command, {"-fdsend"}, error);
     ASSERT_TRUE(parsed) << error;
     EXPECT_EQ(parsed->value("direction"), "send");
-    EXPECT_FALSE(run(command, { "-xyz" }, error));
+    EXPECT_FALSE(run(command, {"-xyz"}, error));
     EXPECT_EQ(error, "Unknown option: -xyz");
 }
 
 TEST(AglowCli, AValueOptionDoesNotTakeTheNextOption)
 {
     std::string error;
-    EXPECT_FALSE(run(command, { "--direction", "--flag" }, error));
-    EXPECT_FALSE(run(command, { "--direction", "--" }, error));
-    const auto parsed = run(command, { "--direction=--flag" }, error);
+    EXPECT_FALSE(run(command, {"--direction", "--flag"}, error));
+    EXPECT_FALSE(run(command, {"--direction", "--"}, error));
+    const auto parsed = run(command, {"--direction=--flag"}, error);
     ASSERT_TRUE(parsed) << error;
     EXPECT_EQ(parsed->value("direction"), "--flag");
 }
@@ -303,9 +322,9 @@ TEST(AglowCli, AValueOptionDoesNotTakeTheNextOption)
 TEST(AglowCli, AMissingValueNamesTheFormThatTakesIt)
 {
     std::string error;
-    EXPECT_FALSE(run(command, { "-d" }, error));
+    EXPECT_FALSE(run(command, {"-d"}, error));
     EXPECT_EQ(error, "The option -d needs a value. A value that starts with -- goes as -dVALUE");
-    EXPECT_FALSE(run(command, { "--direction" }, error));
+    EXPECT_FALSE(run(command, {"--direction"}, error));
     EXPECT_EQ(error, "The option --direction needs a value. A value that starts with -- goes as --direction=VALUE");
 }
 
@@ -326,7 +345,9 @@ TEST(AglowTty, ACommandGetsTheAnswerToItsQueryOnly)
         tty.restore();
         return int(std::count_if(inputs.begin(), inputs.end(), isDa1Answer));
     }));
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 2; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.count(Da1) >= 2;
+    }));
     terminal.say("\x1b[?62;1c\x1b[?62;2c");
     EXPECT_EQ(terminal.wait(), 1);
 }
@@ -353,7 +374,7 @@ TEST(AglowTty, TheDrainWaitsForTheAnswersToCommandQueries)
         // mode, FIONREAD counts only whole lines.
         ::usleep(600 * 1000);
         const int fd = ::open("/dev/tty", O_RDONLY | O_NOCTTY | O_CLOEXEC);
-        termios modes { };
+        termios modes{};
         ::tcgetattr(fd, &modes);
         modes.c_lflag &= ~tcflag_t(ICANON);
         ::tcsetattr(fd, TCSANOW, &modes);
@@ -361,10 +382,14 @@ TEST(AglowTty, TheDrainWaitsForTheAnswersToCommandQueries)
         ::ioctl(fd, FIONREAD, &waiting);
         return std::min(waiting, 99);
     }));
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 1; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.count(Da1) >= 1;
+    }));
     terminal.say("\x1b[?62;1c");
     // The reset: every query that the drain waits for went before it, or right after it.
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find("\x1b[?2004l") != std::string::npos; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.output.find("\x1b[?2004l") != std::string::npos;
+    }));
     terminal.settle(100);
     // The answers to the queries still open, one at a time: a drain that
     // ends at the first leaves the second to the shell.
@@ -414,13 +439,17 @@ TEST(AglowTty, AKeyboardReplyWithoutTheFlagKeepsTheEscTimeout)
         while (nowMs() < deadline) {
             std::vector<Input> inputs;
             tty.turn(50, inputs);
-            if (std::any_of(inputs.begin(), inputs.end(), [](const Input& i) { return i.type == Input::Type::Escape; })) {
+            if (std::any_of(inputs.begin(), inputs.end(), [](const Input& i) {
+                    return i.type == Input::Type::Escape;
+                })) {
                 return 0;
             }
         }
         return 1;
     }));
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 1; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.count(Da1) >= 1;
+    }));
     terminal.say("\x1b[?0u\x1b[?62c");
     terminal.settle(200);
     terminal.say("\x1b");
@@ -449,7 +478,8 @@ TEST(AglowTty, AContinueRestoresTheModesAndRedraws)
         if (!tty.open(error)) {
             return 100;
         }
-        tty.enterModes("\x1b[22;2t\x1b[?1049h\x1b[?1002h", "\x1b[?1002l\x1b[?1049l\x1b[23;2t", "\x1b[?1049h\x1b[?1002h");
+        tty.enterModes("\x1b[22;2t\x1b[?1049h\x1b[?1002h", "\x1b[?1002l\x1b[?1049l\x1b[23;2t",
+                       "\x1b[?1049h\x1b[?1002h");
         int continues = 0;
         const long long deadline = nowMs() + 8000;
         while (nowMs() < deadline) {
@@ -462,14 +492,18 @@ TEST(AglowTty, AContinueRestoresTheModesAndRedraws)
         }
         return 1;
     }));
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 1; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.count(Da1) >= 1;
+    }));
     terminal.say("\x1b[?62c");
     terminal.settle(100);
     constexpr std::string_view Resumed = "\x1b[?2004h\x1b[?1049h\x1b[?1002h\x1b[=1;1u";
     for (int i = 0; i < 2; ++i) {
         const auto before = terminal.output.size();
         stopAndContinue(terminal);
-        EXPECT_TRUE(terminal.readUntil([&] { return terminal.output.find(Resumed, before) != std::string::npos; }));
+        EXPECT_TRUE(terminal.readUntil([&] {
+            return terminal.output.find(Resumed, before) != std::string::npos;
+        }));
     }
     EXPECT_EQ(terminal.wait(), 0);
     // The title and the keyboard mode are pushed once each: the reset pops
@@ -496,9 +530,13 @@ TEST(AglowTty, AContinueDuringTheRestoreSetsNoModes)
         turnFor(tty, 200, inputs);
         return tty.restore() ? 0 : 101;
     }));
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 1; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.count(Da1) >= 1;
+    }));
     terminal.say("\x1b[?62;1c");
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find("\x1b[?2004l") != std::string::npos; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.output.find("\x1b[?2004l") != std::string::npos;
+    }));
     const auto reset = terminal.output.find("\x1b[?2004l");
     stopAndContinue(terminal);
     terminal.settle(300);
@@ -531,7 +569,7 @@ TEST(AglowTty, TheDrainReadsPastOutputAfterTheLastQuery)
         }
         ::usleep(600 * 1000);
         const int fd = ::open("/dev/tty", O_RDONLY | O_NOCTTY | O_CLOEXEC);
-        termios modes { };
+        termios modes{};
         ::tcgetattr(fd, &modes);
         modes.c_lflag &= ~tcflag_t(ICANON);
         ::tcsetattr(fd, TCSANOW, &modes);
@@ -539,7 +577,9 @@ TEST(AglowTty, TheDrainReadsPastOutputAfterTheLastQuery)
         ::ioctl(fd, FIONREAD, &waiting);
         return std::min(waiting, 99);
     }));
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find("\x1b[?2004l") != std::string::npos; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.output.find("\x1b[?2004l") != std::string::npos;
+    }));
     terminal.settle(100);
     // The answers to the queries of the open and of the command, then the
     // report a little later, then the answers to the queries after it.
@@ -548,7 +588,9 @@ TEST(AglowTty, TheDrainReadsPastOutputAfterTheLastQuery)
     terminal.say("\x1b[1;1R");
     const auto after = terminal.output.find("\x1b[6n");
     ASSERT_NE(after, std::string::npos);
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1, after) >= 1; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.count(Da1, after) >= 1;
+    }));
     const auto fences = terminal.count(Da1, after);
     EXPECT_GE(fences, 1u);
     for (std::size_t i = 0; i < fences; ++i) {
@@ -601,20 +643,26 @@ TEST(AglowTty, AReopenStartsWithoutTheLastSession)
         if (!continued || !key) {
             return 1;
         }
-        if (answers != std::vector<std::string> { "?62;2c" }) {
+        if (answers != std::vector<std::string>{"?62;2c"}) {
             return 2;
         }
         return nowMs() - start < 1000 ? 0 : 3;
     }));
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 2; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.count(Da1) >= 2;
+    }));
     terminal.say("\x1b[?62;1c");
     // The second open, and its command's query.
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 4; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.count(Da1) >= 4;
+    }));
     terminal.say("\x1b[?62;1c\x1b[?62;2ck");
     terminal.settle(100);
     const auto before = terminal.output.size();
     stopAndContinue(terminal);
-    EXPECT_TRUE(terminal.readUntil([&] { return terminal.output.find("\x1b[=1;1u", before) != std::string::npos; }));
+    EXPECT_TRUE(terminal.readUntil([&] {
+        return terminal.output.find("\x1b[=1;1u", before) != std::string::npos;
+    }));
     EXPECT_EQ(terminal.wait(), 0);
     EXPECT_EQ(terminal.output.find("\x1b[?1002h", before), std::string::npos);
 }
@@ -641,9 +689,13 @@ TEST(AglowTty, AContinueBeforeTheResetSetsTheModes)
     }));
     // The output of restore(): the program waits in its first flush, which
     // one read does not end.
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find('x') != std::string::npos; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.output.find('x') != std::string::npos;
+    }));
     stopAndContinue(terminal);
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find("\x1b[?2004l") != std::string::npos; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.output.find("\x1b[?2004l") != std::string::npos;
+    }));
     terminal.say("\x1b[?62c");
     EXPECT_EQ(terminal.wait(), 0);
     const auto resumed = terminal.output.find("\x1b[?2004h\x1b[?1002h\x1b[=1;1u");
@@ -689,17 +741,23 @@ TEST(AglowTty, AReopenGetsNoInputOfTheLastSession)
         }
         return typed(inputs, 'z') ? 0 : 2;
     }));
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 1; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.count(Da1) >= 1;
+    }));
     terminal.say("\x1b[?62ca");
     // The program waits in the first flush of restore(), and reads a key and
     // the start of a title.
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find('x') != std::string::npos; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.output.find('x') != std::string::npos;
+    }));
     terminal.say("q");
     ::usleep(100 * 1000);
     terminal.say("\x1b]2;partial");
     ::usleep(100 * 1000);
     // The second open. A parser that still reads the title takes the key.
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 2; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.count(Da1) >= 2;
+    }));
     terminal.say("z");
     terminal.settle(100);
     terminal.say("\x1b[?62c");
@@ -720,7 +778,10 @@ TEST(AglowTty, AContinueJustBeforeTheRestoreSetsTheModes)
         tty.enterModes("\x1b[?1002h", "\x1b[?1002l", "\x1b[?1002h");
         std::vector<Input> inputs;
         const long long answered = nowMs() + 3000;
-        while (std::none_of(inputs.begin(), inputs.end(), [](const Input& i) { return i.data == "a"; })
+        while (std::none_of(inputs.begin(), inputs.end(),
+                            [](const Input& i) {
+                                return i.data == "a";
+                            })
                && nowMs() < answered) {
             tty.turn(50, inputs);
         }
@@ -732,13 +793,19 @@ TEST(AglowTty, AContinueJustBeforeTheRestoreSetsTheModes)
         tty.turn(5000, inputs);
         return tty.restore() ? 0 : 101;
     }));
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 1; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.count(Da1) >= 1;
+    }));
     terminal.say("\x1b[?62ca");
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find("ready") != std::string::npos; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.output.find("ready") != std::string::npos;
+    }));
     terminal.settle(100);
     const auto before = terminal.output.size();
     stopAndContinue(terminal);
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find("\x1b[?2004l", before) != std::string::npos; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.output.find("\x1b[?2004l", before) != std::string::npos;
+    }));
     EXPECT_EQ(terminal.wait(), 0);
     const auto resumed = terminal.output.find("\x1b[?2004h\x1b[?1002h\x1b[=1;1u", before);
     ASSERT_NE(resumed, std::string::npos);
@@ -771,14 +838,16 @@ TEST(AglowTty, AReopenWritesNoResetOfTheLastSession)
         return tty.restore() ? 0 : 101;
     }));
     ::close(sync[1]);
-    pollfd fd { sync[0], POLLIN, 0 };
+    pollfd fd{sync[0], POLLIN, 0};
     ASSERT_EQ(::poll(&fd, 1, 10000), 1);
     char restored = 0;
     ASSERT_EQ(::read(sync[0], &restored, 1), 1);
     ::close(sync[0]);
     EXPECT_EQ(restored, '0');
     // The reset of the second session, and the answer that its drain waits for.
-    ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find("\x1b[?2004l") != std::string::npos; }));
+    ASSERT_TRUE(terminal.readUntil([&] {
+        return terminal.output.find("\x1b[?2004l") != std::string::npos;
+    }));
     terminal.say("\x1b[?62c");
     EXPECT_EQ(terminal.wait(), 0);
     EXPECT_EQ(terminal.count("\x1b[?2004l"), 1u);

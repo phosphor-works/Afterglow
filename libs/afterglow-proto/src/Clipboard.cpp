@@ -50,7 +50,9 @@ std::string_view metadataValue(std::string_view metadata, std::string_view key)
 /// names reach a permission prompt and other programs' clipboards.
 bool isTypeName(std::string_view s)
 {
-    return !s.empty() && std::all_of(s.begin(), s.end(), [](char c) { return c > 0x20 && c < 0x7F; });
+    return !s.empty() && std::all_of(s.begin(), s.end(), [](char c) {
+        return c > 0x20 && c < 0x7F;
+    });
 }
 
 } // namespace
@@ -242,7 +244,8 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
             std::size_t apos = 0;
             while (apos < list.size()) {
                 const auto space = list.find(' ', apos);
-                const std::string_view alias = list.substr(apos, space == std::string_view::npos ? space : space - apos);
+                const std::string_view alias =
+                    list.substr(apos, space == std::string_view::npos ? space : space - apos);
                 if (!alias.empty()) {
                     if (!isTypeName(alias)) {
                         return fail("EINVAL", reply);
@@ -276,7 +279,9 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
             }
             // All the chunks of a type come in one run (the spec). A type sent
             // again would replace its earlier data.
-            if (std::any_of(m_write.data.begin(), m_write.data.end(), [&](const auto& part) { return part.first == mime; })) {
+            if (std::any_of(m_write.data.begin(), m_write.data.end(), [&](const auto& part) {
+                    return part.first == mime;
+                })) {
                 return fail("EINVAL", reply);
             }
             m_mime = mime;
@@ -315,7 +320,8 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
         if (m_part.size() + ((head.size() + whole) / 4 * 3 - padding) > MaxWrite - m_decoded) {
             return fail("EFBIG", reply);
         }
-        if (!base64DecodeAppend(m_part, head, Base64Check::Strict) || !base64DecodeAppend(m_part, body, Base64Check::Strict)) {
+        if (!base64DecodeAppend(m_part, head, Base64Check::Strict)
+            || !base64DecodeAppend(m_part, body, Base64Check::Strict)) {
             return fail("EINVAL", reply);
         }
         if (padding != 0 && whole < rest.size()) {
@@ -374,6 +380,15 @@ std::string ClipboardRequest::osc52Reply(std::string_view text) const
     r += base64Encode(text);
     r += osc52Bel ? "\x07" : "\x1b\\";
     return r;
+}
+
+std::string ClipboardRequest::refusal(std::string_view status) const
+{
+    if (osc52) {
+        return kind == Kind::Read ? osc52Reply({}) : std::string();
+    }
+    return kind == Kind::Read ? ClipboardAssembler::readStatus(status, *this)
+                              : ClipboardAssembler::writeStatus(status, id);
 }
 
 namespace {
@@ -446,7 +461,9 @@ std::string clipboardWriteRequest(const ClipboardRequest& request)
         if (!isTypeName(alias) || !isTypeName(mime)) {
             continue;
         }
-        auto it = std::find_if(aliases.begin(), aliases.end(), [&](const auto& entry) { return entry.first == mime; });
+        auto it = std::find_if(aliases.begin(), aliases.end(), [&](const auto& entry) {
+            return entry.first == mime;
+        });
         if (it == aliases.end()) {
             aliases.emplace_back(mime, std::vector<std::string>{});
             it = std::prev(aliases.end());

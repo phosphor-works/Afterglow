@@ -5,10 +5,15 @@
 
 ## Configuration file
 
-Afterglow reads `$XDG_CONFIG_HOME/afterglow/config.json`.
-The usual path is `~/.config/afterglow/config.json`.
+Afterglow reads `$XDG_CONFIG_HOME/phosphor-works/afterglow/config.json`.
+The usual path is `~/.config/phosphor-works/afterglow/config.json`.
 Afterglow reloads this file when it changes.
 A file that cannot be read, does not parse or does not hold a JSON object keeps the current settings.
+At the start there are no current settings to keep. Afterglow then uses the defaults, but with `Scripts.enabled` and `Control.enabled` off, because the file can turn them off.
+They come on when the file holds a JSON object that does not turn them off. A `-o` option that gives one of them a boolean value still applies.
+A file that becomes empty in the meantime keeps them off, because an editor that saves in place empties the file first.
+A configuration file that is a symbolic link to a file that does not exist counts as a file that cannot be read.
+A file that holds `Terminal.fileTransferPassword` and that other users can read gives a warning. Make it readable by you only (`chmod 600`).
 A deleted file gives every setting its default.
 An empty file gives the defaults too, when it held no settings before, for example after `touch`.
 A file that held settings and becomes empty keeps them, because an editor that saves in place empties the file first.
@@ -28,7 +33,7 @@ Group names and key names are case-sensitive.
 {
   "Font": {"size": 12, "antialiasing": "grayscale"},
   "Colors": {"theme": "afterglow-dark"},
-  "Terminal": {"shellIntegration": true, "scrollback": 10000},
+  "Terminal": {"shellIntegration": "enabled", "scrollback": 10000},
   "Window": {"padding": 8}
 }
 ```
@@ -38,7 +43,7 @@ Group names and key names are case-sensitive.
 | Option | Function |
 | --- | --- |
 | `-o Group.key=value` | Changes one setting for this launch |
-| `--config` | Reads another configuration file |
+| `--config` | Reads another configuration file. Its directory then holds the `themes`, `shaders`, `shader-presets` and `scripts` directories |
 | `--class` | Sets the Wayland application ID for window rules |
 | `--title` | Sets a fixed window title |
 | `--hold` | Keeps the window open after an `-e` program stops |
@@ -75,8 +80,21 @@ Terminal fonts and colors have separate settings.
 
 If the family is not installed, fontconfig selects the nearest match.
 Without a desktop font setting, Afterglow uses the `monospace` alias at 11 points.
-Afterglow draws box drawing, block elements, Braille and the Powerline separators itself.
+Afterglow draws the characters in the table below itself, so that they fill the cell and join the next cell.
 `Font.symbolMap` does not change these characters.
+The font draws the other characters of these blocks, such as the pictures and the digits.
+
+| Characters | Code points |
+| --- | --- |
+| Box drawing and block elements | U+2500 to U+259F |
+| Braille patterns | U+2800 to U+28FF |
+| Powerline separators | U+E0B0 to U+E0BF |
+| Sextants, smooth mosaics and triangles | U+1FB00 to U+1FB6F, U+1FB9A to U+1FB9F |
+| Eighth blocks, quarter blocks, third blocks and half shades | U+1FB70 to U+1FB92, U+1FB94, U+1FBCE, U+1FBCF, U+1FBE4 to U+1FBE7 |
+| Diagonal box drawing | U+1FBA0 to U+1FBAE, U+1FBD0 to U+1FBDF |
+| Separated quadrants and sextants | U+1CC21 to U+1CC2F, U+1CE51 to U+1CE8F |
+| Octants | U+1CD00 to U+1CDE5 |
+| Sixteenth blocks and partial quarter blocks | U+1CE90 to U+1CEAF |
 
 ## Font rendering
 
@@ -118,9 +136,11 @@ Colors that it leaves out keep their `Colors` values, except the divider and pop
 A theme without a divider color gets one a fifth of the way from its background color to its text color.
 A theme without a popup border color gets the color halfway from its background color to its text color.
 With a theme, `Colors.divider` and `Colors.popupBorder` are not used.
+Without a theme, Afterglow derives an empty `Colors.divider` and `Colors.popupBorder` in the same way, from `Colors.background` and `Colors.foreground`.
 
-Afterglow first searches `$XDG_CONFIG_HOME/afterglow/themes`.
-It then searches `afterglow/themes` in each XDG data directory, starting with `~/.local/share`.
+Afterglow first searches the `themes` directory beside the configuration file, normally `$XDG_CONFIG_HOME/phosphor-works/afterglow/themes`.
+With `--config DIR/config.json`, it searches `DIR/themes` instead.
+It then searches `phosphor-works/afterglow/themes` in each XDG data directory, starting with `~/.local/share`.
 It then searches the supplied themes in the table below.
 Last, it searches the themes that other terminals installed:
 
@@ -161,9 +181,7 @@ The keys are `foreground`, `background`, `cursor`, `cursorText`, `selectionForeg
 `searchMatch`, `searchCurrentMatch`, `searchMatchText`, `visualBell`, `visualBellIntensity` and `palette` are also keys.
 A color key can have `-` or `_` between its words, in any mix of upper and lower case, such as `popup-border` in a Ghostty theme.
 Afterglow logs other keys in a JSON theme.
-A color in a theme or in `Colors` is a Qt color name, such as `#1e1e2e`, `#fff` or `red`.
-These colors have no alpha. Afterglow does not accept an eight-digit value such as `#1e1e2eff`.
-It also does not accept `transparent`, in any spelling.
+The colors in a theme have the forms of [color values](#color-values).
 
 Use this value to follow the desktop preference:
 
@@ -193,6 +211,7 @@ Use `plasma:NAME` to take colors from the desktop color scheme:
 `plasma` without a name takes the palette from `afterglow-dark` for a dark color scheme, and from `afterglow-light` for a light one.
 Afterglow reads `kdeglobals` in the XDG configuration directories, as Plasma does.
 On another desktop, or for a color that `kdeglobals` does not set, the colors come from the application palette.
+`afterglow mux new` has no application palette: such a color stays the color of the theme (see [the mux daemon](MUX.md#environment)).
 Afterglow applies a new color scheme while it runs.
 Each half of a `light:` and `dark:` value can also be a `plasma:` value.
 
@@ -200,6 +219,48 @@ A theme value can also be a file path. Either half of a `light:` and `dark:` val
 A relative path starts at the directory of the configuration file.
 Afterglow monitors that path for changes, including deletion and replacement.
 A theme file that does not parse keeps its last colors until it parses again.
+
+## Color values
+
+A color in `Colors` or in a theme has one of these forms:
+
+| Form | Example | Values |
+| --- | --- | --- |
+| A hexadecimal color | `#1e1e2e`, `#fff` | `#rgb`, `#rrggbb`, `#rrrgggbbb` or `#rrrrggggbbbb`. `#fff` is white. A theme, but not `Colors`, can leave out the `#` of six digits. |
+| An X11 color name | `red`, `dark slate gray` | A name from the X11 color list that Kitty reads, in any mix of upper and lower case. Newer CSS names, such as `teal` and `lime`, are not in it. |
+| `rgb:r/g/b` | `rgb:ff/80/00` | 1 to 4 hexadecimal digits for each channel. |
+| `rgbi:r/g/b` | `rgbi:1/0.5/0` | A number from 0 to 1 for each channel. |
+| `oklch(L C H)` | `oklch(0.7 0.1 200)` | L is the lightness, C is the chroma and H is the hue. |
+| `lab(L a b)` | `lab(50 60 40)` | CIE LAB with a D50 white point. L is the lightness. a goes from green to red, and b from blue to yellow. |
+
+A Konsole color scheme or `kdeglobals` can also write `R,G,B`, with each part from 0 to 255.
+A part outside this range makes the color invalid. Afterglow ignores a fourth part, which is an alpha.
+Afterglow ignores spaces before and after a color.
+
+[OKLCH](https://www.w3.org/TR/css-color-4/#ok-lab) and [CIE LAB](https://www.w3.org/TR/css-color-4/#cie-lab) are color spaces from CSS Color 4.
+A step of the same size in their values looks like a change of about the same size.
+The chroma is how much color there is.
+The three values of `oklch` and `lab` can have spaces or commas between them. The value `none` is 0.
+These are the ranges of the values:
+
+| Value | Range | Outside the range |
+| --- | --- | --- |
+| `rgbi` channel | 0 to 1 | The nearest limit. |
+| `oklch` L | 0 to 1, or 0% to 100% | The nearest limit. |
+| `oklch` C | 0 to about 0.4, or a percentage of 0.4 | A negative C is 0. A C larger than 4 is 4. |
+| `oklch` H | Degrees, or a number with the unit `deg`, `rad`, `grad` or `turn` | H counts modulo 360 degrees. |
+| `lab` L | 0 to 100, or 0% to 100% | The nearest limit. |
+| `lab` a and b | About -125 to 125, or a percentage of 125 | If a or b is outside -1000 to 1000, Afterglow decreases both until the larger is 1000, and keeps their ratio. |
+
+Afterglow converts an OKLCH or LAB color to sRGB with 8 bits for each channel.
+A color outside sRGB gets the [gamut mapping of CSS Color 4](https://www.w3.org/TR/css-color-4/#css-gamut-mapping).
+This mapping decreases the chroma of the color, and it keeps almost the same lightness and hue.
+Kitty themes that use these forms work in Afterglow.
+Some of their colors are not the same as in Kitty: see [color escape codes](COMPATIBILITY.md#color-escape-codes-and-pointer-shapes).
+
+A color in `Colors` or in a theme has no alpha. Afterglow does not accept an eight-digit value such as `#1e1e2eff`.
+It also does not accept `transparent`, in any spelling.
+Afterglow ignores an alpha in an OKLCH or LAB color, written as `/ 0.5` or as a fourth value, as Kitty does.
 
 ## Transparency
 

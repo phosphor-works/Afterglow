@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#include <AfterglowProto/FromChars.h>
 #include <AfterglowProto/Json.h>
 #include <AfterglowProto/Text.h>
 
@@ -37,7 +38,8 @@ public:
                 value.reset();
             }
         }
-        if (!value && error) *error = m_error + " at byte " + std::to_string(m_errorAt);
+        if (!value && error)
+            *error = m_error + " at byte " + std::to_string(m_errorAt);
         return value;
     }
 
@@ -61,7 +63,8 @@ private:
 
     bool literal(std::string_view word)
     {
-        if (m_text.substr(m_at, word.size()) != word) return fail("an unknown literal");
+        if (m_text.substr(m_at, word.size()) != word)
+            return fail("an unknown literal");
         m_at += word.size();
         return true;
     }
@@ -80,17 +83,21 @@ private:
         }
         switch (m_text[m_at]) {
         case 'n':
-            if (literal("null")) return Value();
+            if (literal("null"))
+                return Value();
             return std::nullopt;
         case 't':
-            if (literal("true")) return Value(true);
+            if (literal("true"))
+                return Value(true);
             return std::nullopt;
         case 'f':
-            if (literal("false")) return Value(false);
+            if (literal("false"))
+                return Value(false);
             return std::nullopt;
         case '"': {
             std::string s;
-            if (string(s)) return Value(std::move(s));
+            if (string(s))
+                return Value(std::move(s));
             return std::nullopt;
         }
         case '[':
@@ -114,11 +121,13 @@ private:
         const std::size_t start = m_at;
         auto digits = [this] {
             const std::size_t from = m_at;
-            while (m_at < m_text.size() && m_text[m_at] >= '0' && m_text[m_at] <= '9') ++m_at;
+            while (m_at < m_text.size() && m_text[m_at] >= '0' && m_text[m_at] <= '9')
+                ++m_at;
             return m_at > from;
         };
         const bool negative = m_at < m_text.size() && m_text[m_at] == '-';
-        if (negative) ++m_at;
+        if (negative)
+            ++m_at;
         const std::size_t intStart = m_at;
         if (m_at < m_text.size() && m_text[m_at] == '0') {
             ++m_at;
@@ -141,7 +150,8 @@ private:
         if (m_at < m_text.size() && (m_text[m_at] == 'e' || m_text[m_at] == 'E')) {
             ++m_at;
             const bool down = m_at < m_text.size() && m_text[m_at] == '-';
-            if (m_at < m_text.size() && (m_text[m_at] == '+' || m_text[m_at] == '-')) ++m_at;
+            if (m_at < m_text.size() && (m_text[m_at] == '+' || m_text[m_at] == '-'))
+                ++m_at;
             const std::size_t from = m_at;
             if (!digits()) {
                 fail("a number with no digits in its exponent");
@@ -150,11 +160,13 @@ private:
             // Past the range of a double for any count of digits that this
             // text can hold, so that underflows() still tells small from large.
             const long cap = long(m_text.size()) + 400;
-            for (std::size_t i = from; i < m_at; ++i) exponent = std::min(exponent * 10 + (m_text[i] - '0'), cap);
-            if (down) exponent = -exponent;
+            for (std::size_t i = from; i < m_at; ++i)
+                exponent = std::min(exponent * 10 + (m_text[i] - '0'), cap);
+            if (down)
+                exponent = -exponent;
         }
         double value = 0;
-        const auto [end, ec] = std::from_chars(m_text.data() + start, m_text.data() + m_at, value);
+        const auto [end, ec] = fromChars(m_text.data() + start, m_text.data() + m_at, value);
         if (ec == std::errc::result_out_of_range && underflows(intStart, intEnd, fracStart, fracEnd, exponent)) {
             // Below the smallest double: the nearest one is zero.
             return Value(negative ? -0.0 : 0.0);
@@ -169,11 +181,15 @@ private:
 
     /// Whether the number of these digits and @p exponent is below 1, so
     /// that out of range means too small rather than too large.
-    bool underflows(std::size_t intStart, std::size_t intEnd, std::size_t fracStart, std::size_t fracEnd, long exponent) const
+    bool underflows(std::size_t intStart, std::size_t intEnd, std::size_t fracStart, std::size_t fracEnd,
+                    long exponent) const
     {
         long magnitude = 0; // the power of ten of the first digit that is not 0
-        const auto isZero = [](char c) { return c == '0'; };
-        const auto digit = std::find_if_not(m_text.begin() + std::ptrdiff_t(intStart), m_text.begin() + std::ptrdiff_t(intEnd), isZero);
+        const auto isZero = [](char c) {
+            return c == '0';
+        };
+        const auto digit = std::find_if_not(m_text.begin() + std::ptrdiff_t(intStart),
+                                            m_text.begin() + std::ptrdiff_t(intEnd), isZero);
         if (digit != m_text.begin() + std::ptrdiff_t(intEnd)) {
             magnitude = long(m_text.begin() + std::ptrdiff_t(intEnd) - digit) - 1;
         } else {
@@ -188,15 +204,20 @@ private:
     /// m_at unchanged, when they are not.
     std::optional<char32_t> hex4()
     {
-        if (m_text.size() - m_at < 4) return std::nullopt;
+        if (m_text.size() - m_at < 4)
+            return std::nullopt;
         char32_t v = 0;
         for (std::size_t i = 0; i < 4; ++i) {
             const char c = m_text[m_at + i];
             v <<= 4;
-            if (c >= '0' && c <= '9') v |= char32_t(c - '0');
-            else if (c >= 'a' && c <= 'f') v |= char32_t(c - 'a' + 10);
-            else if (c >= 'A' && c <= 'F') v |= char32_t(c - 'A' + 10);
-            else return std::nullopt;
+            if (c >= '0' && c <= '9')
+                v |= char32_t(c - '0');
+            else if (c >= 'a' && c <= 'f')
+                v |= char32_t(c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F')
+                v |= char32_t(c - 'A' + 10);
+            else
+                return std::nullopt;
         }
         m_at += 4;
         return v;
@@ -211,43 +232,66 @@ private:
             const std::size_t from = m_at;
             while (m_at < m_text.size()) {
                 const auto c = static_cast<unsigned char>(m_text[m_at]);
-                if (c == '"' || c == '\\' || c < 0x20) break;
+                if (c == '"' || c == '\\' || c < 0x20)
+                    break;
                 if (c < 0x80) {
                     ++m_at;
                     continue;
                 }
                 char32_t cp = 0;
-                if (!nextUtf8(m_text, m_at, cp)) break;
+                if (!nextUtf8(m_text, m_at, cp))
+                    break;
             }
             out.append(m_text.substr(from, m_at - from));
-            if (m_at >= m_text.size()) return fail("an unterminated string");
+            if (m_at >= m_text.size())
+                return fail("an unterminated string");
             const auto c = static_cast<unsigned char>(m_text[m_at]);
             if (c == '"') {
                 ++m_at;
                 return true;
             }
-            if (c < 0x20) return fail("a control character in a string");
-            if (c != '\\') return fail("a string that is not UTF-8");
+            if (c < 0x20)
+                return fail("a control character in a string");
+            if (c != '\\')
+                return fail("a string that is not UTF-8");
             // A bad escape is reported at its backslash.
             const std::size_t escape = m_at;
             const auto invalid = [this, escape](const char* why) {
                 m_at = escape;
                 return fail(why);
             };
-            if (++m_at >= m_text.size()) return invalid("an unterminated string");
+            if (++m_at >= m_text.size())
+                return invalid("an unterminated string");
             const char e = m_text[m_at++];
             switch (e) {
-            case '"': out += '"'; break;
-            case '\\': out += '\\'; break;
-            case '/': out += '/'; break;
-            case 'b': out += '\b'; break;
-            case 'f': out += '\f'; break;
-            case 'n': out += '\n'; break;
-            case 'r': out += '\r'; break;
-            case 't': out += '\t'; break;
+            case '"':
+                out += '"';
+                break;
+            case '\\':
+                out += '\\';
+                break;
+            case '/':
+                out += '/';
+                break;
+            case 'b':
+                out += '\b';
+                break;
+            case 'f':
+                out += '\f';
+                break;
+            case 'n':
+                out += '\n';
+                break;
+            case 'r':
+                out += '\r';
+                break;
+            case 't':
+                out += '\t';
+                break;
             case 'u': {
                 auto cp = hex4();
-                if (!cp) return invalid("an invalid \\u escape");
+                if (!cp)
+                    return invalid("an invalid \\u escape");
                 if (*cp >= 0xD800 && *cp <= 0xDBFF && m_text.substr(m_at, 2) == "\\u") {
                     const std::size_t back = m_at;
                     m_at += 2;
@@ -280,7 +324,8 @@ private:
         }
         while (true) {
             auto item = read(depth);
-            if (!item) return std::nullopt;
+            if (!item)
+                return std::nullopt;
             items.push_back(std::move(*item));
             skipSpace();
             if (m_at < m_text.size() && m_text[m_at] == ',') {
@@ -312,7 +357,8 @@ private:
                 fail("an object key that is not a string");
                 return std::nullopt;
             }
-            if (!string(key)) return std::nullopt;
+            if (!string(key))
+                return std::nullopt;
             skipSpace();
             if (m_at >= m_text.size() || m_text[m_at] != ':') {
                 fail("an object key without :");
@@ -320,7 +366,8 @@ private:
             }
             ++m_at;
             auto value = read(depth);
-            if (!value) return std::nullopt;
+            if (!value)
+                return std::nullopt;
             members.emplace_back(std::move(key), std::move(*value));
             skipSpace();
             if (m_at < m_text.size() && m_text[m_at] == ',') {
@@ -375,7 +422,8 @@ void writeValue(std::string& out, const Value& value)
         out += '[';
         bool first = true;
         for (const Value& item : value.toArray()) {
-            if (!first) out += ',';
+            if (!first)
+                out += ',';
             first = false;
             writeValue(out, item);
         }
@@ -386,7 +434,8 @@ void writeValue(std::string& out, const Value& value)
         out += '{';
         bool first = true;
         for (const auto& [key, item] : value.toObject()) {
-            if (!first) out += ',';
+            if (!first)
+                out += ',';
             first = false;
             appendString(out, key);
             out += ':';
@@ -404,13 +453,19 @@ std::string_view escapeOf(char32_t cp, char (&buffer)[6])
 {
     static constexpr char Hex[] = "0123456789abcdef";
     switch (cp) {
-    case '"': return "\\\"";
-    case '\\': return "\\\\";
-    case '\n': return "\\n";
-    case '\r': return "\\r";
-    case '\t': return "\\t";
+    case '"':
+        return "\\\"";
+    case '\\':
+        return "\\\\";
+    case '\n':
+        return "\\n";
+    case '\r':
+        return "\\r";
+    case '\t':
+        return "\\t";
     default:
-        if (cp >= 0x20) return {};
+        if (cp >= 0x20)
+            return {};
         buffer[0] = '\\';
         buffer[1] = 'u';
         buffer[2] = '0';
@@ -435,9 +490,11 @@ double Value::toNumber(double fallback) const
 
 std::optional<std::int64_t> Value::toInteger() const
 {
-    if (!isNumber()) return std::nullopt;
+    if (!isNumber())
+        return std::nullopt;
     const double d = std::get<double>(m_data);
-    if (d != std::floor(d) || !(std::abs(d) < MaxExactInteger)) return std::nullopt;
+    if (d != std::floor(d) || !(std::abs(d) < MaxExactInteger))
+        return std::nullopt;
     return std::int64_t(d);
 }
 
@@ -459,7 +516,9 @@ const Json::Object& Value::toObject() const
 const Value* Value::find(std::string_view key) const
 {
     const Json::Object& members = toObject();
-    const auto it = std::find_if(members.rbegin(), members.rend(), [key](const auto& member) { return member.first == key; });
+    const auto it = std::find_if(members.rbegin(), members.rend(), [key](const auto& member) {
+        return member.first == key;
+    });
     return it == members.rend() ? nullptr : &it->second;
 }
 
@@ -502,7 +561,8 @@ void appendString(std::string& out, std::string_view text)
         } else {
             piece = escapeOf(cp, buffer);
         }
-        if (piece.empty()) continue;
+        if (piece.empty())
+            continue;
         out.append(text.substr(plain, start - plain));
         out += piece;
         plain = i;
@@ -513,7 +573,8 @@ void appendString(std::string& out, std::string_view text)
 
 std::size_t nextStringPiece(std::string_view text, std::size_t& at)
 {
-    if (at >= text.size()) return 0;
+    if (at >= text.size())
+        return 0;
     const std::size_t start = at;
     char32_t cp = 0;
     if (!nextUtf8(text, at, cp)) {

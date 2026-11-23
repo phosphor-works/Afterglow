@@ -1,0 +1,75 @@
+{
+    "id": "tilt",
+    "name": "Tilt",
+    "category": "Screen",
+    "description": "Each pane is a screen turned in space and seen in perspective, with a glowing rim. Clicks and selections follow the tilt. Use it as a pane shader.",
+    "author": "afterglow",
+    "version": "1.0",
+    "fragmentShader": "effect.frag",
+    "parameters": [
+        {
+            "id": "yaw",
+            "name": "Turn (degrees)",
+            "group": "Screen",
+            "type": "float",
+            "default": 28.0,
+            "min": -40.0,
+            "max": 40.0
+        },
+        {
+            "id": "pitch",
+            "name": "Lean (degrees)",
+            "group": "Screen",
+            "type": "float",
+            "default": 10.0,
+            "min": -25.0,
+            "max": 25.0
+        },
+        {
+            "id": "scale",
+            "name": "Size (share of the largest that fits)",
+            "group": "Screen",
+            "type": "float",
+            "default": 0.95,
+            "min": 0.4,
+            "max": 1.0
+        },
+        {
+            "id": "fov",
+            "name": "Field of view (degrees)",
+            "group": "Camera",
+            "type": "float",
+            "default": 50.0,
+            "min": 20.0,
+            "max": 90.0
+        },
+        {
+            "id": "glow",
+            "name": "Rim glow",
+            "group": "Rim",
+            "type": "float",
+            "default": 0.6,
+            "min": 0.0,
+            "max": 1.0
+        },
+        {
+            "id": "rimColor",
+            "name": "Rim color",
+            "group": "Rim",
+            "type": "color",
+            "default": "#40BFFF"
+        }
+    ],
+    "presets": {
+        "Gentle": {
+            "yaw": 14.0,
+            "pitch": 5.0,
+            "scale": 1.0
+        },
+        "Steep": {
+            "yaw": 38.0,
+            "pitch": 14.0,
+            "scale": 0.91
+        }
+    }
+}

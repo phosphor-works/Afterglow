@@ -10,19 +10,24 @@ add_executable(afterglow_vt_tests
     ../src/ITerm2.cpp # internal helpers under test
     GraphicsTest.cpp
     InputTest.cpp
+    KeyNamesTest.cpp
     NotificationTest.cpp
     ParserTest.cpp
     ProgramStatusTest.cpp
     ScreenTest.cpp
     SearchTest.cpp
     SelectionTest.cpp
+    ShellMarksTest.cpp
     SixelTest.cpp
+    StateSyncTest.cpp
     TerminalTest.cpp
     TextSizingTest.cpp
     UnicodeTest.cpp
 )
 target_link_libraries(afterglow_vt_tests PRIVATE Afterglow::Vt GTest::gtest_main)
-set_target_properties(afterglow_vt_tests PROPERTIES AUTOMOC OFF)
+set_target_properties(afterglow_vt_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 
 include(GoogleTest)
-gtest_discover_tests(afterglow_vt_tests)
+# A test that hangs (a parser loop that never ends) fails instead of
+# holding ctest for its default timeout.
+gtest_discover_tests(afterglow_vt_tests PROPERTIES TIMEOUT 120)

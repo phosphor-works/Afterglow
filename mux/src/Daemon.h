@@ -1,0 +1,558 @@
+// SPDX-FileCopyrightText: 2026 fuddlesworth
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#pragma once
+
+#include "Attach.h"
+#include "ImageDecoder.h"
+#include "ProcessFds.h"
+#include "Session.h"
+
+#include <AfterglowProto/IpcServer.h>
+#include <AfterglowProto/Remote.h>
+#include <AfterglowProto/RemoteOsc.h>
+#include <AfterglowProto/Socket.h>
+
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <exception>
+#include <functional>
+#include <map>
+#include <memory>
+#include <optional>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace AfterglowMux {
+
+/// The headless process that owns the sessions. One thread runs the sockets
+/// of the daemon, the windows that show sessions and the lifetimes of
+/// sessions and panes. Each pane's PTY has its reader thread, which wakes
+/// this one through an eventfd after output, when a call of its terminal
+/// waits for the window, when the PTY's input queue has room again, and when
+/// its program exits (MuxPane).
+class Daemon
+{
+public:
+    /// The lines of one connection that one pass of the loop answers or
+    /// passes on, empty ones included: a client that pipelines calls cannot
+    /// keep the others, the signals and the reaping of programs waiting.
+    static constexpr int MaxLinesPerRead = 64;
+    /// The command clients that the window of one session serves at a time.
+    static constexpr std::size_t MaxRelaysPerSession = 64;
+    /// The processes above a command client that the daemon looks at for
+    /// the pane that it runs in.
+    static constexpr int MaxAncestors = 64;
+    /// How run() ended.
+    struct Exit
+    {
+        int status = 0;
+        /// The signal that ended the daemon, else 0. The process ends with
+        /// it once the daemon is gone, so that its parent sees the signal.
+        int signal = 0;
+    };
+
+    /// A daemon that no client reaches in this time ends, so a client that
+    /// died before it connected leaves no process behind.
+    static constexpr int StartWaitMs = 10000;
+
+    /// @p fileLimit is the soft RLIMIT_NOFILE that the programs of sessions
+    /// get (see Session), -1 for the daemon's own.
+    explicit Daemon(long fileLimit = -1);
+    ~Daemon();
+    Daemon(const Daemon&) = delete;
+    Daemon& operator=(const Daemon&) = delete;
+
+    /// What listen() did.
+    enum class Listen : std::uint8_t {
+        Listening,
+        Held, ///< another daemon holds one of the sockets: its sessions are there
+        Failed, ///< no socket is left, or the event descriptors could not be made
+    };
+    /// Listens on each of @p sockets, after it creates the socket's
+    /// directory (mode 0700). A socket that fails for another reason than a
+    /// second daemon (its directory, bind()) is left out, with a message on
+    /// stderr. Unless it listens, @p error says why: with no socket left, it
+    /// names the reason of each. In the directory of each socket that
+    /// listens, the sockets of ssh sessions that a killed daemon left go.
+    Listen listen(const std::vector<AfterglowProto::MuxSocket>& sockets, std::string* error);
+    /// Serves until it is idle (no session, no connection and no window) after its
+    /// first session, or after StartWaitMs without one, or until SIGTERM,
+    /// SIGINT or SIGHUP. A signal that the daemon got as ignored (nohup)
+    /// stays ignored.
+    Exit run();
+
+private:
+    void accept();
+    /// True when it answered a call.
+    bool read(AfterglowProto::IpcServerConnection& connection);
+    /// @p caller is the process of the client, 0 when unknown. Empty when
+    /// the answer comes later: a window gives it (answerForwarded()).
+    std::string answer(const AfterglowProto::IpcRequest& request, pid_t caller,
+                       AfterglowProto::IpcServerConnection& connection);
+
+    // The sockets of `afterglow ssh` in session panes, in DaemonRemote.cpp.
+    /// One ssh session's socket for remote commands, and the pane's answer
+    /// to the query of `aglow run`.
+    struct SshSession
+    {
+        std::string token;
+        std::uint32_t pane = 0;
+        std::uint64_t order = 0; ///< orders the sessions of a pane
+        int pidfd = -1; ///< of `afterglow ssh`: the session ends with it
+        std::unique_ptr<AfterglowProto::IpcListener> listener; ///< none for an answer without a socket, or once closed
+        std::string socket; ///< the local socket, the target of `ssh -O forward -R`
+        std::string path; ///< the socket's path on the remote host
+        std::vector<std::string> ssh; ///< the options of `ssh -O cancel`
+        std::string destination;
+        std::string host; ///< ev.remote.host
+        AfterglowProto::Remote::Answer answer;
+        bool answering = false; ///< the pane gives the answer: an error at once, a path once the forward came
+        bool full = false; ///< it refused a client for MaxSshConnections: logged once
+        ~SshSession();
+    };
+    /// What the poll of the loop watches for the ssh sessions.
+    struct SshWatch
+    {
+        enum class Kind {
+            Listener,
+            Process,
+            Cancel
+        } kind = Kind::Listener;
+        std::string token;
+        pid_t pid = 0; ///< Cancel
+    };
+    /// How long an `ssh -O cancel` may run, and how often the daemon looks
+    /// for the end of one that has no pidfd.
+    static constexpr int CancelWaitMs = 10000;
+    static constexpr int CancelLookMs = 100;
+    /// The limits of the sockets of ssh sessions, those of a window's too
+    /// (AfterglowProto::Remote).
+    static constexpr std::size_t MaxSshSessionsPerPane = AfterglowProto::Remote::MaxSessionsPerPane;
+    static constexpr std::size_t MaxSshSessions = AfterglowProto::Remote::MaxSessions;
+    static constexpr std::size_t MaxSshConnections = AfterglowProto::Remote::MaxConnections;
+    static constexpr std::size_t MaxSshOptions = AfterglowProto::Remote::MaxOptions;
+    static constexpr std::size_t MaxSshHostLength = AfterglowProto::Remote::MaxHostLength; ///< UTF-16 units
+    /// The calls of `afterglow ssh` on the control target:
+    /// remoteCommandsEnabled, openRemoteSocket, remoteSocketForwarded and
+    /// remoteSocketFailed.
+    std::string remoteCall(const AfterglowProto::IpcRequest& request, pid_t caller);
+    /// The session whose pane process @p process runs in (MaxAncestors), and
+    /// that pane in @p pane.
+    Session* sessionOfProcess(pid_t process, std::uint32_t* pane) const;
+    Session* sessionOfPane(std::uint32_t pane) const;
+    /// Gives pane @p pane the answer of its newest ssh session that answers,
+    /// else none.
+    void refreshAnswer(std::uint32_t pane);
+    /// Closes the socket of @p session: its clients hear @p reason.
+    void closeSshSocket(SshSession& session, const std::string& reason);
+    /// Ends ssh session @p token: its socket closes and its forward is cancelled.
+    void endSsh(const std::string& token, const std::string& reason);
+    /// Runs `ssh OPTIONS -O cancel -R REMOTE:LOCAL -- DESTINATION`, without waiting.
+    void cancelForward(const SshSession& session);
+    void addSshFds(std::vector<pollfd>& fds, std::vector<SshWatch>& watches) const;
+    void handleSshFds(const pollfd* fds, const std::vector<SshWatch>& watches);
+    /// A client on the remote host: its connection goes to the window that
+    /// shows the session of the pane.
+    void acceptSshClient(SshSession& session, int fd);
+    /// Ends the ssh sessions whose pane closed, and those of a session whose
+    /// window turned remote commands off.
+    void pruneSsh();
+    /// Ends every ssh session, as the daemon ends.
+    void endAllSsh();
+    /// Removes the sockets of ssh sessions of this host in @p directory
+    /// whose lock no daemon holds: a daemon that was killed left them.
+    static void removeStaleSshSockets(const std::string& directory);
+    /// Accepts the clients of every ssh session's socket: also of one that
+    /// starved (no descriptor was left), whose poll waits for no client.
+    void acceptSshClients();
+    /// When the next `ssh -O cancel` must be looked at, -1 for none: one
+    /// without a pidfd, which no poll wakes for, and one that runs too long.
+    int sshDueMs() const;
+
+    // `afterglow ctl watch` for a session (DaemonWatch.cpp).
+    /// A subscription to an event of the control target of @p session.
+    std::string subscribe(const AfterglowProto::IpcRequest& request, AfterglowProto::IpcServerConnection& connection,
+                          Session& session);
+    /// The end of a subscription of @p connection, which names no target. It
+    /// sends its answer itself, before it lets the connection go
+    /// (holdForAnswers()): empty then.
+    std::string unsubscribe(const AfterglowProto::IpcRequest& request, AfterglowProto::IpcServerConnection& connection);
+    /// Sends the events of the watched sessions that came since the last
+    /// pass, and those whose interval ended; ends the subscriptions of the
+    /// sessions that ended or turned control off.
+    void pumpWatch();
+    /// pumpWatch() before @p session ends, when it is watched: its watchers
+    /// hear what its panes told before they closed.
+    void flushWatch(const Session& session);
+    /// When the next entry of an interval ends, -1 for none.
+    int watchDueMs() const;
+    void forgetWatches(const AfterglowProto::IpcServerConnection* connection);
+    /// A watcher of session @p serial subscribed to textChanged.
+    bool textWatched(std::uint64_t serial) const;
+    Session* sessionBySerial(std::uint64_t serial) const;
+    struct Subscription
+    {
+        AfterglowProto::IpcServerConnection* connection = nullptr;
+        std::int64_t id = 0; ///< the subscribe request's, which names its events
+        std::uint64_t session = 0; ///< Session::serial()
+        std::string signal;
+    };
+    /// What the last events of a pane said.
+    struct PaneWatch
+    {
+        std::optional<std::string> title;
+        std::optional<std::pair<std::string, std::string>> status;
+    };
+    /// An event that one kind and pane send at most once in an interval.
+    struct Merged
+    {
+        std::string signal;
+        std::uint32_t pane = 0;
+        std::optional<std::chrono::steady_clock::time_point> sent;
+        std::optional<AfterglowProto::Json::Array> waiting; ///< the newest, for the end of the interval
+    };
+    struct SessionWatch
+    {
+        std::string name;
+        bool readText = false;
+        std::chrono::milliseconds interval{0};
+        std::map<std::uint32_t, PaneWatch> panes;
+        std::uint32_t focused = 0;
+        std::map<std::string, Merged> merged; ///< by signal, pane and name
+    };
+    void sendWatch(std::uint64_t serial, const SessionWatch& watch, const std::string& signal,
+                   AfterglowProto::Json::Array args);
+    /// Sends what waits for @p pane.
+    void flushPane(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane);
+    /// An event that is never merged: what waits for its pane goes first.
+    void watchNow(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane, const std::string& signal,
+                  AfterglowProto::Json::Array args);
+    /// An event that goes at most once in Control.eventInterval for @p pane
+    /// and @p key (a user variable's name).
+    void watchMerged(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane, const std::string& key,
+                     const std::string& signal, AfterglowProto::Json::Array args);
+    /// The events of one watch event of @p pane, whose last events @p state
+    /// holds.
+    void watchEvent(std::uint64_t serial, SessionWatch& watch, std::uint32_t pane, PaneWatch& state,
+                    MuxPane::WatchEvent& event);
+    /// pumpWatch() for the watched session @p it at @p now, which it erases
+    /// when its watch ends.
+    void pumpWatchOf(std::map<std::uint64_t, SessionWatch>::iterator it, std::chrono::steady_clock::time_point now);
+
+    // The command clients of session panes (`aglow run`), which the window
+    // of the session serves, in DaemonCommands.cpp.
+    /// Passes @p connection, whose first request is @p request, read from
+    /// @p line, to the window that shows the session of the caller's pane,
+    /// or of the agent session that the connection selected (`afterglow
+    /// mcp`, whose process runs in no pane of the session). Empty: the
+    /// window answers. Else the error.
+    std::string startRelay(const AfterglowProto::IpcRequest& request, std::string line, pid_t caller,
+                           AfterglowProto::IpcServerConnection& connection);
+    /// Passes the lines of a relayed @p connection to its window, while the
+    /// window has room for them.
+    void readRelay(AfterglowProto::IpcServerConnection& connection);
+    /// The relay @p id ends: its connection closes once its output went.
+    /// @p tellWindow: the client ended it, and the window closes its side.
+    void endRelay(std::uint64_t id, bool tellWindow);
+    /// Sends the clients the lines that @p window sent them, and ends the
+    /// relays that it ended.
+    void deliverRelayFrames(Attachment& window);
+    /// deliverRelayFrames() for each window, and ends the relays whose
+    /// window went.
+    void answerRelays();
+    /// Whether the daemon reads the lines of @p connection now: not those of
+    /// a relayed one whose window has no room, nor of one that closes after
+    /// its output.
+    bool reads(const AfterglowProto::IpcServerConnection& connection) const;
+    /// The attachment by its serial(), or nullptr.
+    Attachment* attachment(std::uint64_t serial) const;
+    /// A session with callerEnvironment takes the environment that
+    /// callerEnvironment() kept for @p connection.
+    std::string newSession(const AfterglowProto::IpcRequest& request,
+                           const AfterglowProto::IpcServerConnection& connection);
+    std::string callerEnvironment(const AfterglowProto::IpcRequest& request,
+                                  const AfterglowProto::IpcServerConnection& connection);
+    std::string killSession(const AfterglowProto::IpcRequest& request);
+    std::string adoptSession(const AfterglowProto::IpcRequest& request);
+    /// bindSession (@p bind) and unbindSession.
+    std::string bindSession(const AfterglowProto::IpcRequest& request,
+                            const AfterglowProto::IpcServerConnection& connection, bool bind);
+    /// Adds @p connection to the bindings of session @p serial. A failure
+    /// (out of memory) throws, and leaves no empty set behind: run() would
+    /// take it for a session whose last client went, and end it.
+    void bind(std::uint64_t serial, const AfterglowProto::IpcServerConnection& connection);
+    /// The connection of the call becomes the window's stream once the
+    /// answer went (m_attaching).
+    std::string attach(const AfterglowProto::IpcRequest& request);
+    std::string detach(const AfterglowProto::IpcRequest& request);
+    std::string paneDirectory(const AfterglowProto::IpcRequest& request);
+    std::string newPane(const AfterglowProto::IpcRequest& request);
+    std::string paneJob(const AfterglowProto::IpcRequest& request, pid_t caller);
+    std::string breakOut(const AfterglowProto::IpcRequest& request);
+    std::string paneSession(const AfterglowProto::IpcRequest& request);
+    /// The pane of a (name, pane) call, else nullptr with the answer that
+    /// refuses the call in @p refusal. @p usage names the arguments.
+    const MuxPane* paneOfCall(const AfterglowProto::IpcRequest& request, const char* usage, std::string& refusal);
+    /// The refusal of a call that changes the panes of session @p name and
+    /// names a window in its argument @p windowArg ("window" of the attach
+    /// answer), while that window does not show the session: another one
+    /// does, or none. Empty when it may.
+    std::string windowRefusal(const AfterglowProto::IpcRequest& request, const std::string& name,
+                              std::size_t windowArg) const;
+    /// The pane @p id of any session, or nullptr.
+    MuxPane* findPane(std::uint32_t id) const;
+    /// The next pane ID: never 0, which marks a split, and none that a
+    /// session still holds once the numbers went round.
+    std::uint32_t nextPaneId();
+    /// Applies what the window of @p attachment, which finished, sent before
+    /// it heard (Attachment::takeLate()) to @p own, the session of its name.
+    /// The caller ends the session when that emptied it.
+    void applyLate(Attachment& attachment, Session& own);
+    /// The window of @p previous loses its session to a new window: what it
+    /// sent before counts, and it finishes.
+    void takeOver(Attachment& previous);
+
+    /// Moves the panes of @p layout out of @p from to a new session that
+    /// keeps that layout: its name, or nothing with @p error.
+    std::optional<std::string> breakOutPanes(Session& from, Layout layout, std::string* error);
+
+    // A pane that joins another session of the daemon, in DaemonJoin.cpp.
+    /// Fn::JoinPane, which the window of the session that the pane leaves
+    /// sends.
+    std::string joinPane(const AfterglowProto::IpcRequest& request);
+    /// Whether a pane of @p size has room for another one on @p side, as half
+    /// of it: two columns or one row at least, as the daemon makes a split.
+    static bool roomBeside(const PaneSize& size, Side side)
+    {
+        return side == Side::Right || side == Side::Left ? size.cols >= 4 : size.rows >= 2;
+    }
+    /// The refusal of a move of a pane of @p from to session @p to, on
+    /// @p placement of pane @p beside of @p to, else empty with the side in
+    /// @p side (none for a new tab): a placement that is not left, right,
+    /// up, down or new-tab, @p to at MaxSessionPanes, the window of @p to
+    /// that has no room for the call that places the pane, and without such
+    /// a window, no room beside @p beside. With @p tellFrom, the window of
+    /// @p from must have room for the call that tells it (joinPanes()).
+    /// Pane @p id cannot go back into the window of @p to while that window
+    /// still holds it from before (Attachment::stillLeaving), nor into an
+    /// agent session from a session without Control.allowReadText.
+    std::string joinRefusal(const AfterglowProto::IpcRequest& request, const Session& from, std::uint32_t id,
+                            const Session& to, std::uint32_t beside, const std::string& placement, bool tellFrom,
+                            std::optional<Side>* side) const;
+    /// Moves pane @p id of @p from, with its program running, to @p to: on
+    /// @p side of pane @p beside of @p to, else in a tab of its own after the
+    /// tab of @p beside. Its title and command go with it. The window of
+    /// @p from drags it out, as for a break out, and the window of @p to
+    /// places it (placePane). With @p tellFrom, the window of @p from hears
+    /// first that the pane left (paneLeft): a move that it did not ask for.
+    /// When it was the last pane of @p from, that session ends: the caller
+    /// uses @p from no more. A failure (out of memory) leaves the pane
+    /// where it was.
+    void joinPanes(Session& from, std::uint32_t id, Session& to, std::uint32_t beside, std::optional<Side> side,
+                   bool tellFrom);
+
+    // The control target (`afterglow ctl` for a session), in DaemonControl.cpp.
+    /// selectSession and selectPane: the session that the control calls of
+    /// @p connection act on.
+    std::string select(const AfterglowProto::IpcRequest& request, AfterglowProto::IpcServerConnection& connection);
+    /// A call of the control target, for the session that @p connection
+    /// selected. Empty when a window answers it later.
+    std::string control(const AfterglowProto::IpcRequest& request, AfterglowProto::IpcServerConnection& connection,
+                        pid_t caller);
+    /// Passes @p request to the window that shows @p session, with @p args in
+    /// place of its own. Empty: its answer comes later. Without a window, the
+    /// error that says so.
+    std::string forward(const AfterglowProto::IpcRequest& request, AfterglowProto::IpcServerConnection& connection,
+                        Session& session, const AfterglowProto::Json::Array& args);
+    /// Tells the window that shows @p session of a change that the daemon
+    /// made (a pane to place, a focus): no answer comes.
+    void tellWindow(const Session& session, const std::string& fn, AfterglowProto::Json::Array args);
+    /// The refusal of a call that would pass one more event to @p window
+    /// while its events fill Mux.eventQueue (Attachment::relayRoom()), else
+    /// empty.
+    static std::string windowFull(const AfterglowProto::IpcRequest& request, const Attachment& window);
+    /// Sends the answers that @p window gave to the calls passed to it.
+    void passReplies(Attachment& window);
+    /// Holds @p connection open past the end of its client's side while a
+    /// forwarded call or a subscription of it waits (keepAtEnd()), and lets
+    /// it go when none does: it closes then if its client ended its side, and
+    /// the end of the pass forgets it.
+    void holdForAnswers(AfterglowProto::IpcServerConnection& connection);
+    /// passReplies() for each window, and fails the calls whose window went.
+    void answerForwarded();
+    /// The connection closed: its selection, its bindings and the calls that
+    /// wait for a window go. A bound agent session that it was the last
+    /// client of ends after the loop over the connections (run()), unless the
+    /// daemon closed the connection itself because its client did not read
+    /// its output in time (sendTo()): then the session runs on, bound to no
+    /// client.
+    void forget(const AfterglowProto::IpcServerConnection* connection);
+    /// Sends @p line on @p connection, and notes a connection that the send
+    /// closes because its client did not read its output in time
+    /// (IpcServerConnection::MaxWaitingBytes): a client that is stopped is
+    /// still there, and a session that it bound must not end with that
+    /// connection.
+    void sendTo(AfterglowProto::IpcServerConnection& connection, std::string line);
+    /// What a pane runs when it has news for the daemon's thread: it wakes
+    /// the poll. Safe to call from any thread.
+    std::function<void()> waker() const;
+    /// The error of a call whose first argument is not this daemon's
+    /// protocol version.
+    static std::optional<std::string> versionError(const AfterglowProto::IpcRequest& request);
+    /// Ends the programs of @p session and the session: its window hears it.
+    void endSession(std::vector<std::unique_ptr<Session>>::iterator session);
+    /// Takes the Kill of @p attachment (Attachment::takeKill()): whether it
+    /// ends @p session, which is not an agent session.
+    static bool killed(Attachment& attachment, const Session& session);
+    /// Sends what changed in each attached session.
+    void pumpAttachments();
+    /// Tells each pane which window shows it, for its host calls.
+    void syncAttached();
+    /// The attachment that shows the session @p name, connected or not;
+    /// not one that finishes.
+    Attachment* shown(const std::string& name) const;
+    /// shown(), once its window shows the session (Attachment::showing()).
+    Attachment* showing(const std::string& name) const;
+    /// The refusal of a pane for @p session, which has MaxSessionPanes.
+    static std::string tooManyPanes(const AfterglowProto::IpcRequest& request, const Session& session);
+    /// A CALL_FAILED answer to @p request.
+    static std::string failed(const AfterglowProto::IpcRequest& request, const std::string& message);
+    /// The TRY_AGAIN error of a call on @p pane while it decodes an image.
+    static std::string decoding(const AfterglowProto::IpcRequest& request, std::uint32_t pane);
+    /// Runs @p work for @p attachment. An exception finishes the attachment,
+    /// whose host calls go back to the panes of its session, and returns
+    /// false.
+    bool guarded(Attachment& attachment, const std::function<bool()>& work);
+    /// Runs @p work, the work of one item of a step of a pass of the loop: a
+    /// client, a relay, an answer, an ssh session, a watched session. One
+    /// that fails (out of memory) costs that item, not the other items of
+    /// the step nor the sessions of all the others, as a call that fails and
+    /// a window that fails (guarded()) do. False when it failed: the caller
+    /// then drops the item, with no allocation.
+    template<typename Work>
+    static bool contained(const char* item, Work&& work)
+    {
+        try {
+            work();
+            return true;
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "aglow-mux: %s failed: %s\n", item, e.what());
+            return false;
+        }
+    }
+    std::string listSessions(const AfterglowProto::IpcRequest& request, pid_t caller);
+    /// The socket that session panes name in AFTERGLOW_SOCKET.
+    const std::string& paneSocket() const;
+    std::vector<std::unique_ptr<Session>>::iterator find(const std::string& name);
+    std::string freeName();
+    void reap();
+    /// No session, no connection and no window: nothing can need the daemon
+    /// now.
+    bool idle() const;
+
+    const long m_fileLimit;
+    std::vector<Subscription> m_subscriptions;
+    std::uint64_t m_lastSessionSerial = 0;
+    std::map<std::uint64_t, SessionWatch> m_watches; ///< by Session::serial()
+    /// A pass dropped a window that failed after the reads: no poll would
+    /// wake for its calls and command clients, which the next pass fails.
+    bool m_again = false;
+    /// Before the sessions: their panes decode with it until they end.
+    ImageDecoder m_images{selfExecutable()};
+    std::vector<std::unique_ptr<AfterglowProto::IpcListener>> m_listeners;
+    int m_wakeFd = -1;
+    int m_signalFd = -1;
+    std::string m_setupError; ///< why the event descriptors are missing
+    std::vector<std::unique_ptr<AfterglowProto::IpcServerConnection>> m_connections;
+    std::vector<std::unique_ptr<Session>> m_sessions;
+    /// The windows of sessions: at most one that is not finishing for each
+    /// session, and those that finish while they send what waits. An
+    /// attachment holds no session: it may outlive its session.
+    std::vector<std::unique_ptr<Attachment>> m_attachments;
+    /// The attachment of the attach call that read() answers: it takes the
+    /// call's connection after the answer.
+    std::unique_ptr<Attachment> m_attaching;
+    std::uint32_t m_nextPane = 1;
+    /// The session that the control calls of each connection act on, by its
+    /// Session::serial(): a later session of the same name is another one.
+    struct Selected
+    {
+        std::uint64_t serial = 0;
+        std::string name;
+    };
+    std::map<const AfterglowProto::IpcServerConnection*, Selected> m_selected;
+    /// The connections that each agent session, by serial, ends with
+    /// (Fn::BindSession): the session ends when the last one closes. An
+    /// empty set is a session whose last one closed: forget() runs within
+    /// the loop over the connections, and run() ends it after that loop.
+    std::map<std::uint64_t, std::set<const AfterglowProto::IpcServerConnection*>> m_bound;
+    /// The connections that the daemon closed because their clients read
+    /// nothing (sendTo()), until forget().
+    std::set<const AfterglowProto::IpcServerConnection*> m_overflowed;
+    /// The environment that each connection's caller sent (callerEnvironment()).
+    std::map<const AfterglowProto::IpcServerConnection*, std::vector<std::pair<std::string, std::string>>>
+        m_callerEnvironments;
+    /// The control calls that wait for the answer of a window, by the ID of
+    /// their Control event.
+    struct Forward
+    {
+        AfterglowProto::IpcServerConnection* connection = nullptr;
+        std::optional<std::int64_t> request;
+        std::uint64_t window = 0; ///< Attachment::serial()
+        std::string session;
+    };
+    std::map<std::uint64_t, Forward> m_forwards;
+    std::uint64_t m_nextForward = 1;
+    /// The number of each client whose calls go to windows: a window keeps
+    /// the overlays and their inputs of each client (`afterglow ctl
+    /// overlay`), and ends them when the client goes.
+    std::map<const AfterglowProto::IpcServerConnection*, std::uint64_t> m_clients;
+    /// From a random number: a window keeps the inputs of a client until it
+    /// hears that it went, and a daemon that starts again numbers others.
+    /// Within the 53 bits that a JSON number keeps exactly.
+    std::uint64_t m_nextClient = (std::uint64_t(std::random_device{}()) << 20) + 1;
+    /// The forwards of clients that went, by their ID, with their window:
+    /// that window can still answer them, and its answer goes nowhere.
+    std::map<std::uint64_t, std::uint64_t> m_abandonedForwards;
+    /// The sessions whose windows hold overlays or inputs of each client.
+    std::map<const AfterglowProto::IpcServerConnection*, std::set<std::string>> m_overlaySessions;
+    /// The command connections that windows serve, by the ID of their relay.
+    struct Relay
+    {
+        AfterglowProto::IpcServerConnection* connection = nullptr;
+        std::uint64_t window = 0; ///< Attachment::serial()
+        std::string session;
+        std::string partial; ///< what the window sent after the last whole line
+        std::string sshToken; ///< the ssh session whose socket the client came through, empty for a client in a pane
+    };
+    std::map<std::uint64_t, Relay> m_relays;
+    std::map<const AfterglowProto::IpcServerConnection*, std::uint64_t> m_relayOf;
+    /// Connections that close once their output went: relays that ended.
+    std::set<const AfterglowProto::IpcServerConnection*> m_closing;
+    std::uint64_t m_nextRelay = 1;
+    std::map<std::string, std::unique_ptr<SshSession>> m_sshSessions; ///< by token
+    std::uint64_t m_sshOpened = 0;
+    /// The `ssh -O cancel` runs that the daemon reaps when they end. One that
+    /// runs past CancelWaitMs is killed: a master that does not answer would
+    /// keep it for the daemon's life.
+    struct Cancel
+    {
+        pid_t pid = 0;
+        int pidfd = -1;
+        std::chrono::steady_clock::time_point deadline;
+        bool killed = false;
+    };
+    std::vector<Cancel> m_cancels;
+    /// The number of the next session without a name of its client.
+    std::uint64_t m_nextName = 1;
+    /// A session was created. Before that, the daemon waits for one for
+    /// StartWaitMs; a connection alone does not end the wait (a client may
+    /// probe the socket before it calls).
+    bool m_hadSession = false;
+};
+
+} // namespace AfterglowMux

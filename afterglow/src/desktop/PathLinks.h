@@ -66,7 +66,12 @@ struct OpenAction
 OpenAction openAction(const QStringList& openFilesWith, const Location& file, bool directory);
 
 /// What a path names on this machine.
-enum class Kind { Unknown, Missing, File, Directory };
+enum class Kind {
+    Unknown,
+    Missing,
+    File,
+    Directory
+};
 
 /// Checks whether paths exist on worker threads, and keeps the answers for a
 /// short time. A stat on a hung network mount blocks its worker, never the
@@ -85,7 +90,10 @@ public:
     /// wait already.
     void check(const QString& path, QObject* context, std::function<void(Kind)> done);
     /// Checks that wait for a worker or run.
-    int pending() const { return int(m_waiting.size()); }
+    int pending() const
+    {
+        return int(m_waiting.size());
+    }
 
 Q_SIGNALS:
     void checked(const QString& path, Afterglow::PathLinks::Kind kind);

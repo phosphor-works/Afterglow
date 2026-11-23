@@ -15,7 +15,10 @@ namespace {
 class Provider : public IAudioSpectrumProvider
 {
 public:
-    bool isAvailable() const override { return available; }
+    bool isAvailable() const override
+    {
+        return available;
+    }
     void start() override
     {
         ++starts;
@@ -28,15 +31,31 @@ public:
     }
     void stop() override
     {
-        if (running) ++stops;
+        if (running)
+            ++stops;
         running = false;
         Q_EMIT runningChanged(false);
     }
-    bool isRunning() const override { return running; }
-    SpectrumOptions options() const override { return opts; }
-    void setOptions(const SpectrumOptions& options) override { opts = options; }
-    QVector<float> spectrum() const override { return {}; }
-    void frame(float value) { Q_EMIT spectrumUpdated(QVector<float>(64, value)); }
+    bool isRunning() const override
+    {
+        return running;
+    }
+    SpectrumOptions options() const override
+    {
+        return opts;
+    }
+    void setOptions(const SpectrumOptions& options) override
+    {
+        opts = options;
+    }
+    QVector<float> spectrum() const override
+    {
+        return {};
+    }
+    void frame(float value)
+    {
+        Q_EMIT spectrumUpdated(QVector<float>(64, value));
+    }
 
     bool available = true;
     bool running = false;
@@ -54,9 +73,15 @@ protected:
         source = provider.get();
         controller = std::make_unique<AudioController>(std::move(provider));
         QObject::connect(controller.get(), &AudioController::spectrumChanged, controller.get(),
-                         [this](const QVector<float>& frame) { spectrum = frame; ++emitted; });
+                         [this](const QVector<float>& frame) {
+                             spectrum = frame;
+                             ++emitted;
+                         });
     }
-    static void flush() { QCoreApplication::processEvents(); }
+    static void flush()
+    {
+        QCoreApplication::processEvents();
+    }
     Provider* source = nullptr;
     QVector<float> spectrum;
     int emitted = 0;

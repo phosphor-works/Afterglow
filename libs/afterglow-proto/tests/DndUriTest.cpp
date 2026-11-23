@@ -35,18 +35,20 @@ TEST(DndUri, EncodeAndParseRoundTrip)
 
 TEST(DndUri, OnlyFilesOfThisComputerAreFiles)
 {
-    const auto parsed = parseDndUriList("file:///a\r\n"
-                                        "file://localhost/b\r\n"
-                                        "file:/c\n"
-                                        "file://otherhost/d\r\n"
-                                        "file:///e%00f\r\n"
-                                        "https://example.org/g\r\n"
-                                        "# a comment\r\n"
-                                        "\r\n"
-                                        "  file:///h/../i  \r\n"
-                                        "file:///j?x\r\n"
-                                        "file:///k#y\r\n");
-    ASSERT_EQ(parsed.size(), 9u);
+    const auto parsed = parseDndUriList(
+        "file:///a\r\n"
+        "file://localhost/b\r\n"
+        "file:/c\n"
+        "file://otherhost/d\r\n"
+        "file:///e%00f\r\n"
+        "https://example.org/g\r\n"
+        "# a comment\r\n"
+        "\r\n"
+        "  file:///h/../i  \r\n"
+        "file:///j?x\r\n"
+        "file:///k#y\r\n"
+        "file://LocalHost/l\r\n");
+    ASSERT_EQ(parsed.size(), 10u);
     EXPECT_EQ(parsed[0].kind, DndUri::Kind::File);
     EXPECT_EQ(parsed[0].path, "/a");
     EXPECT_EQ(parsed[1].kind, DndUri::Kind::File);
@@ -62,15 +64,19 @@ TEST(DndUri, OnlyFilesOfThisComputerAreFiles)
     // A name with a '?' or '#' that the source did not escape: /j and /k are other files.
     EXPECT_EQ(parsed[7].kind, DndUri::Kind::Other);
     EXPECT_EQ(parsed[8].kind, DndUri::Kind::Other);
+    // Host names have no case.
+    EXPECT_EQ(parsed[9].kind, DndUri::Kind::File);
+    EXPECT_EQ(parsed[9].path, "/l");
 }
 
 TEST(DndUri, DataUris)
 {
-    const auto parsed = parseDndUriList("data:,a%20b%00\r\n"
-                                        "data:image/png;base64,iVBO\r\n"
-                                        "data:text/html;charset=utf-8,%3Cp%3E\r\n"
-                                        "data:;base64,!!!\r\n"
-                                        "data:nocomma\r\n");
+    const auto parsed = parseDndUriList(
+        "data:,a%20b%00\r\n"
+        "data:image/png;base64,iVBO\r\n"
+        "data:text/html;charset=utf-8,%3Cp%3E\r\n"
+        "data:;base64,!!!\r\n"
+        "data:nocomma\r\n");
     ASSERT_EQ(parsed.size(), 5u);
     EXPECT_EQ(parsed[0].kind, DndUri::Kind::Data);
     EXPECT_EQ(parsed[0].mime, "text/plain");

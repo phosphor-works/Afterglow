@@ -176,7 +176,9 @@ void ChromeController::activateMenuItem(int id)
 
 void ChromeController::askTitle(const QString& heading, const QString& current)
 {
-    m_titlePrompt = {{QStringLiteral("open"), true}, {QStringLiteral("heading"), heading}, {QStringLiteral("text"), current}};
+    m_titlePrompt = {{QStringLiteral("open"), true},
+                     {QStringLiteral("heading"), heading},
+                     {QStringLiteral("text"), current}};
     Q_EMIT titlePromptChanged();
 }
 

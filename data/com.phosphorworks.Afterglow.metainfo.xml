@@ -29,6 +29,8 @@
   <launchable type="desktop-id">com.phosphorworks.Afterglow.desktop</launchable>
   <provides>
     <binary>afterglow</binary>
+    <binary>aglow</binary>
+    <binary>aglow-mux</binary>
   </provides>
   <categories>
     <category>System</category>

@@ -27,10 +27,10 @@ GraphicsCommand GraphicsCommand::parse(std::string_view keys)
         if (key == 'a' || key == 't' || key == 'd' || key == 'o' || key == 'e') {
             const char ch = value.empty() ? 0 : value[0];
             char& flag = key == 'a' ? cmd.action
-                : key == 't'         ? cmd.medium
-                : key == 'd'         ? cmd.del
-                : key == 'o'         ? cmd.compression
-                                     : cmd.feature;
+                : key == 't'        ? cmd.medium
+                : key == 'd'        ? cmd.del
+                : key == 'o'        ? cmd.compression
+                                    : cmd.feature;
             flag = ch;
             cmd.hasAction = cmd.hasAction || key == 'a';
             continue;
@@ -42,32 +42,93 @@ GraphicsCommand GraphicsCommand::parse(std::string_view keys)
         const auto u = std::uint32_t(std::clamp<std::int64_t>(n, 0, 0xFFFFFFFF));
         const auto i = int(std::clamp<std::int64_t>(n, -0x7FFFFFFF, 0x7FFFFFFF));
         switch (key) {
-        case 'f': cmd.format = u; break;
-        case 's': cmd.s = u; break;
-        case 'v': cmd.v = u; break;
-        case 'S': cmd.size = u; break;
-        case 'O': cmd.offset = u; break;
-        case 'i': cmd.id = u; cmd.hasId = true; break;
-        case 'I': cmd.number = u; cmd.hasNumber = true; break;
-        case 'p': cmd.placement = u; break;
-        case 'm': cmd.more = i; break;
-        case 'q': cmd.quiet = i; break;
-        case 'x': cmd.x = i; cmd.ux = u; break;
-        case 'y': cmd.y = i; cmd.uy = u; break;
-        case 'w': cmd.w = i; break;
-        case 'h': cmd.h = i; break;
-        case 'X': cmd.X = i; break;
-        case 'Y': cmd.Y = n; cmd.Yi = i; break;
-        case 'c': cmd.c = i; break;
-        case 'r': cmd.r = i; break;
-        case 'C': cmd.C = i; break;
-        case 'z': cmd.z = i; break;
-        case 'U': cmd.U = i; break;
-        case 'P': cmd.P = u; break;
-        case 'Q': cmd.Q = u; break;
-        case 'H': cmd.H = i; break;
-        case 'V': cmd.V = i; break;
-        default: break;
+        case 'f':
+            // kitty reads f=0 as the default, RGBA. A negative f is no format,
+            // and stays one when keys() writes it again.
+            cmd.format = n == 0 ? 32 : n < 0 ? 0xFFFFFFFFu : u;
+            break;
+        case 's':
+            cmd.s = u;
+            break;
+        case 'v':
+            cmd.v = u;
+            break;
+        case 'S':
+            cmd.size = u;
+            break;
+        case 'O':
+            cmd.offset = u;
+            break;
+        case 'i':
+            cmd.id = u;
+            cmd.hasId = true;
+            break;
+        case 'I':
+            cmd.number = u;
+            cmd.hasNumber = true;
+            break;
+        case 'p':
+            cmd.placement = u;
+            break;
+        case 'm':
+            cmd.more = i;
+            break;
+        case 'q':
+            cmd.quiet = i;
+            break;
+        case 'x':
+            cmd.x = i;
+            cmd.ux = u;
+            break;
+        case 'y':
+            cmd.y = i;
+            cmd.uy = u;
+            break;
+        case 'w':
+            cmd.w = i;
+            break;
+        case 'h':
+            cmd.h = i;
+            break;
+        case 'X':
+            cmd.X = i;
+            break;
+        case 'Y':
+            cmd.Y = n;
+            cmd.Yi = i;
+            break;
+        case 'c':
+            cmd.c = i;
+            break;
+        case 'r':
+            cmd.r = i;
+            break;
+        case 'C':
+            cmd.C = i;
+            break;
+        case 'z':
+            cmd.z = i;
+            break;
+        case 'U':
+            cmd.U = i;
+            break;
+        case 'P':
+            cmd.P = u;
+            break;
+        case 'Q':
+            cmd.Q = u;
+            break;
+        case 'H':
+            cmd.H = i;
+            break;
+        case 'V':
+            cmd.V = i;
+            break;
+        case 'N':
+            cmd.hints = u;
+            break;
+        default:
+            break;
         }
     }
     return cmd;
@@ -75,7 +136,9 @@ GraphicsCommand GraphicsCommand::parse(std::string_view keys)
 
 bool GraphicsCommand::flagsAreLetters() const
 {
-    auto letter = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
+    auto letter = [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    };
     return (!(hasAction || action != 't') || letter(action)) && (medium == 'd' || letter(medium))
         && (del == 'a' || letter(del)) && (!compression || letter(compression)) && (!feature || letter(feature));
 }
@@ -100,41 +163,76 @@ std::string GraphicsCommand::keys() const
             out += std::to_string(value);
         }
     };
-    if (hasAction || action != 't') add('a', action);
-    if (medium != 'd') add('t', medium);
-    if (del != 'a') add('d', del);
-    if (compression) add('o', compression);
-    if (feature) add('e', feature);
-    if (format != 32) add('f', format);
-    if (s) add('s', s);
-    if (v) add('v', v);
-    if (size) add('S', size);
-    if (offset) add('O', offset);
-    if (hasId || id) add('i', id);
-    if (hasNumber || number) add('I', number);
-    if (placement) add('p', placement);
-    if (more) add('m', more);
-    if (quiet) add('q', quiet);
+    if (hasAction || action != 't')
+        add('a', action);
+    if (medium != 'd')
+        add('t', medium);
+    if (del != 'a')
+        add('d', del);
+    if (compression)
+        add('o', compression);
+    if (feature)
+        add('e', feature);
+    if (format != 32)
+        add('f', format);
+    if (s)
+        add('s', s);
+    if (v)
+        add('v', v);
+    if (size)
+        add('S', size);
+    if (offset)
+        add('O', offset);
+    if (hasId || id)
+        add('i', id);
+    if (hasNumber || number)
+        add('I', number);
+    if (placement)
+        add('p', placement);
+    if (more)
+        add('m', more);
+    if (quiet)
+        add('q', quiet);
     // ux and uy hold what x and y cannot: values past INT_MAX.
-    if (ux > 0x7FFFFFFFu || (x == 0 && ux)) add('x', ux);
-    else if (x) add('x', x);
-    if (uy > 0x7FFFFFFFu || (y == 0 && uy)) add('y', uy);
-    else if (y) add('y', y);
-    if (w) add('w', w);
-    if (h) add('h', h);
-    if (X) add('X', X);
+    if (ux > 0x7FFFFFFFu || (x == 0 && ux))
+        add('x', ux);
+    else if (x)
+        add('x', x);
+    if (uy > 0x7FFFFFFFu || (y == 0 && uy))
+        add('y', uy);
+    else if (y)
+        add('y', y);
+    if (w)
+        add('w', w);
+    if (h)
+        add('h', h);
+    if (X)
+        add('X', X);
     // Yi is Y read as an int (a=c's source row): it stands in when Y is unset.
-    if (Y) add('Y', Y);
-    else if (Yi) add('Y', Yi);
-    if (c) add('c', c);
-    if (r) add('r', r);
-    if (C) add('C', C);
-    if (z) add('z', z);
-    if (U) add('U', U);
-    if (P) add('P', P);
-    if (Q) add('Q', Q);
-    if (H) add('H', H);
-    if (V) add('V', V);
+    if (Y)
+        add('Y', Y);
+    else if (Yi)
+        add('Y', Yi);
+    if (c)
+        add('c', c);
+    if (r)
+        add('r', r);
+    if (C)
+        add('C', C);
+    if (z)
+        add('z', z);
+    if (U)
+        add('U', U);
+    if (P)
+        add('P', P);
+    if (Q)
+        add('Q', Q);
+    if (H)
+        add('H', H);
+    if (V)
+        add('V', V);
+    if (hints)
+        add('N', hints);
     return out;
 }
 
@@ -202,7 +300,8 @@ std::optional<GraphicsReply> GraphicsReply::parse(std::string_view payload)
         if (kv.empty() || (kv.size() >= 2 && kv[1] == '=' && (kv[0] == 'i' || kv[0] == 'I' || kv[0] == 'p'))) {
             continue;
         }
-        if (!reply.keys.empty()) reply.keys += ',';
+        if (!reply.keys.empty())
+            reply.keys += ',';
         reply.keys += kv;
     }
     return reply;
@@ -220,11 +319,15 @@ std::string GraphicsReply::write() const
         out += key;
         out += std::to_string(value);
     };
-    if (id) add("i=", id);
-    if (number) add("I=", number);
-    if (placement) add("p=", placement);
+    if (id)
+        add("i=", id);
+    if (number)
+        add("I=", number);
+    if (placement)
+        add("p=", placement);
     if (!keys.empty()) {
-        if (!first) out += ',';
+        if (!first)
+            out += ',';
         out += keys;
     }
     out += ';';

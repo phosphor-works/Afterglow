@@ -3,18 +3,34 @@
 
 #pragma once
 
+#include <AfterglowProto/FromChars.h>
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <string>
 #include <string_view>
 #include <utility>
 
-/// X11 colour specs, as OSC 4, 10-19 and kitty's colour control take them,
-/// and as a client reads them from its command line.
+/// Colour specs as OSC 4, 10-12, 17, 19 and kitty's colour control (OSC 21)
+/// take them: X11 specs, and kitty's OKLCH and CIE LAB. Also as a client
+/// reads them from its command line, and as settings and themes read names.
 namespace AfterglowProto {
+
+/// Reads "oklch(L C H)" or "lab(L a b)" as kitty and CSS Color 4 write them:
+/// the function name in any case, the three values apart by spaces or
+/// commas, L as a number or a percentage, a hue in degrees or with the CSS
+/// angle units, "none" for 0. A percentage of C is of 0.4, and of a and b of
+/// 125, as in CSS. An alpha ("/ 0.5", or a fourth value) is read and
+/// ignored, as kitty does: terminal colours have none. The colour comes out
+/// in 8-bit sRGB. One outside sRGB is brought in with the gamut mapping of
+/// CSS Color 4: chroma goes down until the clipped colour is less than one
+/// just noticeable difference (deltaE OK 0.02) away. On failure @p r, @p g
+/// and @p b are left as they were.
+bool parseWideGamutColor(std::string_view spec, std::uint8_t& r, std::uint8_t& g, std::uint8_t& b);
 
 namespace detail {
 
@@ -27,25 +43,40 @@ struct ColorValue
 inline constexpr std::pair<std::string_view, ColorValue> ColorNames[] = {
 #include "ColorNames.inc"
 };
-static_assert(std::is_sorted(std::begin(ColorNames), std::end(ColorNames),
-                             [](const auto& a, const auto& b) { return a.first < b.first; }));
+static_assert(std::is_sorted(std::begin(ColorNames), std::end(ColorNames), [](const auto& a, const auto& b) {
+    return a.first < b.first;
+}));
+
+/// The longest colour name: a longer spec is no name, and is not copied to look it up.
+inline constexpr std::size_t MaxColorName = [] {
+    std::size_t longest = 0;
+    for (const auto& entry : ColorNames) {
+        longest = std::max(longest, entry.first.size());
+    }
+    return longest;
+}();
 
 inline int colorHexDigit(char c)
 {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
     return -1;
 }
 
 /// One "rgb:" component of 1-4 hex digits, scaled to 8 bits.
 inline bool parseColorScaled(std::string_view s, std::uint8_t& out)
 {
-    if (s.empty() || s.size() > 4) return false;
+    if (s.empty() || s.size() > 4)
+        return false;
     unsigned v = 0;
     for (const char c : s) {
         const int d = colorHexDigit(c);
-        if (d < 0) return false;
+        if (d < 0)
+            return false;
         v = v * 16 + unsigned(d);
     }
     const unsigned max = (1u << (4 * s.size())) - 1;
@@ -60,7 +91,8 @@ inline bool parseColorHigh(std::string_view s, std::uint8_t& out)
     unsigned v = 0;
     for (const char c : s) {
         const int d = colorHexDigit(c);
-        if (d < 0) return false;
+        if (d < 0)
+            return false;
         v = v * 16 + unsigned(d);
     }
     const int bits = 4 * int(s.size());
@@ -72,7 +104,7 @@ inline bool parseColorHigh(std::string_view s, std::uint8_t& out)
 inline bool parseColorIntensity(std::string_view s, std::uint8_t& out)
 {
     double v = 0;
-    const auto parsed = std::from_chars(s.data(), s.data() + s.size(), v);
+    const auto parsed = AfterglowProto::fromChars(s.data(), s.data() + s.size(), v);
     if (s.empty() || parsed.ec != std::errc{} || parsed.ptr != s.data() + s.size() || !std::isfinite(v)) {
         return false;
     }
@@ -86,7 +118,8 @@ bool parseColorTriple(std::string_view spec, std::uint8_t& r, std::uint8_t& g, s
 {
     const auto s1 = spec.find('/');
     const auto s2 = s1 == std::string_view::npos ? s1 : spec.find('/', s1 + 1);
-    if (s2 == std::string_view::npos) return false;
+    if (s2 == std::string_view::npos)
+        return false;
     return component(spec.substr(0, s1), r) && component(spec.substr(s1 + 1, s2 - s1 - 1), g)
         && component(spec.substr(s2 + 1), b);
 }
@@ -96,13 +129,16 @@ bool parseColorTriple(std::string_view spec, std::uint8_t& r, std::uint8_t& g, s
 /// Reads an X11 colour spec: "rgb:r/g/b" (1-4 hex digits each, scaled),
 /// "rgbi:r/g/b" (intensities), "#rgb", "#rrggbb", "#rrrgggbbb",
 /// "#rrrrggggbbbb", or an X11 colour name in any case. The device-independent
-/// CIE and TekHVC spaces of Xcms are not supported. On failure @p r, @p g and
-/// @p b are left as they were.
+/// CIE and TekHVC spaces of Xcms are not supported. kitty's "oklch(...)" and
+/// "lab(...)" are (parseWideGamutColor). On failure @p r, @p g and @p b are
+/// left as they were.
 inline bool parseColorSpec(std::string_view spec, std::uint8_t& r, std::uint8_t& g, std::uint8_t& b)
 {
     std::uint8_t cr = 0, cg = 0, cb = 0;
     bool ok = false;
-    if (spec.starts_with("rgbi:")) {
+    if (spec.find('(') != std::string_view::npos) {
+        ok = parseWideGamutColor(spec, cr, cg, cb);
+    } else if (spec.starts_with("rgbi:")) {
         ok = detail::parseColorTriple(spec.substr(5), cr, cg, cb, detail::parseColorIntensity);
     } else if (spec.starts_with("rgb:")) {
         ok = detail::parseColorTriple(spec.substr(4), cr, cg, cb, detail::parseColorScaled);
@@ -113,13 +149,16 @@ inline bool parseColorSpec(std::string_view spec, std::uint8_t& r, std::uint8_t&
             ok = detail::parseColorHigh(spec.substr(0, n), cr) && detail::parseColorHigh(spec.substr(n, n), cg)
                 && detail::parseColorHigh(spec.substr(2 * n, n), cb);
         }
-    } else {
+    } else if (spec.size() <= detail::MaxColorName) {
         std::string lower(spec);
-        std::transform(lower.begin(), lower.end(), lower.begin(),
-                       [](unsigned char c) { return c >= 'A' && c <= 'Z' ? char(c + 32) : char(c); });
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+            return c >= 'A' && c <= 'Z' ? char(c + 32) : char(c);
+        });
         const auto* end = std::end(detail::ColorNames);
         const auto* it = std::lower_bound(std::begin(detail::ColorNames), end, std::string_view(lower),
-                                          [](const auto& entry, std::string_view value) { return entry.first < value; });
+                                          [](const auto& entry, std::string_view value) {
+                                              return entry.first < value;
+                                          });
         if (it != end && it->first == lower) {
             cr = it->second.r;
             cg = it->second.g;
@@ -134,5 +173,16 @@ inline bool parseColorSpec(std::string_view spec, std::uint8_t& r, std::uint8_t&
     }
     return ok;
 }
+
+/// Reads a colour as settings, themes and the control calls take it (in
+/// the window, and in the mux daemon for its sessions): blanks around it
+/// go, and "#rgb", "#rrggbb", "#rrrgggbbb" and "#rrrrggggbbbb" read as CSS
+/// and kitty read them, so that "#fff" is white, where XParseColor, which
+/// the escape codes follow, reads f0f0f0. Each component widens to 16 bits
+/// and back to 8 as QColor does. Eight digits, Qt's #AARRGGBB, are no
+/// colour: these colours have no alpha. The rest as parseColorSpec(): X11
+/// names, rgb:, rgbi:, OKLCH and LAB. On failure @p r, @p g and @p b are
+/// left as they were.
+bool parseSettingColor(std::string_view spec, std::uint8_t& r, std::uint8_t& g, std::uint8_t& b);
 
 } // namespace AfterglowProto

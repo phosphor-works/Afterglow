@@ -46,7 +46,9 @@ namespace Themes {
 /// for colours that a theme derives from its background and text.
 constexpr AfterglowVt::Rgb between(AfterglowVt::Rgb from, AfterglowVt::Rgb to, int numerator, int denominator)
 {
-    auto part = [&](std::uint8_t a, std::uint8_t b) { return std::uint8_t(a + (b - a) * numerator / denominator); };
+    auto part = [&](std::uint8_t a, std::uint8_t b) {
+        return std::uint8_t(a + (b - a) * numerator / denominator);
+    };
     return {part(from.r, to.r), part(from.g, to.g), part(from.b, to.b)};
 }
 /// The divider of a theme without one: a fifth of the way from its
@@ -67,15 +69,16 @@ constexpr AfterglowVt::Rgb derivedPopupBorder(AfterglowVt::Rgb background, After
 /// be a path). A spec without a light: or dark: part is one name or path.
 QString pick(const QString& spec, bool dark);
 
-/// Where themes live, most important first: the user's
-/// ~/.config/afterglow/themes, then the XDG data directories' (from
+/// Where themes live, most important first: themes in @p configDirectory,
+/// the directory of the config file (empty for ~/.config/phosphor-works/afterglow), then the XDG data directories'
+/// (from
 /// ~/.local/share on), then the bundled ones, then other terminals' themes:
 /// Ghostty's (~/.config/ghostty/themes, then ghostty/themes in each XDG data
 /// directory), Kitty's (~/.config/kitty/themes) and Konsole's (konsole in
 /// each XDG data directory). A build-tree binary puts the checkout's themes
 /// before the XDG data directories. The data directories' entries are listed
 /// whether they exist or not, so that a watch of them sees a new one.
-QStringList searchDirs();
+QStringList searchDirs(const QString& configDirectory = {});
 
 /// Every file that could hold theme @p name, in search order: name.json,
 /// name.conf, name.colorscheme and name in each of @p dirs. A name with a
@@ -86,12 +89,21 @@ QStringList candidates(const QString& name, const QStringList& dirs, const QStri
 /// The first of candidates() that is a file. Empty if none is.
 QString locate(const QString& name, const QStringList& dirs, const QString& base = {});
 
-/// Whether @p name is a colour that a setting or theme can hold: a Qt colour
-/// name or hex form, but not eight hex digits and not "transparent" in any
-/// spelling that Qt reads ("Trans Parent"). Qt reads eight digits as
-/// #AARRGGBB, and these colours have no alpha, so "#1e1e2eff" would come out
-/// a different colour with no warning, and "transparent" opaque black.
+/// A colour as a setting or a theme writes it, with white space around it
+/// or not (AfterglowProto::parseSettingColor): "#rgb", "#rrggbb",
+/// "#rrrgggbbb" or "#rrrrggggbbbb" as Qt reads them ("#fff" is white), and
+/// otherwise what AfterglowProto::parseColorSpec reads for the escape codes:
+/// an X11 colour name in any case, "rgb:r/g/b", "rgbi:r/g/b", "oklch(L C H)"
+/// or "lab(L a b)". Empty for anything else, and for eight hex digits and
+/// "transparent": these colours have no alpha.
+std::optional<AfterglowVt::Rgb> rgbFromName(const QString& name);
+
+/// Whether rgbFromName() reads @p name.
 bool isColorName(const QString& name);
+
+/// @p rgb as "#rrggbb" in lowercase, as settings, themes and the control
+/// calls write a colour, and as rgbFromName() reads it back.
+QString hexName(AfterglowVt::Rgb rgb);
 
 /// Whether @p data is an Afterglow JSON theme rather than a Ghostty, kitty or
 /// Konsole one: parse() decides the format by the content, not the file name.
@@ -132,6 +144,8 @@ QStringList plasmaSources();
 /// later files over earlier ones, as KDE reads them. A colour that no file
 /// sets comes from the application palette (Base, Text, Highlight,
 /// HighlightedText, Accent), so other desktops get their own colours too.
+/// Without a QGuiApplication (afterglow mux new) it stays unset, and the
+/// settings keep the theme's.
 Theme plasmaColors(const QStringList& sources);
 
 } // namespace Themes

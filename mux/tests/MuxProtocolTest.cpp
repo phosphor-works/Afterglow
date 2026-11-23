@@ -1,0 +1,1455 @@
+// SPDX-FileCopyrightText: 2026 fuddlesworth
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "MuxHost.h"
+#include "MuxLayout.h"
+#include "MuxProtocol.h"
+#include "MuxStream.h"
+
+#include <AfterglowProto/IpcServer.h>
+#include <AfterglowVt/Screen.h>
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <tuple>
+#include <vector>
+
+using namespace AfterglowMux;
+namespace Json = AfterglowProto::Json;
+
+namespace {
+
+/// The keys of @p object, in their order.
+std::vector<std::string> keys(const Json::Value& object)
+{
+    std::vector<std::string> list;
+    for (const auto& [key, value] : object.toObject())
+        list.push_back(key);
+    return list;
+}
+
+/// @p object with @p key set to @p value; a key that it lacks is added.
+Json::Value with(const Json::Value& object, std::string_view key, Json::Value value)
+{
+    Json::Object copy = object.toObject();
+    for (auto& [name, v] : copy) {
+        if (name == key) {
+            v = std::move(value);
+            return Json::Value(std::move(copy));
+        }
+    }
+    copy.emplace_back(std::string(key), std::move(value));
+    return Json::Value(std::move(copy));
+}
+
+Json::Value without(const Json::Value& object, std::string_view key)
+{
+    Json::Object copy = object.toObject();
+    std::erase_if(copy, [&](const auto& entry) {
+        return entry.first == key;
+    });
+    return Json::Value(std::move(copy));
+}
+
+} // namespace
+
+TEST(MuxProtocol, SessionNames)
+{
+    for (const char* name : {"1", "work", "a_b-C9", "x", "_x", "a-", "a--b"})
+        EXPECT_TRUE(validSessionName(name)) << name;
+    // A name that starts with '-' would read as an option of `afterglow mux kill`.
+    for (const char* name : {"", "a b", "a/b", "é", "a.b", "-\n", "-", "--", "-a", "--force"})
+        EXPECT_FALSE(validSessionName(name)) << name;
+    EXPECT_TRUE(validSessionName(std::string(MaxSessionName, 'a')));
+    EXPECT_FALSE(validSessionName(std::string(MaxSessionName + 1, 'a')));
+    EXPECT_NE(std::string(SessionNameRule).find("ASCII letters"), std::string::npos);
+}
+
+// A key that one end sends and the other does not know is a change of the
+// protocol: this list and ProtocolVersion change together.
+TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
+{
+    ASSERT_EQ(ProtocolVersion, 33) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 33 added the epoch of a text mark ({row, col, epoch}) and the
+    // STALE_MARK error of getText since a mark of another epoch; the
+    // keep_end option of getText; the prompt and enter options of paste,
+    // with NOT_AT_PROMPT; the endSession option of close, with LAST_PANE
+    // and its {sessionEnded} answer; NO_ROOM for a split without room;
+    // NOT_ATTACHED and TRY_AGAIN for the calls that need a window;
+    // Control.allowAdopt in the control values, which adoptSession needs;
+    // and the bind option of newSession (AttachTest).
+    EXPECT_EQ(std::string(Error::StaleMark), "STALE_MARK");
+    EXPECT_EQ(std::string(Error::NotAtPrompt), "NOT_AT_PROMPT");
+    EXPECT_EQ(std::string(Error::LastPane), "LAST_PANE");
+    EXPECT_EQ(std::string(Error::NoRoom), "NO_ROOM");
+    EXPECT_EQ(std::string(Error::NotAttached), "NOT_ATTACHED");
+    EXPECT_EQ(std::string(GetTextScopeNames),
+              "screen, scrollback, selection, last-output, first-output-on-screen, last-visited-output or since");
+    EXPECT_EQ(std::string(TextOptionNames), "the options are ansi, cursor, wrap_markers, keep_end and mark");
+    // Version 32 added the layout call of the control target, and a client
+    // that selected an agent session reaches the commands of scripts of the
+    // window that shows it, with pane 0 in the Open of its relay (AttachTest).
+    // Version 31 added agent sessions: the agent option of a session, the
+    // agent and bound of listSessions, the agent of the attach answer, the
+    // adoptSession, bindSession and unbindSession calls, and the daemon's
+    // call agent to the window that shows a session that an agent adopted
+    // (AttachTest).
+    EXPECT_EQ(std::string(Fn::AdoptSession), "adoptSession");
+    EXPECT_EQ(std::string(Fn::BindSession), "bindSession");
+    EXPECT_EQ(std::string(Fn::UnbindSession), "unbindSession");
+    // Version 30 added the textChanged event (AttachTest).
+    EXPECT_NE(std::find(ControlEvents.begin(), ControlEvents.end(), "textChanged"), ControlEvents.end());
+    // Version 29 added the paste call of the control target, which sends
+    // text as a paste in a window does (AttachTest).
+    // Version 28 gave the control target the shell's state: shell, input and
+    // last_exit in the pane objects of listPanes in place of at_prompt, the
+    // shellChanged event, the mark and shellRegions calls, the since scope of
+    // getText, its {text, truncated} answer, and the TRY_AGAIN error, which a
+    // window and the daemon both give (AttachTest).
+    EXPECT_EQ(std::string(Error::TryAgain), "TRY_AGAIN");
+    EXPECT_NE(std::find(ControlEvents.begin(), ControlEvents.end(), "shellChanged"), ControlEvents.end());
+    // Version 27 streams iTerm2 downloads: DownloadBegin, DownloadData and
+    // DownloadEnd host calls in place of Download, and the DownloadAnswer
+    // action, for which the pane's output waits (AttachTest). It added the
+    // UploadRequest host call of it2ul, and the UploadAnswerPart and
+    // UploadAnswer inputs that carry the answer whole.
+    // Version 26 added the answer to OSC 99's query to the settings of a
+    // window, empty while the window shows no notifications: a session
+    // follows Notifications.enabled (below).
+    // Version 25 changed the shell marks of the state frames: the byte of a
+    // click on the command line holds the click_events mode and kitty's
+    // special key, and the marks end with the secondary prompt (OSC 133
+    // A;k=s, StateSync tests).
+    // Version 24 added Mux.keptNotifications to the options and the settings
+    // of a session, and the missed flag of the Notify and DesktopNotification
+    // host calls: the notifications that a pane kept while no window showed
+    // the session (AttachTest). It also added the joinPane call, which moves
+    // a pane to another session of the daemon, and the paneLeft call of the
+    // daemon to the window that showed it (AttachTest).
+    EXPECT_EQ(std::string(Fn::JoinPane), "joinPane");
+    // Version 23 lets a pane value leave out "command" so that the daemon
+    // keeps the one it has (keepsCommand), and gives the environment of the
+    // session in the answers of selectSession and selectPane.
+    // Version 22 added the tabs and splits of a session, with the Refresh
+    // input, the Refreshed event and the environment of the attach answer
+    // (below, with the calls of the panes that they change). The attach
+    // answer names the window, which its newPane and breakOut give back
+    // (AttachTest).
+    // Version 21 added Control.eventInterval to the control values, the
+    // moved panes to a window's layout, and the subscriptions of the control
+    // target of a session (AttachTest).
+    // Version 20 added the parts of a ControlReply larger than one frame,
+    // and the client of a Control event (AttachTest).
+    Attach::Input replyPart;
+    replyPart.type = Attach::InputType::ControlReplyPart;
+    replyPart.bytes = "{\"id\"";
+    EXPECT_EQ(Attach::encode(replyPart), std::string("\x0c\x00{\"id\"", 7));
+    const auto replyPartBack = Attach::decodeInput(Attach::encode(replyPart));
+    ASSERT_TRUE(replyPartBack);
+    EXPECT_EQ(replyPartBack->type, Attach::InputType::ControlReplyPart);
+    // Under the output that waits for one client of the daemon.
+    static_assert(Attach::MaxControlReply < AfterglowProto::IpcServerConnection::MaxWaitingBytes);
+    // Version 19 added the variables of Mux.updateEnvironment to the
+    // settings of a window, a value or null for each.
+    {
+        SessionSettings variables;
+        variables.environment = {{"SSH_AUTH_SOCK", "/run/a"}, {"DISPLAY", std::nullopt}};
+        EXPECT_EQ(Json::write(toJson(variables)["environment"]), R"([["SSH_AUTH_SOCK","/run/a"],["DISPLAY",null]])");
+        std::string variablesError;
+        const auto variablesBack =
+            sessionSettings(Json::parse(Json::write(toJson(variables))).value(), &variablesError);
+        ASSERT_TRUE(variablesBack) << variablesError;
+        EXPECT_TRUE(*variablesBack == variables);
+        for (const char* bad : {R"([["A=B","x"]])", R"([["A",1]])", R"([["A"]])", R"(["A"])", R"([["","x"]])"}) {
+            Json::Object object = toJson(variables).toObject();
+            for (auto& [key, value] : object) {
+                if (key == "environment")
+                    value = Json::parse(bad).value();
+            }
+            EXPECT_FALSE(sessionSettings(Json::Value(object), &variablesError)) << bad;
+        }
+    }
+    // Version 18 added the first pane's ID to the answer of newSession
+    // (DaemonTest).
+    // Version 17 added the window's settings to its input, with their keys:
+    // the session follows them.
+    SessionSettings followed;
+    followed.control.remoteCommandsOff = "off";
+    followed.control.eventInterval = 250;
+    followed.terminal.defaultBackground = {1, 2, 3};
+    followed.keptNotifications = 3;
+    followed.notificationCapabilities = "p=title";
+    EXPECT_EQ(keys(toJson(followed)),
+              (std::vector<std::string>{"terminal", "control", "environment", "keptNotifications",
+                                        "notificationCapabilities"}));
+    EXPECT_EQ(
+        keys(toJson(followed)["control"]),
+        (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff", "eventInterval", "allowAdopt"}));
+    [[maybe_unused]] auto& [followedTerminal, followedControl, followedEnvironment, followedKept,
+                            followedCapabilities] = followed;
+    std::string settingsError;
+    const auto settingsBack = sessionSettings(Json::parse(Json::write(toJson(followed))).value(), &settingsError);
+    ASSERT_TRUE(settingsBack) << settingsError;
+    EXPECT_TRUE(*settingsBack == followed);
+    EXPECT_FALSE(sessionSettings(Json::Object{{"terminal", toJson(followed)["terminal"]}}, &settingsError));
+    EXPECT_NE(settingsError.find("control"), std::string::npos) << settingsError;
+    for (const Json::Value& kept : {Json::Value(-1), Json::Value(MaxKeptNotifications + 1), Json::Value("8")}) {
+        Json::Object object = toJson(followed).toObject();
+        for (auto& [key, value] : object) {
+            if (key == "keptNotifications")
+                value = kept;
+        }
+        settingsError.clear();
+        EXPECT_FALSE(sessionSettings(Json::Value(object), &settingsError)) << Json::write(kept);
+        EXPECT_NE(settingsError.find("keptNotifications"), std::string::npos) << settingsError;
+    }
+    // The answer to OSC 99's query is text.
+    for (const Json::Value& capabilities :
+         {Json::Value(3), Json::Value(nullptr), Json::Value(Json::Array{"p=title"})}) {
+        Json::Object object = toJson(followed).toObject();
+        for (auto& [key, value] : object) {
+            if (key == "notificationCapabilities")
+                value = capabilities;
+        }
+        settingsError.clear();
+        EXPECT_FALSE(sessionSettings(Json::Value(object), &settingsError)) << Json::write(capabilities);
+        EXPECT_NE(settingsError.find("notificationCapabilities"), std::string::npos) << settingsError;
+    }
+    Attach::Input settingsInput;
+    settingsInput.type = Attach::InputType::Settings;
+    settingsInput.bytes = "{}";
+    EXPECT_EQ(Attach::encode(settingsInput), std::string("\x0b\x00{}", 4));
+    const auto settingsInputBack = Attach::decodeInput(Attach::encode(settingsInput));
+    ASSERT_TRUE(settingsInputBack);
+    EXPECT_EQ(settingsInputBack->bytes, "{}");
+    // Version 16 added the command to a launch, the values of the panes to
+    // a layout (MuxLayoutTest), and the command to the placePane call of the
+    // daemon to a window.
+    // Version 15 added control.remoteCommandsOff to the options of a
+    // session, and the remote calls of `afterglow ssh` on the control
+    // target of the daemon.
+    // Version 14 names the pane and the kind of the client in the Open of a
+    // relay, and the host of a client of an ssh session.
+    EXPECT_EQ(Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::Open, {}, 7, Attach::RelayKind::Remote, "h"}),
+              std::string("\x01\x03\x07\x01h", 5));
+    // Version 32 added pane 0 in the Open of a client that selected an
+    // agent session.
+    EXPECT_EQ(Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::Open, {}, 0}),
+              std::string("\x01\x03\x00\x00", 4));
+    // Version 13 passes the command clients of a session pane (`aglow run`)
+    // to the window: the Commands event and the window's CommandsChannel,
+    // with their RelayFrame.
+    EXPECT_EQ(Attach::CommandsChannel, 2u);
+    EXPECT_EQ(std::string(Attach::CommandsCodec), "afterglow.mux.commands.v1");
+    Attach::Event commands;
+    commands.type = Attach::EventType::Commands;
+    commands.payload = Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::Open, {}, 7});
+    EXPECT_EQ(Attach::encode(commands), std::string("\x0a\x00\x00\x00\x01\x03\x07\x00", 8));
+    EXPECT_EQ(Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::Bytes, "{}\n"}), std::string("\x02\x03{}\n", 5));
+    EXPECT_EQ(Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::End, {}}), std::string("\x03\x03", 2));
+    // Version 12 added callerEnvironment to the options of a session: the
+    // environment of the caller (the proxy on another host).
+    // Version 11 carries the stream of an attach on the connection of its
+    // call, whose answer names no socket (Mux.MuxAttach.TheAttachCallAnswersWithItsKeys).
+    // Version 10 added the control target of a session (`afterglow ctl
+    // --session`): the selectSession and selectPane calls, the Control event
+    // and its ControlReply, and the Control settings of a session.
+    EXPECT_EQ(std::string(Fn::SelectSession), "selectSession");
+    EXPECT_EQ(std::string(Fn::SelectPane), "selectPane");
+    Attach::Event control;
+    control.type = Attach::EventType::Control;
+    control.payload = "{}";
+    EXPECT_EQ(Attach::encode(control), std::string("\x09\x00\x00\x00{}", 6));
+    Attach::Input controlReply;
+    controlReply.type = Attach::InputType::ControlReply;
+    controlReply.bytes = "{}";
+    EXPECT_EQ(Attach::encode(controlReply), std::string("\x0a\x00{}", 4));
+    // The tabs and splits of a session (version 22): the newPane, paneJob,
+    // breakOut and paneSession calls, the Layout event and input
+    // (MuxLayoutTest), the ClosePane action, and the session's environment
+    // apart from the launch of each pane, with the variables that a launch
+    // unsets. The options of a session hold the launch of its first pane and
+    // its size as objects of their own (SessionOptionsRefuseBadValues), and
+    // the umask is the session's, not the launch's. The answers of attach
+    // (with the session's environment), newPane and breakOut are pinned by
+    // AttachTest.
+    EXPECT_EQ(std::string(Fn::NewPane), "newPane");
+    EXPECT_EQ(std::string(Fn::PaneJob), "paneJob");
+    EXPECT_EQ(std::string(Fn::BreakOut), "breakOut");
+    EXPECT_EQ(std::string(Fn::PaneSession), "paneSession");
+    Attach::Input closePane;
+    closePane.type = Attach::InputType::ClosePane;
+    closePane.pane = 5;
+    EXPECT_EQ(Attach::encode(closePane), std::string("\x08\x05", 2));
+    Attach::Input layoutInput;
+    layoutInput.type = Attach::InputType::Layout;
+    layoutInput.bytes = "{}";
+    EXPECT_EQ(Attach::encode(layoutInput), std::string("\x07\x00{}", 4));
+    Attach::Event layoutEvent;
+    layoutEvent.type = Attach::EventType::Layout;
+    layoutEvent.payload = "{}";
+    EXPECT_EQ(Attach::encode(layoutEvent), std::string("\x07\x00\x00\x00{}", 6));
+    // With them came the Refresh input of a window that reads a pane's
+    // text, and the Refreshed event that answers it with the frames that
+    // hold it.
+    Attach::Input refresh;
+    refresh.type = Attach::InputType::Refresh;
+    refresh.pane = 5;
+    EXPECT_EQ(Attach::encode(refresh), std::string("\x09\x05", 2));
+    Attach::Event refreshed;
+    refreshed.type = Attach::EventType::Refreshed;
+    refreshed.pane = 3;
+    refreshed.frames = 300;
+    EXPECT_EQ(Attach::encode(refreshed), std::string("\x08\x03\x00\x00\xac\x02", 6));
+    // The Visible input and the Refresh go on the action channel: neither
+    // waits behind the input of a program, and nor does the answer to a
+    // download, whose program reads no input until it comes. Each of the
+    // sixteen input types is on one channel or the other.
+    for (const auto type :
+         {Attach::InputType::Kill, Attach::InputType::ClosePane, Attach::InputType::Visible, Attach::InputType::Refresh,
+          Attach::InputType::PaneForgotten, Attach::InputType::DownloadAnswer})
+        EXPECT_TRUE(Attach::isAction(type)) << int(type);
+    for (const auto type :
+         {Attach::InputType::Bytes, Attach::InputType::Resize, Attach::InputType::Reset, Attach::InputType::Clear,
+          Attach::InputType::Layout, Attach::InputType::ControlReply, Attach::InputType::Settings,
+          Attach::InputType::ControlReplyPart, Attach::InputType::UploadAnswerPart, Attach::InputType::UploadAnswer})
+        EXPECT_FALSE(Attach::isAction(type)) << int(type);
+    // Version 27: the answer to a download's question, or its stop, a byte.
+    for (const auto reply :
+         {Attach::DownloadReply::Refuse, Attach::DownloadReply::Accept, Attach::DownloadReply::Stop}) {
+        Attach::Input answer;
+        answer.type = Attach::InputType::DownloadAnswer;
+        answer.pane = 3;
+        answer.download = reply;
+        EXPECT_EQ(Attach::encode(answer), std::string("\x0e\x03", 2) + char(reply));
+        const auto decoded = Attach::decodeInput(Attach::encode(answer));
+        if (!decoded) {
+            ADD_FAILURE() << "DownloadAnswer " << int(reply) << " does not decode";
+            continue;
+        }
+        EXPECT_EQ(decoded->type, Attach::InputType::DownloadAnswer);
+        EXPECT_EQ(decoded->pane, 3u);
+        EXPECT_EQ(decoded->download, reply);
+    }
+    EXPECT_FALSE(Attach::decodeInput(std::string("\x0e\x03\x03", 3)));
+    EXPECT_FALSE(Attach::decodeInput(std::string("\x0e\x03", 2)));
+    EXPECT_FALSE(Attach::decodeInput(std::string("\x0e\x03\x01\x00", 4)));
+    // And the answer to an upload, in parts that name its pane.
+    for (const auto type : {Attach::InputType::UploadAnswerPart, Attach::InputType::UploadAnswer}) {
+        Attach::Input upload;
+        upload.type = type;
+        upload.pane = 4;
+        upload.bytes = "ok\n";
+        EXPECT_EQ(Attach::encode(upload), std::string(1, char(type)) + "\x04ok\n");
+        const auto decoded = Attach::decodeInput(Attach::encode(upload));
+        if (!decoded) {
+            ADD_FAILURE() << "upload input " << int(type) << " does not decode";
+            continue;
+        }
+        EXPECT_EQ(decoded->type, type);
+        EXPECT_EQ(decoded->pane, 4u);
+        EXPECT_EQ(decoded->bytes, "ok\n");
+    }
+    Layout layout;
+    layout.addTab(4);
+    layout.values[4] = {"t", {"htop"}};
+    EXPECT_EQ(keys(toJson(layout)), (std::vector<std::string>{"tabs", "current", "values"}));
+    EXPECT_EQ(keys(toJson(layout)["tabs"].toArray()[0]),
+              (std::vector<std::string>{"tree", "focused", "zoomed", "title"}));
+    EXPECT_EQ(keys(toJson(layout)["values"].toArray()[0]), (std::vector<std::string>{"id", "title", "command"}));
+    // A window that does not know a pane's command sends none, and the
+    // daemon keeps its own.
+    layout.values[4].keepsCommand = true;
+    EXPECT_EQ(keys(toJson(layout)["values"].toArray()[0]), (std::vector<std::string>{"id", "title"}));
+    layout.values[4].keepsCommand = false;
+    [[maybe_unused]] auto& [tabs, current, values, moved] = layout;
+    // The moves of a window's layout go only when there are some.
+    layout.moved = {4};
+    EXPECT_EQ(keys(toJson(layout)), (std::vector<std::string>{"tabs", "current", "values", "moved"}));
+    layout.moved.clear();
+    [[maybe_unused]] auto& [valueTitle, valueCommand, valueKeepsCommand] = layout.values[4];
+    [[maybe_unused]] auto& [tree, focused, zoomed, tabTitle] = layout.tabs[0];
+    [[maybe_unused]] auto& [nodePane, down, ratio] = layout.tabs[0].tree[0];
+    // Version 8 added the frames of its pane before each Host event, which
+    // the window reads before it makes the call (below).
+    // Version 7 added the images and the cell size of the state codec
+    // (StateSyncTest).
+    // Version 6 added the visibility of a pane in the window's input, the
+    // paneDirectory call, the history option of the attach call, and the
+    // shell marks, status, contexts, extra cursors, region scrolls, layout
+    // epochs and first visible rows of the state codec (StateSyncTest).
+    EXPECT_EQ(std::string(Fn::PaneDirectory), "paneDirectory");
+    EXPECT_EQ(std::string(Error::NoSuchPane), "NO_SUCH_PANE");
+    Attach::Input visible;
+    visible.type = Attach::InputType::Visible;
+    visible.pane = 3;
+    visible.visible = true;
+    EXPECT_EQ(Attach::encode(visible), std::string("\x06\x03\x01", 3));
+    // Version 5 added the host calls of a pane's terminal (Host events, whole
+    // or in parts), each layout byte for byte, and the eventQueue of the
+    // attach call.
+    Attach::Event bell;
+    bell.type = Attach::EventType::Host;
+    bell.pane = 1;
+    bell.payload = Host::encode(Host::make(Host::Kind::Bell));
+    EXPECT_EQ(Attach::encode(bell), std::string("\x06\x01\x00\x00\x00\x01", 6));
+    bell.status = Attach::HostPart;
+    bell.frames = 300;
+    EXPECT_EQ(Attach::encode(bell), std::string("\x06\x01\x00\x02\xac\x02\x01", 7));
+    EXPECT_EQ(Attach::HostPartBytes, std::size_t(1) << 20);
+    // The number of each kind.
+    for (const auto& [kind, number] : std::vector<std::pair<Host::Kind, int>>{{Host::Kind::Bell, 1},
+                                                                              {Host::Kind::Flash, 2},
+                                                                              {Host::Kind::Notify, 3},
+                                                                              {Host::Kind::DesktopNotification, 4},
+                                                                              {Host::Kind::ClipboardWrite, 5},
+                                                                              {Host::Kind::ClipboardRequest, 6},
+                                                                              {Host::Kind::TerminalProtocol, 7},
+                                                                              {Host::Kind::PointerShape, 8},
+                                                                              {Host::Kind::UserVar, 9},
+                                                                              {Host::Kind::CommandStarted, 10},
+                                                                              {Host::Kind::CommandFinished, 11},
+                                                                              {Host::Kind::DownloadBegin, 12},
+                                                                              {Host::Kind::Report, 13},
+                                                                              {Host::Kind::ProtocolLost, 14},
+                                                                              {Host::Kind::DownloadData, 15},
+                                                                              {Host::Kind::DownloadEnd, 16},
+                                                                              {Host::Kind::UploadRequest, 17}}) {
+        EXPECT_EQ(int(kind), number);
+    }
+    EXPECT_EQ(Host::encode(Host::make(Host::Kind::Notify, "t", "b")),
+              std::string("\x03\x01t\x01"
+                          "b\x00",
+                          6));
+    Host::Call missed = Host::make(Host::Kind::Notify, "t", "b");
+    missed.missed = true;
+    EXPECT_EQ(Host::encode(missed),
+              std::string("\x03\x01t\x01"
+                          "b\x01",
+                          6));
+    EXPECT_EQ(Host::encode(Host::make(Host::Kind::UserVar, "n", "v")), std::string("\x09\x01n\x01v"));
+    EXPECT_EQ(Host::encode(Host::make(Host::Kind::UploadRequest)), std::string("\x11"));
+    // The daemon encodes a download's data without a Call.
+    EXPECT_EQ(Host::encodeDownloadData("ab"),
+              std::string("\x0f\x02"
+                          "ab"));
+    EXPECT_EQ(Host::encode(Host::make(Host::Kind::DownloadData, {}, "ab")), Host::encodeDownloadData("ab"));
+    EXPECT_EQ(Host::encode(Host::make(Host::Kind::TerminalProtocol, {}, "x", 5113)), std::string("\x07\xf2\x4f\x01x"));
+    EXPECT_EQ(Host::encode(Host::make(Host::Kind::Report, {}, "\x1b[?62c")), std::string("\x0d\x06\x1b[?62c"));
+    Host::Call finished = Host::make(Host::Kind::CommandFinished, {}, {}, -1);
+    finished.value = 1500;
+    EXPECT_EQ(Host::encode(finished), std::string("\x0b\x01\xdc\x0b"));
+    Host::Call lost = Host::make(Host::Kind::ProtocolLost, {}, {}, Host::LostPackets);
+    lost.value = 1;
+    EXPECT_EQ(Host::encode(lost), std::string("\x0e\x04\x01"));
+    Host::Call alive = Host::make(Host::Kind::DesktopNotification);
+    alive.notification.kind = AfterglowVt::NotificationRequest::Kind::Alive;
+    alive.notification.id = "a";
+    EXPECT_EQ(Host::encode(alive),
+              std::string("\x04\x02\x01"
+                          "a"
+                          "\x00\x00\x00\x00\x00\x00\x00\x00\x06system\x01\x00\x00\x00\x02\x01\x00",
+                          26));
+    Host::Call read = Host::make(Host::Kind::ClipboardRequest);
+    read.clipboard.id = "r";
+    read.clipboard.mimes = {"text/plain"};
+    EXPECT_EQ(Host::encode(read), std::string("\x06\x00\x00\x01r\x00\x00\x01\x0atext/plain\x00\x00\x00\x00\x00", 24));
+    // The calls name every field of what they carry: a new field stops this
+    // test compiling until MuxHost.cpp carries it and the version changes.
+    Host::Call call;
+    [[maybe_unused]] auto& [callKind, title, text, number, value, notification, clipboard, callMissed] = call;
+    [[maybe_unused]] auto& [nKind, nId, nTitle, nBody, buttons, iconNames, iconData, iconCacheId, appName, types, sound,
+                            focusOnActivate, reportActivation, reportClose, occasion, urgency, expireMs] =
+        call.notification;
+    [[maybe_unused]] auto& [cKind, primary, cId, password, cName, mimes, data, aliases, osc52, osc52Bel,
+                            osc52Selection] = call.clipboard;
+    // The options of the attach call, which the daemon refuses others of.
+    EXPECT_EQ(std::string(AttachOption::Takeover), "takeover");
+    EXPECT_EQ(std::string(AttachOption::EventQueue), "eventQueue");
+    EXPECT_EQ(std::string(AttachOption::History), "history");
+    // Version 4 added attach and detach, and the attach stream: its events
+    // and input, byte for byte (the keys of the answer of the attach call are
+    // in Mux.MuxAttach.TheAttachCallAnswersWithItsKeys).
+    EXPECT_EQ(std::string(Fn::Attach), "attach");
+    EXPECT_EQ(std::string(Fn::Detach), "detach");
+    Attach::Event opened;
+    opened.pane = 300;
+    opened.channel = 2;
+    EXPECT_EQ(Attach::encode(opened), std::string("\x01\xac\x02\x02\x00", 5));
+    Attach::Input resize;
+    resize.type = Attach::InputType::Resize;
+    resize.pane = 1;
+    resize.size = {80, 24, 8, 16};
+    EXPECT_EQ(Attach::encode(resize), std::string("\x02\x01\x50\x18\x08\x10", 6));
+    // The other events and inputs of the stream that no line above pins.
+    // The status of a program's end goes up by one, and 0 is unknown.
+    Attach::Event ended;
+    ended.type = Attach::EventType::PaneClosed;
+    ended.pane = 7;
+    ended.status = 3 << 8;
+    EXPECT_EQ(Attach::encode(ended), std::string("\x02\x07\x00\x81\x06", 5));
+    ended.status = -1;
+    EXPECT_EQ(Attach::encode(ended), std::string("\x02\x07\x00\x00", 4));
+    for (const auto& [type, bytes] : std::vector<std::pair<Attach::EventType, std::string>>{
+             {Attach::EventType::SessionEnded, std::string("\x03\x00\x00\x00", 4)},
+             {Attach::EventType::TakenOver, std::string("\x04\x00\x00\x00", 4)},
+             {Attach::EventType::Detached, std::string("\x05\x00\x00\x00", 4)}}) {
+        Attach::Event event;
+        event.type = type;
+        EXPECT_EQ(Attach::encode(event), bytes) << int(type);
+    }
+    Attach::Input typed;
+    typed.pane = 2;
+    typed.bytes = "ab";
+    EXPECT_EQ(Attach::encode(typed),
+              std::string("\x01\x02"
+                          "ab",
+                          4));
+    for (const auto& [type, bytes] : std::vector<std::pair<Attach::InputType, std::string>>{
+             {Attach::InputType::Reset, std::string("\x03\x05", 2)},
+             {Attach::InputType::Clear, std::string("\x04\x05", 2)},
+             {Attach::InputType::Kill, std::string("\x05\x05", 2)}}) {
+        Attach::Input input;
+        input.type = type;
+        input.pane = 5;
+        EXPECT_EQ(Attach::encode(input), bytes) << int(type);
+    }
+    // A new field that toJson leaves out would still pass the key lists. The
+    // bindings name every field, so a new field stops this test compiling
+    // until it has its key, its place in the round trip and a new version.
+    SessionOptions fields;
+    [[maybe_unused]] auto& [name, sessionEnvironment, callerEnvironment, umask, launch, size, terminal,
+                            notificationCapabilities, controlOptions, keptNotifications, sessionAgent] = fields;
+    [[maybe_unused]] auto& [controlEnabled, allowReadText, remoteCommandsOff, eventInterval, allowAdopt] =
+        fields.control;
+    [[maybe_unused]] auto& [argv, cwd, environment, unset, launchedProgram, command] = fields.launch;
+    [[maybe_unused]] auto& [cols, rows, cellWidth, cellHeight] = fields.size;
+    [[maybe_unused]] auto& [scrollback, foreground, background, palette, cursorColor, cursorTextColor,
+                            selectionForeground, selectionBackground, boldIsBright, minimumContrast, wordBoundaries,
+                            ambiguousWide, bidi, cursorShape, cursorBlink, allowScreenReadback, graphicsQuota,
+                            graphicsFileTransfer] = fields.terminal;
+    SessionInfo info;
+    [[maybe_unused]] auto& [infoName, attached, panes, jobs, agent, bound] = info;
+
+    const Json::Value options = toJson(SessionOptions{});
+    EXPECT_EQ(
+        keys(options),
+        (std::vector<std::string>{"name", "environment", "callerEnvironment", "umask", "launch", "size", "terminal",
+                                  "notificationCapabilities", "control", "keptNotifications", "agent"}));
+    EXPECT_EQ(
+        keys(options["control"]),
+        (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff", "eventInterval", "allowAdopt"}));
+    EXPECT_EQ(keys(options["launch"]),
+              (std::vector<std::string>{"argv", "cwd", "environment", "unset", "launchedProgram", "command"}));
+    EXPECT_EQ(keys(options["size"]), (std::vector<std::string>{"cols", "rows", "cellWidth", "cellHeight"}));
+    EXPECT_EQ(
+        keys(options["terminal"]),
+        (std::vector<std::string>{"scrollback", "foreground", "background", "palette", "cursorColor", "cursorTextColor",
+                                  "selectionForeground", "selectionBackground", "boldIsBright", "minimumContrast",
+                                  "wordBoundaries", "ambiguousWide", "bidi", "cursorShape", "cursorBlink",
+                                  "allowScreenReadback", "graphicsQuota", "graphicsFileTransfer"}));
+    EXPECT_EQ(keys(toJson(SessionInfo{})),
+              (std::vector<std::string>{"name", "attached", "panes", "jobs", "agent", "bound"}));
+}
+
+namespace {
+
+/// Every field of a notification, to compare two.
+auto fieldsOf(const AfterglowVt::NotificationRequest& n)
+{
+    return std::tie(n.kind, n.id, n.title, n.body, n.buttons, n.iconNames, n.iconData, n.iconCacheId, n.appName,
+                    n.types, n.sound, n.focusOnActivate, n.reportActivation, n.reportClose, n.occasion, n.urgency,
+                    n.expireMs);
+}
+
+} // namespace
+
+TEST(MuxProtocol, HostCallsRoundTrip)
+{
+    std::vector<Host::Call> calls;
+    calls.push_back(Host::make(Host::Kind::Bell));
+    calls.push_back(Host::make(Host::Kind::Flash));
+    calls.push_back(Host::make(Host::Kind::Notify, "title", "body \xe2\x80\xa8 line"));
+    Host::Call missedNotify = Host::make(Host::Kind::Notify, "kept", "while detached");
+    missedNotify.missed = true;
+    calls.push_back(missedNotify);
+    calls.push_back(Host::make(Host::Kind::ClipboardWrite, "cp", std::string("data\0with nul", 13)));
+    calls.push_back(Host::make(Host::Kind::TerminalProtocol, {}, "ac=send;id=x", 5113));
+    calls.push_back(Host::make(Host::Kind::TerminalProtocol, {}, "t=q", 72));
+    calls.push_back(Host::make(Host::Kind::TerminalProtocol, {}, {}, 0));
+    calls.push_back(Host::make(Host::Kind::PointerShape, {}, "pointer"));
+    calls.push_back(Host::make(Host::Kind::UserVar, "name", "value"));
+    calls.push_back(Host::make(Host::Kind::CommandStarted, {}, "make -j4"));
+    for (const int code : {-1, 255, std::numeric_limits<int>::min(), std::numeric_limits<int>::max()}) {
+        Host::Call finished = Host::make(Host::Kind::CommandFinished, {}, {}, code);
+        finished.value = std::uint64_t(code < 0 ? 0 : code) * 1000;
+        calls.push_back(finished);
+    }
+    // A declared size of 9 bytes (the data below), of 0 bytes, of the most
+    // that the terminal gives (INT64_MAX), and none.
+    for (const std::uint64_t value :
+         {std::uint64_t(10), std::uint64_t(1), std::uint64_t(INT64_MAX) + 1, std::uint64_t(0)}) {
+        Host::Call begin = Host::make(Host::Kind::DownloadBegin, "file.txt");
+        begin.value = value;
+        calls.push_back(begin);
+    }
+    calls.push_back(Host::make(Host::Kind::DownloadData, {}, std::string("cont\0ents", 9)));
+    calls.push_back(Host::make(Host::Kind::DownloadEnd, {}, {}, 1));
+    calls.push_back(Host::make(Host::Kind::DownloadEnd, {}, {}, 0));
+    calls.push_back(Host::make(Host::Kind::UploadRequest));
+    calls.push_back(Host::make(Host::Kind::Report, {}, "\x1b[?62;22c"));
+    for (const int held : {Host::LostNothing, Host::LostReset, Host::LostPackets}) {
+        Host::Call lost = Host::make(Host::Kind::ProtocolLost, {}, {}, held);
+        lost.value = held == Host::LostReset ? 1 : 0;
+        calls.push_back(lost);
+    }
+    Host::Call notification = Host::make(Host::Kind::DesktopNotification);
+    notification.notification.kind = AfterglowVt::NotificationRequest::Kind::Close;
+    notification.notification.id = "n1";
+    notification.notification.title = "t";
+    notification.notification.body = "b\nline";
+    notification.notification.buttons = {"yes", "no"};
+    notification.notification.iconNames = {"dialog-information"};
+    notification.notification.iconData = std::string("\x89PNG", 4);
+    notification.notification.iconCacheId = "cache";
+    notification.notification.appName = "app";
+    notification.notification.types = {"im"};
+    notification.notification.sound = "silent";
+    // Two flags that trade places fail in this row or in the next.
+    notification.notification.focusOnActivate = false;
+    notification.notification.reportActivation = true;
+    notification.notification.reportClose = false;
+    notification.notification.occasion = AfterglowVt::NotificationRequest::Occasion::Invisible;
+    notification.notification.urgency = 2;
+    notification.notification.expireMs = 0;
+    calls.push_back(notification);
+    // The same flags the other way: two that trade places fail in one row.
+    Host::Call flags = notification;
+    flags.notification.focusOnActivate = true;
+    flags.notification.reportActivation = false;
+    flags.notification.reportClose = true;
+    calls.push_back(flags);
+    Host::Call missedShow = flags;
+    missedShow.notification.kind = AfterglowVt::NotificationRequest::Kind::Show;
+    missedShow.missed = true;
+    calls.push_back(missedShow);
+    Host::Call clipboard = Host::make(Host::Kind::ClipboardRequest);
+    clipboard.clipboard.kind = AfterglowVt::ClipboardRequest::Kind::Write;
+    clipboard.clipboard.primary = true;
+    clipboard.clipboard.id = "c1";
+    clipboard.clipboard.password = "pw";
+    clipboard.clipboard.name = "editor";
+    clipboard.clipboard.mimes = {"text/plain", "image/png"};
+    clipboard.clipboard.data = {{"text/plain", "hello"}};
+    clipboard.clipboard.aliases = {{"text/html", "text/plain"}};
+    calls.push_back(clipboard);
+    Host::Call nonPrimary = clipboard;
+    nonPrimary.clipboard.primary = false;
+    calls.push_back(nonPrimary);
+    Host::Call osc52 = Host::make(Host::Kind::ClipboardRequest);
+    osc52.clipboard.mimes = {"text/plain"};
+    osc52.clipboard.osc52 = true;
+    osc52.clipboard.osc52Bel = true;
+    osc52.clipboard.osc52Selection = "cp";
+    calls.push_back(osc52);
+    for (const Host::Call& call : calls) {
+        const std::string bytes = Host::encode(call);
+        const auto back = Host::decode(bytes);
+        if (!back) {
+            ADD_FAILURE() << "kind " << int(call.kind) << " does not decode";
+            continue;
+        }
+        EXPECT_EQ(back->kind, call.kind);
+        EXPECT_EQ(back->title, call.title);
+        EXPECT_EQ(back->text, call.text);
+        EXPECT_EQ(back->number, call.number);
+        EXPECT_EQ(back->value, call.value);
+        EXPECT_EQ(back->missed, call.missed) << int(call.kind);
+        EXPECT_TRUE(fieldsOf(back->notification) == fieldsOf(call.notification)) << int(call.kind);
+        EXPECT_TRUE(back->clipboard == call.clipboard) << int(call.kind);
+        EXPECT_TRUE(Host::encode(*back) == bytes) << int(call.kind);
+        // Cut short anywhere, a call does not decode.
+        for (std::size_t n = 0; n < bytes.size(); ++n)
+            EXPECT_FALSE(Host::decode(bytes.substr(0, n))) << int(call.kind) << " " << n;
+        EXPECT_FALSE(Host::decode(bytes + "x")) << int(call.kind);
+    }
+}
+
+// The window answers the program with what it decodes: what the terminal's
+// parser never makes is refused, whole calls and not only short ones.
+TEST(MuxProtocol, HostCallsThatTheParserNeverMakesAreRefused)
+{
+    // No kind, kind 0, and the first kind after the last.
+    const std::string after(1, char(std::uint8_t(Host::Kind::UploadRequest) + 1));
+    for (const std::string_view kind :
+         {std::string_view("", 0), std::string_view("\x00", 1), std::string_view(after)}) {
+        EXPECT_FALSE(Host::decode(kind)) << testing::PrintToString(std::string(kind));
+    }
+    const auto refused = [](const Host::Call& call) {
+        return !Host::decode(Host::encode(call));
+    };
+    EXPECT_TRUE(refused(Host::make(Host::Kind::TerminalProtocol, {}, "x", 99)));
+    // A download's end is whole or not, and its size is the terminal's.
+    EXPECT_TRUE(refused(Host::make(Host::Kind::DownloadEnd, {}, {}, 2)));
+    EXPECT_TRUE(refused(Host::make(Host::Kind::DownloadEnd, {}, {}, -1)));
+    Host::Call huge = Host::make(Host::Kind::DownloadBegin, "file.txt");
+    huge.value = std::uint64_t(INT64_MAX) + 2;
+    EXPECT_TRUE(refused(huge));
+    huge.value = ~std::uint64_t(0);
+    EXPECT_TRUE(refused(huge));
+    EXPECT_TRUE(refused(Host::make(Host::Kind::Notify, "a\x1b]0;b", "body")));
+    EXPECT_TRUE(refused(Host::make(Host::Kind::Notify, "title", "line\nline")));
+    EXPECT_TRUE(refused(Host::make(Host::Kind::ProtocolLost, {}, {}, 3)));
+    Host::Call reset = Host::make(Host::Kind::ProtocolLost);
+    reset.value = 2;
+    EXPECT_TRUE(refused(reset));
+
+    Host::Call good = Host::make(Host::Kind::DesktopNotification);
+    good.notification.id = "n";
+    good.notification.buttons = {"ok"};
+    ASSERT_FALSE(refused(good));
+    const auto with = [&good](auto change) {
+        Host::Call call = good;
+        change(call.notification);
+        return call;
+    };
+    using Request = AfterglowVt::NotificationRequest;
+    EXPECT_TRUE(refused(with([](Request& n) {
+        n.kind = Request::Kind(3);
+    })));
+    EXPECT_TRUE(refused(with([](Request& n) {
+        n.occasion = Request::Occasion(3);
+    })));
+    EXPECT_TRUE(refused(with([](Request& n) {
+        n.urgency = 3;
+    })));
+    EXPECT_TRUE(refused(with([](Request& n) {
+        n.id = "a b";
+    })));
+    EXPECT_TRUE(refused(with([](Request& n) {
+        n.iconCacheId = "a;b";
+    })));
+    EXPECT_TRUE(refused(with([](Request& n) {
+        n.title = "\x07";
+    })));
+    EXPECT_TRUE(refused(with([](Request& n) {
+        n.buttons = {""};
+    })));
+    EXPECT_TRUE(refused(with([](Request& n) {
+        n.iconNames.assign(Request::MaxNames + 1, "icon");
+    })));
+    EXPECT_TRUE(refused(with([](Request& n) {
+        n.body.assign(Request::MaxText + 1, 'x');
+    })));
+    // A flag of 2, in the byte that a flag changes.
+    std::string flag = Host::encode(good);
+    Host::Call flipped = good;
+    flipped.notification.reportClose = !good.notification.reportClose;
+    const std::string other = Host::encode(flipped);
+    ASSERT_EQ(flag.size(), other.size());
+    std::vector<std::size_t> differ;
+    for (std::size_t i = 0; i < flag.size(); ++i) {
+        if (flag[i] != other[i])
+            differ.push_back(i);
+    }
+    ASSERT_EQ(differ.size(), 1u);
+    ASSERT_LE(int(std::uint8_t(flag[differ[0]])), 1);
+    flag[differ[0]] = 2;
+    EXPECT_FALSE(Host::decode(flag));
+    // The missed flag is the last byte of a notification, of either kind.
+    for (Host::Call missed : {good, Host::make(Host::Kind::Notify, "t", "b")}) {
+        missed.missed = true;
+        std::string bytes = Host::encode(missed);
+        ASSERT_EQ(bytes.back(), '\x01');
+        bytes.back() = '\x02';
+        EXPECT_FALSE(Host::decode(bytes)) << int(missed.kind);
+    }
+
+    Host::Call request = Host::make(Host::Kind::ClipboardRequest);
+    request.clipboard.id = "c";
+    ASSERT_FALSE(refused(request));
+    request.clipboard.kind = AfterglowVt::ClipboardRequest::Kind(2);
+    EXPECT_TRUE(refused(request));
+    request.clipboard.kind = AfterglowVt::ClipboardRequest::Kind::Read;
+    request.clipboard.id = "c d";
+    EXPECT_TRUE(refused(request));
+    request.clipboard.id = "c";
+    request.clipboard.mimes.assign(AfterglowVt::ClipboardAssembler::MaxParts + 1, "text/plain");
+    EXPECT_TRUE(refused(request));
+    request.clipboard.mimes = {"text/plain"};
+    // OSC 52: reads of the selections that the answer echoes.
+    request.clipboard.osc52 = true;
+    request.clipboard.osc52Selection = "c";
+    ASSERT_FALSE(refused(request));
+    for (const char* selection : {"", "c;x", "\x1b"}) {
+        request.clipboard.osc52Selection = selection;
+        EXPECT_TRUE(refused(request)) << selection;
+    }
+    request.clipboard.osc52Selection = "c";
+    request.clipboard.kind = AfterglowVt::ClipboardRequest::Kind::Write;
+    EXPECT_TRUE(refused(request));
+    // OSC 5522 has none of the fields of OSC 52.
+    request.clipboard.kind = AfterglowVt::ClipboardRequest::Kind::Read;
+    request.clipboard.osc52 = false;
+    EXPECT_TRUE(refused(request));
+}
+
+TEST(MuxProtocol, SessionOptionsRoundTrip)
+{
+    // Every value differs from its default, so that a field that the wire
+    // drops fails the comparison.
+    SessionOptions o;
+    o.name = "work";
+    o.environment = {{"HOME", "/home/u"}, {"TMUX", "x"}};
+    o.callerEnvironment = true;
+    o.umask = 027;
+    o.launch.argv = {"/bin/zsh", "-l"};
+    o.launch.workingDirectory = "/tmp";
+    o.launch.environment = {{"TERM", "afterglow"}, {"EMPTY", ""}};
+    o.launch.unset = {"TMUX"};
+    o.launch.launchedProgram = "htop";
+    o.launch.command = {"htop", "-d", "10"};
+    o.size = {132, 43, 9, 18};
+    o.notificationCapabilities = "a=focus:p=title";
+    o.control = {false, true, "remote commands are off (Terminal.sshRemoteCommands)", 250};
+    o.keptNotifications = 0;
+    o.agent = true;
+    AfterglowVt::TerminalOptions& t = o.terminal;
+    t.maxScrollback = 1234;
+    t.defaultForeground = {4, 5, 6};
+    t.defaultBackground = {1, 2, 3};
+    t.basePalette[15] = {250, 251, 252};
+    t.cursorColor = AfterglowVt::Rgb{9, 8, 7};
+    t.cursorTextColor = AfterglowVt::Rgb{7, 8, 9};
+    t.selectionForeground = AfterglowVt::Rgb{10, 11, 12};
+    t.selectionBackground = AfterglowVt::Rgb{13, 14, 15};
+    t.boldIsBright = true;
+    t.minimumContrast = 4.5;
+    t.wordBoundaries = U"│ ,";
+    t.ambiguousWide = true;
+    t.bidi = AfterglowVt::BidiMode::RightToLeft;
+    t.cursorShape = AfterglowVt::CursorShape::Bar;
+    t.cursorBlink = false;
+    t.allowScreenReadback = true;
+    t.graphicsQuota = std::size_t(64) << 20;
+    t.graphicsFileTransfer = false;
+    EXPECT_FALSE(t == AfterglowVt::TerminalOptions{});
+
+    // Through the wire's text, as the daemon reads it.
+    const auto parsed = Json::parse(Json::write(toJson(o)));
+    ASSERT_TRUE(parsed);
+    std::string error;
+    const auto back = sessionOptions(*parsed, &error);
+    ASSERT_TRUE(back) << error;
+    EXPECT_EQ(back->name, o.name);
+    EXPECT_EQ(back->environment, o.environment);
+    EXPECT_TRUE(back->callerEnvironment);
+    EXPECT_EQ(back->umask, 027);
+    EXPECT_EQ(back->launch.argv, o.launch.argv);
+    EXPECT_EQ(back->launch.workingDirectory, o.launch.workingDirectory);
+    EXPECT_EQ(back->launch.environment, o.launch.environment);
+    EXPECT_EQ(back->launch.unset, o.launch.unset);
+    EXPECT_EQ(back->launch.launchedProgram, o.launch.launchedProgram);
+    EXPECT_EQ(back->launch.command, o.launch.command);
+    // A launch and a size alone, as newPane takes them.
+    const auto launch = launchFrom(Json::parse(Json::write(toJson(o.launch))).value(), &error);
+    ASSERT_TRUE(launch) << error;
+    EXPECT_EQ(launch->unset, o.launch.unset);
+    EXPECT_EQ(launch->argv, o.launch.argv);
+    const auto size = paneSizeFrom(toJson(o.size), &error);
+    ASSERT_TRUE(size) << error;
+    EXPECT_EQ(size->cols, 132);
+    EXPECT_EQ(size->cellHeight, 18);
+    EXPECT_EQ(back->size.cols, 132);
+    EXPECT_EQ(back->size.rows, 43);
+    EXPECT_EQ(back->size.cellWidth, 9);
+    EXPECT_EQ(back->size.cellHeight, 18);
+    EXPECT_EQ(back->notificationCapabilities, o.notificationCapabilities);
+    EXPECT_FALSE(back->control.enabled);
+    EXPECT_TRUE(back->control.allowReadText);
+    EXPECT_EQ(back->control.remoteCommandsOff, "remote commands are off (Terminal.sshRemoteCommands)");
+    EXPECT_EQ(back->control.eventInterval, 250);
+    EXPECT_TRUE(back->control == o.control);
+    EXPECT_EQ(back->keptNotifications, 0);
+    EXPECT_TRUE(back->agent);
+    EXPECT_TRUE(back->terminal == o.terminal);
+    // Unset colors go as null and come back unset.
+    SessionOptions unset;
+    unset.terminal.cursorColor.reset();
+    unset.terminal.selectionBackground.reset();
+    const auto plain = sessionOptions(toJson(unset), &error);
+    ASSERT_TRUE(plain) << error;
+    EXPECT_TRUE(plain->terminal == unset.terminal);
+}
+
+TEST(MuxProtocol, SessionOptionsRefuseBadValues)
+{
+    const Json::Value good = toJson(SessionOptions{});
+    std::string error;
+    ASSERT_TRUE(sessionOptions(good, &error)) << error;
+    const std::pair<const char*, Json::Value> bad[] = {
+        {"name", "a b"},
+        {"name", "-a"},
+        {"name", std::string(MaxSessionName + 1, 'a')},
+        {"name", 1},
+        {"environment", Json::Array{Json::Array{"A=B", "c"}}},
+        {"environment", Json::Array{Json::Array{"", "c"}}},
+        {"environment", Json::Array{Json::Array{"A"}}},
+        {"environment", Json::Array{Json::Array{std::string("A\0B", 3), "c"}}},
+        {"environment", Json::Array{Json::Array{"A", 1}}},
+        {"environment", Json::Array{"A=B"}},
+        {"umask", -2},
+        {"umask", 01000},
+        {"launch", "sh"},
+        {"size", Json::Array{}},
+        {"terminal", 3},
+        {"notificationCapabilities", nullptr},
+        {"keptNotifications", -1},
+        {"keptNotifications", MaxKeptNotifications + 1},
+        {"keptNotifications", "8"},
+        {"agent", 1},
+        // A key of another version.
+        {"argv", Json::Array{}},
+    };
+    for (const auto& [key, value] : bad) {
+        error.clear();
+        EXPECT_FALSE(sessionOptions(with(good, key, value), &error)) << key << " " << Json::write(value);
+        EXPECT_NE(error.find(std::string("'") + key + "'"), std::string::npos) << key << ": " << error;
+    }
+    for (const char* key : {"name", "environment", "callerEnvironment", "umask", "launch", "size", "terminal",
+                            "notificationCapabilities", "control", "keptNotifications", "agent"}) {
+        error.clear();
+        EXPECT_FALSE(sessionOptions(without(good, key), &error)) << key;
+        EXPECT_NE(error.find(std::string("'") + key + "'"), std::string::npos) << key << ": " << error;
+    }
+    // The Control settings: all of them, two booleans, a reason and an
+    // interval.
+    for (const auto& [value, key] : std::vector<std::pair<Json::Value, std::string>>{
+             {Json::Object{{"enabled", true}}, "'control.allowReadText'"},
+             {Json::Object{{"enabled", 1}, {"allowReadText", false}}, "'control.enabled'"},
+             {Json::Object{{"enabled", true}, {"allowReadText", false}, {"remoteCommandsOff", 1}},
+              "'control.remoteCommandsOff'"},
+             {Json::Object{{"enabled", true},
+                           {"allowReadText", false},
+                           {"remoteCommandsOff", ""},
+                           {"eventInterval", MaxEventInterval + 1}},
+              "'control.eventInterval'"},
+             {Json::Object{{"enabled", true},
+                           {"allowReadText", false},
+                           {"remoteCommandsOff", ""},
+                           {"eventInterval", 0}},
+              "'control.allowAdopt'"},
+             {Json::Object{{"enabled", true},
+                           {"allowReadText", false},
+                           {"remoteCommandsOff", ""},
+                           {"eventInterval", 0},
+                           {"allowAdopt", "yes"}},
+              "'control.allowAdopt'"},
+             {Json::Object{{"enabled", true},
+                           {"allowReadText", false},
+                           {"remoteCommandsOff", ""},
+                           {"eventInterval", 0},
+                           {"allowAdopt", false},
+                           {"other", 1}},
+              "'control.other'"}}) {
+        error.clear();
+        EXPECT_FALSE(sessionOptions(with(good, "control", value), &error)) << Json::write(value);
+        EXPECT_NE(error.find(key), std::string::npos) << key << ": " << error;
+    }
+    // The keys of the launch and of the size, which newPane takes alone too.
+    const std::pair<const char*, Json::Value> badLaunch[] = {
+        {"argv", Json::Array{1}},
+        {"argv", "sh"},
+        {"cwd", Json::Array{}},
+        {"environment", Json::Array{Json::Array{"A=B", "c"}}},
+        {"environment", Json::Array{"A=B"}},
+        {"unset", Json::Array{"A=B"}},
+        {"unset", Json::Array{""}},
+        {"unset", Json::Array{1}},
+        {"launchedProgram", false},
+        {"command", "htop"},
+        {"command", Json::Array{1}},
+        {"command", Json::Array{""}},
+        {"command", Json::Array(MaxPaneCommandArgs + 1, Json::Value("a"))},
+        {"command", Json::Array{"vi", std::string(MaxPaneCommandArg + 1, 'x')}},
+        // A key of another version: version 8 had the umask with the program,
+        // and version 22 has it in the session's options.
+        {"umask", 0},
+    };
+    for (const auto& [key, value] : badLaunch) {
+        error.clear();
+        EXPECT_FALSE(sessionOptions(with(good, "launch", with(good["launch"], key, value)), &error))
+            << key << " " << Json::write(value);
+        EXPECT_NE(error.find(std::string("'launch.") + key + "'"), std::string::npos) << key << ": " << error;
+        error.clear();
+        EXPECT_FALSE(launchFrom(with(good["launch"], key, value), &error)) << key;
+        EXPECT_NE(error.find(std::string("'launch.") + key + "'"), std::string::npos) << key << ": " << error;
+    }
+    const std::pair<const char*, Json::Value> badSize[] = {
+        {"cols", 1},
+        {"cols", std::int64_t(1) << 31},
+        {"cols", 2.5},
+        {"rows", 0},
+        {"rows", std::int64_t(1) << 31},
+        {"cellWidth", -1},
+        {"cellWidth", std::int64_t(1) << 31},
+        {"cellHeight", -1},
+        {"cellHeight", std::int64_t(1) << 31},
+    };
+    for (const auto& [key, value] : badSize) {
+        error.clear();
+        EXPECT_FALSE(sessionOptions(with(good, "size", with(good["size"], key, value)), &error))
+            << key << " " << Json::write(value);
+        EXPECT_NE(error.find(std::string("'size.") + key + "'"), std::string::npos) << key << ": " << error;
+        error.clear();
+        EXPECT_FALSE(paneSizeFrom(with(good["size"], key, value), &error)) << key;
+        EXPECT_NE(error.find(std::string("'size.") + key + "'"), std::string::npos) << key << ": " << error;
+    }
+    // A size past what a terminal can be is the largest terminal, as for a
+    // Resize: the window measured it.
+    const auto large =
+        paneSizeFrom(Json::Object{{"cols", 5000}, {"rows", 100000}, {"cellWidth", 70000}, {"cellHeight", 16}}, &error);
+    ASSERT_TRUE(large) << error;
+    EXPECT_EQ(large->cols, AfterglowVt::Screen::MaxColumns);
+    EXPECT_EQ(large->rows, int(AfterglowVt::Screen::MaxCells) / AfterglowVt::Screen::MaxColumns);
+    EXPECT_EQ(large->cellWidth, 65535);
+    EXPECT_EQ(large->cellHeight, 16);
+    // The bad variable name, named as such.
+    EXPECT_FALSE(sessionOptions(with(good, "environment", Json::Array{Json::Value(Json::Array{"A=B", "c"})}), &error));
+    EXPECT_NE(error.find("variable name"), std::string::npos) << error;
+    // The environment of the attach answer reads as a session's does.
+    const auto environment = environmentFrom(environmentJson({{"A", "1"}, {"B", ""}}), &error);
+    ASSERT_TRUE(environment) << error;
+    EXPECT_EQ(*environment, (std::vector<std::pair<std::string, std::string>>{{"A", "1"}, {"B", ""}}));
+    EXPECT_FALSE(environmentFrom(Json::Array{Json::Array{"", "1"}}, &error));
+    EXPECT_FALSE(environmentFrom(Json::Object{}, &error));
+    // A key of the wire in an error is safe to print, and short.
+    error.clear();
+    EXPECT_FALSE(paneSizeFrom(with(good["size"], std::string(1000, 'k') + "\x1b", 1), &error));
+    EXPECT_LT(error.size(), 200u) << error;
+    EXPECT_EQ(error.find('\x1b'), std::string::npos);
+}
+
+TEST(MuxProtocol, TerminalValuesOutsideTheirBoundsAreRefusedByName)
+{
+    const Json::Value good = toJson(SessionOptions{});
+    const Json::Value terminal = good["terminal"];
+    Json::Array palette = terminal["palette"].toArray();
+    Json::Array overRange = palette;
+    // The last of 16 colors has a component past 255.
+    overRange.back() = Json::Array{0, 0, 256};
+    Json::Array negative = palette;
+    negative.front() = Json::Array{-1, 0, 0};
+    Json::Array shortColor = palette;
+    shortColor[3] = Json::Array{1, 2};
+    const std::pair<const char*, Json::Value> bad[] = {
+        {"scrollback", -1},
+        {"scrollback", MaxScrollback + 1},
+        {"foreground", Json::Array{1, 2, 3, 4}},
+        {"background", nullptr},
+        {"palette", Json::Array{Json::Array{0, 0, 0}}},
+        {"palette", std::move(overRange)},
+        {"palette", std::move(negative)},
+        {"palette", std::move(shortColor)},
+        {"cursorColor", Json::Array{0, 0, 300}},
+        {"cursorTextColor", "red"},
+        {"selectionForeground", Json::Array{}},
+        {"selectionBackground", 1},
+        {"boldIsBright", 1},
+        {"minimumContrast", 0.5},
+        {"minimumContrast", 21.5},
+        {"wordBoundaries", 3},
+        {"wordBoundaries", std::string("\xff")},
+        {"ambiguousWide", "yes"},
+        {"bidi", -1},
+        {"bidi", int(AfterglowVt::BidiMode::RightToLeft) + 1},
+        {"cursorShape", int(AfterglowVt::CursorShape::Bar) + 1},
+        {"cursorBlink", nullptr},
+        {"allowScreenReadback", 0},
+        {"graphicsQuota", -1},
+        {"graphicsQuota", MaxGraphicsQuota + 1},
+        {"graphicsFileTransfer", "no"},
+        {"unknown", 1},
+    };
+    std::string error;
+    for (const auto& [key, value] : bad) {
+        error.clear();
+        EXPECT_FALSE(sessionOptions(with(good, "terminal", with(terminal, key, value)), &error)) << key;
+        // The error names the key inside the terminal object.
+        EXPECT_NE(error.find(std::string("'terminal.") + key + "'"), std::string::npos) << key << ": " << error;
+    }
+    for (const char* key : {"scrollback", "palette", "cursorColor", "allowScreenReadback"}) {
+        error.clear();
+        EXPECT_FALSE(sessionOptions(with(good, "terminal", without(terminal, key)), &error)) << key;
+        EXPECT_NE(error.find(std::string("'terminal.") + key + "'"), std::string::npos) << key << ": " << error;
+    }
+    // The bounds themselves pass.
+    for (const auto& [key, value] : {std::pair<const char*, Json::Value>{"scrollback", MaxScrollback},
+                                     {"minimumContrast", MinContrast},
+                                     {"minimumContrast", MaxContrast},
+                                     {"graphicsQuota", MaxGraphicsQuota}}) {
+        error.clear();
+        EXPECT_TRUE(sessionOptions(with(good, "terminal", with(terminal, key, value)), &error)) << key << ": " << error;
+    }
+}
+
+TEST(MuxProtocol, TheFirstErrorIsTheOneReported)
+{
+    const Json::Value good = toJson(SessionOptions{});
+    Json::Value bad = with(good, "size", with(good["size"], "cols", 1));
+    bad = with(bad, "terminal", with(good["terminal"], "scrollback", -1));
+    std::string error;
+    EXPECT_FALSE(sessionOptions(bad, &error));
+    EXPECT_NE(error.find("'size.cols'"), std::string::npos) << error;
+}
+
+TEST(MuxProtocol, SessionInfoRoundTrip)
+{
+    SessionInfo info{"2", true, 3, {"vim", "make"}, true, 2};
+    const auto back = sessionInfo(toJson(info));
+    ASSERT_TRUE(back);
+    EXPECT_EQ(back->name, "2");
+    EXPECT_TRUE(back->attached);
+    EXPECT_EQ(back->panes, 3);
+    EXPECT_EQ(back->jobs, info.jobs);
+    EXPECT_TRUE(back->agent);
+    EXPECT_EQ(back->bound, 2);
+    EXPECT_FALSE(sessionInfo(with(toJson(info), "bound", -1)));
+    EXPECT_FALSE(sessionInfo(with(toJson(info), "bound", "2")));
+    EXPECT_FALSE(sessionInfo(with(toJson(info), "agent", 1)));
+    EXPECT_FALSE(sessionInfo(without(toJson(info), "agent")));
+    EXPECT_FALSE(sessionInfo(without(toJson(info), "bound")));
+    EXPECT_FALSE(sessionInfo(Json::Object{{"name", "x"}}));
+    EXPECT_FALSE(sessionInfo(with(toJson(info), "panes", -1)));
+    EXPECT_FALSE(sessionInfo(with(toJson(info), "jobs", Json::Array{1})));
+    // A key of another version.
+    EXPECT_FALSE(sessionInfo(with(toJson(info), "title", "x")));
+    // A key that version 2 had.
+    EXPECT_FALSE(sessionInfo(with(toJson(info), "windows", 1)));
+    // The name comes from a daemon, maybe of another host: a client prints
+    // it and passes it on, so it follows the rule of a session's name.
+    for (const std::string& name :
+         {std::string("-x"), std::string("a\x1b[2Jb"), std::string(MaxSessionName + 1, 'a')}) {
+        EXPECT_FALSE(sessionInfo(with(toJson(info), "name", name))) << testing::PrintToString(name);
+    }
+    EXPECT_TRUE(sessionInfo(with(toJson(info), "name", std::string(MaxSessionName, 'a'))));
+}
+
+TEST(MuxProtocol, AttachEventsRoundTrip)
+{
+    for (const int status : {-1, 0, 3 << 8, 0x7fffffff}) {
+        Attach::Event closed;
+        closed.type = Attach::EventType::PaneClosed;
+        closed.pane = 7;
+        closed.status = status;
+        const auto back = Attach::decodeEvent(Attach::encode(closed));
+        if (!back) {
+            ADD_FAILURE() << "does not decode: " << status;
+            continue;
+        }
+        EXPECT_EQ(back->type, Attach::EventType::PaneClosed);
+        EXPECT_EQ(back->pane, 7u);
+        // -1 is the status that is unknown, and stays so.
+        EXPECT_EQ(back->status, status) << status;
+    }
+    for (const auto type :
+         {Attach::EventType::SessionEnded, Attach::EventType::TakenOver, Attach::EventType::Detached}) {
+        Attach::Event event;
+        event.type = type;
+        const auto back = Attach::decodeEvent(Attach::encode(event));
+        if (!back) {
+            ADD_FAILURE() << "does not decode: " << int(type);
+            continue;
+        }
+        EXPECT_EQ(back->type, type);
+    }
+    // The highest channel that the daemon gives a pane.
+    Attach::Event opened;
+    opened.pane = 1;
+    opened.channel = Attach::MaxChannelId - 1;
+    EXPECT_EQ(Attach::encode(opened), std::string("\x01\x01\x80\x02\x00", 5));
+    const auto openedBack = Attach::decodeEvent(Attach::encode(opened));
+    ASSERT_TRUE(openedBack);
+    EXPECT_EQ(openedBack->type, Attach::EventType::PaneOpened);
+    EXPECT_EQ(openedBack->channel, Attach::MaxChannelId - 1);
+    for (const std::uint64_t frames : {std::uint64_t(0), std::uint64_t(1) << 40}) {
+        Attach::Event refreshed;
+        refreshed.type = Attach::EventType::Refreshed;
+        refreshed.pane = 9;
+        refreshed.frames = frames;
+        const auto back = Attach::decodeEvent(Attach::encode(refreshed));
+        if (!back) {
+            ADD_FAILURE() << "does not decode: " << frames;
+            continue;
+        }
+        EXPECT_EQ(back->type, Attach::EventType::Refreshed);
+        EXPECT_EQ(back->pane, 9u);
+        EXPECT_EQ(back->frames, frames);
+    }
+    // The layout takes the rest of the frame too.
+    for (const std::string& payload :
+         {std::string(), std::string(R"({"tabs":[],"current":0})"), std::string("\x80\x00\xff", 3)}) {
+        Attach::Event layout;
+        layout.type = Attach::EventType::Layout;
+        layout.payload = payload;
+        const auto back = Attach::decodeEvent(Attach::encode(layout));
+        if (!back) {
+            ADD_FAILURE() << "does not decode: " << testing::PrintToString(payload);
+            continue;
+        }
+        EXPECT_EQ(back->type, Attach::EventType::Layout);
+        EXPECT_EQ(back->pane, 0u);
+        EXPECT_EQ(back->channel, 0u);
+        EXPECT_EQ(back->status, -1);
+        EXPECT_TRUE(back->payload == payload);
+    }
+    // A host call takes the rest of the frame, whatever its bytes look like.
+    for (const int status : {-1, Attach::HostPart}) {
+        for (const std::string& payload :
+             {std::string(), Host::encode(Host::make(Host::Kind::Notify, "t", "b")), std::string("\x80\x00\xff", 3)}) {
+            Attach::Event host;
+            host.type = Attach::EventType::Host;
+            host.pane = 3;
+            host.status = status;
+            host.frames = 1u << 20;
+            host.payload = payload;
+            const auto back = Attach::decodeEvent(Attach::encode(host));
+            if (!back) {
+                ADD_FAILURE() << "does not decode: " << status;
+                continue;
+            }
+            EXPECT_EQ(back->type, Attach::EventType::Host);
+            EXPECT_EQ(back->pane, 3u);
+            EXPECT_EQ(back->status, status);
+            EXPECT_EQ(back->frames, 1u << 20);
+            EXPECT_TRUE(back->payload == payload);
+        }
+    }
+}
+
+TEST(MuxProtocol, AttachEventsThatDoNotDecodeAreRefused)
+{
+    static_assert(Attach::MaxChannelId == 257, "the frame of PaneOpened below names MaxChannelId");
+    const std::string_view bad[] = {
+        {}, // empty
+        std::string_view("\x0b\x00\x00\x00", 4), // the type after Commands
+        std::string_view("\x0a\x01\x00\x00", 4), // Commands of a pane
+        std::string_view("\x09\x01\x00\x00", 4), // Control of a pane
+        std::string_view("\x08\x01\x00\x00", 4), // a Refreshed without its frames
+        std::string_view("\x08\x01\x00\x00\x01\x00", 6), // a byte after a Refreshed
+        std::string_view("\x08\x00\x00\x00\x01", 5), // Refreshed of pane 0
+        std::string_view("\x08\x01\x01\x00\x01", 5), // Refreshed on a channel
+        std::string_view("\x08\x01\x00\x01\x01", 5), // Refreshed with a status
+        std::string_view("\x00\x01\x00\x00", 4), // type 0
+        std::string_view("\x02\x01\x00\x00\x00", 5), // a byte after the event
+        std::string_view("\x02\x81", 2), // a varint that does not end
+        std::string_view("\x02\x81\x00\x00\x00", 5), // a varint in a longer form than needed
+        std::string_view("\x02\xff\xff\xff\xff\x10\x00\x00", 8), // a pane id past 32 bits
+        std::string_view("\x01\x00\x01\x00", 4), // PaneOpened of pane 0
+        std::string_view("\x01\x01\x00\x00", 4), // PaneOpened on the channel of the events
+        std::string_view("\x01\x01\x80\x20\x00", 5), // PaneOpened on channel 4096
+        std::string_view("\x01\x01\x81\x02\x00", 5), // PaneOpened on channel MaxChannelId (257)
+        std::string_view("\x07\x01\x00\x00{}", 6), // Layout of a pane
+        std::string_view("\x07\x00\x01\x00{}", 6), // Layout on a channel
+        std::string_view("\x07\x00\x00\x01{}", 6), // Layout with a status
+        std::string_view("\x06\x00\x00\x00\x01", 5), // Host of pane 0
+        std::string_view("\x06\x01\x01\x00\x01", 5), // Host on a channel
+        std::string_view("\x06\x01\x00\x01\x01", 5), // Host with status 0
+        std::string_view("\x06\x01\x00\x04\x01", 5), // Host with status 3
+    };
+    for (const std::string_view frame : bad)
+        EXPECT_FALSE(Attach::decodeEvent(frame)) << testing::PrintToString(std::string(frame));
+    // A program's end names its pane, and the end of the link names
+    // nothing: no pane, no channel and no status.
+    const auto event = [](Attach::EventType type, std::uint32_t pane, std::uint32_t channel, int status) {
+        Attach::Event e;
+        e.type = type;
+        e.pane = pane;
+        e.channel = channel;
+        e.status = status;
+        return Attach::encode(e);
+    };
+    EXPECT_FALSE(Attach::decodeEvent(event(Attach::EventType::PaneClosed, 0, 0, 0)));
+    EXPECT_FALSE(Attach::decodeEvent(event(Attach::EventType::PaneClosed, 7, 2, 0)));
+    EXPECT_FALSE(Attach::decodeEvent(event(Attach::EventType::SessionEnded, 7, 0, -1)));
+    EXPECT_FALSE(Attach::decodeEvent(event(Attach::EventType::Detached, 0, 0, 3)));
+    EXPECT_FALSE(Attach::decodeEvent(event(Attach::EventType::TakenOver, 0, 2, -1)));
+}
+
+TEST(MuxProtocol, RelayFramesRoundTrip)
+{
+    for (const std::uint64_t relay : {std::uint64_t(1), std::uint64_t(300), ~std::uint64_t(0)}) {
+        const auto open =
+            Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Open, {}, 0xffffffffu}));
+        if (!open) {
+            ADD_FAILURE() << "Open of relay " << relay << " does not decode";
+            continue;
+        }
+        EXPECT_EQ(open->part, Attach::RelayPart::Open);
+        EXPECT_EQ(open->relay, relay);
+        EXPECT_EQ(open->pane, 0xffffffffu);
+        EXPECT_EQ(open->kind, Attach::RelayKind::Commands);
+        EXPECT_TRUE(open->host.empty());
+        // The host of an ssh session, whatever its bytes look like.
+        const std::string host("h\x00\xff", 3);
+        const auto remote = Attach::decodeRelay(
+            Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Open, {}, 4, Attach::RelayKind::Remote, host}));
+        if (!remote) {
+            ADD_FAILURE() << "the Open of a remote client of relay " << relay << " does not decode";
+            continue;
+        }
+        EXPECT_EQ(remote->pane, 4u);
+        EXPECT_EQ(remote->kind, Attach::RelayKind::Remote);
+        EXPECT_TRUE(remote->host == host);
+        // A client that selected an agent session (afterglow mcp).
+        const auto unpaned =
+            Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Open, {}, 0}));
+        EXPECT_TRUE(unpaned && unpaned->pane == 0 && unpaned->kind == Attach::RelayKind::Commands);
+        // The bytes of a connection, whatever they look like.
+        const std::string bytes("\x00\xff\n\x80", 4);
+        const auto data =
+            Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Bytes, bytes}));
+        if (!data) {
+            ADD_FAILURE() << "Bytes of relay " << relay << " does not decode";
+            continue;
+        }
+        EXPECT_EQ(data->part, Attach::RelayPart::Bytes);
+        EXPECT_EQ(data->relay, relay);
+        EXPECT_TRUE(data->bytes == bytes);
+        const auto end = Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::End, {}}));
+        if (!end) {
+            ADD_FAILURE() << "End of relay " << relay << " does not decode";
+            continue;
+        }
+        EXPECT_EQ(end->part, Attach::RelayPart::End);
+        EXPECT_EQ(end->relay, relay);
+    }
+    // A Commands event carries the frame as its payload.
+    Attach::Event event;
+    event.type = Attach::EventType::Commands;
+    event.payload = Attach::encode(Attach::RelayFrame{2, Attach::RelayPart::Bytes, "line\n"});
+    const auto back = Attach::decodeEvent(Attach::encode(event));
+    ASSERT_TRUE(back);
+    EXPECT_EQ(back->type, Attach::EventType::Commands);
+    EXPECT_TRUE(back->payload == event.payload);
+}
+
+TEST(MuxProtocol, RelayFramesThatDoNotDecodeAreRefused)
+{
+    const std::string_view bad[] = {
+        {}, // empty
+        std::string_view("\x00\x01", 2), // part 0
+        std::string_view("\x04\x01", 2), // the part after End
+        std::string_view("\x01\x00\x01", 3), // relay 0
+        std::string_view("\x01\x01", 2), // Open without its pane
+        std::string_view("\x01\x01\x01", 3), // Open without its kind
+        std::string_view("\x01\x01\x00\x01h", 5), // the Open of a client of an ssh session in pane 0
+        std::string_view("\x01\x01\x01\x02", 4), // the kind after Remote
+        std::string_view("\x01\x01\x01\x00h", 5), // a byte after the Open of a client of the commands target
+        std::string_view("\x01\x01\x01\x01", 4), // the Open of a client of an ssh session without its host
+        std::string_view("\x02\x01", 2), // Bytes without bytes
+        std::string_view("\x03\x01\x00", 3), // a byte after End
+        std::string_view("\x03\x81", 2), // a varint that does not end
+    };
+    for (const std::string_view frame : bad)
+        EXPECT_FALSE(Attach::decodeRelay(frame)) << testing::PrintToString(std::string(frame));
+}
+
+TEST(MuxProtocol, AttachInputRoundTripsAndClampsOnlyTheCellSize)
+{
+    Attach::Input bytes;
+    bytes.pane = 2;
+    bytes.bytes = std::string("a\0b", 3);
+    const auto back = Attach::decodeInput(Attach::encode(bytes));
+    ASSERT_TRUE(back);
+    EXPECT_EQ(back->type, Attach::InputType::Bytes);
+    EXPECT_EQ(back->bytes, bytes.bytes);
+    for (const auto type :
+         {Attach::InputType::Reset, Attach::InputType::Clear, Attach::InputType::Kill, Attach::InputType::ClosePane,
+          Attach::InputType::Refresh, Attach::InputType::PaneForgotten}) {
+        for (const std::uint32_t pane : {2u, 0xffffffffu}) {
+            Attach::Input action;
+            action.type = type;
+            action.pane = pane;
+            const auto decoded = Attach::decodeInput(Attach::encode(action));
+            if (!decoded) {
+                ADD_FAILURE() << "type " << int(type) << " of pane " << pane << " does not decode";
+                continue;
+            }
+            EXPECT_EQ(decoded->type, type);
+            EXPECT_EQ(decoded->pane, pane);
+        }
+    }
+    // The layout takes the rest of the frame, as the bytes do.
+    for (const std::string& json :
+         {std::string(), std::string(R"({"tabs":[],"current":0})"), std::string("\x80\x00\xff", 3)}) {
+        Attach::Input layout;
+        layout.type = Attach::InputType::Layout;
+        layout.bytes = json;
+        const auto decoded = Attach::decodeInput(Attach::encode(layout));
+        if (!decoded) {
+            ADD_FAILURE() << "does not decode: " << testing::PrintToString(json);
+            continue;
+        }
+        EXPECT_EQ(decoded->type, Attach::InputType::Layout);
+        EXPECT_EQ(decoded->pane, 0u);
+        EXPECT_TRUE(decoded->bytes == json);
+    }
+    // The value follows a pane of one varint byte, and one of two.
+    for (const std::uint32_t pane : {2u, 300u}) {
+        for (const bool visible : {false, true}) {
+            Attach::Input input;
+            input.type = Attach::InputType::Visible;
+            input.pane = pane;
+            input.visible = visible;
+            const auto decoded = Attach::decodeInput(Attach::encode(input));
+            if (!decoded) {
+                ADD_FAILURE() << "Visible " << visible << " of pane " << pane << " does not decode";
+                continue;
+            }
+            EXPECT_EQ(decoded->type, Attach::InputType::Visible);
+            EXPECT_EQ(decoded->pane, pane);
+            EXPECT_EQ(decoded->visible, visible);
+        }
+    }
+    // A size past what a terminal takes still decodes: the terminal clamps
+    // it, and the window does not lose its session for it.
+    Attach::Input resize;
+    resize.type = Attach::InputType::Resize;
+    resize.pane = 1;
+    resize.size = {100000, 0, 70000, 1};
+    const auto size = Attach::decodeInput(Attach::encode(resize));
+    ASSERT_TRUE(size);
+    EXPECT_EQ(size->size.cols, 100000);
+    EXPECT_EQ(size->size.rows, 0);
+    EXPECT_EQ(size->size.cellWidth, 65535);
+}
+
+TEST(MuxProtocol, AttachInputThatDoesNotDecodeIsRefused)
+{
+    const std::string_view bad[] = {
+        {},
+        std::string_view("\x11\x01", 2), // the type after UploadAnswer
+        std::string_view("\x0e\x01", 2), // a DownloadAnswer without its byte
+        std::string_view("\x0d\x01\x00", 3), // a byte after a PaneForgotten
+        std::string_view("\x0a\x01", 2), // ControlReply of a pane
+        std::string_view("\x0b\x01", 2), // Settings of a pane
+        std::string_view("\x0c\x01", 2), // ControlReplyPart of a pane
+        std::string_view("\x09\x01\x00", 3), // a byte after a Refresh
+        std::string_view("\x08\x01\x00", 3), // a byte after a ClosePane
+        std::string_view("\x07\x01{}", 4), // a Layout of a pane
+        std::string_view("\x01", 1), // no pane
+        std::string_view("\x02\x01\x50\x18\x08", 5), // a Resize that ends early
+        std::string_view("\x02\x01\x50\x18\x08\x10\x00", 7), // a byte after the Resize
+        std::string_view("\x03\x01\x00", 3), // a byte after a Reset
+        std::string_view("\x06\x01", 2), // a Visible without its value
+        std::string_view("\x06\x01\x02", 3), // a Visible that is neither
+        std::string_view("\x06\x01\x01\x00", 4), // a byte after a Visible
+        std::string_view("\x02\x01\x80\x00\x18\x08\x10", 7), // a varint in a longer form than needed
+    };
+    for (const std::string_view frame : bad)
+        EXPECT_FALSE(Attach::decodeInput(frame)) << testing::PrintToString(std::string(frame));
+}

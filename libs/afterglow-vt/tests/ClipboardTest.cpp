@@ -34,7 +34,10 @@ struct Term
 {
     ClipHost host;
     Terminal t{20, 5, host};
-    void feed(std::string_view s) { t.feed(s); }
+    void feed(std::string_view s)
+    {
+        t.feed(s);
+    }
 };
 
 } // namespace
@@ -117,6 +120,31 @@ TEST(Clipboard, NoSupportAnswersEnosys)
     t.host.supported = false;
     t.feed("\x1b]5522;type=read:id=x;Lg==\x1b\\");
     EXPECT_EQ(t.host.written, "\x1b]5522;type=read:status=ENOSYS:id=x\x1b\\");
+}
+
+// The answer that refuses a request, as the terminal, a window and the mux
+// daemon give it.
+TEST(Clipboard, ARefusalAnswersAsItsRequestAsked)
+{
+    ClipboardRequest read;
+    read.id = "q";
+    read.primary = true;
+    // A refusal names no location.
+    EXPECT_EQ(read.refusal("EPERM"), "\x1b]5522;type=read:status=EPERM:id=q\x1b\\");
+    ClipboardRequest write;
+    write.kind = ClipboardRequest::Kind::Write;
+    write.id = "w";
+    EXPECT_EQ(write.refusal("ENOSYS"), "\x1b]5522;type=write:status=ENOSYS:id=w\x1b\\");
+    // OSC 52 has no status: a read gets an empty answer, ending as it did.
+    ClipboardRequest osc52;
+    osc52.osc52 = true;
+    osc52.osc52Selection = "c";
+    EXPECT_EQ(osc52.refusal("EPERM"), "\x1b]52;c;\x1b\\");
+    osc52.osc52Bel = true;
+    EXPECT_EQ(osc52.refusal("EPERM"), "\x1b]52;c;\x07");
+    // A write gets no answer.
+    osc52.kind = ClipboardRequest::Kind::Write;
+    EXPECT_EQ(osc52.refusal("EPERM"), "");
 }
 
 TEST(Clipboard, ReplyEncoders)
@@ -237,7 +265,9 @@ TEST(Clipboard, ResetDropsAWriteInProgress)
 {
     Term t;
     t.feed("\x1b]5522;type=write:id=w\x1b\\\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;aGk=\x1b\\");
-    t.feed("\x1b" "c\x1b]5522;type=wdata\x1b\\");
+    t.feed(
+        "\x1b"
+        "c\x1b]5522;type=wdata\x1b\\");
     EXPECT_TRUE(t.host.requests.empty());
 }
 
@@ -246,7 +276,8 @@ TEST(Clipboard, AWriteHoldsAtMost64Types)
     Term t;
     t.feed("\x1b]5522;type=write:id=w\x1b\\");
     for (int i = 0; i <= 64; ++i) {
-        t.feed("\x1b]5522;type=wdata:mime=" + AfterglowProto::base64Encode("type/" + std::to_string(i)) + ";aGk=\x1b\\");
+        t.feed("\x1b]5522;type=wdata:mime=" + AfterglowProto::base64Encode("type/" + std::to_string(i))
+               + ";aGk=\x1b\\");
     }
     EXPECT_TRUE(t.host.written.empty());
     t.feed("\x1b]5522;type=wdata\x1b\\"); // the end reports the 65th type

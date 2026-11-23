@@ -24,11 +24,7 @@ constexpr std::size_t MaxSequence = 4096; // the whole OSC, introducer and termi
 constexpr std::size_t Introducer = 7; // ESC ] 7 5 0 1 ;
 constexpr std::size_t MaxKey = 16;
 constexpr std::size_t MaxMsgEncoded = 2732;
-constexpr std::size_t MaxMsgDecoded = 2048;
 constexpr std::size_t MaxTitleEncoded = 256;
-constexpr std::size_t MaxTitleDecoded = 192;
-constexpr std::size_t MaxApp = 32;
-constexpr std::size_t MaxId = 128;
 constexpr std::size_t MaxIdSegment = 32;
 constexpr int MaxIdDepth = 8;
 
@@ -45,7 +41,7 @@ std::string_view trim(std::string_view s)
 
 bool validId(std::string_view id)
 {
-    if (id.empty() || id.size() > MaxId) {
+    if (id.empty() || id.size() > ProgramStatus::MaxId) {
         return false;
     }
     int depth = 0;
@@ -71,8 +67,7 @@ bool validId(std::string_view id)
 
 bool isDescendantOrSelf(std::string_view id, std::string_view ancestor)
 {
-    return id == ancestor
-        || (id.size() > ancestor.size() && id.starts_with(ancestor) && id[ancestor.size()] == '/');
+    return id == ancestor || (id.size() > ancestor.size() && id.starts_with(ancestor) && id[ancestor.size()] == '/');
 }
 
 } // namespace
@@ -162,21 +157,23 @@ ProgramStatus::Result ProgramStatus::apply(std::string_view body, std::size_t te
         }
     }
     if (app) {
-        if (app->size() > MaxApp || !detail::isCleanText(*app)) {
+        if (app->size() > ProgramStatus::MaxApp || !detail::isCleanText(*app)) {
             return Result::Ignored;
         }
         r.app = std::string(*app);
     }
     if (title) {
-        const auto decoded = title->size() <= MaxTitleEncoded ? base64Decode(*title, Base64Check::PaddingOptional) : std::nullopt;
-        if (!decoded || decoded->size() > MaxTitleDecoded || !detail::isCleanText(*decoded)) {
+        const auto decoded =
+            title->size() <= MaxTitleEncoded ? base64Decode(*title, Base64Check::PaddingOptional) : std::nullopt;
+        if (!decoded || decoded->size() > ProgramStatus::MaxTitle || !detail::isCleanText(*decoded)) {
             return Result::Ignored;
         }
         r.title = *decoded;
     }
     if (msg) {
-        const auto decoded = msg->size() <= MaxMsgEncoded ? base64Decode(*msg, Base64Check::PaddingOptional) : std::nullopt;
-        if (!decoded || decoded->size() > MaxMsgDecoded || !detail::isCleanText(*decoded)) {
+        const auto decoded =
+            msg->size() <= MaxMsgEncoded ? base64Decode(*msg, Base64Check::PaddingOptional) : std::nullopt;
+        if (!decoded || decoded->size() > ProgramStatus::MaxMessage || !detail::isCleanText(*decoded)) {
             return Result::Ignored;
         }
         r.msg = *decoded;
@@ -262,8 +259,10 @@ std::string_view ProgramStatus::effectiveApp(const StatusRecord& record) const
     while (!id.empty()) {
         const auto slash = id.rfind('/');
         id = slash == std::string_view::npos ? std::string_view{} : id.substr(0, slash);
-        const auto it = std::lower_bound(m_records.begin(), m_records.end(), id,
-                                         [](const StatusRecord& r, std::string_view key) { return r.id < key; });
+        const auto it =
+            std::lower_bound(m_records.begin(), m_records.end(), id, [](const StatusRecord& r, std::string_view key) {
+                return r.id < key;
+            });
         if (it != m_records.end() && it->id == id && !it->app.empty()) {
             return it->app;
         }
@@ -276,15 +275,19 @@ void ProgramStatus::upsert(StatusRecord record)
     record.serial = ++m_serial;
     // One record per id; a report replaces it whole.
     const auto it = std::lower_bound(m_records.begin(), m_records.end(), record.id,
-                                     [](const StatusRecord& r, const std::string& id) { return r.id < id; });
+                                     [](const StatusRecord& r, const std::string& id) {
+                                         return r.id < id;
+                                     });
     if (it != m_records.end() && it->id == record.id) {
         *it = std::move(record);
         return;
     }
     if (m_records.size() >= MaxRecords) {
         // Full: the least recently updated record makes room.
-        const auto oldest = std::min_element(m_records.begin(), m_records.end(),
-                                             [](const StatusRecord& a, const StatusRecord& b) { return a.serial < b.serial; });
+        const auto oldest =
+            std::min_element(m_records.begin(), m_records.end(), [](const StatusRecord& a, const StatusRecord& b) {
+                return a.serial < b.serial;
+            });
         const auto offset = (it - m_records.begin()) - (oldest < it ? 1 : 0);
         m_records.erase(oldest);
         m_records.insert(m_records.begin() + offset, std::move(record));
@@ -295,8 +298,10 @@ void ProgramStatus::upsert(StatusRecord record)
 
 bool ProgramStatus::clear(std::string_view id, bool all)
 {
-    const std::size_t removed = all ? std::exchange(m_records, {}).size()
-                                    : std::erase_if(m_records, [id](const StatusRecord& r) { return isDescendantOrSelf(r.id, id); });
+    const std::size_t removed =
+        all ? std::exchange(m_records, {}).size() : std::erase_if(m_records, [id](const StatusRecord& r) {
+            return isDescendantOrSelf(r.id, id);
+        });
     if (removed == 0) {
         return false;
     }

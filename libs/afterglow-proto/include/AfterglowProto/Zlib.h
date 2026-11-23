@@ -16,8 +16,15 @@ namespace AfterglowProto {
 class ZlibStream
 {
 public:
-    enum class Mode : std::uint8_t { Inflate, Deflate };
-    enum class Result : std::uint8_t { Ok, End, Error };
+    enum class Mode : std::uint8_t {
+        Inflate,
+        Deflate
+    };
+    enum class Result : std::uint8_t {
+        Ok,
+        End,
+        Error
+    };
 
     explicit ZlibStream(Mode mode);
     ~ZlibStream();
@@ -55,5 +62,8 @@ bool zlibInflate(std::string_view in, std::string& out, std::size_t limit);
 /// send a whole buffer. Empty when zlib fails (no memory):
 /// a stream, even of no input, is never empty.
 std::string zlibCompress(std::string_view in);
+/// The CRC-32 of @p in, as zlib and PNG chunks compute it, of any size. Not
+/// named crc32: zlib.h renames that name to the prefixed one of zlib-ng.
+std::uint32_t crc32Of(std::string_view in);
 
 } // namespace AfterglowProto

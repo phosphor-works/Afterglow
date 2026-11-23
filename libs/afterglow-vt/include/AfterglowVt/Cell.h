@@ -26,31 +26,95 @@ class Cell
 public:
     constexpr Cell() = default;
 
-    constexpr char32_t codepoint() const { return m_cp & CodepointMask; }
-    constexpr std::uint32_t styleId() const { return m_packed & StyleMask; }
-    constexpr int width() const { return int((m_packed >> WidthShift) & 3); }
-    constexpr bool hasGrapheme() const { return (m_packed & GraphemeBit) != 0; }
-    constexpr bool isSpacerHead() const { return (m_packed & SpacerHeadBit) != 0; }
-    constexpr bool isTail() const { return width() == 0; }
+    constexpr char32_t codepoint() const
+    {
+        return m_cp & CodepointMask;
+    }
+    constexpr std::uint32_t styleId() const
+    {
+        return m_packed & StyleMask;
+    }
+    constexpr int width() const
+    {
+        return int((m_packed >> WidthShift) & 3);
+    }
+    constexpr bool hasGrapheme() const
+    {
+        return (m_packed & GraphemeBit) != 0;
+    }
+    constexpr bool isSpacerHead() const
+    {
+        return (m_packed & SpacerHeadBit) != 0;
+    }
+    constexpr bool isTail() const
+    {
+        return width() == 0;
+    }
     /// True for a cell nothing was ever printed to (renders as blank).
-    constexpr bool isEmpty() const { return codepoint() == 0; }
-    constexpr bool isMulticell() const { return (m_cp & MulticellBit) != 0; }
+    constexpr bool isEmpty() const
+    {
+        return codepoint() == 0;
+    }
+    constexpr bool isMulticell() const
+    {
+        return (m_cp & MulticellBit) != 0;
+    }
     /// Offset of this cell from its multicell block's top-left cell.
-    constexpr int multicellDx() const { return int((m_cp >> DxShift) & 0x3F); }
-    constexpr int multicellDy() const { return int((m_cp >> DyShift) & 0x7); }
+    constexpr int multicellDx() const
+    {
+        return int((m_cp >> DxShift) & 0x3F);
+    }
+    constexpr int multicellDy() const
+    {
+        return int((m_cp >> DyShift) & 0x7);
+    }
 
     /// Sets the character; a plain character is not part of a block.
-    constexpr void setCodepoint(char32_t cp) { m_cp = cp & CodepointMask; }
+    constexpr void setCodepoint(char32_t cp)
+    {
+        m_cp = cp & CodepointMask;
+    }
     constexpr void setMulticell(int dx, int dy)
     {
-        m_cp = (m_cp & CodepointMask) | MulticellBit | (char32_t(dx & 0x3F) << DxShift) | (char32_t(dy & 0x7) << DyShift);
+        m_cp =
+            (m_cp & CodepointMask) | MulticellBit | (char32_t(dx & 0x3F) << DxShift) | (char32_t(dy & 0x7) << DyShift);
     }
-    constexpr void setStyleId(std::uint32_t id) { m_packed = (m_packed & ~StyleMask) | (id & StyleMask); }
-    constexpr void setWidth(int w) { m_packed = (m_packed & ~(3u << WidthShift)) | (std::uint32_t(w & 3) << WidthShift); }
-    constexpr void setHasGrapheme(bool on) { m_packed = on ? (m_packed | GraphemeBit) : (m_packed & ~GraphemeBit); }
-    constexpr void setSpacerHead(bool on) { m_packed = on ? (m_packed | SpacerHeadBit) : (m_packed & ~SpacerHeadBit); }
+    constexpr void setStyleId(std::uint32_t id)
+    {
+        m_packed = (m_packed & ~StyleMask) | (id & StyleMask);
+    }
+    constexpr void setWidth(int w)
+    {
+        m_packed = (m_packed & ~(3u << WidthShift)) | (std::uint32_t(w & 3) << WidthShift);
+    }
+    constexpr void setHasGrapheme(bool on)
+    {
+        m_packed = on ? (m_packed | GraphemeBit) : (m_packed & ~GraphemeBit);
+    }
+    constexpr void setSpacerHead(bool on)
+    {
+        m_packed = on ? (m_packed | SpacerHeadBit) : (m_packed & ~SpacerHeadBit);
+    }
 
     constexpr bool operator==(const Cell&) const = default;
+
+    /// The two words of the cell as they are stored, for the mux codec
+    /// (StateSync.cpp), which checks each part of a cell that it reads.
+    constexpr std::uint32_t rawCodepoint() const
+    {
+        return std::uint32_t(m_cp);
+    }
+    constexpr std::uint32_t rawPacked() const
+    {
+        return m_packed;
+    }
+    static constexpr Cell fromRaw(std::uint32_t codepoint, std::uint32_t packed)
+    {
+        Cell c;
+        c.m_cp = char32_t(codepoint);
+        c.m_packed = packed;
+        return c;
+    }
 
 private:
     static constexpr std::uint32_t StyleMask = (1u << 24) - 1;
@@ -83,7 +147,10 @@ struct MulticellParams
     std::uint8_t den = 0;
     std::uint8_t valign = 0; ///< 0 top, 1 bottom, 2 centre
     std::uint8_t halign = 0; ///< 0 left, 1 right, 2 centre
-    int columns() const { return scale * width; }
+    int columns() const
+    {
+        return scale * width;
+    }
     bool operator==(const MulticellParams&) const = default;
 };
 /// Keyed by the column where a block starts in this row.
@@ -91,7 +158,12 @@ using MulticellMap = std::unordered_map<std::uint16_t, MulticellParams>;
 
 /// DEC line size (DECDWL / DECDHL): the row's characters drawn twice as wide,
 /// and for double height, as the top or bottom half.
-enum class LineSize : std::uint8_t { Single, DoubleWidth, DoubleTop, DoubleBottom };
+enum class LineSize : std::uint8_t {
+    Single,
+    DoubleWidth,
+    DoubleTop,
+    DoubleBottom
+};
 
 struct Row
 {

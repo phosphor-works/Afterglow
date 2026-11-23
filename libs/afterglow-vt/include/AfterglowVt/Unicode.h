@@ -42,12 +42,16 @@ struct Props
     bool extendedPictographic = false;
     /// Emoji with text-default presentation: VS16 (U+FE0F) widens it to two cells.
     bool widensWithVs16 = false;
+    /// A wide emoji, not a regional indicator: VS15 (U+FE0E) narrows it to
+    /// one cell.
+    bool narrowsWithVs15 = false;
     /// Terminal cell width: 0, 1 or 2.
     std::uint8_t width = 1;
     /// East Asian Ambiguous: width 1, but 2 for terminals set up for CJK text.
     bool ambiguous = false;
 };
 
+inline constexpr char32_t VariationSelector15 = 0xFE0E;
 inline constexpr char32_t VariationSelector16 = 0xFE0F;
 inline constexpr char32_t ReplacementCharacter = 0xFFFD;
 
@@ -65,7 +69,10 @@ public:
     void reset() noexcept;
     /// Whether printable ASCII (grapheme class Other) fed next would join the
     /// current cluster: only after a Prepend (GB9b).
-    bool joinsAscii() const noexcept { return m_started && m_prev == GraphemeBreak::Prepend; }
+    bool joinsAscii() const noexcept
+    {
+        return m_started && m_prev == GraphemeBreak::Prepend;
+    }
     /// breaksBefore() for a "simple" character: grapheme class Other, not
     /// Extended_Pictographic, no InCB. Same result and state, without the
     /// rules: it joins only after a Prepend (GB9b).
@@ -81,8 +88,16 @@ public:
     }
 
 private:
-    enum class EmojiState : std::uint8_t { None, Pictographic, PictographicZwj };
-    enum class ConjunctState : std::uint8_t { None, Consonant, ConsonantLinker };
+    enum class EmojiState : std::uint8_t {
+        None,
+        Pictographic,
+        PictographicZwj
+    };
+    enum class ConjunctState : std::uint8_t {
+        None,
+        Consonant,
+        ConsonantLinker
+    };
 
     bool m_started = false;
     bool m_riOdd = false;
