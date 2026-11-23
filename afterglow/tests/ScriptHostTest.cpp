@@ -3947,6 +3947,10 @@ return {
     end,
 }
 )");
+    // The conversions are CPU time of the handler. Unoptimized (-O0) they pass
+    // the default Scripts.cpuBudget, which then disables the script before the
+    // slots this test counts fill up. The budget is not what it tests.
+    host->setCpuBudget(1000);
     host->setEnabled(true);
     // Three failures, then a success that resets the run of failures: 18
     // abandoned waits in all, more than the 16 that can wait at once.
