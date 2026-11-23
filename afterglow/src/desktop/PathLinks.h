@@ -65,6 +65,16 @@ struct OpenAction
 /// file:// URL instead, with the desktop's application or the file manager.
 OpenAction openAction(const QStringList& openFilesWith, const Location& file, bool directory);
 
+/// @p processName, as the kernel names a process (foregroundJob()), is one of
+/// @p clients (Links.remoteClients). The kernel keeps the first 15 bytes of
+/// a name, so a longer client matches by those.
+bool isRemoteClient(const QString& processName, const QStringList& clients);
+/// The program of the command line @p command, as a shell reported it, is
+/// one of @p clients: its first word after variable assignments
+/// ("TERM=xterm ssh host"), without its directory ("/usr/bin/ssh").
+/// `afterglow ssh` counts as ssh, the name of its process.
+bool startsRemoteClient(const QString& command, const QStringList& clients);
+
 /// What a path names on this machine.
 enum class Kind {
     Unknown,

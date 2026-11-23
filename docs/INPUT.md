@@ -333,6 +333,8 @@ A path in a URL or in an OSC 8 link is part of that link.
 
 A relative path starts from the working directory of the pane, which the shell reports with OSC 7.
 Without a report, Afterglow uses the directory of the foreground program.
+In a pane of a mux session, a relative path is a link only when the shell reports its directory.
+The program of a session pane runs in the mux daemon, and the window does not wait for the daemon on each pointer move.
 `~/` is your home directory.
 
 A path is a link only when the file or directory exists.
@@ -346,7 +348,15 @@ Afterglow knows this from these items:
 
 - The shell context (OSC 3008 and the iTerm2 `RemoteHost` sequence).
 - An OSC 7 directory on another host.
+- A pane of a mux session on another host.
 - The foreground program of the pane, when its process name is in `Links.remoteClients`. This includes `afterglow ssh`, which runs as `ssh`.
+
+A pane of a mux session on this computer uses the shell integration in place of the foreground program:
+
+- At a prompt, the pane has path links.
+- While a command runs, the pane has path links when the first word of the command line is not in `Links.remoteClients`. Variable assignments and the directory of the program are not part of this word, and `afterglow ssh` counts as `ssh`.
+- While a command runs that the shell did not report, the pane has no path links.
+- Without shell integration, the pane has no path links.
 
 | Limit | Value | At the limit |
 | --- | --- | --- |
@@ -357,6 +367,7 @@ Afterglow knows this from these items:
 
 Afterglow does not find a remote program that runs inside a local program, such as `sudo ssh host`.
 The foreground program is then `sudo`, and the paths in its output can be links to local files.
+The same applies to the command line of a session pane.
 
 Set `Links.openFilesWith` to open files in an editor at the line.
 The list is the program and its arguments, without a shell.

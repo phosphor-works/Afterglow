@@ -128,6 +128,33 @@ OpenAction openAction(const QStringList& openFilesWith, const Location& file, bo
             {}};
 }
 
+bool isRemoteClient(const QString& processName, const QStringList& clients)
+{
+    if (processName.isEmpty())
+        return false;
+    return std::any_of(clients.cbegin(), clients.cend(), [&](const QString& name) {
+        return processName == name || processName == QString::fromUtf8(name.toUtf8().left(15));
+    });
+}
+
+bool startsRemoteClient(const QString& command, const QStringList& clients)
+{
+    static const QRegularExpression assignment(QStringLiteral(R"(^[A-Za-z_][A-Za-z0-9_]*=)"));
+    static const QRegularExpression space(QStringLiteral(R"(\s+)"));
+    const QStringList words = command.split(space, Qt::SkipEmptyParts);
+    const auto first = std::find_if(words.cbegin(), words.cend(), [](const QString& word) {
+        return !assignment.match(word).hasMatch();
+    });
+    if (first == words.cend())
+        return false;
+    QString program = first->mid(first->lastIndexOf(QLatin1Char('/')) + 1);
+    // `afterglow ssh` names its process ssh, which the list of a pane of
+    // its own matches.
+    if (program == QLatin1String("afterglow") && first + 1 != words.cend() && *(first + 1) == QLatin1String("ssh"))
+        program = QStringLiteral("ssh");
+    return !program.isEmpty() && clients.contains(program);
+}
+
 Checker::Checker(QObject* parent, std::chrono::milliseconds lifetime, int capacity)
     : QObject(parent)
     , m_lifetime(lifetime)

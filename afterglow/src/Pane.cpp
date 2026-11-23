@@ -8,6 +8,7 @@
 #include "desktop/FileTransfer.h"
 #include "desktop/DragDrop.h"
 #include "desktop/Accessibility.h"
+#include "desktop/PathLinks.h"
 #include "DockArea.h" // IWYU pragma: keep (~Pane deletes the docks: unique_ptr needs the type)
 #include "ProgramImages.h"
 
@@ -1471,24 +1472,40 @@ QString Pane::workingDirectory() const
 
 std::optional<QString> Pane::localPathDirectory(const QStringList& remoteClients) const
 {
-    QString reported;
+    // The program of a session of another host runs there, and names that
+    // host's files.
+    if (m_session && (m_sessionGone || m_session->remote()))
+        return std::nullopt;
+    QString reported, command;
+    AfterglowVt::ShellState state = AfterglowVt::ShellState::None;
     {
         std::lock_guard lock(m_mutex);
         if (m_directoryElsewhere || m_contextKind == QLatin1String("remote")
             || m_contextKind == QLatin1String("container"))
             return std::nullopt;
         reported = m_reportedDirectory;
+        state = m_terminal.shellState();
+        command = m_command;
+    }
+    if (m_session) {
+        // Its processes are the daemon's, which the GUI thread would wait
+        // for: the shell of the replica tells what runs. At its prompt the
+        // shell runs; else only the command line it reported names the
+        // program, and without one the pane could show another host.
+        if (state == AfterglowVt::ShellState::Running) {
+            if (command.isEmpty() || PathLinks::startsRemoteClient(command, remoteClients))
+                return std::nullopt;
+        } else if (state == AfterglowVt::ShellState::None) {
+            return std::nullopt;
+        }
+        // Without a reported directory a relative path names nothing: the
+        // daemon's answer would hold up the GUI thread.
+        return reported;
     }
     // A client such as ssh without shell integration on the far side tells
-    // nothing of where its output comes from: its name does. The kernel
-    // keeps the first 15 bytes of a process name.
-    if (const QString job = foregroundJob(); !job.isEmpty()) {
-        const bool remote = std::any_of(remoteClients.cbegin(), remoteClients.cend(), [&](const QString& name) {
-            return job == name || job == QString::fromUtf8(name.toUtf8().left(15));
-        });
-        if (remote)
-            return std::nullopt;
-    }
+    // nothing of where its output comes from: its name does.
+    if (PathLinks::isRemoteClient(foregroundJob(), remoteClients))
+        return std::nullopt;
     if (!reported.isEmpty())
         return reported;
     return m_pty ? QFile::decodeName(QByteArray::fromStdString(m_pty->currentWorkingDirectory())) : QString();

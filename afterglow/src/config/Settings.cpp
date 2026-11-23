@@ -904,8 +904,8 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("detectPaths"), d.links.detectPaths, QMetaType::Bool,
          QStringLiteral(
              "Detect file paths in the text, such as src/main.cpp:12, as links. A path is a link only when the "
-             "file or directory exists. Paths in a pane whose shell runs on another host or in a container are "
-             "not links.")},
+             "file or directory exists. Paths in a pane whose shell runs on another host or in a container, and "
+             "in a pane of a mux session on another host, are not links.")},
         stringKey(QStringLiteral("openWith"), {},
                   QStringLiteral(
                       "Command for opening links. Afterglow splits it into words, adds the URL as the last "
@@ -919,10 +919,10 @@ PhosphorConfig::Schema buildSchema()
              "An empty list opens files as other links open, with Links.openWith or the desktop application.")
              .arg(MaxHintCommandArguments)},
         {QStringLiteral("remoteClients"), stringList(d.links.remoteClients), QMetaType::QVariantList,
-         QStringLiteral(
-             "Process names of programs that connect to another host. While one of them is the foreground "
-             "program of a pane, paths in that pane are not links. Linux shows at most the first 15 characters "
-             "of a process name. An empty list turns this check off.")},
+         QStringLiteral("Names of programs that connect to another host. While one of them runs in a pane, paths in "
+                        "that pane are not links. A pane compares the name of its foreground process, of which Linux "
+                        "keeps the first 15 characters. A mux session pane compares the first word of the command "
+                        "line that its shell reported. An empty list turns this check off.")},
         enumKey(
             QStringLiteral("modifier"), ModifierChoices, d.links.modifier,
             QStringLiteral("Modifier for link highlighting and activation. With none, a plain click opens the link. "

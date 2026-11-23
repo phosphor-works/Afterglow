@@ -131,12 +131,12 @@ A color in `Colors` and in `Mux.agentColor` has one of the forms of [color value
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `detectPaths` | `true` |  | Detect file paths in the text, such as src/main.cpp:12, as links. A path is a link only when the file or directory exists. Paths in a pane whose shell runs on another host or in a container are not links. |
+| `detectPaths` | `true` |  | Detect file paths in the text, such as src/main.cpp:12, as links. A path is a link only when the file or directory exists. Paths in a pane whose shell runs on another host or in a container, and in a pane of a mux session on another host, are not links. |
 | `detectUrls` | `true` |  | Detect plain-text URLs in addition to application-provided OSC 8 links. |
 | `modifier` | `"ctrl"` | `"ctrl"`, `"shift"`, `"alt"`, `"super"`, `"none"` | Modifier for link highlighting and activation. With none, a plain click opens the link. super is the key that key bindings call Meta. |
 | `openFilesWith` | `[]` |  | Program and arguments that open a file link, a list of 1 to 32 strings such as ["kate", "--line", "{line}", "{file}"]. {file} is the absolute path. {line} and {column} come from a :LINE or :LINE:COLUMN after the path, and are 1 when the text has none. Directories open in the file manager. An empty list opens files as other links open, with Links.openWith or the desktop application. |
 | `openWith` | `""` |  | Command for opening links. Afterglow splits it into words, adds the URL as the last argument and runs it without a shell. Quotes keep spaces in one word. An empty value uses the desktop browser. |
-| `remoteClients` | `["ssh", "mosh-client", "et", "telnet", "rlogin"]` |  | Process names of programs that connect to another host. While one of them is the foreground program of a pane, paths in that pane are not links. Linux shows at most the first 15 characters of a process name. An empty list turns this check off. |
+| `remoteClients` | `["ssh", "mosh-client", "et", "telnet", "rlogin"]` |  | Names of programs that connect to another host. While one of them runs in a pane, paths in that pane are not links. A pane compares the name of its foreground process, of which Linux keeps the first 15 characters. A mux session pane compares the first word of the command line that its shell reported. An empty list turns this check off. |
 | `schemes` | `["http", "https", "mailto", "ftp", "file"]` |  | URL schemes that open without a prompt. Links with other schemes ask first. |
 
 ## Mcp

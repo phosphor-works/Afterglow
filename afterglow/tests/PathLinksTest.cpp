@@ -147,6 +147,29 @@ TEST(PathLinks, OpensWithTheCommandOrTheFileUrl)
     EXPECT_EQ(directory.url, QUrl::fromLocalFile(QStringLiteral("/w")));
 }
 
+TEST(PathLinks, RemoteClientsMatchByProcessNameOrCommandLine)
+{
+    const QStringList clients{QStringLiteral("ssh"), QStringLiteral("remote-client-1234")};
+    // A process name, as the kernel keeps it: its first 15 bytes.
+    EXPECT_TRUE(PathLinks::isRemoteClient(QStringLiteral("ssh"), clients));
+    EXPECT_TRUE(PathLinks::isRemoteClient(QStringLiteral("remote-client-1"), clients));
+    EXPECT_FALSE(PathLinks::isRemoteClient(QStringLiteral("sshd"), clients));
+    EXPECT_FALSE(PathLinks::isRemoteClient(QString(), clients));
+    EXPECT_FALSE(PathLinks::isRemoteClient(QStringLiteral("ssh"), {}));
+    // A command line: its program, past variable assignments and its directory.
+    EXPECT_TRUE(PathLinks::startsRemoteClient(QStringLiteral("ssh far-host"), clients));
+    EXPECT_TRUE(PathLinks::startsRemoteClient(QStringLiteral("  TERM=xterm LANG=C /usr/bin/ssh -t far-host"), clients));
+    EXPECT_FALSE(PathLinks::startsRemoteClient(QStringLiteral("make ssh"), clients));
+    EXPECT_FALSE(PathLinks::startsRemoteClient(QStringLiteral("sshfs far-host:/ /mnt"), clients));
+    EXPECT_FALSE(PathLinks::startsRemoteClient(QStringLiteral("TERM=xterm"), clients));
+    EXPECT_FALSE(PathLinks::startsRemoteClient(QString(), clients));
+    // afterglow ssh, as its process name says.
+    EXPECT_TRUE(PathLinks::startsRemoteClient(QStringLiteral("afterglow ssh far-host"), clients));
+    EXPECT_FALSE(PathLinks::startsRemoteClient(QStringLiteral("afterglow ctl ls"), clients));
+    // A wrapper hides the client, as it does from the process name.
+    EXPECT_FALSE(PathLinks::startsRemoteClient(QStringLiteral("sudo ssh far-host"), clients));
+}
+
 TEST(PathLinks, TheDefaultHintPatternIsThePathPattern)
 {
     const QVariantList hints = defaultHintPatterns();

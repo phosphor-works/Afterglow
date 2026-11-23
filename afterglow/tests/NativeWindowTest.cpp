@@ -15907,6 +15907,108 @@ TEST_F(NativeWindow, AMuxSessionsMarksStatusAndDirectoryReachTheWindow)
     delete shown;
 }
 
+// The processes of a session pane are the daemon's: what its shell reports
+// tells whether its paths are this computer's. Its sh has no shell
+// integration, so the test sends the marks of one.
+TEST_F(NativeWindow, ASessionPaneHasPathLinksWhileItsShellRunsNoRemoteClient)
+{
+    PathTree tree;
+    ASSERT_TRUE(tree.make());
+    restartApplication(QStringLiteral("session-paths.conf"),
+                       testSettings({{QStringLiteral("Links"),
+                                      QJsonObject{{QStringLiteral("modifier"), QStringLiteral("none")},
+                                                  {QStringLiteral("openFilesWith"), tree.command()}}}}),
+                       {QStringLiteral("cat")});
+    if (HasFatalFailure())
+        return;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "paths")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("paths"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    const QString file = QUrl::fromLocalFile(tree.file()).toString();
+    const QString line = QStringLiteral("at src/main.cpp:3 here");
+    // The row of the line that printf wrote, not of its command line.
+    const auto rowOfLine = [&] {
+        return int(screenOf(pane).split(QLatin1Char('\n')).indexOf(line));
+    };
+    const auto sendShell = [&](const std::string& command) {
+        return pane->sendInput(command + "\n");
+    };
+    // A path in the directory that the shell reports.
+    ASSERT_TRUE(sendShell("printf '\\033]7;file://localhost" + tree.root.path().toStdString()
+                          + "\\007at src/main.cpp:3 here\\n'"));
+    ASSERT_TRUE(waitFor(
+        [&] {
+            return pane && rowOfLine() >= 0 && pane->knownDirectory() == tree.root.path();
+        },
+        5000))
+        << (pane ? screenOf(pane).toStdString() : std::string("the pane closed"));
+    int row = rowOfLine();
+    pane->refreshSnapshot();
+    // Without shell integration, nothing tells what runs in the pane.
+    hoverAt(shown, cellCenter(shown, pane, 5, row));
+    drain(300);
+    hoverAt(shown, cellCenter(shown, pane, 6, row));
+    EXPECT_TRUE(shown->hoveredLink().isEmpty()) << shown->hoveredLink().toStdString();
+    // At its prompt the shell runs: the path is a link, and a click opens it.
+    ASSERT_TRUE(sendShell("printf '\\033]133;A\\007'"));
+    ASSERT_TRUE(waitFor(
+        [&] {
+            return pane && pane->shellFacts().state == AfterglowVt::ShellState::Prompt;
+        },
+        5000));
+    row = rowOfLine();
+    ASSERT_GE(row, 0);
+    pane->refreshSnapshot();
+    hoverAt(shown, cellCenter(shown, pane, 5, row));
+    ASSERT_TRUE(waitFor([&] {
+        return shown->hoveredLink() == file;
+    })) << shown->hoveredLink().toStdString();
+    clickLeft(shown, cellCenter(shown, pane, 5, row));
+    ASSERT_TRUE(waitFor([&] {
+        return QFile::exists(tree.opened());
+    }));
+    EXPECT_EQ(tree.openedWith(), (QStringList{tree.file(), QStringLiteral("3"), QStringLiteral("1")}));
+    ASSERT_TRUE(QFile::remove(tree.opened()));
+    // While ssh runs, its output names the other host's files: no link, and
+    // a click opens nothing.
+    ASSERT_TRUE(sendShell("printf '\\033]133;C;cmdline_url=ssh%%20far-host\\007'"));
+    ASSERT_TRUE(waitFor(
+        [&] {
+            return pane && pane->runningCommand() == QStringLiteral("ssh far-host");
+        },
+        5000))
+        << (pane ? pane->runningCommand().toStdString() : std::string("the pane closed"));
+    row = rowOfLine();
+    ASSERT_GE(row, 0);
+    pane->refreshSnapshot();
+    hoverAt(shown, cellCenter(shown, pane, 5, row));
+    drain(300);
+    hoverAt(shown, cellCenter(shown, pane, 6, row));
+    EXPECT_TRUE(shown->hoveredLink().isEmpty()) << shown->hoveredLink().toStdString();
+    clickLeft(shown, cellCenter(shown, pane, 6, row));
+    drain(300);
+    EXPECT_FALSE(QFile::exists(tree.opened()));
+    // Another command is local again.
+    ASSERT_TRUE(sendShell("printf '\\033]133;D;0\\007\\033]133;C;cmdline_url=make\\007'"));
+    ASSERT_TRUE(waitFor(
+        [&] {
+            return pane && pane->runningCommand() == QStringLiteral("make");
+        },
+        5000))
+        << (pane ? pane->runningCommand().toStdString() : std::string("the pane closed"));
+    row = rowOfLine();
+    ASSERT_GE(row, 0);
+    pane->refreshSnapshot();
+    hoverAt(shown, cellCenter(shown, pane, 5, row));
+    EXPECT_TRUE(waitFor([&] {
+        return shown->hoveredLink() == file;
+    })) << shown->hoveredLink().toStdString();
+    delete shown;
+}
+
 // The window tells the daemon whether the user can see a session pane, and
 // the daemon's terminal reports each change to the program (mode 2033): at
 // the attach, when another tab shows, and when the pane shows again.
