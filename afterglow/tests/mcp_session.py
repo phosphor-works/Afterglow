@@ -592,9 +592,14 @@ def flood(home):
     other = s.tool('open_pane', where='tab')['pane']
     s.at_prompt(first)
     s.at_prompt(other)
+    # The flood runs until the test has its reads, so that their count does
+    # not depend on how fast the machine prints: at least 700,000 lines, and
+    # then on until the stop file appears.
+    stop = home.root / 'stop-flood'
     waiting = s.start_call('wait', pane=first, until='text', pattern='END-OF-FLOOD', timeout_ms=120000)
-    s.tool('send', pane=first, paste="yes 0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz "
-           "| head -n 700000; echo END-OF-''FLOOD", keys=['enter'])
+    s.tool('send', pane=first, paste="n=0; while [ $n -lt 35 ] || [ ! -e " + str(stop) + " ]; do yes "
+           "0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz | head -n 20000; "
+           "n=$((n+1)); done; echo END-OF-''FLOOD", keys=['enter'])
     start = time.monotonic()
     slowest = 0.0
     # The reads that the server answered while the wait was still open: one
@@ -607,10 +612,13 @@ def flood(home):
         slowest = max(slowest, time.monotonic() - asked)
         if waiting not in s.replies:
             during += 1
+        if during >= 3:
+            stop.touch()
         try:
             result = s.result(waiting, 0.3)
         except Timeout:
-            check(time.monotonic() - start < 120, 'the flood did not end')
+            check(time.monotonic() - start < 120,
+                  f'the flood did not end: {during} reads in another pane came during it')
     check(not result.get('isError') and result['structuredContent']['matched'], result)
     check(during >= 3, f'only {during} reads in another pane came during the flood')
     print(f'  flood: {time.monotonic() - start:.1f} s, {during} reads during it, slowest {slowest:.2f} s')
