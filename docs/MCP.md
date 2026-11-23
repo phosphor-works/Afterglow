@@ -120,7 +120,7 @@ Each result has a short text and the same data as structured content.
 | --- | --- | --- |
 | `list_panes` | None | `session`, and for each pane `id`, `tab`, `title`, `cwd`, `command`, `cols`, `rows`, `shell`, `input` and `last_exit` |
 | `open_pane` | `where` (`tab` or `split`), `pane`, `direction`, `cwd`, `argv`, `env` | `pane`, the ID of the new pane |
-| `run` | `pane`, `command`, `timeout_ms`, `tail_lines` | `status`, `exit_code`, `exit_codes`, `duration_ms`, `output`, `truncated` |
+| `run` | `pane`, `command`, `timeout_ms`, `tail_lines` | `status`, `exit_code`, `exit_codes`, `duration_ms`, `output`, `truncated`, `notes` |
 | `wait` | `pane`, `until` (`finished`, `text`, `quiet` or `closed`), `pattern`, `quiet_ms`, `timeout_ms`, `tail_lines` | As `run`, and `matched` and `match` |
 | `send` | `pane`, `text`, `paste`, `keys`, `signal` | None |
 | `read` | `pane`, `scope` (`screen`, `scrollback` or `last_output`), `tail_lines`, `max_bytes` | `text`, `truncated` |
@@ -218,15 +218,16 @@ Thus a command of several lines that runs nothing, such as lines of comments onl
 | The new prompt shows | `status` `finished` |
 | The timeout comes first (`timeout_ms`, else `Mcp.waitTimeout`) | `status` `running`, with the output so far. The command goes on. Call `wait` with `until` `finished` on the pane. |
 | The command is incomplete, for example an open quote or a `\` at the end | A tool error. The shell waits for the rest. Send the keys `ctrl+c` to drop the command. |
-| Fish keeps an incomplete command in its editor, and starts nothing | At the timeout, `status` `running` and a text that says so. The server does not wait for the command any more. |
+| Fish keeps an incomplete command in its editor, and starts nothing | At the timeout, `status` `running` and a note in `notes` that says so. The server does not wait for the command any more. |
 | The pane closes, or the session ends | A tool error that says which |
 | `Control.enabled` goes off | A tool error. The tools stop until the server restarts. |
 | A pane decodes an image, and cannot answer for a moment (`TRY_AGAIN`) | The server asks again a moment later, within the timeout. It never sends the command two times. |
 
 When you type in the pane while `run` waits, your command becomes part of the run.
 When the client cancels a `run` after the command went, the command runs, and the server stops the wait.
-The pane can change its width or clear its screen after the server sent the command. Then `output` holds only the output of the last command, and `truncated` is true.
-When the daemon cannot give the output, the result has the exit codes, an empty `output`, and a text that says why. An example is a text that is larger than one answer can hold.
+The pane can change its width or clear its screen after the server sent the command. Then `output` holds only the output of the last command, `truncated` is true, and `notes` says so.
+When the daemon cannot give the output, the result has the exit codes, an empty `output`, and a note in `notes` that says why. An example is a text that is larger than one answer can hold.
+`notes` holds these notes also in the structured content, for a client that shows only that. It is empty when there is nothing to tell.
 
 ### wait
 
@@ -240,7 +241,9 @@ When the daemon cannot give the output, the result has the exit codes, an empty 
 `pattern` is a regular expression of PCRE2, with at most 1024 characters.
 `^` and `$` match at the start and the end of each line.
 Each check reads only the text since the last check, and the line in progress.
-Thus a prompt with no line end after it, such as `(gdb) `, matches.
+Thus a prompt with no line end after it, such as `(gdb) `, matches, with the space before the cursor.
+After a `send` to the pane, the next `wait` with `until` `text` reads from where the cursor was before the input.
+Thus the prompt that the input answers does not match, also when the program has not read the input yet.
 A match across more lines than came in since the last check can fail: match within one line.
 When more than 1 MiB of text comes between two checks, the check reads only its last 1 MiB.
 At the timeout, one more check reads the text that came last.
@@ -256,6 +259,7 @@ Thus `quiet` waits at least two times that interval. The server reads the interv
 | `matched` | True when it happened |
 | `match` | For `text`: the text that matched, at most `Mcp.outputLimit` bytes. A cut removes its start. |
 | `output` | The text since the wait began. For `finished` after a `run` of this server, since the run began. For a match of `text`, the text that the check that matched read. |
+| `notes` | As for `run` |
 
 A `run` and a `wait` that the client gave a progress token send progress notifications.
 The progress is the number of rows since the start, and the message is the newest line, at most 200 characters.

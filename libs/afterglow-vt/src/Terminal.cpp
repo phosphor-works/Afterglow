@@ -4287,14 +4287,18 @@ public:
     }
 
     /// Writes the cells @p c0 to @p c1 of @p row, then a line feed with
-    /// @p newline. False once the limit cut the text.
-    bool row(const Row& row, int c0, int c1, bool continues, bool newline)
+    /// @p newline. False once the limit cut the text. @p keepBlanks: the
+    /// spaces that a program wrote at the end stay (before the cursor).
+    bool row(const Row& row, int c0, int c1, bool continues, bool newline, bool keepBlanks = false)
     {
         c1 = std::min(c1, visibleColumns(row));
         // The blanks at the end of a line go, unless they show a background
         // or a link in ANSI.
         int end = c1;
-        if (m_format.ansi && !continues) {
+        if (keepBlanks && !continues) {
+            while (end > c0 && row.at(end - 1).isEmpty())
+                --end;
+        } else if (m_format.ansi && !continues) {
             while (end > c0 && blank(row.at(end - 1)))
                 --end;
         }
@@ -4319,7 +4323,7 @@ public:
             }
         }
         if (!continues) {
-            if (!m_format.ansi) {
+            if (!m_format.ansi && !keepBlanks) {
                 while (!line.empty() && line.back() == ' ')
                     line.pop_back();
             } else {
@@ -4361,6 +4365,18 @@ public:
     std::string take()
     {
         return std::move(m_out);
+    }
+
+    /// Whether a program wrote any of the cells @p c0 to @p c1 of @p row,
+    /// a space too.
+    bool writesAny(const Row& row, int c0, int c1) const
+    {
+        c1 = std::min(c1, visibleColumns(row));
+        for (int x = std::max(c0, 0); x < c1; ++x) {
+            if (!row.at(x).isEmpty())
+                return true;
+        }
+        return false;
     }
 
     /// Whether the cells @p c0 to @p c1 of @p row give an empty line:
@@ -4516,7 +4532,7 @@ std::string Terminal::textBetween(const Mark& from, const Mark& to, std::size_t 
 }
 
 std::string Terminal::textBetween(const Mark& from, const Mark& to, std::size_t maxBytes, bool* truncated,
-                                  const TextFormat& format, bool trimmed) const
+                                  const TextFormat& format, bool trimmed, bool toCursor) const
 {
     const Screen& scr = *m_primary;
     const long long first = scr.absoluteIndexOf(from.row);
@@ -4528,11 +4544,12 @@ std::string Terminal::textBetween(const Mark& from, const Mark& to, std::size_t 
     }
     // The start scrolled out of history: from the oldest row kept.
     return textOfRows(scr, first < 0 ? 0 : first, first < 0 ? 0 : from.col, last, to.col, maxBytes, truncated, format,
-                      trimmed);
+                      trimmed, toCursor);
 }
 
 std::string Terminal::textOfRows(const Screen& scr, long long first, int firstCol, long long last, int lastCol,
-                                 std::size_t maxBytes, bool* truncated, const TextFormat& format, bool trimmed) const
+                                 std::size_t maxBytes, bool* truncated, const TextFormat& format, bool trimmed,
+                                 bool toCursor) const
 {
     if (truncated)
         *truncated = false;
@@ -4549,10 +4566,16 @@ std::string Terminal::textOfRows(const Screen& scr, long long first, int firstCo
         ++start;
         startCol = 0;
     }
+    // The blanks that a prompt such as ">>> " ends with, before the cursor,
+    // are text: a pattern that waits for the prompt reads them.
+    const auto keeps = [&](long long i) {
+        return toCursor && i == last
+            && blanks.writesAny(scr.absoluteRow(std::size_t(i)), i == start ? startCol : 0, lastCol);
+    };
     // Rows that write nothing at the end: the caller trims their line feeds,
     // so they take no room.
     if (trimmed) {
-        while (end > start && !scr.absoluteRow(std::size_t(end - 1)).wrapped
+        while (end > start && !keeps(end) && !scr.absoluteRow(std::size_t(end - 1)).wrapped
                && blanks.writesNothing(scr.absoluteRow(std::size_t(end)), false, 0, endCol)) {
             --end;
             endCol = scr.cols();
@@ -4576,7 +4599,7 @@ std::string Terminal::textOfRows(const Screen& scr, long long first, int firstCo
                 break;
             TextWriter measure(scr, format, maxBytes - total - carried);
             if (!measure.row(row, i == start ? startCol : 0, i == end ? endCol : scr.cols(), continues,
-                             !continues && i < end))
+                             !continues && i < end, keeps(i)))
                 break;
             total += measure.take().size() + carried;
             fit = i;
@@ -4599,7 +4622,7 @@ std::string Terminal::textOfRows(const Screen& scr, long long first, int firstCo
         const Row& row = scr.absoluteRow(std::size_t(i));
         const bool continues = row.wrapped && i < end;
         if (!writer.row(row, i == start ? startCol : 0, i == end ? endCol : scr.cols(), continues,
-                        !continues && i < end))
+                        !continues && i < end, keeps(i)))
             break;
     }
     if (truncated) {
@@ -5405,8 +5428,9 @@ std::string Terminal::textSince(const TextMark& from, std::size_t maxBytes, bool
     const int col = std::clamp(from.col, 0, m_primary->cols());
     // A carriage return left the cursor before the mark on its row: what
     // the program wrote over the row after the mark.
-    const Mark to = from.row == cursor.row && col > cursor.col ? Mark{cursor.row, m_primary->cols(), true} : cursor;
-    std::string out = textBetween({from.row, col, true}, to, maxBytes, truncated, format, true);
+    const bool returned = from.row == cursor.row && col > cursor.col;
+    const Mark to = returned ? Mark{cursor.row, m_primary->cols(), true} : cursor;
+    std::string out = textBetween({from.row, col, true}, to, maxBytes, truncated, format, true, !returned);
     while (!out.empty() && out.back() == '\n')
         out.pop_back();
     return out;

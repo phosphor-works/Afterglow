@@ -662,7 +662,8 @@ public:
     }
     /// The cursor's place on the primary screen, as a mark for textSince().
     TextMark textMark() const;
-    /// The text of the primary screen from @p from to the cursor. The text
+    /// The text of the primary screen from @p from to the cursor, with the
+    /// blanks before the cursor on its row (the space of a prompt). The text
     /// of the screen on the alternate screen, which has no history, and of
     /// the live screen when the cursor went above the row of @p from. From
     /// @p from to the end of its row when the cursor is left of it on that
@@ -1125,14 +1126,16 @@ private:
     std::string textBetween(const Mark& from, const Mark& to, std::size_t maxBytes = 1024 * 1024,
                             bool* truncated = nullptr) const;
     /// @p trimmed: the caller trims the line feeds at the end, so blank rows
-    /// that the limit left out do not count as cut.
+    /// that the limit left out do not count as cut. @p toCursor: @p to is
+    /// the cursor, and the blanks before it on its row stay.
     std::string textBetween(const Mark& from, const Mark& to, std::size_t maxBytes, bool* truncated,
-                            const TextFormat& format, bool trimmed = false) const;
+                            const TextFormat& format, bool trimmed = false, bool toCursor = false) const;
     /// The text of the rows @p first to @p last (absolute indices of
     /// @p scr), from column @p firstCol of the first to @p lastCol of the
-    /// last. @p trimmed: as textBetween().
+    /// last. @p trimmed and @p toCursor: as textBetween().
     std::string textOfRows(const Screen& scr, long long first, int firstCol, long long last, int lastCol,
-                           std::size_t maxBytes, bool* truncated, const TextFormat& format, bool trimmed) const;
+                           std::size_t maxBytes, bool* truncated, const TextFormat& format, bool trimmed,
+                           bool toCursor = false) const;
     /// The text of the rows of @p scr from absolute index @p top, a screen
     /// high, without the line feeds at its end.
     std::string screenText(const Screen& scr, std::size_t top, std::size_t maxBytes, bool* truncated,

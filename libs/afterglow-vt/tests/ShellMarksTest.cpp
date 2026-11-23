@@ -382,6 +382,41 @@ TEST(ShellMarks, TextSinceAMarkThatTheCursorLeft)
     EXPECT_EQ(row.t.textSince(prompt, 1024, nullptr, nullptr, nullptr, {}), "abc");
 }
 
+// The spaces that a program wrote before the cursor on its row are text: a
+// prompt such as ">>> " or "(gdb) " keeps its space, also with keepEnd and
+// in ANSI. The blanks after the cursor, the cells that no program wrote, and
+// the blanks at the end of the rows above it go.
+TEST(ShellMarks, TextSinceKeepsTheBlanksBeforeTheCursor)
+{
+    TextFormat end;
+    end.keepEnd = true;
+    TextFormat ansi;
+    ansi.ansi = true;
+    for (const TextFormat& format : {TextFormat{}, end, ansi}) {
+        Term t(20, 4);
+        const TextMark mark = t.t.textMark();
+        t.feed("42   \r\n>>> ");
+        EXPECT_EQ(t.t.textSince(mark, 1024, nullptr, nullptr, nullptr, format), "42\n>>> ");
+        t.feed("   \x1b[3D");
+        EXPECT_EQ(t.t.textSince(mark, 1024, nullptr, nullptr, nullptr, format), "42\n>>> ");
+    }
+
+    // A row of blanks before the cursor alone: no row of text.
+    Term blank(20, 4);
+    const TextMark top = blank.t.textMark();
+    blank.feed("x\r\n  ");
+    EXPECT_EQ(blank.t.textSince(top, 1024, nullptr, nullptr, nullptr, {}), "x\n  ");
+    blank.feed("\r");
+    EXPECT_EQ(blank.t.textSince(top, 1024, nullptr, nullptr, nullptr, {}), "x");
+    // A cursor that moved over cells that no program wrote.
+    Term moved(20, 4);
+    const TextMark start = moved.t.textMark();
+    moved.feed("x\r\n\r\nab\x1b[3C");
+    EXPECT_EQ(moved.t.textSince(start, 1024, nullptr, nullptr, nullptr, {}), "x\n\nab");
+    moved.feed("\r\n\x1b[2C");
+    EXPECT_EQ(moved.t.textSince(start, 1024, nullptr, nullptr, nullptr, {}), "x\n\nab");
+}
+
 // The cuts of a long text: the rows before the mark are no part of the text,
 // a last row longer than the limit keeps its start, blank rows at the end
 // and a right prompt after the cursor take no room.

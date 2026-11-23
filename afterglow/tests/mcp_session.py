@@ -585,6 +585,56 @@ def gdb_prompt(home):
 
 
 @case
+def wait_after_send(home):
+    """A prompt that ends with a space, as gdb's and Python's do, and the next prompt after a send: not the prompt
+    that the input answered, which the line in progress still shows until the program echoes the input."""
+    s = home.server()
+    pane = s.tool('open_pane', where='tab', argv=[
+        home.bash, '--norc', '-c', 'while :; do printf "> "; IFS= read -r l || exit; sleep 1; echo "got $l"; done'])['pane']
+    # Its first prompt, with the space before the cursor.
+    result = s.tool('wait', pane=pane, until='text', pattern='^> $', timeout_ms=10000)
+    check(result['status'] == 'matched' and result['match'] == '> ', result)
+    # The input goes, and the answer comes a second later, then the next prompt.
+    s.tool('send', pane=pane, text='x\r')
+    start = time.monotonic()
+    result = s.tool('wait', pane=pane, until='text', pattern='^> $', timeout_ms=10000)
+    check(result['status'] == 'matched' and 'got x' in result['output'], result)
+    check(time.monotonic() - start >= 0.8, (time.monotonic() - start, result))
+    # A wait that began before the send reads what the input makes. The next
+    # wait reads from its own start: the old answer does not match again.
+    waiting = s.start_call('wait', pane=pane, until='text', pattern='^got y$', timeout_ms=10000)
+    s.tool('send', pane=pane, text='y\r')
+    check(s.result(waiting, 15)['structuredContent']['matched'], 'no got y')
+    s.tool('wait', pane=pane, until='text', pattern='^> $', timeout_ms=10000)
+    result = s.tool('wait', pane=pane, until='text', pattern='^got y$', timeout_ms=1500)
+    check(result['status'] == 'running' and not result['matched'], result)
+    check(result['notes'] == [], result)
+
+
+@case
+def fish_holds_an_incomplete_command(home):
+    """Fish keeps an incomplete command in its editor and starts nothing: run says so in notes, which a client
+    that reads only the structured content reads too."""
+    fish = shutil.which('fish')
+    if not fish:
+        raise Skip('fish is not in PATH')
+    home.settings(shell=fish)
+    try:
+        s = home.server()
+    finally:
+        home.settings()
+    pane = s.first_pane()
+    s.at_prompt(pane)
+    result = s.tool('run', pane=pane, command='echo "open quote', timeout_ms=2000)
+    check(result['status'] == 'running', result)
+    check(len(result['notes']) == 1 and 'incomplete command' in result['notes'][0], result)
+    s.tool('send', pane=pane, keys=['ctrl+c'])
+    s.at_prompt(pane)
+    result = s.tool('run', pane=pane, command='echo done', timeout_ms=10000)
+    check(result['status'] == 'finished' and result['exit_code'] == 0 and result['notes'] == [], result)
+
+
+@case
 def flood(home):
     """wait until text during 50 MB of output: each check reads only what is new, and the server answers meanwhile."""
     s = home.server()

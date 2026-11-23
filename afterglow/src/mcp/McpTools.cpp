@@ -52,11 +52,13 @@ QJsonObject runProperties(const QStringList& statuses)
         {L("duration_ms"), nullable("integer")},
         {L("output"), typed("string")},
         {L("truncated"), typed("boolean")},
+        {L("notes"), QJsonObject{{L("type"), L("array")}, {L("items"), typed("string")}}},
     };
 }
 
 const QStringList RunRequired{QStringLiteral("status"),      QStringLiteral("exit_code"), QStringLiteral("exit_codes"),
-                              QStringLiteral("duration_ms"), QStringLiteral("output"),    QStringLiteral("truncated")};
+                              QStringLiteral("duration_ms"), QStringLiteral("output"),    QStringLiteral("truncated"),
+                              QStringLiteral("notes")};
 
 McpTool listPanesTool()
 {
@@ -149,7 +151,8 @@ McpTool runTool()
             "one command, with one exit code. exit_code is the last one. At the timeout, status is running and the "
             "command goes on: call wait with until finished on the pane. An incomplete command (an open quote, or "
             "a backslash at the end) is an error, and the shell waits for the rest: send keys ctrl+c. Fish keeps an "
-            "incomplete command in its editor, and run tells so at the timeout. The pane needs shell integration: "
+            "incomplete command in its editor, and run tells so in notes at the timeout. The pane needs shell "
+            "integration: "
             "else use send and wait."))
         .setInputSchema(schema(
             {{L("pane"), paneArgument()},
@@ -178,9 +181,11 @@ McpTool waitTool()
             "(the next prompt shows), as run returns it. At a prompt with no run of this server, it answers at "
             "once with the last command's exit code and output. until text: new text matches pattern, a regular "
             "expression (PCRE) in which ^ and $ match at line ends. Each check reads only the text since the last "
-            "check and the line in progress, so match within one line. On the alternate screen, or after a program "
-            "cleared the screen, a check reads the whole screen, which can hold older text. until quiet: no new "
-            "text for quiet_ms, at least twice the setting Control.eventInterval. until closed: the pane closes. "
+            "check and the line in progress, so match within one line. After a send to the pane, it reads from "
+            "where the input went: the prompt that the input answers does not match. On the alternate screen, or "
+            "after a program cleared the screen, a check reads the whole screen, which can hold older text. until "
+            "quiet: no new text for quiet_ms, at least twice the setting Control.eventInterval. until closed: the "
+            "pane closes. "
             "matched is true when it happened, and status says what: finished, matched, quiet or closed, or "
             "running at the timeout. output is the text since the wait began, since the run began for until "
             "finished, and the text that the matching check read for a match."))
@@ -305,7 +310,8 @@ McpResult closedResult(quint32 pane)
                                                        {L("exit_codes"), QJsonArray()},
                                                        {L("duration_ms"), QJsonValue()},
                                                        {L("output"), QString()},
-                                                       {L("truncated"), false}});
+                                                       {L("truncated"), false},
+                                                       {L("notes"), QJsonArray()}});
     done.addText(QStringLiteral("Pane %1 is closed.").arg(pane));
     return done;
 }
@@ -346,6 +352,9 @@ struct McpTools::Wait
     /// Where the next check of until text reads from: the start of the
     /// cursor's line at the check before.
     QJsonObject searchMark;
+    /// The mark of a send before the wait: no check reads before it, where
+    /// the line in progress still showed the prompt that the input answered.
+    QJsonObject floor;
     /// Why the mark at the start of a wait failed.
     QString markError;
     /// The mark at the start of a wait has not come: a pane that decodes an
@@ -922,14 +931,20 @@ void McpTools::checkText(quint64 serial)
                                                            {L("exit_codes"), QJsonArray()},
                                                            {L("duration_ms"), QJsonValue()},
                                                            {L("output"), output.text},
-                                                           {L("truncated"), output.truncated || matched.truncated}};
+                                                           {L("truncated"), output.truncated || matched.truncated},
+                                                           {L("notes"), QJsonArray()}};
                                         McpResult done = McpResult::structured(result);
                                         done.addText(QStringLiteral("Pane %1 matched.").arg(wait->pane));
                                         return finishWait(serial, done);
                                     }
                                     // The next check reads from the start of the cursor's
                                     // line: the line in progress, and what comes after it.
-                                    wait->searchMark = rowMark(row, epoch);
+                                    // On the row of a send, from where the input went.
+                                    const QJsonObject& floor = wait->floor;
+                                    wait->searchMark = !floor.isEmpty() && epochOf(floor) == epoch
+                                            && floor.value(L("row")).toInteger() == row
+                                        ? floor
+                                        : rowMark(row, epoch);
                                     if (wait->lastCheckStarted)
                                         return finishWithText(serial, QStringLiteral("running"), {});
                                     checked(serial);
@@ -1011,6 +1026,18 @@ void McpTools::finishWithText(quint64 serial, const QString& status, const QJson
                 result.insert(L("matched"), status != L("running"));
                 result.insert(L("match"), QJsonValue());
             }
+            // A client that reads only the structured result reads these too.
+            QStringList notes;
+            if (!note.isEmpty())
+                notes << note;
+            if (stale) {
+                notes << QStringLiteral(
+                    "The pane changed its width or cleared its screen since the wait began: "
+                    "output is the output of the last command only.");
+            }
+            if (error)
+                notes << QStringLiteral("The output could not be read: %1").arg(error->message);
+            result.insert(L("notes"), QJsonArray::fromStringList(notes));
             McpResult done = McpResult::structured(result);
             if (status == L("running")) {
                 done.addText(
@@ -1020,15 +1047,8 @@ void McpTools::finishWithText(quint64 serial, const QString& status, const QJson
             } else {
                 done.addText(QStringLiteral("Pane %1: %2.").arg(wait->pane).arg(status));
             }
-            if (!note.isEmpty())
-                done.addText(note);
-            if (stale) {
-                done.addText(
-                    QStringLiteral("The pane changed its width or cleared its screen since the wait began: "
-                                   "output is the output of the last command only."));
-            }
-            if (error)
-                done.addText(QStringLiteral("The output could not be read: %1").arg(error->message));
+            for (const QString& line : std::as_const(notes))
+                done.addText(line);
             finishWait(serial, done);
         });
 }
@@ -1195,6 +1215,9 @@ void McpTools::run(McpCall call)
     const quint64 serial = addWait(std::move(call), pane, true);
     if (!serial)
         return;
+    // The output of the run is what the next wait reads, not the text since
+    // a send before it.
+    m_sendMarks.remove(pane);
     Wait& wait = *waitOf(serial);
     wait.run = true;
     wait.tailLines = tailLines;
@@ -1415,6 +1438,18 @@ void McpTools::markWait(quint64 serial)
                         wait->mark = value.toObject();
                         wait->searchMark = wait->mark;
                         wait->searchMark.insert(L("col"), 0);
+                        // After a send, the line in progress still shows the
+                        // prompt that the input answered: the text starts where
+                        // the input went. A clear or a reflow since then: the
+                        // line in progress is new.
+                        if (wait->until == Wait::Until::Text) {
+                            const QJsonObject sent = m_sendMarks.take(wait->pane);
+                            if (!sent.isEmpty() && epochOf(sent) == epochOf(wait->mark)) {
+                                wait->mark = sent;
+                                wait->searchMark = sent;
+                                wait->floor = sent;
+                            }
+                        }
                         wait->progressBase = wait->mark.value(L("row")).toInteger();
                         wait->progressEpoch = epochOf(wait->mark);
                     }
@@ -1502,7 +1537,8 @@ void McpTools::startWait(quint64 serial)
                                            {L("exit_codes"), lastExit.isDouble() ? QJsonArray{lastExit} : QJsonArray()},
                                            {L("duration_ms"), QJsonValue()},
                                            {L("output"), output.text},
-                                           {L("truncated"), output.truncated}};
+                                           {L("truncated"), output.truncated},
+                                           {L("notes"), QJsonArray()}};
                         McpResult done = McpResult::structured(result);
                         done.addText(
                             QStringLiteral("Pane %1 is at its prompt: this is its last command.").arg(wait->pane));
@@ -1557,7 +1593,38 @@ void McpTools::send(McpCall call)
             return;
         }
     }
-    sendFrom(std::make_shared<McpCall>(std::move(call)), std::make_shared<const SendCalls>(std::move(calls)), 0);
+    markSend(std::make_shared<McpCall>(std::move(call)), std::make_shared<const SendCalls>(std::move(calls)));
+}
+
+void McpTools::markSend(const CallPtr& call, const std::shared_ptr<const SendCalls>& calls)
+{
+    const qint64 pane = call->arguments().value(L("pane")).toInteger();
+    // Where the cursor is before the input goes: the next wait until text of
+    // the pane reads from there, not the prompt that the input answers.
+    m_link.call(QStringLiteral("mark"), {pane},
+                [this, call, calls, pane](const QJsonValue& value, const DaemonLink::Error* error) {
+                    if (!call->isValid())
+                        return;
+                    if (tryAgain(error)) {
+                        QTimer::singleShot(retryMs(), this, [this, call, calls] {
+                            if (call->isValid())
+                                markSend(call, calls);
+                        });
+                        return;
+                    }
+                    // A pane that does not exist: the first part of the send says so.
+                    // A wait until text that began before the send reads what the
+                    // input makes: the mark would let the next wait match it again.
+                    const bool covered = std::any_of(m_waits.begin(), m_waits.end(), [pane](const auto& entry) {
+                        const Wait& wait = *entry.second;
+                        return wait.pane == quint32(pane) && wait.until == Wait::Until::Text && !wait.markPending;
+                    });
+                    if (!error && !covered)
+                        m_sendMarks.insert(quint32(pane), value.toObject());
+                    else
+                        m_sendMarks.remove(quint32(pane));
+                    sendFrom(call, calls, 0);
+                });
 }
 
 void McpTools::sendFrom(const CallPtr& call, const std::shared_ptr<const SendCalls>& calls, qsizetype index)
@@ -1711,6 +1778,7 @@ void McpTools::onEvent(const QString& name, const QJsonArray& args)
     }
     if (closed) {
         m_runs.remove(pane);
+        m_sendMarks.remove(pane);
         m_shells.remove(pane);
         m_starting.remove(pane);
         m_closed.insert(pane);
