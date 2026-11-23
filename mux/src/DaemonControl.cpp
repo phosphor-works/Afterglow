@@ -4,22 +4,25 @@
 // The control target of the daemon: `afterglow ctl --session NAME`, and
 // `afterglow ctl` in a session pane. The calls and their values are those of
 // the control target of a window (ControlSocket in the application), so that
-// one client speaks both. The daemon answers the calls on panes, text,
-// keys, colours, user variables, signals and layout itself, with its own
-// pane IDs, also while no window shows the session; a window that shows it
-// moves the panes that the daemon places, and finds the neighbors of a
-// pane in its own sizes. The calls that only a window can answer (the
-// titles of panes and tabs, shader signals, notifications, actions, windows,
-// directories, projects, script diagnostics, overlays, screenshots, pane
-// sizes, scrolling, the font size, the opacity and the window's state) go to
-// that window, whose answer the daemon passes back. A tab's title and a
-// pane's size need the window too: it cleans the title as it shows it, and
-// measures the panes.
+// one client speaks both. Only the daemon gives the layout call, the options
+// prompt and enter of paste, and the option endSession of close.
+//
+// The daemon answers the calls on panes, text, keys, colours, user
+// variables, signals and layout itself, with its own pane IDs, also while
+// no window shows the session; a window that shows it moves the panes that
+// the daemon places, and finds the neighbors of a pane in its own sizes.
+// The calls that only a window can answer (the titles of panes and tabs,
+// shader signals, notifications, actions, windows, directories, projects,
+// script diagnostics, overlays, screenshots, pane sizes, scrolling, the font
+// size, the opacity and the window's state) go to that window, whose answer
+// the daemon passes back. A tab's title and a pane's size need the window
+// too: it cleans the title as it shows it, and measures the panes.
 
 #include "Daemon.h"
 
 #include <AfterglowProto/Color.h>
 #include <AfterglowPty/Pty.h>
+#include <AfterglowVt/Input.h>
 #include <AfterglowVt/KeyNames.h>
 #include <AfterglowVt/Terminal.h>
 
@@ -28,6 +31,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <exception>
+#include <limits>
 #include <optional>
 #include <set>
 #include <string_view>
@@ -91,11 +95,11 @@ bool among(std::string_view fn, std::initializer_list<std::string_view> names)
 /// The calls whose first argument is a pane.
 bool takesPane(std::string_view fn)
 {
-    return among(fn, {"sendText",    "getText",       "split",         "newTab",        "focus",       "close",
-                      "setTitle",    "signal",        "notify",        "runAction",     "movePane",    "detachTab",
-                      "saveProject", "overlay",       "screenshot",    "focusNeighbor", "resizePane",  "sendKeys",
-                      "scroll",      "setTabTitle",   "getColors",     "setColors",     "setFontSize", "setOpacity",
-                      "setUserVar",  "signalProgram", "setWindowState"});
+    return among(fn, {"sendText",    "getText",       "split",          "newTab",        "focus",        "close",
+                      "setTitle",    "signal",        "notify",         "runAction",     "movePane",     "detachTab",
+                      "saveProject", "overlay",       "screenshot",     "focusNeighbor", "resizePane",   "sendKeys",
+                      "scroll",      "setTabTitle",   "getColors",      "setColors",     "setFontSize",  "setOpacity",
+                      "setUserVar",  "signalProgram", "setWindowState", "mark",          "shellRegions", "paste"});
 }
 
 /// The calls that only a window answers.
@@ -124,9 +128,9 @@ std::optional<AfterglowVt::Rgb> colorNamed(std::string_view name)
 /// window's control target takes it, whose router refuses another count.
 std::optional<std::size_t> arity(std::string_view fn)
 {
-    if (fn == "listPanes" || fn == "focusedPane")
+    if (fn == "listPanes" || fn == "focusedPane" || fn == "layout")
         return 0;
-    if (fn == "focus" || fn == "close" || fn == "detachTab")
+    if (fn == "focus" || fn == "detachTab")
         return 1;
     return std::nullopt;
 }
@@ -137,6 +141,45 @@ std::optional<std::uint32_t> paneArg(const Json::Value& value)
     if (!id || *id < 0 || *id > 0xffffffffLL)
         return std::nullopt;
     return std::uint32_t(*id);
+}
+
+/// A mark of the mark call: {row, col, epoch}, whole numbers that a double
+/// holds exactly. Its keys and no other.
+std::optional<AfterglowVt::TextMark> markFrom(const Json::Value& value)
+{
+    if (!value.isObject() || value.toObject().size() != 3)
+        return std::nullopt;
+    const Json::Value* row = value.find("row");
+    const Json::Value* col = value.find("col");
+    const Json::Value* epoch = value.find("epoch");
+    const auto r = row ? row->toInteger() : std::nullopt;
+    const auto c = col ? col->toInteger() : std::nullopt;
+    const auto e = epoch ? epoch->toInteger() : std::nullopt;
+    if (!r || !c || !e || *r < 0 || *r > (1LL << 53) || *c < 0 || *c > std::numeric_limits<int>::max() || *e < 0
+        || *e > (1LL << 53))
+        return std::nullopt;
+    return AfterglowVt::TextMark{std::uint64_t(*r), int(*c), std::uint64_t(*e)};
+}
+
+Json::Value markJson(const AfterglowVt::TextMark& mark)
+{
+    return Json::Object{{"row", std::int64_t(mark.row)}, {"col", mark.col}, {"epoch", std::int64_t(mark.epoch)}};
+}
+
+/// A region of shellRegions: its ID, which the after argument takes, its
+/// kind, whether it is still open, its exit code (an output region that D
+/// closed with one), whether its start left the scrollback, and whether its
+/// text can still be read.
+Json::Value regionJson(const AfterglowVt::SemanticRegion& region)
+{
+    return Json::Object{
+        {"id", std::int64_t(region.id)},
+        {"kind", std::string(ShellRegionKinds[std::size_t(region.kind)])},
+        {"open", region.open},
+        {"exit_code", region.exitCode ? Json::Value(*region.exitCode) : Json::Value()},
+        {"start_trimmed", region.startTrimmed},
+        {"available", region.available},
+    };
 }
 
 std::optional<Side> sideOf(const Json::Value& value)
@@ -235,13 +278,33 @@ Json::Value paneMap(const Session& session, const MuxPane& pane, bool readText, 
     };
     if (!listed)
         return map;
-    map.emplace_back("at_prompt", facts.atPrompt);
+    map.emplace_back("shell", std::string(AfterglowVt::shellStateName(facts.shell)));
+    map.emplace_back("input", facts.input);
+    map.emplace_back("last_exit", facts.lastExit ? Json::Value(*facts.lastExit) : Json::Value());
     map.emplace_back("user_vars", userVarsJson(facts.userVars, readText));
     // The arguments only with read access: their read can wait on the
     // memory lock of a stuck process.
     map.emplace_back("foreground", foregroundJson(pane.foreground(readText), readText));
     map.emplace_back("neighbors", neighborsJson(layout, pane.id(), facts.size));
     return map;
+}
+
+/// The refusal of a paste with the option prompt, by what the shell of pane
+/// @p pane does.
+std::string notAtPrompt(std::uint32_t pane, AfterglowVt::ShellState state)
+{
+    const std::string id = std::to_string(pane);
+    switch (state) {
+    case AfterglowVt::ShellState::Prompt:
+        return "the command line of pane " + id + " holds typed text";
+    case AfterglowVt::ShellState::Continuation:
+        return "the shell of pane " + id + " waits for the rest of a command";
+    case AfterglowVt::ShellState::Running:
+        return "the shell of pane " + id + " runs a command";
+    case AfterglowVt::ShellState::None:
+        break;
+    }
+    return "pane " + id + " shows no prompt of shell integration";
 }
 
 } // namespace
@@ -367,6 +430,23 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
     }
     if (fn == "focusedPane")
         return ipcReply(request.id.value_or(0), std::int64_t(session.focusedPane()));
+    if (fn == "layout") {
+        // The tabs and splits that the daemon keeps, which the window that
+        // shows the session sends after each change: an agent saves a
+        // project of a session that no window shows from them.
+        Layout layout = session.layout();
+        layout.moved.clear();
+        // Commands can carry secrets: they leave only with read access.
+        if (!readText) {
+            for (auto& [id, values] : layout.values)
+                values.command.clear();
+        }
+        std::string reply = ipcReply(request.id.value_or(0), toJson(layout));
+        if (reply.size() > IpcServerConnection::MaxWaitingBytes - connection.waitingBytes()) {
+            return failed(request, "the layout of session '" + session.name() + "' is larger than one answer can hold");
+        }
+        return reply;
+    }
     if (fn == "sendText") {
         if (args.size() != 2 || !args[1].isString())
             return ipcError(request.id, IpcErrorCode::InvalidArg, "sendText takes (pane, text)");
@@ -398,7 +478,7 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
             return failed(request, "sendKeys needs a key");
         const auto modes = pane->modes();
         if (!modes)
-            return failed(request, "pane " + std::to_string(pane->id()) + " decodes an image: try again");
+            return decoding(request, pane->id());
         std::string bytes;
         for (const AfterglowVt::NamedKey& key : keys)
             bytes += AfterglowVt::encodeNamedKey(key, *modes);
@@ -409,12 +489,66 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
             return ipcReply(request.id.value_or(0), nullptr);
         return failed(request, "program closed or input queue full");
     }
+    if (fn == "paste") {
+        if (args.size() < 2 || args.size() > 3 || !args[1].isString() || (args.size() == 3 && !args[2].isObject()))
+            return ipcError(request.id, IpcErrorCode::InvalidArg, "paste takes (pane, text[, {prompt, enter}])");
+        // prompt: only into an empty command line at a primary prompt, so
+        // that the text never reaches a program that runs. enter: the Enter
+        // key after the paste, in the same write.
+        bool atPrompt = false;
+        bool enter = false;
+        if (args.size() == 3) {
+            for (const auto& [key, value] : args[2].toObject()) {
+                bool* flag = key == "prompt" ? &atPrompt : key == "enter" ? &enter : nullptr;
+                if (!flag || !value.isBool()) {
+                    return ipcError(request.id, IpcErrorCode::InvalidArg,
+                                    "the options of paste are prompt and enter, true or false");
+                }
+                *flag = value.toBool();
+            }
+        }
+        // An empty paste sends nothing, as in a window: not the paste marks
+        // alone. An Enter that the caller asked for still goes: an empty
+        // line at a prompt runs nothing, and the shell prompts again.
+        if (args[1].toString().empty() && !enter)
+            return ipcReply(request.id.value_or(0), nullptr);
+        // As a paste in a window: bracketed when the program asked for it
+        // (mode 2004), with the line ends as Enter and no other control.
+        const auto modes = pane->modes();
+        if (!modes)
+            return decoding(request, pane->id());
+        std::string bytes =
+            args[1].toString().empty() ? std::string() : AfterglowVt::encodePaste(args[1].toString(), *modes);
+        if (enter)
+            bytes += AfterglowVt::encodeNamedKey(*AfterglowVt::parseKeyName("enter"), *modes);
+        // As sendText: after the window's input that waits.
+        if (shownWindow && shownWindow->holdsInput(pane->id()))
+            return failed(request, "program closed or input queue full");
+        if (bytes.empty())
+            return ipcReply(request.id.value_or(0), nullptr);
+        MuxPane::Input written = MuxPane::Input::Gone;
+        if (atPrompt) {
+            AfterglowVt::ShellState state = AfterglowVt::ShellState::None;
+            bool busy = false;
+            const auto done = pane->inputAtPrompt(bytes, state, busy);
+            if (busy)
+                return decoding(request, pane->id());
+            if (!done)
+                return ipcError(request.id, Error::NotAtPrompt, notAtPrompt(pane->id(), state));
+            written = *done;
+        } else {
+            written = pane->input(bytes);
+        }
+        if (written == MuxPane::Input::Written)
+            return ipcReply(request.id.value_or(0), nullptr);
+        return failed(request, "program closed or input queue full");
+    }
     if (fn == "getColors") {
         if (args.size() != 1)
             return ipcError(request.id, IpcErrorCode::InvalidArg, "getColors takes (pane)");
         const auto colors = pane->colors();
         if (!colors)
-            return failed(request, "pane " + std::to_string(pane->id()) + " decodes an image: try again");
+            return decoding(request, pane->id());
         Json::Object out;
         for (const auto& color : *colors) {
             char hex[8];
@@ -446,7 +580,7 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         case MuxPane::Colors::Applied:
             break;
         case MuxPane::Colors::Decoding:
-            return failed(request, "pane " + std::to_string(pane->id()) + " decodes an image: try again");
+            return decoding(request, pane->id());
         case MuxPane::Colors::NotAColor:
             return failed(request, "pane " + std::to_string(pane->id()) + " took only some of the colors");
         }
@@ -511,24 +645,34 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         }
         const std::string& scope = args[1].toString();
         AfterglowVt::TextFormat format;
+        std::optional<AfterglowVt::TextMark> mark;
         if (args.size() == 3) {
             // As a window reads them (Control::textFormat).
             for (const auto& [key, value] : args[2].toObject()) {
+                if (key == "mark") {
+                    mark = markFrom(value);
+                    if (!mark)
+                        return failed(request, MarkOptionError);
+                    continue;
+                }
                 bool* flag = key == "ansi"  ? &format.ansi
                     : key == "cursor"       ? &format.cursor
                     : key == "wrap_markers" ? &format.wrapMarkers
+                    : key == "keep_end"     ? &format.keepEnd
                                             : nullptr;
                 if (!flag)
-                    return failed(request,
-                                  "unknown getText option " + key + ": the options are ansi, cursor and wrap_markers");
+                    return failed(request, std::string("unknown getText option ") + key + ": " + TextOptionNames);
                 if (!value.isBool())
                     return failed(request, "the getText option " + key + " is true or false");
                 *flag = value.toBool();
             }
         }
+        if ((scope == "since") != mark.has_value())
+            return failed(request, MarkScopeError);
         // The text of one output region ends before the cursor's place, as a
-        // window refuses it.
-        if ((scope == "first-output-on-screen" || scope == "last-visited-output") && format.cursor)
+        // window refuses it. So does the text since a mark on the primary
+        // screen.
+        if ((scope == "first-output-on-screen" || scope == "last-visited-output" || scope == "since") && format.cursor)
             return failed(request, CursorScopeError);
         // A selection is the window's, and so is the output that a prompt
         // jump in it visited last. Without a window there is none to read:
@@ -542,9 +686,18 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         // daemon's, which shows the bottom.
         if (scope == "first-output-on-screen" && window)
             return forward(request, connection, session, args);
-        std::optional<std::string> text;
+        // The end of a command's output and of what came since a mark holds
+        // its result: a cut keeps it. keep_end asks it of the other scopes.
+        format.keepEnd = format.keepEnd || scope == "last-output" || scope == "since";
+        std::optional<MuxPane::Text> text;
         if (scope == "first-output-on-screen") {
             text = pane->firstOutputOnScreen(format);
+        } else if (scope == "since") {
+            text = pane->textSince(*mark, format);
+            // Its rows hold other text since: a reflow, an unscroll, a clear
+            // of the screen or a reset gave them new content.
+            if (text && text->stale)
+                return ipcError(request.id, Error::StaleMark, StaleMarkMessage);
         } else {
             std::optional<AfterglowVt::Terminal::TextScope> textScope;
             if (scope == "screen")
@@ -554,13 +707,16 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
             else if (scope == "last-output")
                 textScope = AfterglowVt::Terminal::TextScope::LastOutput;
             if (!textScope) {
-                return failed(request, std::string("scope is ") + TextScopeNames);
+                return failed(request, std::string("scope is ") + GetTextScopeNames);
             }
             text = pane->text(*textScope, format);
         }
         if (!text)
-            return failed(request, "pane " + std::to_string(pane->id()) + " decodes an image: try again");
-        std::string reply = ipcReply(request.id.value_or(0), std::move(*text));
+            return decoding(request, pane->id());
+        Json::Object answer{{"text", std::move(text->text)}, {"truncated", text->truncated}};
+        if (scope == "since")
+            answer.emplace_back("trimmed", text->trimmed);
+        std::string reply = ipcReply(request.id.value_or(0), std::move(answer));
         // A connection takes no more at once, with what still waits on it: it
         // would close with no answer.
         if (reply.size() > IpcServerConnection::MaxWaitingBytes - connection.waitingBytes()) {
@@ -569,6 +725,26 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
                               + " is larger than one answer can hold: read a smaller scope");
         }
         return reply;
+    }
+    if (fn == "mark") {
+        if (args.size() != 1)
+            return ipcError(request.id, IpcErrorCode::InvalidArg, "mark takes (pane)");
+        const auto mark = pane->textMark();
+        if (!mark)
+            return decoding(request, pane->id());
+        return ipcReply(request.id.value_or(0), markJson(*mark));
+    }
+    if (fn == "shellRegions") {
+        const auto after = args.size() == 2 ? args[1].toInteger() : std::optional<std::int64_t>(0);
+        if (args.size() < 1 || args.size() > 2 || !after || *after < 0)
+            return ipcError(request.id, IpcErrorCode::InvalidArg, "shellRegions takes (pane[, after])");
+        const auto regions = pane->semanticRegions(std::uint64_t(*after));
+        if (!regions)
+            return decoding(request, pane->id());
+        Json::Array list;
+        for (const AfterglowVt::SemanticRegion& region : *regions)
+            list.push_back(regionJson(region));
+        return ipcReply(request.id.value_or(0), std::move(list));
     }
     if (fn == "split" || fn == "newTab") {
         const bool split = fn == "split";
@@ -628,7 +804,7 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         PaneSize size = facts.size;
         if (split) {
             if (!window && !roomBeside(size, side))
-                return failed(request, "not enough room for another pane");
+                return ipcError(request.id, Error::NoRoom, "not enough room for another pane");
             if (side == Side::Right || side == Side::Left)
                 size.cols = std::max(2, size.cols / 2);
             else
@@ -671,12 +847,38 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         if (values)
             layout.values.insert(std::move(values));
         const char* const place = split ? sideName(side) : "tab";
+        // Its program starts here: its first prompt is news to the window.
         tellWindow(session, "placePane",
-                   Json::Array{std::int64_t(id), std::int64_t(pane->id()), place, std::move(command)});
+                   Json::Array{std::int64_t(id), std::int64_t(pane->id()), place, std::move(command), "", true});
         return ipcReply(request.id.value_or(0), std::int64_t(id));
     }
     if (fn == "close") {
+        // endSession false: a close that would end the session closes
+        // nothing. With the option, the answer says whether the session
+        // ended.
+        std::optional<bool> endsSession;
+        if (args.size() == 2) {
+            const Json::Value* value = args[1].isObject() ? args[1].find("endSession") : nullptr;
+            if (!value || !value->isBool() || args[1].toObject().size() != 1)
+                return ipcError(request.id, IpcErrorCode::InvalidArg, "close takes (pane[, {endSession}])");
+            endsSession = value->toBool();
+        } else if (args.size() != 1) {
+            return ipcError(request.id, IpcErrorCode::InvalidArg, "close takes (pane[, {endSession}])");
+        }
         const std::uint32_t id = pane->id();
+        // A pane whose program exited goes at the next reap(), and the
+        // session ends with its last running program: those do not count.
+        const auto runsBeside = [&session](std::uint32_t closing) {
+            return std::ranges::any_of(session.panes(), [closing](const auto& other) {
+                return other->id() != closing && !other->exited();
+            });
+        };
+        const bool last = !runsBeside(id);
+        if (last && endsSession == false) {
+            return ipcError(request.id, Error::LastPane,
+                            "pane " + std::to_string(id) + " is the last pane of session '" + session.name()
+                                + "': closing it ends the session");
+        }
         if (session.closePane(id) && shownWindow) {
             guarded(*shownWindow, [&] {
                 shownWindow->paneRemoved(id);
@@ -684,8 +886,14 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
             });
         }
         // Its last pane: the session ends, as when its last program exits.
+        // With only exited panes left, reap() ends it at the next pass of
+        // the loop, which their exit woke: their output and their watch
+        // events go first.
+        const bool ended = !runsBeside(id);
         if (session.empty())
             endSession(it);
+        if (endsSession)
+            return ipcReply(request.id.value_or(0), Json::Object{{"sessionEnded", ended}});
         return ipcReply(request.id.value_or(0), nullptr);
     }
     if (fn == "focus") {
@@ -819,8 +1027,10 @@ std::string Daemon::control(const IpcRequest& request, IpcServerConnection& conn
         return ipcReply(request.id.value_or(0), paneMap(session, *pane, readText));
     }
     if (windowCall(fn)) {
-        if (!window)
-            return failed(request, "no window shows session '" + session.name() + "', and only a window can do " + fn);
+        if (!window) {
+            return ipcError(request.id, Error::NotAttached,
+                            "no window shows session '" + session.name() + "', and only a window can do " + fn);
+        }
         return forward(request, connection, session, args);
     }
     return ipcError(request.id, IpcErrorCode::NoSuchFn, "no function '" + fn + "' on target 'control' of a session");
@@ -830,9 +1040,9 @@ std::string Daemon::windowFull(const IpcRequest& request, const Attachment& wind
 {
     if (window.relayRoom())
         return {};
-    return failed(request,
-                  "the window of session '" + window.session()
-                      + "' has not taken the calls before this one yet: try again");
+    return ipcError(request.id, Error::TryAgain,
+                    "the window of session '" + window.session()
+                        + "' has not taken the calls before this one yet: try again");
 }
 
 std::string Daemon::forward(const IpcRequest& request, IpcServerConnection& connection, Session& session,
@@ -840,7 +1050,7 @@ std::string Daemon::forward(const IpcRequest& request, IpcServerConnection& conn
 {
     Attachment* const window = showing(session.name());
     if (!window)
-        return failed(request, "no window shows session '" + session.name() + "'");
+        return ipcError(request.id, Error::NotAttached, "no window shows session '" + session.name() + "'");
     // A window that does not read its events gets no more calls: they would
     // wait in the daemon without a bound.
     if (std::string full = windowFull(request, *window); !full.empty())
@@ -926,7 +1136,7 @@ void Daemon::passReplies(Attachment& window)
                                   "the answer of the window of session '" + window.session()
                                       + "' is larger than the connection can take now");
             }
-            connection->send(std::move(answer));
+            sendTo(*connection, std::move(answer));
             m_forwards.erase(forward);
             holdForAnswers(*connection);
         });
@@ -958,8 +1168,9 @@ void Daemon::answerForwarded()
         // Out of memory, the client gets no error: its connection closes,
         // which tells it, and the other calls still get theirs.
         const bool told = contained("an answer of a window", [&] {
-            connection->send(ipcError(it->second.request, IpcErrorCode::CallFailed,
-                                      "the window of session '" + it->second.session + "' closed before it answered"));
+            sendTo(*connection,
+                   ipcError(it->second.request, IpcErrorCode::CallFailed,
+                            "the window of session '" + it->second.session + "' closed before it answered"));
         });
         if (!told)
             connection->close();
@@ -983,7 +1194,25 @@ void Daemon::holdForAnswers(IpcServerConnection& connection)
 void Daemon::forget(const IpcServerConnection* connection)
 {
     // First what names the connection, which needs no allocation: a failure
-    // below (out of memory) leaves no pointer to it behind.
+    // below (out of memory) leaves no pointer to it behind. A binding set
+    // that this empties ends its session after the loop over the
+    // connections (run()), unless the daemon closed the connection because
+    // its client did not read its output in time: a stopped client is still
+    // there, and its session runs on, bound to no client.
+    const bool overflowed = m_overflowed.erase(connection) > 0;
+    for (auto bound = m_bound.begin(); bound != m_bound.end();) {
+        if (!bound->second.erase(connection) || !bound->second.empty() || !overflowed) {
+            ++bound;
+            continue;
+        }
+        if (const Session* session = sessionBySerial(bound->first)) {
+            std::fprintf(stderr,
+                         "aglow-mux: the client of agent session %s did not read its output in time, and its "
+                         "connection closed: the session runs on, and no client ends it\n",
+                         session->name().c_str());
+        }
+        bound = m_bound.erase(bound);
+    }
     m_selected.erase(connection);
     m_closing.erase(connection);
     m_callerEnvironments.erase(connection);

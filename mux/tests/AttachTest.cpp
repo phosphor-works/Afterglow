@@ -91,6 +91,9 @@ struct Window
         if (!result)
             return error.code.empty() ? error.message : error.code;
         serial = (*result)["window"].toInteger().value_or(0);
+        agent = (*result)["agent"].toBool();
+        if (!(*result)["agent"].isBool())
+            return "the attach answer has no agent";
         return {};
     }
 
@@ -488,6 +491,7 @@ struct Window
 
     std::unique_ptr<IpcConnection> connection; ///< the attach call's, until the stream takes it
     std::int64_t serial = 0; ///< "window" of the attach answer
+    bool agent = false; ///< "agent" of the attach answer
     std::unique_ptr<PhosphorChannel::Stream> stream;
     PhosphorChannel::StreamWriter* input = nullptr;
     PhosphorChannel::StreamWriter* actions = nullptr;
@@ -958,7 +962,7 @@ TEST(MuxAttach, TheAttachCallAnswersWithItsKeys)
     for (const auto& [key, value] : result->toObject())
         keys.push_back(key);
     std::sort(keys.begin(), keys.end());
-    EXPECT_EQ(keys, (std::vector<std::string>{"environment", "name", "window"}));
+    EXPECT_EQ(keys, (std::vector<std::string>{"agent", "environment", "name", "window"}));
     EXPECT_EQ((*result)["name"].toString(), "keep");
     EXPECT_GT((*result)["window"].toInteger().value_or(0), 0);
     // The session's environment, as `afterglow mux new` sent it: the window
@@ -2976,11 +2980,13 @@ struct ControlClient
         if (!connection.connect(daemon.socket(), &error, 2000))
             ADD_FAILURE() << "no connection: " << error.message;
     }
-    /// Empty on success, else the error code.
+    /// Empty on success, else the error code, or the message of a failure
+    /// without one (no answer came).
     std::string select(const std::string& name)
     {
-        return call(Fn::SelectSession, Json::Array{ProtocolVersion, name}, Target).has_value() ? std::string()
-                                                                                               : error.code;
+        if (call(Fn::SelectSession, Json::Array{ProtocolVersion, name}, Target))
+            return {};
+        return error.code.empty() ? "no answer: " + error.message : error.code;
     }
     std::optional<Json::Value> call(const std::string& fn, Json::Array args, const std::string& target = "control")
     {
@@ -3026,7 +3032,7 @@ bool screenShows(ControlClient& ctl, std::int64_t pane, const std::string& part,
     return waitFor(
         [&] {
             const auto text = ctl.call("getText", Json::Array{pane, "screen"});
-            return text && contains(text->toString(), part);
+            return text && contains((*text)["text"].toString(), part);
         },
         wait);
 }
@@ -3152,23 +3158,24 @@ buf = b''
 def answer(line):
     with open(sys.argv[2], 'ab') as f:
         f.write(line)
-while True:
-    with open(sys.argv[1], 'rb') as f:
-        for line in f:
-            if line.strip() == b'spawn':
-                pid = os.fork()
-                if pid == 0:
-                    os.execvp('sleep', ['sleep', '60'])
-                answer(b'%d\n' % pid)
-                continue
-            s.sendall(line)
-            while b'\n' not in buf:
-                more = s.recv(65536)
-                if not more:
-                    sys.exit(1)
-                buf += more
-            reply, _, buf = buf.partition(b'\n')
-            answer(reply + b'\n')
+# Open for writing too: the fifo never ends between two writers, whose
+# lines would go with an end that this read before them.
+f = os.fdopen(os.open(sys.argv[1], os.O_RDWR), 'rb')
+for line in f:
+    if line.strip() == b'spawn':
+        pid = os.fork()
+        if pid == 0:
+            os.execvp('sleep', ['sleep', '60'])
+        answer(b'%d\n' % pid)
+        continue
+    s.sendall(line)
+    while b'\n' not in buf:
+        more = s.recv(65536)
+        if not more:
+            sys.exit(1)
+        buf += more
+    reply, _, buf = buf.partition(b'\n')
+    answer(reply + b'\n')
 )";
         started = bool(daemon.newSession(daemon.options({"python3", "-I", "-c", script, input, output}, name)));
     }
@@ -3316,8 +3323,7 @@ TEST(MuxControl, AnSshSessionOfASessionPaneGetsASocketOfTheDaemon)
     ASSERT_EQ(::mkdir(bin.c_str(), 0700), 0);
     if (script(bin, "ssh", "printf '%s\\n' \"$*\" >> '" + log + "'").empty())
         GTEST_SKIP() << bin << " runs no program";
-    const char* path = std::getenv("PATH");
-    daemon.daemonOnly("PATH", bin + ":" + (path ? path : "/usr/bin:/bin"));
+    daemon.daemonOnly("PATH", bin + ":" + MuxTest::testPath());
     // The socket of an ssh session that a killed daemon of this host left
     // goes. Its name has the ID of the host, as its state socket has: that
     // of another host whose home is the same stays.
@@ -3393,13 +3399,15 @@ TEST(MuxControl, AnSshSessionOfASessionPaneGetsASocketOfTheDaemon)
     EXPECT_EQ(info.st_mode & 077, 0u);
     EXPECT_TRUE(ctl.call("remoteSocketForwarded", Json::Array{token})) << ctl.error.message;
     {
-        // While no window shows the session, its client hears why.
+        // While no window shows the session, its client hears why, with the
+        // code of a client in a session pane.
         RawClient client(socket);
         ASSERT_TRUE(client.connected());
         const auto reply = Json::parse(client.line());
         ASSERT_TRUE(reply);
         EXPECT_EQ((*reply)["type"].toString(), "error");
         EXPECT_FALSE(reply->find("id"));
+        EXPECT_EQ((*reply)["code"].toString(), Error::NotAttached) << Json::write(*reply);
         EXPECT_NE((*reply)["message"].toString().find("no window shows session 's'"), std::string::npos)
             << Json::write(*reply);
     }
@@ -3540,6 +3548,224 @@ TEST(MuxControl, AnSshSessionOfASessionPaneGetsASocketOfTheDaemon)
     EXPECT_TRUE(waitFor([&] {
         return readFile(log).find(ended) != std::string::npos;
     })) << readFile(log);
+}
+
+// An agent session keeps read access whatever a window sends, and so does a
+// session that an agent adopted. A bound session ends when the last
+// connection that bound it closes, also with no word from its client. A
+// session that was adopted is the user's: it is never bound. Only a session
+// whose Control.enabled and Control.allowAdopt are on is adopted, and a
+// window that shows it hears of it, also one that did not start its stream
+// when it happened.
+TEST(MuxControl, AnAgentSessionKeepsReadAccessAndEndsWithItsBoundClients)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    SessionOptions agentOptions = shellOptions(daemon, "a");
+    agentOptions.agent = true;
+    ASSERT_TRUE(daemon.newSession(agentOptions)) << daemon.lastError();
+    for (const char* name : {"p", "q"}) {
+        SessionOptions adoptable = shellOptions(daemon, name);
+        adoptable.control.allowAdopt = true;
+        ASSERT_TRUE(daemon.newSession(adoptable)) << daemon.lastError();
+    }
+    ASSERT_TRUE(daemon.newSession(shellOptions(daemon, "u"))) << daemon.lastError();
+    SessionOptions off = shellOptions(daemon, "off");
+    off.control.enabled = false;
+    off.control.allowAdopt = true;
+    ASSERT_TRUE(daemon.newSession(off)) << daemon.lastError();
+    const auto info = [&](const std::string& name) {
+        return sessionNamed(daemon, name).value_or(SessionInfo{});
+    };
+    EXPECT_TRUE(info("a").agent);
+    EXPECT_FALSE(info("p").agent);
+
+    // Read access from the start, before any window.
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("a"), "");
+    const std::int64_t pane = firstPane(ctl);
+    ASSERT_NE(pane, 0);
+    EXPECT_TRUE(ctl.call("getText", Json::Array{pane, "screen"})) << ctl.error.message;
+    // A window that shows the agent session sends no read access: it stays.
+    {
+        Window w;
+        ASSERT_EQ(w.attach(daemon, "a"), "");
+        EXPECT_TRUE(w.agent);
+        ASSERT_TRUE(w.until([&] {
+            return w.pane != 0 && contains(w.screen(), "$ ");
+        })) << w.screen();
+        ASSERT_TRUE(w.sendSettings(SessionSettings{daemon.options({"/bin/sh"}, "x").terminal, {true, false, ""}}));
+    }
+    // The daemon read the settings before the end of the window's stream.
+    ASSERT_TRUE(waitFor([&] {
+        return !info("a").attached;
+    }));
+    EXPECT_TRUE(ctl.call("getText", Json::Array{pane, "screen"})) << ctl.error.message;
+
+    // The plain session has none; adopted, it has it, and its window marks
+    // it. So does the window that started its stream only after.
+    ControlClient plain(daemon);
+    ASSERT_EQ(plain.select("p"), "");
+    const std::int64_t plainPane = firstPane(plain);
+    ASSERT_NE(plainPane, 0);
+    EXPECT_FALSE(plain.call("getText", Json::Array{plainPane, "screen"}));
+    EXPECT_EQ(plain.error.message, "reading pane text is off (Control.allowReadText)");
+    Window shown;
+    ASSERT_EQ(shown.attach(daemon, "p"), "");
+    EXPECT_FALSE(shown.agent);
+    ASSERT_TRUE(shown.until([&] {
+        return shown.pane != 0;
+    }));
+    Window late;
+    ASSERT_EQ(late.call(daemon, "q"), "");
+    EXPECT_FALSE(late.agent);
+    IpcConnection::Error adoptError;
+    for (const char* name : {"p", "q"})
+        ASSERT_TRUE(daemon.call(Fn::AdoptSession, Json::Array{name}, &adoptError)) << adoptError.message;
+    EXPECT_TRUE(info("p").agent);
+    EXPECT_TRUE(plain.call("getText", Json::Array{plainPane, "screen"})) << plain.error.message;
+    const auto markedAgent = [](const Window& w) {
+        const auto calls = w.controls();
+        return std::any_of(calls.begin(), calls.end(), [](const Json::Value& call) {
+            return call["fn"].toString() == "agent" && call["id"].toInteger() == 0;
+        });
+    };
+    EXPECT_TRUE(shown.until([&] {
+        return markedAgent(shown);
+    }));
+    ASSERT_EQ(late.connect(), "");
+    EXPECT_TRUE(late.until([&] {
+        return markedAgent(late);
+    }));
+    // After the layout, which is the first event.
+    ASSERT_FALSE(late.events.empty());
+    EXPECT_EQ(late.events.front().type, Attach::EventType::Layout);
+    // Read access whatever the window's settings say, which the daemon reads
+    // before a detach.
+    ASSERT_TRUE(shown.sendSettings(SessionSettings{daemon.options({"/bin/sh"}, "x").terminal, {true, false, ""}}));
+    ASSERT_TRUE(shown.stream->flush(2000));
+    ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"p"}, &adoptError)) << adoptError.message;
+    EXPECT_TRUE(plain.call("getText", Json::Array{plainPane, "screen"})) << plain.error.message;
+
+    // Control.allowAdopt and Control.enabled guard the adoption.
+    EXPECT_FALSE(daemon.call(Fn::AdoptSession, Json::Array{"u"}, &adoptError));
+    EXPECT_EQ(adoptError.code, IpcErrorCode::CallFailed);
+    EXPECT_EQ(adoptError.message, "session 'u' cannot be adopted (Control.allowAdopt)");
+    EXPECT_FALSE(daemon.call(Fn::AdoptSession, Json::Array{"off"}, &adoptError));
+    EXPECT_EQ(adoptError.code, IpcErrorCode::CallFailed);
+    EXPECT_EQ(adoptError.message, "session 'off' takes no control calls (Control.enabled)");
+    EXPECT_FALSE(info("u").agent);
+    EXPECT_FALSE(info("off").agent);
+    EXPECT_FALSE(daemon.call(Fn::AdoptSession, Json::Array{"none"}, &adoptError));
+    EXPECT_EQ(adoptError.code, Error::NoSuchSession);
+    // Their arguments.
+    for (const char* fn : {Fn::AdoptSession, Fn::BindSession, Fn::UnbindSession}) {
+        for (const Json::Array& args : {Json::Array{}, Json::Array{1}, Json::Array{"a", "b"}}) {
+            IpcConnection::Error argError;
+            EXPECT_FALSE(daemon.call(fn, args, &argError)) << fn;
+            EXPECT_EQ(argError.code, IpcErrorCode::InvalidArg) << fn << " " << Json::write(Json::Value(args));
+        }
+    }
+
+    // An adopted session, and one that is no agent's, are never bound.
+    IpcConnection::Error bindError;
+    EXPECT_FALSE(daemon.call(Fn::BindSession, Json::Array{"p"}, &bindError));
+    EXPECT_EQ(bindError.code, IpcErrorCode::CallFailed);
+    EXPECT_FALSE(daemon.call(Fn::BindSession, Json::Array{"u"}, &bindError));
+    EXPECT_EQ(bindError.code, IpcErrorCode::CallFailed);
+    EXPECT_FALSE(daemon.call(Fn::BindSession, Json::Array{"none"}, &bindError));
+    EXPECT_EQ(bindError.code, Error::NoSuchSession);
+
+    // Two clients bind the agent session. The first goes without a word: the
+    // session stays. An unbind of the second keeps it as well, and a new
+    // bind of it ends it when it goes.
+    auto bindOn = [&](RawClient& client) {
+        EXPECT_TRUE(client.send(Json::write(Json::Object{{"type", "call"},
+                                                         {"id", 1},
+                                                         {"target", Target},
+                                                         {"fn", Fn::BindSession},
+                                                         {"args", Json::Array{"a"}}})
+                                + "\n"));
+        return Json::parse(client.line()).value_or(Json::Value())["type"].toString();
+    };
+    auto first = std::make_unique<RawClient>(daemon.socket());
+    RawClient second(daemon.socket());
+    ASSERT_EQ(bindOn(*first), "reply");
+    ASSERT_EQ(bindOn(second), "reply");
+    EXPECT_EQ(info("a").bound, 2);
+    first.reset();
+    ASSERT_TRUE(waitFor([&] {
+        return info("a").bound == 1;
+    }));
+    EXPECT_TRUE(sessionNamed(daemon, "a"));
+    ASSERT_TRUE(second.send(Json::write(Json::Object{{"type", "call"},
+                                                     {"id", 2},
+                                                     {"target", Target},
+                                                     {"fn", Fn::UnbindSession},
+                                                     {"args", Json::Array{"a"}}})
+                            + "\n"));
+    EXPECT_EQ(Json::parse(second.line()).value_or(Json::Value())["type"].toString(), "reply");
+    EXPECT_EQ(info("a").bound, 0);
+    {
+        RawClient last(daemon.socket());
+        ASSERT_EQ(bindOn(last), "reply");
+        EXPECT_EQ(info("a").bound, 1);
+    }
+    EXPECT_TRUE(waitFor([&] {
+        return !sessionNamed(daemon, "a");
+    }));
+    // The others go on.
+    EXPECT_TRUE(sessionNamed(daemon, "p"));
+    EXPECT_TRUE(sessionNamed(daemon, "u"));
+}
+
+// The layout call gives the tabs and splits that the daemon keeps, with no
+// window: an agent saves a project from them. The commands of the panes
+// leave only with read access, as in listPanes.
+TEST(MuxControl, TheLayoutOfASessionComesFromTheDaemon)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    for (const bool readText : {false, true}) {
+        SCOPED_TRACE(readText);
+        const std::string name = readText ? "r" : "n";
+        SessionOptions o = shellOptions(daemon, name);
+        o.control.allowReadText = readText;
+        o.launch.command = {"sh"};
+        ASSERT_TRUE(daemon.newSession(o)) << daemon.lastError();
+        ControlClient ctl(daemon);
+        ASSERT_EQ(ctl.select(name), "");
+        const std::int64_t first = firstPane(ctl);
+        const auto added = ctl.call("split", Json::Array{first, "down", Json::Array{}});
+        const auto tab = ctl.call("newTab", Json::Array{first, "", Json::Array{}});
+        if (!added || !tab) {
+            // The other value still runs.
+            ADD_FAILURE() << ctl.error.message;
+            continue;
+        }
+        EXPECT_FALSE(ctl.call("layout", Json::Array{1}));
+        EXPECT_EQ(ctl.error.code, IpcErrorCode::InvalidArg);
+        const auto layout = ctl.call("layout", {});
+        std::string error;
+        const auto read = layout ? layoutFrom(*layout, &error) : std::nullopt;
+        if (!read || read->tabs.size() != 2) {
+            ADD_FAILURE() << ctl.error.message << error << ": " << (layout ? Json::write(*layout) : std::string());
+            continue;
+        }
+        // The window's moves are no part of the layout that the daemon gives.
+        EXPECT_EQ((*layout).find("moved"), nullptr) << Json::write(*layout);
+        const std::vector<LayoutNode> split{{0, true, 0.5},
+                                            {std::uint32_t(first), false, 0.5},
+                                            {std::uint32_t(added->toInteger().value_or(0)), false, 0.5}};
+        EXPECT_EQ(read->tabs[0].tree, split);
+        EXPECT_EQ(read->current, 1u);
+        EXPECT_EQ(read->tabs[1].focused, std::uint32_t(tab->toInteger().value_or(0)));
+        // A pane with no title and no command has no values.
+        const auto values = read->values.find(std::uint32_t(first));
+        const std::vector<std::string> command =
+            values == read->values.end() ? std::vector<std::string>{} : values->second.command;
+        EXPECT_EQ(command, readText ? std::vector<std::string>{"sh"} : std::vector<std::string>{});
+    }
 }
 
 // The session follows the settings of the window that shows it: the daemon
@@ -3877,8 +4103,10 @@ TEST(MuxControl, WhatOnlyAWindowDoesNeedsOne)
     ControlClient ctl(daemon);
     ASSERT_EQ(ctl.select("s"), "");
     EXPECT_FALSE(ctl.call("setTitle", Json::Array{0, "t"}));
+    EXPECT_EQ(ctl.error.code, Error::NotAttached);
     EXPECT_NE(ctl.error.message.find("no window shows session 's'"), std::string::npos) << ctl.error.message;
     EXPECT_FALSE(ctl.call("screenshot", Json::Array{0, "pane"}));
+    EXPECT_EQ(ctl.error.code, Error::NotAttached);
     EXPECT_NE(ctl.error.message.find("only a window can do screenshot"), std::string::npos) << ctl.error.message;
     EXPECT_FALSE(ctl.call("split", Json::Array{0, "right", Json::Array{"htop"}}));
     EXPECT_NE(ctl.error.message.find("launch"), std::string::npos) << ctl.error.message;
@@ -3940,8 +4168,7 @@ TEST(MuxControl, TheDaemonTypesKeysAndTellsThePanesFacts)
     ASSERT_TRUE(ctl.call("sendText", Json::Array{std::int64_t(first), "printf '\\033]133;A\\a'\n"}));
     EXPECT_TRUE(waitFor([&] {
         const auto listed = ctl.call("listPanes", {});
-        return listed && !listed->toArray().empty() && listed->toArray()[0]["at_prompt"].isBool()
-            && listed->toArray()[0]["at_prompt"].toBool();
+        return listed && !listed->toArray().empty() && listed->toArray()[0]["shell"].toString() == "prompt";
     }));
     const auto split = ctl.call("split", Json::Array{std::int64_t(first), "down", Json::Array{}});
     ASSERT_TRUE(split) << ctl.error.message;
@@ -3999,7 +4226,7 @@ TEST(MuxAttach, AnUploadRequestGoesToTheWindowOrGetsNothing)
     const std::string clear = "printf '\\033[H\\033[2J'\n";
     const auto readNothing = [&] {
         const auto text = ctl.call("getText", Json::Array{pane, "screen"});
-        return text && !contains(text->toString(), " 03") && !contains(text->toString(), " 78");
+        return text && !contains((*text)["text"].toString(), " 03") && !contains((*text)["text"].toString(), " 78");
     };
     ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, request("1")})) << ctl.error.message;
     ASSERT_TRUE(screenShows(ctl, pane, "end"));
@@ -4079,7 +4306,7 @@ TEST(MuxAttach, TheNextWindowAsksForAnUploadThatTheLastOneDidNotAnswer)
     }));
     const auto screen = ctl.call("getText", Json::Array{pane, "screen"});
     ASSERT_TRUE(screen) << ctl.error.message;
-    EXPECT_FALSE(contains(screen->toString(), "end")) << screen->toString();
+    EXPECT_FALSE(contains((*screen)["text"].toString(), "end")) << (*screen)["text"].toString();
     // The answer as a window sends one.
     Attach::Input answer;
     answer.type = Attach::InputType::UploadAnswer;
@@ -4150,7 +4377,7 @@ TEST(MuxAttach, AResetKeepsTheQuestionOfAnUpload)
     // The reset reached the terminal: the screen is clear of the command.
     ASSERT_TRUE(waitFor([&] {
         const auto text = ctl.call("getText", Json::Array{pane, "screen"});
-        return text && !contains(text->toString(), "RequestUpload");
+        return text && !contains((*text)["text"].toString(), "RequestUpload");
     })) << ctl.error.message;
     ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"r"})) << daemon.lastError();
     first.reset();
@@ -4385,6 +4612,7 @@ TEST(MuxControl, TheDaemonSetsColoursVariablesAndSignals)
                                                           {"setOpacity", Json::Array{pane, 0.5}},
                                                           {"setWindowState", Json::Array{pane, "maximized", 0, 0}}}) {
         EXPECT_FALSE(ctl.call(fn, call)) << fn;
+        EXPECT_EQ(ctl.error.code, Error::NotAttached) << fn;
         EXPECT_NE(ctl.error.message.find("only a window can do " + fn), std::string::npos) << ctl.error.message;
     }
 }
@@ -4447,10 +4675,10 @@ TEST(MuxControl, TheDaemonWritesTextWithItsStyles)
     ASSERT_TRUE(screenShows(ctl, pane, "\nred"));
     const auto styled = ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"ansi", true}}});
     ASSERT_TRUE(styled) << ctl.error.message;
-    EXPECT_TRUE(contains(styled->toString(), "\x1b[0;31mred\x1b[m")) << styled->toString();
+    EXPECT_TRUE(contains((*styled)["text"].toString(), "\x1b[0;31mred\x1b[m")) << (*styled)["text"].toString();
     const auto first = ctl.call("getText", Json::Array{pane, "first-output-on-screen"});
     ASSERT_TRUE(first) << ctl.error.message;
-    EXPECT_EQ(first->toString(), "\nred\n");
+    EXPECT_EQ((*first)["text"].toString(), "\nred\n");
     // The text of one output ends before the cursor's place: refused as a
     // window refuses it.
     for (const char* scope : {"first-output-on-screen", "last-visited-output"}) {
@@ -4461,17 +4689,18 @@ TEST(MuxControl, TheDaemonWritesTextWithItsStyles)
     EXPECT_EQ(ctl.error.message, "only a window that shows session 't' has its last-visited-output");
     const auto cursor = ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"cursor", true}}});
     ASSERT_TRUE(cursor) << ctl.error.message;
-    EXPECT_TRUE(contains(cursor->toString(), "\x1b[?25h")) << cursor->toString();
+    EXPECT_TRUE(contains((*cursor)["text"].toString(), "\x1b[?25h")) << (*cursor)["text"].toString();
     // A row that wraps ends with a carriage return with wrap_markers, and
     // runs on into the next row without.
     ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "printf '%0300d\\n' 0\n"})) << ctl.error.message;
     ASSERT_TRUE(screenShows(ctl, pane, std::string(300, '0')));
     const auto wrapped = ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"wrap_markers", true}}});
     ASSERT_TRUE(wrapped) << ctl.error.message;
-    EXPECT_TRUE(contains(wrapped->toString(), "0\r0")) << wrapped->toString();
-    EXPECT_FALSE(contains(wrapped->toString(), std::string(300, '0'))) << wrapped->toString();
+    EXPECT_TRUE(contains((*wrapped)["text"].toString(), "0\r0")) << (*wrapped)["text"].toString();
+    EXPECT_FALSE(contains((*wrapped)["text"].toString(), std::string(300, '0'))) << (*wrapped)["text"].toString();
     EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"bold", true}}}));
-    EXPECT_EQ(ctl.error.message, "unknown getText option bold: the options are ansi, cursor and wrap_markers");
+    EXPECT_EQ(ctl.error.message,
+              "unknown getText option bold: the options are ansi, cursor, wrap_markers, keep_end and mark");
     EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"ansi", 1}}}));
     EXPECT_EQ(ctl.error.message, "the getText option ansi is true or false");
 }
@@ -4503,7 +4732,7 @@ TEST(MuxControl, AWindowPlacesNewPanesAndAnswersWindowCalls)
     EXPECT_EQ(place["id"].toInteger(), 0);
     EXPECT_EQ(place["fn"].toString(), "placePane");
     EXPECT_EQ(Json::write(place["args"]),
-              "[" + std::to_string(*splitId) + "," + std::to_string(w.pane) + ",\"left\",[]]");
+              "[" + std::to_string(*splitId) + "," + std::to_string(w.pane) + ",\"left\",[],\"\",true]");
     const auto logged = [&daemon] {
         const std::string errors = daemon.errors();
         std::size_t count = 0;
@@ -4973,10 +5202,11 @@ struct Watcher
         signals[id] = signal;
         return request({{"type", "subscribe"}, {"id", id}, {"target", "control"}, {"signal", signal}});
     }
-    /// The next line: an event as "signal args", or an error as "error ID CODE MESSAGE".
-    std::string next()
+    /// The next line: an event as "signal args", or an error as "error ID
+    /// CODE MESSAGE". Empty when none comes in @p timeoutMs.
+    std::string next(int timeoutMs = 5000)
     {
-        const auto line = Json::parse(client.line());
+        const auto line = Json::parse(client.line(timeoutMs));
         if (!line)
             return {};
         if ((*line)["type"].toString() == "error") {
@@ -6145,11 +6375,11 @@ void commandLines(bool readText)
     const auto listed = ctl.call("listPanes", {});
     ASSERT_TRUE(listed) << ctl.error.message;
     ASSERT_EQ(listed->toArray().size(), 1u) << Json::write(*listed);
+    ASSERT_TRUE(listed->toArray()[0]["command"].isString()) << Json::write(*listed);
     EXPECT_EQ(listed->toArray()[0]["command"].toString(), shown);
     // Its output follows: no prompt. The command line of the process in the
     // foreground needs read access too.
-    EXPECT_TRUE(listed->toArray()[0]["at_prompt"].isBool()) << Json::write(*listed);
-    EXPECT_FALSE(listed->toArray()[0]["at_prompt"].toBool());
+    EXPECT_EQ(listed->toArray()[0]["shell"].toString(), "running") << Json::write(*listed);
     EXPECT_GT(listed->toArray()[0]["foreground"]["pid"].toInteger().value_or(0), 0) << Json::write(*listed);
     EXPECT_EQ(listed->toArray()[0]["foreground"]["cmdline"].toArray().empty(), !readText) << Json::write(*listed);
     ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "printf '\\033]133;D;3\\007'\n"})) << ctl.error.message;
@@ -6298,6 +6528,7 @@ TEST(MuxControl, TheDaemonRefusesWhatAWindowRefuses)
     ControlClient ctl(daemon);
     ASSERT_EQ(ctl.select("narrow"), "");
     EXPECT_FALSE(ctl.call("split", Json::Array{0, "right", Json::Array{}}));
+    EXPECT_EQ(ctl.error.code, Error::NoRoom);
     EXPECT_EQ(ctl.error.message, "not enough room for another pane");
     EXPECT_FALSE(ctl.call("focus", Json::Array{1, 2}));
     EXPECT_EQ(ctl.error.code, IpcErrorCode::InvalidArg);
@@ -6353,7 +6584,7 @@ TEST(MuxControl, ASplitOfAShellSessionRunsTheShellOfItsFirstLaunch)
         EXPECT_TRUE(waitFor([&] {
             const auto text = ctl.call("getText", Json::Array{*added->toInteger(), "screen"});
             if (text)
-                screen = text->toString();
+                screen = (*text)["text"].toString();
             // getText drops the space at the end of the prompt's line.
             return contains(screen, "argument --posix") && contains(screen, "$");
         })) << fn
@@ -6392,7 +6623,7 @@ TEST(MuxControl, ASplitOfAShellSessionRunsTheShellOfItsFirstLaunch)
             return waitFor([&] {
                 const auto text = ctl.call("getText", Json::Array{*split->toInteger(), "screen"});
                 if (text)
-                    screen = text->toString();
+                    screen = (*text)["text"].toString();
                 return contains(screen, part);
             });
         };
@@ -6585,6 +6816,8 @@ TEST(MuxControl, ForwardedCallsStopAtTheEventQueueAndThoseThatWaitDoNotGo)
         if (id >= 100 && id < 100 + Calls) {
             EXPECT_NE((*line)["message"].toString().find("has not taken the calls before this one"), std::string::npos)
                 << Json::write(*line);
+            // A client tries again a moment later.
+            EXPECT_EQ((*line)["code"].toString(), Error::TryAgain) << Json::write(*line);
             ++refused;
         }
     }
@@ -6817,6 +7050,66 @@ TEST(MuxAttach, ACommandClientOfASessionPaneReachesTheWindow)
     ASSERT_TRUE(w.relay(Attach::RelayFrame{open.relay, Attach::RelayPart::End}));
     ASSERT_TRUE(w.stream->flush(2000));
     EXPECT_EQ(agent.next(), "last");
+}
+
+// afterglow mcp runs in no pane of its agent session, and can run in a pane
+// of another session: the connection that selected the agent session reaches
+// the commands of the window that shows that session, and its runs name
+// their panes (pane 0 in the open). A connection that selected a session of
+// no agent reaches none, and one that selected nothing needs a session pane.
+TEST(MuxAttach, AClientThatSelectedAnAgentSessionReachesTheCommandsOfItsWindow)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    SessionOptions agentOptions = shellOptions(daemon, "a");
+    agentOptions.agent = true;
+    ASSERT_TRUE(daemon.newSession(agentOptions)) << daemon.lastError();
+    ASSERT_TRUE(shellSession(daemon, "p")) << daemon.lastError();
+    ControlClient plain(daemon);
+    ASSERT_EQ(plain.select("p"), "");
+    EXPECT_FALSE(plain.call("list", {}, AfterglowProto::Run::Target));
+    EXPECT_EQ(plain.error.code, IpcErrorCode::CallFailed);
+    EXPECT_EQ(plain.error.message,
+              "session 'p' is no agent session: a connection that selected a session reaches the "
+              "commands of scripts only in an agent session");
+    ControlClient none(daemon);
+    EXPECT_FALSE(none.call("list", {}, AfterglowProto::Run::Target));
+    EXPECT_EQ(none.error.message, "only a client in a session pane reaches the mux daemon for the commands of scripts");
+    ControlClient early(daemon);
+    ASSERT_EQ(early.select("a"), "");
+    EXPECT_FALSE(early.call("list", {}, AfterglowProto::Run::Target));
+    EXPECT_EQ(early.error.code, Error::NotAttached);
+    EXPECT_EQ(early.error.message, "no window shows session 'a', and only a window runs the commands of scripts");
+
+    Window w;
+    ASSERT_EQ(w.attach(daemon, "a"), "");
+    ASSERT_TRUE(w.until([&] {
+        return w.pane != 0;
+    }));
+    ControlClient agent(daemon);
+    ASSERT_EQ(agent.select("a"), "");
+    IpcConnection::Error error;
+    const auto id = agent.connection.send(AfterglowProto::Run::Target, "list", {}, &error);
+    ASSERT_TRUE(id) << error.message;
+    ASSERT_TRUE(w.until([&] {
+        return w.relays.size() >= 2;
+    }));
+    const Attach::RelayFrame open = w.relays[0];
+    EXPECT_EQ(open.part, Attach::RelayPart::Open);
+    EXPECT_EQ(open.pane, 0u);
+    EXPECT_EQ(open.kind, Attach::RelayKind::Commands);
+    EXPECT_EQ(w.relays[1].part, Attach::RelayPart::Bytes);
+    EXPECT_EQ(w.relays[1].relay, open.relay);
+    EXPECT_TRUE(contains(w.relays[1].bytes, R"("fn":"list")")) << w.relays[1].bytes;
+    ASSERT_TRUE(w.relay(Attach::RelayFrame{open.relay, Attach::RelayPart::Bytes,
+                                           R"({"type":"reply","id":)" + std::to_string(*id)
+                                               + R"(,"result":[]})"
+                                                 "\n"}));
+    ASSERT_TRUE(w.stream->flush(2000));
+    Json::Value frame;
+    ASSERT_EQ(agent.connection.next(frame, 5000), IpcConnection::Read::Frame);
+    EXPECT_TRUE(IpcConnection::answers(frame, *id)) << Json::write(frame);
+    EXPECT_TRUE(IpcConnection::answer(frame, &error)) << error.message;
 }
 
 namespace {
@@ -7063,6 +7356,292 @@ std::int64_t tabOf(ControlClient& ctl, std::uint32_t id)
 
 } // namespace
 
+// The shell's state in the pane objects and in shellChanged, its regions
+// with their exit codes, and the text since a mark. sh prints the marks
+// that shell integration would: A and B a prompt, C a command, D its end,
+// A;k=s the prompt of a command that goes on.
+TEST(MuxControl, TheDaemonTellsTheShellsStateRegionsAndTextSinceAMark)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "s")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("s"), "");
+    const auto pane = std::int64_t(firstPane(ctl));
+    ASSERT_NE(pane, 0);
+    const std::string id = std::to_string(pane);
+    const auto facts = [&ctl]() -> Json::Value {
+        const auto listed = ctl.call("listPanes", {});
+        return listed && !listed->toArray().empty() ? listed->toArray()[0] : Json::Value();
+    };
+    // No mark yet: no shell integration.
+    EXPECT_EQ(facts()["shell"].toString(), "none") << Json::write(facts());
+    EXPECT_TRUE(facts()["last_exit"].isNull()) << Json::write(facts());
+    // sh's own prompt would come after the B mark of the prompt that the
+    // test prints, as typed text: the marks are the prompt.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "PS1=''\n"})) << ctl.error.message;
+    Watcher watcher(daemon, "s");
+    EXPECT_EQ(watcher.subscribe(2, "shellChanged")["type"].toString(), "reply");
+
+    const std::string prompt = "printf '\\033]133;A\\007$ \\033]133;B\\007'";
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, prompt + "\n"})) << ctl.error.message;
+    EXPECT_EQ(watcher.next(), "shellChanged [" + id + ",\"prompt\"]");
+    EXPECT_EQ(facts()["shell"].toString(), "prompt");
+    ASSERT_TRUE(facts()["input"].isBool()) << Json::write(facts());
+    EXPECT_FALSE(facts()["input"].toBool());
+    // Text after B is typed text: the same prompt drawn again, with no event.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "printf '\\033]133;A\\007$ \\033]133;B\\007ty''ped'\n"}))
+        << ctl.error.message;
+    EXPECT_TRUE(waitFor([&] {
+        return facts()["input"].toBool();
+    })) << Json::write(facts());
+    EXPECT_EQ(facts()["shell"].toString(), "prompt");
+
+    // A command, and its end with code 3: running, then the prompt.
+    const auto mark = ctl.call("mark", Json::Array{pane});
+    ASSERT_TRUE(mark) << ctl.error.message;
+    ASSERT_TRUE((*mark)["row"].toInteger() && (*mark)["col"].toInteger() && (*mark)["epoch"].toInteger())
+        << Json::write(*mark);
+    EXPECT_EQ(mark->toObject().size(), 3u) << Json::write(*mark);
+    ASSERT_TRUE(ctl.call("sendText",
+                         Json::Array{pane,
+                                     "printf '\\033]133;C\\007'; echo o''ne; echo t''wo; sleep 1; "
+                                     "printf '\\033]133;D;3\\007'; "
+                                         + prompt + "\n"}))
+        << ctl.error.message;
+    EXPECT_EQ(watcher.next(), "shellChanged [" + id + ",\"running\"]");
+    EXPECT_EQ(watcher.next(), "shellChanged [" + id + ",\"prompt\"]");
+    EXPECT_EQ(facts()["last_exit"].toInteger(), 3) << Json::write(facts());
+    // A client that comes later learns the code too.
+    ControlClient later(daemon);
+    ASSERT_EQ(later.select("s"), "");
+    const auto listed = later.call("listPanes", {});
+    ASSERT_TRUE(listed) << later.error.message;
+    ASSERT_EQ(listed->toArray().size(), 1u) << Json::write(*listed);
+    EXPECT_EQ(listed->toArray()[0]["last_exit"].toInteger(), 3) << Json::write(*listed);
+
+    // The text since the mark, with the command's output, and none of what
+    // came before it.
+    const auto since = ctl.call("getText", Json::Array{pane, "since", Json::Object{{"mark", *mark}}});
+    ASSERT_TRUE(since) << ctl.error.message;
+    EXPECT_TRUE(contains((*since)["text"].toString(), "one\ntwo")) << Json::write(*since);
+    EXPECT_FALSE(contains((*since)["text"].toString(), "PS1=")) << Json::write(*since);
+    ASSERT_TRUE((*since)["truncated"].isBool() && (*since)["trimmed"].isBool()) << Json::write(*since);
+    EXPECT_FALSE((*since)["truncated"].toBool());
+    EXPECT_FALSE((*since)["trimmed"].toBool());
+    // keep_end is an option of each scope.
+    const auto ended = ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"keep_end", true}}});
+    ASSERT_TRUE(ended) << ctl.error.message;
+    EXPECT_TRUE(contains((*ended)["text"].toString(), "one\ntwo")) << Json::write(*ended);
+    EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"keep_end", 1}}}));
+    EXPECT_EQ(ctl.error.message, "the getText option keep_end is true or false");
+    const auto plain = ctl.call("getText", Json::Array{pane, "screen"});
+    ASSERT_TRUE(plain) << ctl.error.message;
+    EXPECT_FALSE((*plain)["truncated"].toBool());
+    EXPECT_EQ((*plain).find("trimmed"), nullptr) << Json::write(*plain);
+
+    // The regions: the output that ended with 3 is closed and has its code.
+    const auto regions = ctl.call("shellRegions", Json::Array{pane});
+    ASSERT_TRUE(regions) << ctl.error.message;
+    std::int64_t outputId = 0;
+    for (const Json::Value& region : regions->toArray()) {
+        const std::string kind = region["kind"].toString();
+        EXPECT_TRUE(kind == "prompt" || kind == "input" || kind == "output") << Json::write(region);
+        EXPECT_TRUE(region["start_trimmed"].isBool() && region["available"].isBool() && region["open"].isBool())
+            << Json::write(region);
+        if (kind == "output") {
+            outputId = region["id"].toInteger().value_or(0);
+            EXPECT_FALSE(region["open"].toBool()) << Json::write(region);
+            EXPECT_EQ(region["exit_code"].toInteger(), 3) << Json::write(region);
+        }
+    }
+    ASSERT_NE(outputId, 0) << Json::write(*regions);
+    // Only the regions after the one given: the prompt after the output.
+    const auto after = ctl.call("shellRegions", Json::Array{pane, outputId});
+    ASSERT_TRUE(after) << ctl.error.message;
+    EXPECT_FALSE(after->toArray().empty()) << Json::write(*regions);
+    for (const Json::Value& region : after->toArray())
+        EXPECT_GT(region["id"].toInteger().value_or(0), outputId) << Json::write(*after);
+
+    // A command that starts and ends within one read, and an empty line (D
+    // with no command): the state is the prompt before and after, and the
+    // new prompt is the event.
+    // One printf, one write: the marks come in one read, almost always. A
+    // read that splits them adds the running between.
+    const auto nextPrompt = [&] {
+        std::string event = watcher.next();
+        if (event == "shellChanged [" + id + ",\"running\"]")
+            event = watcher.next();
+        return event;
+    };
+    ASSERT_TRUE(ctl.call("sendText",
+                         Json::Array{pane,
+                                     "printf '\\033]133;C\\007\\033]133;D;0\\007\\033]133;A\\007$ "
+                                     "\\033]133;B\\007'\n"}))
+        << ctl.error.message;
+    EXPECT_EQ(nextPrompt(), "shellChanged [" + id + ",\"prompt\"]");
+    EXPECT_EQ(facts()["last_exit"].toInteger(), 0) << Json::write(facts());
+    ASSERT_TRUE(
+        ctl.call("sendText", Json::Array{pane, "printf '\\033]133;D;0\\007\\033]133;A\\007$ \\033]133;B\\007'\n"}))
+        << ctl.error.message;
+    EXPECT_EQ(nextPrompt(), "shellChanged [" + id + ",\"prompt\"]");
+    // The prompt of a command that goes on, then the primary prompt.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "printf '\\033]133;A;k=s\\007> '\n"})) << ctl.error.message;
+    EXPECT_EQ(watcher.next(), "shellChanged [" + id + ",\"continuation\"]");
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, prompt + "\n"})) << ctl.error.message;
+    EXPECT_EQ(watcher.next(), "shellChanged [" + id + ",\"prompt\"]");
+
+    // The mark and the scope since go together.
+    EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "since"}));
+    EXPECT_EQ(ctl.error.message, AfterglowMux::MarkScopeError);
+    EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "screen", Json::Object{{"mark", *mark}}}));
+    EXPECT_EQ(ctl.error.message, AfterglowMux::MarkScopeError);
+    for (const Json::Value& bad :
+         {Json::Value(Json::Object{{"row", -1}, {"col", 0}, {"epoch", 0}}),
+          Json::Value(Json::Object{{"row", 1}, {"col", 0}}),
+          Json::Value(Json::Object{{"row", 1}, {"col", 0}, {"epoch", -1}}),
+          Json::Value(Json::Object{{"row", 1}, {"col", 0}, {"epoch", 0.5}}), Json::Value("1:0"),
+          Json::Value(Json::Object{{"row", 1}, {"col", 0}, {"epoch", 0}, {"x", 0}})}) {
+        EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "since", Json::Object{{"mark", bad}}})) << Json::write(bad);
+        EXPECT_EQ(ctl.error.message, AfterglowMux::MarkOptionError);
+    }
+    EXPECT_EQ(std::string(AfterglowMux::MarkOptionError),
+              "the getText option mark is the object {row, col, epoch} that the mark call gives");
+    EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "since", Json::Object{{"mark", *mark}, {"cursor", true}}}));
+    EXPECT_EQ(ctl.error.message, AfterglowMux::CursorScopeError);
+    // A clear of the screen gives the rows of the mark new text: the mark is
+    // stale, and the call says so rather than read the wrong rows.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "printf '\\033[2J'\n"})) << ctl.error.message;
+    EXPECT_TRUE(waitFor([&] {
+        return !ctl.call("getText", Json::Array{pane, "since", Json::Object{{"mark", *mark}}})
+            && ctl.error.code == Error::StaleMark;
+    })) << ctl.error.code;
+    EXPECT_EQ(ctl.error.message,
+              "the mark is from before the pane changed its width or cleared its screen: take a new mark");
+    const auto fresh = ctl.call("mark", Json::Array{pane});
+    ASSERT_TRUE(fresh) << ctl.error.message;
+    EXPECT_TRUE(ctl.call("getText", Json::Array{pane, "since", Json::Object{{"mark", *fresh}}})) << ctl.error.message;
+    EXPECT_FALSE(ctl.call("shellRegions", Json::Array{pane, -1}));
+    EXPECT_EQ(ctl.error.code, IpcErrorCode::InvalidArg);
+    EXPECT_FALSE(ctl.call("mark", Json::Array{pane, 1}));
+    EXPECT_EQ(ctl.error.code, IpcErrorCode::InvalidArg);
+}
+
+// textChanged comes when a pane's text changes, merged to one in each
+// Control.eventInterval, and none while the text stays: a client waits for
+// text without reading it again and again. It carries no text.
+TEST(MuxControl, TextChangedIsMergedAndComesOnlyForAChange)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    // Read access only for the waits on the screen: the event needs none
+    // (the last part).
+    SessionOptions options = shellOptions(daemon, "t");
+    options.control.allowReadText = true;
+    options.control.eventInterval = 300;
+    ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("t"), "");
+    const std::int64_t pane = firstPane(ctl);
+    ASSERT_NE(pane, 0);
+    const std::string event = "textChanged [" + std::to_string(pane) + "]";
+    ASSERT_TRUE(waitFor([&] {
+        const auto text = ctl.call("getText", Json::Array{pane, "screen"});
+        return text && contains((*text)["text"].toString(), "$");
+    }));
+    Watcher watcher(daemon, "t");
+    EXPECT_EQ(watcher.subscribe(2, "textChanged")["type"].toString(), "reply");
+    // A pane whose text stays tells nothing.
+    EXPECT_EQ(watcher.next(800), "");
+    // A flood of output for two seconds: one event in each interval, not one
+    // for each read of the output. Bound by time, not by bytes: a build with
+    // sanitizers reads them slower.
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "timeout 2 yes; echo d''one\n"})) << ctl.error.message;
+    const auto start = std::chrono::steady_clock::now();
+    int events = 0;
+    for (std::string line = watcher.next(1500); !line.empty(); line = watcher.next(1500)) {
+        EXPECT_EQ(line, event);
+        ++events;
+    }
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+    ASSERT_TRUE(screenShows(ctl, pane, "done"));
+    EXPECT_GE(events, 2);
+    // The last read ended 1.5 s of quiet after the last event.
+    EXPECT_LE(events, elapsed / 300 + 2) << elapsed << " ms";
+
+    // With no interval, each change goes at once, and a flood still keeps
+    // the connection: the changes of a pane that wait between two passes of
+    // the daemon are one (MuxPane::watchLocked, MuxPaneTest).
+    ControlClient eager(daemon);
+    SessionOptions now = shellOptions(daemon, "n");
+    now.control.allowReadText = true;
+    now.control.eventInterval = 0;
+    ASSERT_TRUE(daemon.newSession(now)) << daemon.lastError();
+    ASSERT_EQ(eager.select("n"), "");
+    const std::int64_t other = firstPane(eager);
+    Watcher fast(daemon, "n");
+    EXPECT_EQ(fast.subscribe(2, "textChanged")["type"].toString(), "reply");
+    ASSERT_TRUE(eager.call("sendText", Json::Array{other, "timeout 2 yes; echo d''one\n"})) << eager.error.message;
+    int fastEvents = 0;
+    while (fast.next(1500) == "textChanged [" + std::to_string(other) + "]")
+        ++fastEvents;
+    EXPECT_GE(fastEvents, 2);
+    EXPECT_FALSE(fast.client.ended());
+    ASSERT_TRUE(screenShows(eager, other, "done"));
+
+    // A session without read access still tells that the text changed.
+    SessionOptions closed = shellOptions(daemon, "c");
+    closed.control.allowReadText = false;
+    closed.control.eventInterval = 0;
+    ASSERT_TRUE(daemon.newSession(closed)) << daemon.lastError();
+    ControlClient blind(daemon);
+    ASSERT_EQ(blind.select("c"), "");
+    const std::int64_t third = firstPane(blind);
+    ASSERT_NE(third, 0);
+    Watcher quiet(daemon, "c");
+    EXPECT_EQ(quiet.subscribe(2, "textChanged")["type"].toString(), "reply");
+    ASSERT_TRUE(blind.call("sendText", Json::Array{third, "echo hi\n"})) << blind.error.message;
+    EXPECT_EQ(quiet.next(), "textChanged [" + std::to_string(third) + "]");
+}
+
+// The paste call sends text as a paste in a window: between the paste marks
+// while the program asks for them (mode 2004), the line ends as Enter, and
+// no other control, so the text cannot end the paste early.
+TEST(MuxControl, ThePasteCallBracketsAsTheProgramAsks)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "s")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("s"), "");
+    const auto pane = std::int64_t(firstPane(ctl));
+    ASSERT_NE(pane, 0);
+    // A program that prints the bytes that it reads, in hexadecimal.
+    ASSERT_TRUE(ctl.call("sendText",
+                         Json::Array{pane,
+                                     "stty raw -echo; printf '\\033[?2004hre''ady'; head -c15 | od "
+                                     "-An -tx1 | tr -s ' '; printf '\\033[?2004l'; stty sane\n"}))
+        << ctl.error.message;
+    ASSERT_TRUE(screenShows(ctl, pane, "ready"));
+    ASSERT_TRUE(ctl.call("paste", Json::Array{pane, "a\nb\x1b"})) << ctl.error.message;
+    EXPECT_TRUE(screenShows(ctl, pane, " 1b 5b 32 30 30 7e 61 0d 62 1b 5b 32 30 31 7e"));
+    // Without the mode: the text alone.
+    ASSERT_TRUE(
+        ctl.call("sendText",
+                 Json::Array{pane, "stty raw -echo; printf 'go''ne'; head -c3 | od -An -tx1 | tr -s ' '; stty sane\n"}))
+        << ctl.error.message;
+    ASSERT_TRUE(screenShows(ctl, pane, "gone"));
+    // A control byte goes also without the paste marks: a paste is text.
+    ASSERT_TRUE(ctl.call("paste", Json::Array{pane, "c\x1b\r\nd"})) << ctl.error.message;
+    EXPECT_TRUE(screenShows(ctl, pane, " 63 0d 64"));
+
+    EXPECT_FALSE(ctl.call("paste", Json::Array{pane}));
+    EXPECT_EQ(ctl.error.code, IpcErrorCode::InvalidArg);
+    EXPECT_FALSE(ctl.call("paste", Json::Array{pane, 3}));
+    EXPECT_EQ(ctl.error.code, IpcErrorCode::InvalidArg);
+}
+
 // Without a window, the daemon refuses a pane argument that is no pane ID, a
 // pane of another session, a request that is no call, a scope and a launch
 // that it does not know. It reads each scope of a pane's text, and starts a
@@ -7112,18 +7691,17 @@ TEST(MuxControl, TheDaemonChecksTheArgumentsOfItsControlCalls)
     ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "echo mar''k\n"})) << ctl.error.message;
     EXPECT_TRUE(waitFor([&] {
         const auto text = ctl.call("getText", Json::Array{pane, "scrollback"});
-        return text && contains(text->toString(), "\nmark");
+        return text && contains((*text)["text"].toString(), "\nmark");
     })) << ctl.error.message;
     const auto last = ctl.call("getText", Json::Array{pane, "last-output"});
     ASSERT_TRUE(last) << ctl.error.message;
-    EXPECT_TRUE(last->isString());
+    EXPECT_TRUE((*last)["text"].isString());
     EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "selection"}));
     EXPECT_EQ(ctl.error.code, IpcErrorCode::CallFailed);
     EXPECT_EQ(ctl.error.message, "only a window that shows session 's' has its selection");
     EXPECT_FALSE(ctl.call("getText", Json::Array{pane, "everything"}));
     EXPECT_EQ(ctl.error.code, IpcErrorCode::CallFailed);
-    EXPECT_EQ(ctl.error.message,
-              "scope is screen, scrollback, selection, last-output, first-output-on-screen or last-visited-output");
+    EXPECT_EQ(ctl.error.message, std::string("scope is ") + AfterglowMux::GetTextScopeNames);
 
     // A launch that is no launch.
     EXPECT_FALSE(ctl.call("split", Json::Array{pane, "right", Json::Array{}, "sh"}));
@@ -7171,6 +7749,10 @@ TEST(MuxControl, TextForAProgramThatReadsNothingStopsAtItsQueue)
         ++written;
     EXPECT_GE(written, 30);
     EXPECT_LT(written, 40);
+    EXPECT_EQ(ctl.error.code, IpcErrorCode::CallFailed);
+    EXPECT_EQ(ctl.error.message, "program closed or input queue full");
+    // A paste too.
+    EXPECT_FALSE(ctl.call("paste", Json::Array{0, part}));
     EXPECT_EQ(ctl.error.code, IpcErrorCode::CallFailed);
     EXPECT_EQ(ctl.error.message, "program closed or input queue full");
 }
@@ -7597,9 +8179,9 @@ TEST(MuxAttach, APaneJoinsAnotherSessionWithItsProgram)
     const auto place = Json::parse(wb.events[placed].payload);
     ASSERT_TRUE(place);
     EXPECT_EQ((*place)["id"].toInteger(), 0);
-    EXPECT_EQ(
-        Json::write((*place)["args"]),
-        Json::write(Json::Value(Json::Array{std::int64_t(*moving), std::int64_t(wb.pane), "down", Json::Array{}, ""})));
+    EXPECT_EQ(Json::write((*place)["args"]),
+              Json::write(Json::Value(
+                  Json::Array{std::int64_t(*moving), std::int64_t(wb.pane), "down", Json::Array{}, "", false})));
     // The daemon's layout of the other session holds it below its pane.
     ControlClient ctl(daemon);
     ASSERT_EQ(ctl.select("b"), "");
@@ -7630,7 +8212,7 @@ TEST(MuxAttach, APaneJoinsAnotherSessionWithItsProgram)
     }));
     const std::size_t tab = controlAt(wb, "placePane", last);
     ASSERT_LT(tab, wb.events.size());
-    EXPECT_EQ((*Json::parse(wb.events[tab].payload))["args"].toArray().at(2).toString(), "tab");
+    EXPECT_EQ(Json::parse(wb.events[tab].payload).value_or(Json::Value())["args"].toArray().at(2).toString(), "tab");
     EXPECT_EQ(tabOf(ctl, last), 1);
     EXPECT_TRUE(running(program));
 }
@@ -7768,7 +8350,7 @@ TEST(MuxControl, AMoveBesideAPaneOfAnotherSessionJoinsIt)
     const std::size_t left = controlAt(wa, "paneLeft", *moving);
     ASSERT_LT(left, wa.events.size());
     EXPECT_LT(left, eventAt(wa, Attach::EventType::PaneClosed, *moving));
-    EXPECT_EQ(Json::write((*Json::parse(wa.events[left].payload))["args"]),
+    EXPECT_EQ(Json::write(Json::parse(wa.events[left].payload).value_or(Json::Value())["args"]),
               Json::write(Json::Value(Json::Array{std::int64_t(*moving), "b"})));
     EXPECT_EQ(sessionNamed(daemon, "a").value_or(SessionInfo{}).panes, 1);
     EXPECT_EQ(sessionNamed(daemon, "b").value_or(SessionInfo{}).panes, 2);
@@ -7943,4 +8525,391 @@ TEST(MuxControl, APaneComesBackIntoTheWindowThatItLeftOnceThatWindowLetItGo)
         }
     }
     EXPECT_LT(placed, reopened);
+}
+
+namespace {
+
+/// The line of a newSession call with @p extra as its third argument.
+std::string newSessionLine(const SessionOptions& options, Json::Value extra)
+{
+    return Json::write(Json::Object{{"type", "call"},
+                                    {"id", 1},
+                                    {"target", Target},
+                                    {"fn", Fn::NewSession},
+                                    {"args", Json::Array{ProtocolVersion, toJson(options), std::move(extra)}}})
+        + "\n";
+}
+
+/// An agent session of a plain sh, which @p client makes and binds in one
+/// call: the answer's type ("reply" or "error").
+std::string newBoundSession(RawClient& client, const SessionOptions& options)
+{
+    if (!client.send(newSessionLine(options, Json::Object{{"bind", true}})))
+        return "no send";
+    const Json::Value answer = Json::parse(client.line()).value_or(Json::Value());
+    if (answer["type"].toString() != "reply")
+        return Json::write(answer);
+    return "reply";
+}
+
+SessionOptions agentShell(const TestDaemon& daemon, const std::string& name)
+{
+    SessionOptions o = shellOptions(daemon, name);
+    o.agent = true;
+    return o;
+}
+
+} // namespace
+
+// newSession binds the session to its connection in the same call: a client
+// that dies between two calls leaves no agent session that nothing ends.
+// Only an agent session is bound.
+TEST(MuxControl, ANewSessionIsBoundInItsOwnCall)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const auto info = [&](const std::string& name) {
+        return sessionNamed(daemon, name).value_or(SessionInfo{});
+    };
+    {
+        RawClient client(daemon.socket());
+        ASSERT_EQ(newBoundSession(client, agentShell(daemon, "a")), "reply");
+        EXPECT_EQ(info("a").bound, 1);
+    }
+    EXPECT_TRUE(waitFor([&] {
+        return !sessionNamed(daemon, "a");
+    }));
+    IpcConnection::Error error;
+    EXPECT_TRUE(daemon.call(
+        Fn::NewSession, Json::Array{ProtocolVersion, toJson(agentShell(daemon, "b")), Json::Object{{"bind", false}}},
+        &error))
+        << error.message;
+    EXPECT_EQ(info("b").bound, 0);
+    for (const auto& [options, extra] : std::vector<std::pair<SessionOptions, Json::Value>>{
+             {shellOptions(daemon, "c"), Json::Object{{"bind", true}}},
+             {agentShell(daemon, "c"), Json::Object{{"bind", 1}}},
+             {agentShell(daemon, "c"), Json::Object{{"bind", true}, {"other", true}}},
+             {agentShell(daemon, "c"), Json::Value(true)},
+         }) {
+        EXPECT_FALSE(daemon.call(Fn::NewSession, Json::Array{ProtocolVersion, toJson(options), extra}, &error))
+            << Json::write(extra);
+        EXPECT_EQ(error.code, IpcErrorCode::InvalidArg) << Json::write(extra);
+    }
+    EXPECT_FALSE(sessionNamed(daemon, "c"));
+}
+
+// An agent session that an agent started and bound becomes the user's when
+// it is adopted: its clients end it no more, and none binds it again.
+TEST(MuxControl, AnAdoptedAgentSessionNoLongerEndsWithItsClients)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    SessionOptions options = agentShell(daemon, "a");
+    options.control.allowAdopt = true;
+    auto client = std::make_unique<RawClient>(daemon.socket());
+    ASSERT_EQ(newBoundSession(*client, options), "reply");
+    IpcConnection::Error error;
+    ASSERT_TRUE(daemon.call(Fn::AdoptSession, Json::Array{"a"}, &error)) << error.message;
+    EXPECT_EQ(sessionNamed(daemon, "a").value_or(SessionInfo{}).bound, 0);
+    client.reset();
+    EXPECT_FALSE(waitFor(
+        [&] {
+            return !sessionNamed(daemon, "a");
+        },
+        500ms));
+    EXPECT_FALSE(daemon.call(Fn::BindSession, Json::Array{"a"}, &error));
+    EXPECT_EQ(error.code, IpcErrorCode::CallFailed);
+}
+
+// The window of an agent session that closes with Mux.onClose kill only
+// detaches: the session ends with its agent, not with a window.
+TEST(MuxAttach, TheKillOfAWindowOfAnAgentSessionOnlyDetachesIt)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    SessionOptions options = daemon.options(Waiting, "a");
+    options.agent = true;
+    ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
+    {
+        Window w;
+        ASSERT_EQ(w.attach(daemon, "a"), "");
+        ASSERT_TRUE(w.until([&] {
+            return w.pane != 0;
+        }));
+        ASSERT_TRUE(w.action(Attach::InputType::Kill));
+        ASSERT_TRUE(w.stream->flush(2000));
+    }
+    EXPECT_TRUE(waitFor([&] {
+        return !sessionNamed(daemon, "a").value_or(SessionInfo{}).attached;
+    }));
+    EXPECT_TRUE(sessionNamed(daemon, "a"));
+}
+
+// Panes that leave a bound agent session for a session of their own keep
+// its bindings: the new session ends with the same clients. Those that
+// leave an adopted session keep its mark: it is the user's, and no client
+// binds it.
+TEST(MuxControl, PanesThatLeaveAnAgentSessionKeepItsBindingsAndItsMark)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    const auto sessions = [&daemon] {
+        return daemon.sessions();
+    };
+    auto client = std::make_unique<RawClient>(daemon.socket());
+    ASSERT_EQ(newBoundSession(*client, agentShell(daemon, "a")), "reply");
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("a"), "");
+    const std::int64_t first = firstPane(ctl);
+    ASSERT_NE(first, 0);
+    const auto second = ctl.call("split", Json::Array{first, "right", Json::Array{}});
+    ASSERT_TRUE(second && second->toInteger()) << ctl.error.message;
+    ASSERT_TRUE(ctl.call("movePane", Json::Array{*second, 0, "new-window"})) << ctl.error.message;
+    const auto broken = daemon.call(Fn::PaneSession, Json::Array{*second});
+    ASSERT_TRUE(broken) << daemon.lastError();
+    const std::string fresh = broken->toString();
+    ASSERT_NE(fresh, "a");
+    EXPECT_TRUE(sessionNamed(daemon, fresh).value_or(SessionInfo{}).agent);
+    EXPECT_EQ(sessionNamed(daemon, fresh).value_or(SessionInfo{}).bound, 1);
+    client.reset();
+    EXPECT_TRUE(waitFor([&] {
+        return !sessionNamed(daemon, "a") && !sessionNamed(daemon, fresh);
+    })) << names(sessions()).size();
+
+    SessionOptions adoptable = shellOptions(daemon, "p");
+    adoptable.control.allowAdopt = true;
+    ASSERT_TRUE(daemon.newSession(adoptable)) << daemon.lastError();
+    IpcConnection::Error error;
+    ASSERT_TRUE(daemon.call(Fn::AdoptSession, Json::Array{"p"}, &error)) << error.message;
+    ControlClient user(daemon);
+    ASSERT_EQ(user.select("p"), "");
+    const std::int64_t own = firstPane(user);
+    ASSERT_NE(own, 0);
+    const auto tab = user.call("newTab", Json::Array{own, "", Json::Array{}});
+    ASSERT_TRUE(tab && tab->toInteger()) << user.error.message;
+    ASSERT_TRUE(user.call("detachTab", Json::Array{*tab})) << user.error.message;
+    const auto detached = daemon.call(Fn::PaneSession, Json::Array{*tab});
+    ASSERT_TRUE(detached) << daemon.lastError();
+    EXPECT_TRUE(sessionNamed(daemon, detached->toString()).value_or(SessionInfo{}).agent);
+    EXPECT_FALSE(daemon.call(Fn::BindSession, Json::Array{detached->toString()}, &error));
+    EXPECT_EQ(error.code, IpcErrorCode::CallFailed);
+}
+
+// A pane of a session that keeps its text from clients
+// (Control.allowReadText) joins no agent session, whose agent reads it.
+TEST(MuxControl, APaneOfASessionThatKeepsItsTextJoinsNoAgentSession)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(daemon.newSession(agentShell(daemon, "a"))) << daemon.lastError();
+    ASSERT_TRUE(readableShell(daemon, "p", false)) << daemon.lastError();
+    ASSERT_TRUE(readableShell(daemon, "r", true)) << daemon.lastError();
+    const std::uint32_t target = firstPaneOf(daemon, "a");
+    ASSERT_NE(target, 0u);
+    ControlClient closed(daemon);
+    ASSERT_EQ(closed.select("p"), "");
+    const std::int64_t kept = firstPane(closed);
+    ASSERT_NE(kept, 0);
+    EXPECT_FALSE(closed.call("movePane", Json::Array{kept, std::int64_t(target), "right"}));
+    EXPECT_EQ(closed.error.code, IpcErrorCode::CallFailed);
+    EXPECT_EQ(closed.error.message,
+              "pane " + std::to_string(kept) + " cannot join agent session 'a': session 'p' "
+                  + "keeps its text (Control.allowReadText)");
+    EXPECT_EQ(sessionNamed(daemon, "p").value_or(SessionInfo{}).panes, 1);
+    ControlClient open(daemon);
+    ASSERT_EQ(open.select("r"), "");
+    const std::int64_t readable = firstPane(open);
+    ASSERT_NE(readable, 0);
+    EXPECT_TRUE(open.call("movePane", Json::Array{readable, std::int64_t(target), "right"})) << open.error.message;
+    EXPECT_EQ(sessionNamed(daemon, "a").value_or(SessionInfo{}).panes, 2);
+}
+
+// A client that reads nothing (an agent's server that the user stopped)
+// fills its connection until the daemon closes it: the client is still
+// there, so the agent session that it bound runs on, bound to no client.
+TEST(MuxControl, ABoundSessionOutlivesAConnectionThatTheDaemonClosesForItsOutput)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    // Each answer of selectSession carries the session's environment.
+    SessionOptions options = agentShell(daemon, "a");
+    // Six variables: the kernel takes no single one past 128 KiB.
+    for (int i = 0; i < 6; ++i)
+        options.environment.emplace_back("LARGE" + std::to_string(i), std::string(std::size_t(100) << 10, 'x'));
+    RawClient client(daemon.socket());
+    ASSERT_EQ(newBoundSession(client, options), "reply");
+    ASSERT_EQ(sessionNamed(daemon, "a").value_or(SessionInfo{}).bound, 1);
+    std::string lines;
+    const std::size_t calls = AfterglowProto::IpcServerConnection::MaxWaitingBytes / (std::size_t(600) << 10) + 8;
+    for (std::size_t i = 0; i < calls; ++i) {
+        lines += Json::write(Json::Object{{"type", "call"},
+                                          {"id", std::int64_t(i + 2)},
+                                          {"target", Target},
+                                          {"fn", Fn::SelectSession},
+                                          {"args", Json::Array{ProtocolVersion, "a"}}})
+            + "\n";
+    }
+    ASSERT_TRUE(client.send(lines));
+    EXPECT_TRUE(waitFor(
+        [&] {
+            return sessionNamed(daemon, "a").value_or(SessionInfo{}).bound == 0;
+        },
+        10s));
+    EXPECT_FALSE(waitFor(
+        [&] {
+            return !sessionNamed(daemon, "a");
+        },
+        500ms));
+}
+
+// The options of paste: prompt writes only into an empty command line at a
+// primary prompt, in the same step as the check, and enter adds the Enter
+// key in the same write.
+TEST(MuxControl, APasteAtThePromptGoesOnlyToAnEmptyPrompt)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(readableShell(daemon, "s")) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("s"), "");
+    const auto pane = std::int64_t(firstPane(ctl));
+    ASSERT_NE(pane, 0);
+    const auto shell = [&] {
+        const auto listed = ctl.call("listPanes", {});
+        return listed && listed->toArray().size() == 1 ? listed->toArray()[0]["shell"].toString() : std::string();
+    };
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "PS1=''\n"})) << ctl.error.message;
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "printf '\\033]133;A\\007$ \\033]133;B\\007'\n"}))
+        << ctl.error.message;
+    ASSERT_TRUE(waitFor([&] {
+        return shell() == "prompt";
+    }));
+    ASSERT_TRUE(ctl.call("paste", Json::Array{pane, "echo pas''ted", Json::Object{{"prompt", true}, {"enter", true}}}))
+        << ctl.error.message;
+    EXPECT_TRUE(screenShows(ctl, pane, "\npasted"));
+    ASSERT_TRUE(ctl.call("sendText", Json::Array{pane, "printf '\\033]133;C\\007'\n"})) << ctl.error.message;
+    ASSERT_TRUE(waitFor([&] {
+        return shell() == "running";
+    }));
+    EXPECT_FALSE(ctl.call("paste", Json::Array{pane, "x", Json::Object{{"prompt", true}}}));
+    EXPECT_EQ(ctl.error.code, Error::NotAtPrompt);
+    EXPECT_EQ(ctl.error.message, "the shell of pane " + std::to_string(pane) + " runs a command");
+    for (const Json::Value& bad : {Json::Value(Json::Object{{"other", true}}), Json::Value(Json::Object{{"prompt", 1}}),
+                                   Json::Value("prompt")}) {
+        EXPECT_FALSE(ctl.call("paste", Json::Array{pane, "x", bad})) << Json::write(bad);
+        EXPECT_EQ(ctl.error.code, IpcErrorCode::InvalidArg) << Json::write(bad);
+    }
+    EXPECT_FALSE(ctl.call("paste", Json::Array{pane, "x", Json::Object{}, 1}));
+    EXPECT_EQ(ctl.error.code, IpcErrorCode::InvalidArg);
+    // An empty paste sends nothing, also while a command runs. One with
+    // enter sends the Enter, which the prompt check guards as any paste.
+    EXPECT_TRUE(ctl.call("paste", Json::Array{pane, ""})) << ctl.error.message;
+    EXPECT_FALSE(ctl.call("paste", Json::Array{pane, "", Json::Object{{"prompt", true}, {"enter", true}}}));
+    EXPECT_EQ(ctl.error.code, Error::NotAtPrompt);
+}
+
+// close with endSession false closes no last pane, and with the option its
+// answer says whether the session ended.
+TEST(MuxControl, ACloseKeepsTheLastPaneWhenItMustNotEndTheSession)
+{
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(daemon.newSession(daemon.options(Waiting, "s"))) << daemon.lastError();
+    ControlClient ctl(daemon);
+    ASSERT_EQ(ctl.select("s"), "");
+    const std::int64_t first = firstPane(ctl);
+    ASSERT_NE(first, 0);
+    EXPECT_FALSE(ctl.call("close", Json::Array{first, Json::Object{{"endSession", false}}}));
+    EXPECT_EQ(ctl.error.code, Error::LastPane);
+    EXPECT_EQ(ctl.error.message,
+              "pane " + std::to_string(first) + " is the last pane of session 's': closing it ends the session");
+    EXPECT_EQ(sessionNamed(daemon, "s").value_or(SessionInfo{}).panes, 1);
+    const auto second = ctl.call("split", Json::Array{first, "right", Json::Array{}});
+    ASSERT_TRUE(second && second->toInteger()) << ctl.error.message;
+    const auto kept = ctl.call("close", Json::Array{*second, Json::Object{{"endSession", false}}});
+    ASSERT_TRUE(kept) << ctl.error.message;
+    EXPECT_EQ(Json::write(*kept), R"({"sessionEnded":false})");
+    for (const Json::Array& bad :
+         {Json::Array{first, Json::Object{}}, Json::Array{first, Json::Object{{"endSession", 1}}},
+          Json::Array{first, Json::Object{{"endSession", true}, {"other", 1}}},
+          Json::Array{first, Json::Object{{"endSession", true}}, 1}}) {
+        EXPECT_FALSE(ctl.call("close", bad)) << Json::write(Json::Value(bad));
+        EXPECT_EQ(ctl.error.code, IpcErrorCode::InvalidArg) << Json::write(Json::Value(bad));
+    }
+    const auto ended = ctl.call("close", Json::Array{first, Json::Object{{"endSession", true}}});
+    ASSERT_TRUE(ended) << ctl.error.message;
+    EXPECT_EQ(Json::write(*ended), R"({"sessionEnded":true})");
+    EXPECT_FALSE(sessionNamed(daemon, "s"));
+}
+
+// A connection that selected a session reaches the commands of scripts only
+// of that session, also from a pane of another session: the session of
+// its pane would be the user's. A selected session that ended, or one of
+// no agent, or one whose Control.enabled is off, reaches none.
+TEST(MuxAttach, AClientThatSelectedASessionNeverReachesTheSessionOfItsPane)
+{
+    if (!pythonFound())
+        GTEST_SKIP() << "python3 is not installed";
+    TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(daemon.newSession(agentShell(daemon, "a"))) << daemon.lastError();
+    // A client in a pane of session p that selects session a first.
+    const std::string go = daemon.dir() + "/go";
+    static const std::string script = R"(import os, socket, sys, time
+while not os.path.exists(sys.argv[1]):
+    time.sleep(0.02)
+s = socket.socket(socket.AF_UNIX)
+s.connect(os.environ['AFTERGLOW_SOCKET'])
+s.sendall(sys.argv[2].encode() + b'\n')
+buf = b''
+while b'\n' not in buf:
+    buf += s.recv(65536)
+s.sendall(sys.argv[3].encode() + b'\n')
+time.sleep(3600)
+)";
+    const std::string select = Json::write(Json::Object{{"type", "call"},
+                                                        {"id", 1},
+                                                        {"target", Target},
+                                                        {"fn", Fn::SelectSession},
+                                                        {"args", Json::Array{ProtocolVersion, "a"}}});
+    ASSERT_TRUE(daemon.newSession(daemon.options({"python3", "-I", "-c", script, go, select, commandsLine()}, "p")))
+        << daemon.lastError();
+    Window agentWindow;
+    ASSERT_EQ(agentWindow.attach(daemon, "a"), "");
+    Window paneWindow;
+    ASSERT_EQ(paneWindow.attach(daemon, "p"), "");
+    ASSERT_TRUE(agentWindow.until([&] {
+        return agentWindow.pane != 0;
+    }));
+    ASSERT_TRUE(paneWindow.until([&] {
+        return paneWindow.pane != 0;
+    }));
+    std::ofstream(go).put('\n');
+    ASSERT_TRUE(agentWindow.until([&] {
+        return agentWindow.relays.size() >= 2;
+    }));
+    EXPECT_EQ(agentWindow.relays[0].part, Attach::RelayPart::Open);
+    EXPECT_EQ(agentWindow.relays[0].pane, 0u);
+    paneWindow.until(
+        [] {
+            return false;
+        },
+        300ms);
+    EXPECT_TRUE(paneWindow.relays.empty());
+
+    // A session that ended, and one whose control target is off.
+    SessionOptions off = agentShell(daemon, "off");
+    off.control.enabled = false;
+    ASSERT_TRUE(daemon.newSession(off)) << daemon.lastError();
+    ControlClient disabled(daemon);
+    ASSERT_EQ(disabled.select("off"), "");
+    EXPECT_FALSE(disabled.call("list", {}, AfterglowProto::Run::Target));
+    EXPECT_EQ(disabled.error.message, "session 'off' takes no control calls (Control.enabled)");
+    ASSERT_TRUE(daemon.newSession(agentShell(daemon, "gone"))) << daemon.lastError();
+    ControlClient ended(daemon);
+    ASSERT_EQ(ended.select("gone"), "");
+    ASSERT_TRUE(daemon.call(Fn::KillSession, Json::Array{"gone"})) << daemon.lastError();
+    EXPECT_FALSE(ended.call("list", {}, AfterglowProto::Run::Target));
+    EXPECT_EQ(ended.error.code, Error::NoSuchSession);
+    EXPECT_EQ(ended.error.message, "session 'gone' ended");
 }

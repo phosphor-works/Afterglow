@@ -10,6 +10,7 @@
 #include <AfterglowVt/Screen.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -71,7 +72,45 @@ TEST(MuxProtocol, SessionNames)
 // protocol: this list and ProtocolVersion change together.
 TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
 {
-    ASSERT_EQ(ProtocolVersion, 27) << "a new protocol version: update the key lists and the calls of this test";
+    ASSERT_EQ(ProtocolVersion, 33) << "a new protocol version: update the key lists and the calls of this test";
+    // Version 33 added the epoch of a text mark ({row, col, epoch}) and the
+    // STALE_MARK error of getText since a mark of another epoch; the
+    // keep_end option of getText; the prompt and enter options of paste,
+    // with NOT_AT_PROMPT; the endSession option of close, with LAST_PANE
+    // and its {sessionEnded} answer; NO_ROOM for a split without room;
+    // NOT_ATTACHED and TRY_AGAIN for the calls that need a window;
+    // Control.allowAdopt in the control values, which adoptSession needs;
+    // and the bind option of newSession (AttachTest).
+    EXPECT_EQ(std::string(Error::StaleMark), "STALE_MARK");
+    EXPECT_EQ(std::string(Error::NotAtPrompt), "NOT_AT_PROMPT");
+    EXPECT_EQ(std::string(Error::LastPane), "LAST_PANE");
+    EXPECT_EQ(std::string(Error::NoRoom), "NO_ROOM");
+    EXPECT_EQ(std::string(Error::NotAttached), "NOT_ATTACHED");
+    EXPECT_EQ(std::string(GetTextScopeNames),
+              "screen, scrollback, selection, last-output, first-output-on-screen, last-visited-output or since");
+    EXPECT_EQ(std::string(TextOptionNames), "the options are ansi, cursor, wrap_markers, keep_end and mark");
+    // Version 32 added the layout call of the control target, and a client
+    // that selected an agent session reaches the commands of scripts of the
+    // window that shows it, with pane 0 in the Open of its relay (AttachTest).
+    // Version 31 added agent sessions: the agent option of a session, the
+    // agent and bound of listSessions, the agent of the attach answer, the
+    // adoptSession, bindSession and unbindSession calls, and the daemon's
+    // call agent to the window that shows a session that an agent adopted
+    // (AttachTest).
+    EXPECT_EQ(std::string(Fn::AdoptSession), "adoptSession");
+    EXPECT_EQ(std::string(Fn::BindSession), "bindSession");
+    EXPECT_EQ(std::string(Fn::UnbindSession), "unbindSession");
+    // Version 30 added the textChanged event (AttachTest).
+    EXPECT_NE(std::find(ControlEvents.begin(), ControlEvents.end(), "textChanged"), ControlEvents.end());
+    // Version 29 added the paste call of the control target, which sends
+    // text as a paste in a window does (AttachTest).
+    // Version 28 gave the control target the shell's state: shell, input and
+    // last_exit in the pane objects of listPanes in place of at_prompt, the
+    // shellChanged event, the mark and shellRegions calls, the since scope of
+    // getText, its {text, truncated} answer, and the TRY_AGAIN error, which a
+    // window and the daemon both give (AttachTest).
+    EXPECT_EQ(std::string(Error::TryAgain), "TRY_AGAIN");
+    EXPECT_NE(std::find(ControlEvents.begin(), ControlEvents.end(), "shellChanged"), ControlEvents.end());
     // Version 27 streams iTerm2 downloads: DownloadBegin, DownloadData and
     // DownloadEnd host calls in place of Download, and the DownloadAnswer
     // action, for which the pane's output waits (AttachTest). It added the
@@ -146,8 +185,9 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     EXPECT_EQ(keys(toJson(followed)),
               (std::vector<std::string>{"terminal", "control", "environment", "keptNotifications",
                                         "notificationCapabilities"}));
-    EXPECT_EQ(keys(toJson(followed)["control"]),
-              (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff", "eventInterval"}));
+    EXPECT_EQ(
+        keys(toJson(followed)["control"]),
+        (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff", "eventInterval", "allowAdopt"}));
     [[maybe_unused]] auto& [followedTerminal, followedControl, followedEnvironment, followedKept,
                             followedCapabilities] = followed;
     std::string settingsError;
@@ -195,6 +235,10 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     // relay, and the host of a client of an ssh session.
     EXPECT_EQ(Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::Open, {}, 7, Attach::RelayKind::Remote, "h"}),
               std::string("\x01\x03\x07\x01h", 5));
+    // Version 32 added pane 0 in the Open of a client that selected an
+    // agent session.
+    EXPECT_EQ(Attach::encode(Attach::RelayFrame{3, Attach::RelayPart::Open, {}, 0}),
+              std::string("\x01\x03\x00\x00", 4));
     // Version 13 passes the command clients of a session pane (`aglow run`)
     // to the window: the Commands event and the window's CommandsChannel,
     // with their RelayFrame.
@@ -478,8 +522,9 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
     // until it has its key, its place in the round trip and a new version.
     SessionOptions fields;
     [[maybe_unused]] auto& [name, sessionEnvironment, callerEnvironment, umask, launch, size, terminal,
-                            notificationCapabilities, controlOptions, keptNotifications] = fields;
-    [[maybe_unused]] auto& [controlEnabled, allowReadText, remoteCommandsOff, eventInterval] = fields.control;
+                            notificationCapabilities, controlOptions, keptNotifications, sessionAgent] = fields;
+    [[maybe_unused]] auto& [controlEnabled, allowReadText, remoteCommandsOff, eventInterval, allowAdopt] =
+        fields.control;
     [[maybe_unused]] auto& [argv, cwd, environment, unset, launchedProgram, command] = fields.launch;
     [[maybe_unused]] auto& [cols, rows, cellWidth, cellHeight] = fields.size;
     [[maybe_unused]] auto& [scrollback, foreground, background, palette, cursorColor, cursorTextColor,
@@ -487,14 +532,16 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
                             ambiguousWide, bidi, cursorShape, cursorBlink, allowScreenReadback, graphicsQuota,
                             graphicsFileTransfer] = fields.terminal;
     SessionInfo info;
-    [[maybe_unused]] auto& [infoName, attached, panes, jobs] = info;
+    [[maybe_unused]] auto& [infoName, attached, panes, jobs, agent, bound] = info;
 
     const Json::Value options = toJson(SessionOptions{});
-    EXPECT_EQ(keys(options),
-              (std::vector<std::string>{"name", "environment", "callerEnvironment", "umask", "launch", "size",
-                                        "terminal", "notificationCapabilities", "control", "keptNotifications"}));
-    EXPECT_EQ(keys(options["control"]),
-              (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff", "eventInterval"}));
+    EXPECT_EQ(
+        keys(options),
+        (std::vector<std::string>{"name", "environment", "callerEnvironment", "umask", "launch", "size", "terminal",
+                                  "notificationCapabilities", "control", "keptNotifications", "agent"}));
+    EXPECT_EQ(
+        keys(options["control"]),
+        (std::vector<std::string>{"enabled", "allowReadText", "remoteCommandsOff", "eventInterval", "allowAdopt"}));
     EXPECT_EQ(keys(options["launch"]),
               (std::vector<std::string>{"argv", "cwd", "environment", "unset", "launchedProgram", "command"}));
     EXPECT_EQ(keys(options["size"]), (std::vector<std::string>{"cols", "rows", "cellWidth", "cellHeight"}));
@@ -504,7 +551,8 @@ TEST(MuxProtocol, TheKeysBelongToTheProtocolVersion)
                                   "selectionForeground", "selectionBackground", "boldIsBright", "minimumContrast",
                                   "wordBoundaries", "ambiguousWide", "bidi", "cursorShape", "cursorBlink",
                                   "allowScreenReadback", "graphicsQuota", "graphicsFileTransfer"}));
-    EXPECT_EQ(keys(toJson(SessionInfo{})), (std::vector<std::string>{"name", "attached", "panes", "jobs"}));
+    EXPECT_EQ(keys(toJson(SessionInfo{})),
+              (std::vector<std::string>{"name", "attached", "panes", "jobs", "agent", "bound"}));
 }
 
 namespace {
@@ -768,6 +816,7 @@ TEST(MuxProtocol, SessionOptionsRoundTrip)
     o.notificationCapabilities = "a=focus:p=title";
     o.control = {false, true, "remote commands are off (Terminal.sshRemoteCommands)", 250};
     o.keptNotifications = 0;
+    o.agent = true;
     AfterglowVt::TerminalOptions& t = o.terminal;
     t.maxScrollback = 1234;
     t.defaultForeground = {4, 5, 6};
@@ -825,6 +874,7 @@ TEST(MuxProtocol, SessionOptionsRoundTrip)
     EXPECT_EQ(back->control.eventInterval, 250);
     EXPECT_TRUE(back->control == o.control);
     EXPECT_EQ(back->keptNotifications, 0);
+    EXPECT_TRUE(back->agent);
     EXPECT_TRUE(back->terminal == o.terminal);
     // Unset colors go as null and come back unset.
     SessionOptions unset;
@@ -860,6 +910,7 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
         {"keptNotifications", -1},
         {"keptNotifications", MaxKeptNotifications + 1},
         {"keptNotifications", "8"},
+        {"agent", 1},
         // A key of another version.
         {"argv", Json::Array{}},
     };
@@ -869,7 +920,7 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
         EXPECT_NE(error.find(std::string("'") + key + "'"), std::string::npos) << key << ": " << error;
     }
     for (const char* key : {"name", "environment", "callerEnvironment", "umask", "launch", "size", "terminal",
-                            "notificationCapabilities", "control", "keptNotifications"}) {
+                            "notificationCapabilities", "control", "keptNotifications", "agent"}) {
         error.clear();
         EXPECT_FALSE(sessionOptions(without(good, key), &error)) << key;
         EXPECT_NE(error.find(std::string("'") + key + "'"), std::string::npos) << key << ": " << error;
@@ -889,7 +940,19 @@ TEST(MuxProtocol, SessionOptionsRefuseBadValues)
              {Json::Object{{"enabled", true},
                            {"allowReadText", false},
                            {"remoteCommandsOff", ""},
+                           {"eventInterval", 0}},
+              "'control.allowAdopt'"},
+             {Json::Object{{"enabled", true},
+                           {"allowReadText", false},
+                           {"remoteCommandsOff", ""},
                            {"eventInterval", 0},
+                           {"allowAdopt", "yes"}},
+              "'control.allowAdopt'"},
+             {Json::Object{{"enabled", true},
+                           {"allowReadText", false},
+                           {"remoteCommandsOff", ""},
+                           {"eventInterval", 0},
+                           {"allowAdopt", false},
                            {"other", 1}},
               "'control.other'"}}) {
         error.clear();
@@ -1045,13 +1108,20 @@ TEST(MuxProtocol, TheFirstErrorIsTheOneReported)
 
 TEST(MuxProtocol, SessionInfoRoundTrip)
 {
-    SessionInfo info{"2", true, 3, {"vim", "make"}};
+    SessionInfo info{"2", true, 3, {"vim", "make"}, true, 2};
     const auto back = sessionInfo(toJson(info));
     ASSERT_TRUE(back);
     EXPECT_EQ(back->name, "2");
     EXPECT_TRUE(back->attached);
     EXPECT_EQ(back->panes, 3);
     EXPECT_EQ(back->jobs, info.jobs);
+    EXPECT_TRUE(back->agent);
+    EXPECT_EQ(back->bound, 2);
+    EXPECT_FALSE(sessionInfo(with(toJson(info), "bound", -1)));
+    EXPECT_FALSE(sessionInfo(with(toJson(info), "bound", "2")));
+    EXPECT_FALSE(sessionInfo(with(toJson(info), "agent", 1)));
+    EXPECT_FALSE(sessionInfo(without(toJson(info), "agent")));
+    EXPECT_FALSE(sessionInfo(without(toJson(info), "bound")));
     EXPECT_FALSE(sessionInfo(Json::Object{{"name", "x"}}));
     EXPECT_FALSE(sessionInfo(with(toJson(info), "panes", -1)));
     EXPECT_FALSE(sessionInfo(with(toJson(info), "jobs", Json::Array{1})));
@@ -1234,6 +1304,10 @@ TEST(MuxProtocol, RelayFramesRoundTrip)
         EXPECT_EQ(remote->pane, 4u);
         EXPECT_EQ(remote->kind, Attach::RelayKind::Remote);
         EXPECT_TRUE(remote->host == host);
+        // A client that selected an agent session (afterglow mcp).
+        const auto unpaned =
+            Attach::decodeRelay(Attach::encode(Attach::RelayFrame{relay, Attach::RelayPart::Open, {}, 0}));
+        EXPECT_TRUE(unpaned && unpaned->pane == 0 && unpaned->kind == Attach::RelayKind::Commands);
         // The bytes of a connection, whatever they look like.
         const std::string bytes("\x00\xff\n\x80", 4);
         const auto data =
@@ -1272,7 +1346,7 @@ TEST(MuxProtocol, RelayFramesThatDoNotDecodeAreRefused)
         std::string_view("\x01\x00\x01", 3), // relay 0
         std::string_view("\x01\x01", 2), // Open without its pane
         std::string_view("\x01\x01\x01", 3), // Open without its kind
-        std::string_view("\x01\x01\x00\x00", 4), // Open of pane 0
+        std::string_view("\x01\x01\x00\x01h", 5), // the Open of a client of an ssh session in pane 0
         std::string_view("\x01\x01\x01\x02", 4), // the kind after Remote
         std::string_view("\x01\x01\x01\x00h", 5), // a byte after the Open of a client of the commands target
         std::string_view("\x01\x01\x01\x01", 4), // the Open of a client of an ssh session without its host

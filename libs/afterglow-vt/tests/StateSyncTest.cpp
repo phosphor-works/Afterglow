@@ -168,7 +168,9 @@ std::string differs(const Terminal& a, const Terminal& b)
     if (std::string d = regionsDiffer(a, b); !d.empty())
         return "shell marks: " + d;
     if (a.atShellPrompt() != b.atShellPrompt() || a.hasCommandOutput() != b.hasCommandOutput()
-        || a.promptRedrawPending() != b.promptRedrawPending()) {
+        || a.promptRedrawPending() != b.promptRedrawPending() || a.shellState() != b.shellState()
+        || a.lastExitCode() != b.lastExitCode() || a.lastPromptId() != b.lastPromptId()
+        || a.shellInput() != b.shellInput()) {
         return "shell state";
     }
     // A click on the command line sends the same input from both: a few
@@ -619,6 +621,99 @@ TEST(StateSync, ShellIntegrationMarksAndRegions)
     ASSERT_TRUE(p.sync(&error)) << error;
     EXPECT_EQ(regionsDiffer(p.source, p.replica), "");
     EXPECT_EQ(p.replica.text(Terminal::TextScope::LastOutput), p.source.text(Terminal::TextScope::LastOutput));
+}
+
+// The shell's facts reach the replica whole: a command that runs across a
+// reset, its code, the id of the newest prompt, and a secondary prompt on
+// the alternate screen, which has no mark of its row.
+TEST(StateSync, ShellFactsReachTheReplica)
+{
+    Pair p(30, 8, 100);
+    p.source.feed(
+        "\x1b]133;A\x07$ \x1b]133;B\x07make\r\n\x1b]133;C\x07\x1b"
+        "c");
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(p.replica.shellState(), ShellState::Running);
+    EXPECT_EQ(differs(p.source, p.replica), "");
+    p.source.feed("\x1b]133;D;4\x07\x1b]133;A\x07$ ");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(p.replica.lastExitCode(), 4);
+    EXPECT_EQ(p.replica.lastPromptId(), p.source.lastPromptId());
+    EXPECT_EQ(p.replica.shellState(), ShellState::Prompt);
+    EXPECT_EQ(differs(p.source, p.replica), "");
+    p.source.feed(
+        "\x1b[?1049h\x1b]133;A\x07$ \x1b]133;B\x07"
+        "echo \"\r\n\x1b]133;A;k=s\x07> ");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    ASSERT_EQ(p.source.shellState(), ShellState::Continuation);
+    EXPECT_EQ(p.replica.shellState(), ShellState::Continuation);
+    EXPECT_EQ(differs(p.source, p.replica), "");
+    p.source.programExited();
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(p.replica.shellState(), ShellState::None);
+}
+
+// A frame of rows changes the replica's text, and one of a title alone does
+// not (contentGeneration()). A mark on the replica goes stale with an
+// unscroll of the writer.
+TEST(StateSync, TheReplicasTextChangesWithRowsOnly)
+{
+    Pair p(20, 4, 100);
+    for (int i = 0; i < 10; ++i)
+        p.source.feed("line " + std::to_string(i) + "\r\n");
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    std::uint64_t generation = p.replica.contentGeneration();
+    p.source.feed("\x1b]0;a title\x07\x1b]133;A\x07\x1b[31m");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(p.replica.title(), "a title");
+    EXPECT_EQ(p.replica.contentGeneration(), generation);
+    p.source.feed("x");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_NE(p.replica.contentGeneration(), generation);
+    generation = p.replica.contentGeneration();
+    const TextMark mark = p.replica.textMark();
+    bool stale = true;
+    EXPECT_EQ(p.replica.textSince(mark, 100, nullptr, nullptr, &stale, {}), "");
+    EXPECT_FALSE(stale);
+    p.source.feed("\x1b[2+T");
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_NE(p.replica.contentGeneration(), generation);
+    p.replica.textSince(mark, 100, nullptr, nullptr, &stale, {});
+    EXPECT_TRUE(stale);
+}
+
+// A replica that nobody sees gets held frames without the rows. Its text
+// still changes with the writer's, so that its host tells of each change as
+// it comes (the window's textChanged of a session pane that no tab shows).
+TEST(StateSync, AHeldFrameChangesTheReplicasTextWithTheWritersText)
+{
+    Pair p(20, 4, 100);
+    p.source.feed("before");
+    std::string error;
+    ASSERT_TRUE(p.sync(&error)) << error;
+    std::uint64_t generation = p.replica.contentGeneration();
+    const std::uint64_t drawn = p.replica.textGeneration();
+    p.source.feed(" after");
+    const std::string held = p.writer.updateHeld(p.source);
+    ASSERT_FALSE(held.empty());
+    ASSERT_TRUE(p.reader.apply(p.replica, held, &error)) << error;
+    EXPECT_NE(p.replica.contentGeneration(), generation);
+    // The rows wait: the replica draws nothing new.
+    EXPECT_EQ(rowText(p.replica, 0), "before");
+    EXPECT_EQ(p.replica.textGeneration(), drawn);
+    EXPECT_FALSE(p.reader.screenChanged());
+    // A title alone changes no text, held or not.
+    generation = p.replica.contentGeneration();
+    p.source.feed("\x1b]0;a title\x07");
+    ASSERT_TRUE(p.reader.apply(p.replica, p.writer.updateHeld(p.source), &error)) << error;
+    EXPECT_EQ(p.replica.title(), "a title");
+    EXPECT_EQ(p.replica.contentGeneration(), generation);
+    // The next update() brings the rows, and the text it already told of.
+    ASSERT_TRUE(p.sync(&error)) << error;
+    EXPECT_EQ(rowText(p.replica, 0), "before after");
+    EXPECT_EQ(differs(p.source, p.replica), "");
 }
 
 TEST(StateSync, ProgramStatusAndContextsReachTheReplicasHost)
@@ -1349,10 +1444,12 @@ TEST(StateSync, ReaderRefusesBadNewSections)
     };
     // The shell section: the zone, the click byte, running, the redraw, the
     // four marks (a valid byte, then its row and column), the next region
-    // id, and the regions (id, flags, start row and column, end row and
-    // column). @p head is its first four bytes, @p marks the marks.
-    const auto shell = [](std::string head, std::string marks, std::string regions) {
-        return head + marks + regions;
+    // id, the regions (id, flags, start row and column, end row and column),
+    // and the facts (a flag byte, an exit code with its flag, the prompt
+    // id). @p head is its first four bytes, @p marks the marks.
+    const auto shell = [](std::string head, std::string marks, std::string regions,
+                          std::string facts = std::string("\x00\x00", 2)) {
+        return head + marks + regions + facts;
     };
     const std::string noMarks(4, '\0');
     const std::string past = varint((std::uint64_t(INT64_MAX) / 65536) + 1);
@@ -1368,6 +1465,9 @@ TEST(StateSync, ReaderRefusesBadNewSections)
               frame(
                   11,
                   shell(std::string(4, '\0'), std::string("\x00\x00\x00\x01\x05\x02", 6), std::string("\x00\x00", 2)))},
+             {"every shell fact",
+              frame(11,
+                    shell(std::string(4, '\0'), noMarks, std::string("\x00\x00", 2), std::string("\x07\x06\x05", 3)))},
          }) {
         StateReader reader;
         Terminal replica(20, 4, p.replicaHost);
@@ -1385,6 +1485,10 @@ TEST(StateSync, ReaderRefusesBadNewSections)
               frame(11, shell(std::string("\x00\x08\x00\x00", 4), noMarks, std::string("\x00\x00", 2)))},
              {"a region id past the next one",
               frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x01\x01\x01\x00\x00\x00\x00\x00", 8)))},
+             {"an unknown shell fact",
+              frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x00\x00", 2), std::string("\x10\x00", 2)))},
+             {"shell facts cut short",
+              frame(11, shell(std::string(4, '\0'), noMarks, std::string("\x00\x00", 2), std::string("\x04\x06", 2)))},
              {"a prompt redraw of 2",
               frame(11, shell(std::string("\x00\x00\x00\x02", 4), noMarks, std::string("\x00\x00", 2)))},
              {"a shell mark that is valid twice",
@@ -2533,8 +2637,12 @@ TEST(StateSync, AHeldFrameLeavesTheScreensForTheNextUpdate)
     EXPECT_EQ(p.replica.primaryScreen().historySize(), 0u);
     EXPECT_TRUE(p.replica.graphics().images().empty());
     EXPECT_TRUE(p.replicaHost.scrolls.empty());
-    // Output that changes nothing of those sections makes no held frame.
+    // Output that changes nothing of those sections makes a held frame that
+    // says only that the text changed. With no change, none comes.
     p.source.feed("\r\nmore");
+    const std::string more = p.writer.updateHeld(p.source);
+    ASSERT_FALSE(more.empty());
+    ASSERT_TRUE(p.reader.apply(p.replica, more, &error)) << error;
     EXPECT_EQ(p.writer.updateHeld(p.source), "");
     // The next update() sends the screens as they are, with the scrolls
     // that the caller kept.

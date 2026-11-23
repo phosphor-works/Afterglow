@@ -81,13 +81,16 @@ std::string Daemon::subscribe(const IpcRequest& request, IpcServerConnection& co
     if (!m_watches.contains(session.serial())) {
         SessionWatch& watch = m_watches[session.serial()];
         watch.name = session.name();
-        session.setWatched(true);
+        session.setWatched(true, false);
         for (const auto& pane : session.panes())
             watch.panes[pane->id()] = PaneWatch{pane->title(), pane->status()};
         watch.focused = session.focusedPane();
     }
     // The events go to the subscription by the id of its request.
     m_subscriptions.push_back(Subscription{&connection, id, session.serial(), request.signal});
+    // The panes keep the changes of their text only for a watcher of them
+    // (pumpWatchOf() stops that when the last one goes).
+    session.setWatched(true, textWatched(session.serial()));
     // A client that ends its side still hears its events, until they end.
     connection.keepAtEnd(true);
     return ipcReply(id, nullptr);
@@ -111,9 +114,16 @@ std::string Daemon::unsubscribe(const IpcRequest& request, IpcServerConnection& 
     // The answer goes before the connection is let go: a client that ended
     // its side gets it, then the connection closes. Sent here, so read()
     // sends nothing more.
-    connection.send(ipcReply(request.id.value_or(0), nullptr));
+    sendTo(connection, ipcReply(request.id.value_or(0), nullptr));
     holdForAnswers(connection);
     return {};
+}
+
+bool Daemon::textWatched(std::uint64_t serial) const
+{
+    return std::any_of(m_subscriptions.begin(), m_subscriptions.end(), [serial](const Subscription& s) {
+        return s.session == serial && s.signal == "textChanged";
+    });
 }
 
 void Daemon::forgetWatches(const IpcServerConnection* connection)
@@ -138,7 +148,7 @@ void Daemon::sendWatch(std::uint64_t serial, const SessionWatch& watch, const st
         // A watcher whose event fails (out of memory) loses its connection,
         // which tells it that it missed one. The others still get theirs.
         if (!contained("an event of afterglow ctl watch", [&] {
-                s.connection->send(ipcEvent(s.id, args));
+                sendTo(*s.connection, ipcEvent(s.id, args));
             }))
             s.connection->close();
     }
@@ -210,6 +220,9 @@ void Daemon::watchEvent(std::uint64_t serial, SessionWatch& watch, std::uint32_t
     case Kind::Bell:
         watchMerged(serial, watch, pane, {}, "bell", Json::Array{std::int64_t(pane)});
         break;
+    case Kind::Text:
+        watchMerged(serial, watch, pane, {}, "textChanged", Json::Array{std::int64_t(pane)});
+        break;
     case Kind::UserVar:
         watchMerged(serial, watch, pane, event.name, "userVarChanged",
                     Json::Array{std::int64_t(pane), event.name, std::move(event.text)});
@@ -221,6 +234,11 @@ void Daemon::watchEvent(std::uint64_t serial, SessionWatch& watch, std::uint32_t
         watchNow(
             serial, watch, pane, "commandFinished",
             Json::Array{std::int64_t(pane), std::move(event.text), event.exitCode, std::int64_t(event.milliseconds)});
+        break;
+    case Kind::Shell:
+        // At once, as the end of a command: a client waits for the prompt.
+        // The same state again is a new prompt.
+        watchNow(serial, watch, pane, "shellChanged", Json::Array{std::int64_t(pane), std::move(event.name)});
         break;
     }
 }
@@ -284,7 +302,7 @@ void Daemon::pumpWatchOf(std::map<std::uint64_t, SessionWatch>::iterator it, std
             // Out of memory, the watcher's connection closes, which tells
             // it.
             if (!contained("an event of afterglow ctl watch", [&] {
-                    connection->send(ipcError(id, code, message));
+                    sendTo(*connection, ipcError(id, code, message));
                 }))
                 connection->close();
             holdForAnswers(*connection);
@@ -296,10 +314,11 @@ void Daemon::pumpWatchOf(std::map<std::uint64_t, SessionWatch>::iterator it, std
         });
     if (!open || !subscribed) {
         if (session)
-            session->setWatched(false);
+            session->setWatched(false, false);
         m_watches.erase(it);
         return;
     }
+    session->setWatched(true, textWatched(serial));
     watch.readText = session->options().control.allowReadText;
     watch.interval = std::chrono::milliseconds(session->options().control.eventInterval);
     std::set<std::uint32_t> live;

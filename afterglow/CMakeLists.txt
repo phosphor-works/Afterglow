@@ -94,6 +94,15 @@ qt_add_library(afterglow_app STATIC
     src/control/RemoteSockets.h
     src/control/SessionControl.cpp
     src/control/SessionControl.h
+    src/control/SessionLaunch.cpp
+    src/control/SessionLaunch.h
+    # Here, not with Mcp.cpp: the tests check the tool definitions.
+    src/mcp/DaemonLink.cpp
+    src/mcp/DaemonLink.h
+    src/mcp/McpToolParts.h
+    src/mcp/McpTools.cpp
+    src/mcp/McpTools.h
+    src/mcp/McpWorkflows.cpp
     # Here, not with Ctl: the socket tests drive it too.
     src/control/IpcClient.cpp
     src/control/IpcClient.h
@@ -105,7 +114,7 @@ qt_add_library(afterglow_app STATIC
 )
 
 qt_add_executable(afterglow src/main.cpp src/control/Ctl.cpp src/control/Ctl.h src/control/Mux.cpp src/control/Mux.h
-    src/shell/Aglow.cpp src/shell/Aglow.h)
+    src/mcp/Mcp.cpp src/mcp/Mcp.h src/shell/Aglow.cpp src/shell/Aglow.h)
 # afterglow_app brings afterglow_mux_protocol, which Mux.cpp uses too.
 target_link_libraries(afterglow PRIVATE afterglow_app)
 # afterglow mux runs the aglow-mux of its own directory, and so do the panes,
@@ -287,7 +296,7 @@ target_include_directories(afterglow_app PUBLIC src)
 target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afterglow_shaders afterglow_scripting afterglow_audio Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
     Qt6::Concurrent Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::CorePrivate Qt6::GuiPrivate Qt6::QuickPrivate
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
-    PhosphorDBus::PhosphorDBus PhosphorIpc::PhosphorIpc PhosphorScripting::PhosphorScripting
+    PhosphorDBus::PhosphorDBus PhosphorIpc::PhosphorIpc PhosphorMcp::PhosphorMcp PhosphorScripting::PhosphorScripting
     PhosphorAnimation::PhosphorAnimation PhosphorShortcuts::PhosphorShortcuts PhosphorWayland::PhosphorWayland
     Qt6::DBus Qt6::Network KF6::WindowSystem
     # Headers of src/control/ and src/mux/ include its headers.
@@ -307,7 +316,7 @@ install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 set(AFTERGLOW_PRIVATE_LIBS ${AFTERGLOW_MUX_PRIVATE_LIBS} AfterglowRender
     PhosphorPaths PhosphorConfig PhosphorFsLoader PhosphorRegistry PhosphorShaders PhosphorRendering
     PhosphorWayland PhosphorLayer PhosphorAnimation PhosphorShortcuts
-    PhosphorDBus PhosphorIpc PhosphorScripting PhosphorAudio)
+    PhosphorDBus PhosphorIpc PhosphorMcp PhosphorScripting PhosphorAudio)
 set_target_properties(${AFTERGLOW_PRIVATE_LIBS} PROPERTIES INSTALL_RPATH "$ORIGIN")
 set_target_properties(phosphorwayland-qpa PROPERTIES INSTALL_RPATH "$ORIGIN/../..")
 install(TARGETS ${AFTERGLOW_PRIVATE_LIBS} LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR} NAMELINK_SKIP)

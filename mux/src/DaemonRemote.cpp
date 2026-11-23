@@ -563,10 +563,12 @@ void Daemon::acceptSshClient(SshSession& session, int fd)
         Attachment* const window = owner ? showing(owner->name()) : nullptr;
         if (!window) {
             // An error that answers no call: the client's first call reads it.
-            connection.send(ipcError(std::nullopt, IpcErrorCode::CallFailed,
-                                     owner ? "no window shows session '" + owner->name()
-                                             + "', and only a window runs the commands of scripts"
-                                           : std::string("the pane of the ssh session has closed")));
+            // The code of a client in a session pane (startRelay()).
+            connection.send(
+                owner ? ipcError(std::nullopt, Error::NotAttached,
+                                 "no window shows session '" + owner->name()
+                                     + "', and only a window runs the commands of scripts")
+                      : ipcError(std::nullopt, IpcErrorCode::CallFailed, "the pane of the ssh session has closed"));
             m_closing.insert(&connection);
             return;
         }

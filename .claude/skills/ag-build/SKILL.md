@@ -75,11 +75,14 @@ window: the native tests show sessions with a daemon of their own (`mux/tests/Te
 
 The rule "Never touch the user's running Afterglow" in `CLAUDE.md` lists what reaches the user's mux daemon and its
 sessions, also from a nested KWin: `afterglow mux` (every command but `--help`), `afterglow ctl --session`,
-`aglow-mux` (every run but `--help` and `--version`), `--mux-attach`, a project with `"session": true` and
-`launch.newWindow` with a `session`. The `--ssh` option, `--mux-host` and a `sessionHost` reach the daemon of another
-host with the user's ssh keys. Run them only with a private `XDG_RUNTIME_DIR` and `XDG_STATE_HOME` under `/tmp`, as
-the tests do (they also give a `HOME` of their own), and kill the sessions that you made. Never stop, restart or mask
-the user's `aglow-mux.service` or `afterglow-mux.service`, and never remove the files in the user's `aglow-mux` and
+`afterglow mcp` (every run but `--help`), `aglow-mux` (every run but `--help` and `--version`), `--mux-attach`, a
+project with `"session": true` and `launch.newWindow` with a `session`. The `--ssh` option, `--mux-host` and a
+`sessionHost` reach the daemon of another host with the user's ssh keys. Run them only with a private
+`XDG_RUNTIME_DIR` and `XDG_STATE_HOME` under `/tmp`, as the tests do (they also give a `HOME` of their own), and kill
+the sessions that you made. `afterglow mcp` also needs a private `XDG_CONFIG_HOME` and `HOME`: `save_project` writes
+to the `projects` folder of the configuration. Never register an MCP server from `build/` with an MCP client: it
+starts an `aglow-mux` from `build/`, and the next build breaks it. Never stop, restart or mask the user's
+`aglow-mux.service` or `afterglow-mux.service`, and never remove the files in the user's `aglow-mux` and
 `afterglow-mux` directories.
 
 ## The Phosphor libraries
@@ -152,7 +155,9 @@ before a commit.
 - The native window tests (`afterglow_native_tests`, the `Shaders/` tests included) are not in CTest by default
   (`AFTERGLOW_NATIVE_TESTS=OFF`).
   They need a nested KWin. Use the `ag-verify-live` skill to run them.
-- CTest runs some Python tests: `completion_test.py` (`afterglow_shell_completion`), the relays of
+- CTest runs some Python tests: `completion_test.py` (`afterglow_shell_completion`), `mcp_session.py`
+  (`afterglow_mcp_session`: `afterglow mcp` against a daemon of its own; `afterglow_mcp_session_window`: its case with
+  a window in a headless KWin, which takes the GPU lock and skips with 77 without KWin or Vulkan), the relays of
   `kitty_transfer_interop.py`, `tools/generate-reference.py --check`, the scripts in `tools/aglow/tests`, and
   `test_headless.py` (`afterglow_headless_runner`), `test_tuifuzz.py` and `kitten_icat.py` in `tools/conformance`. With
   `AFTERGLOW_NATIVE_TESTS=ON` it also runs `native_window_acceptance.py` and `kitty_transfer_interop.py --kitty`. The

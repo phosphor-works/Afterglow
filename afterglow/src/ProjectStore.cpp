@@ -121,6 +121,11 @@ bool ProjectStore::keepsCommand(const QStringList& command)
     return commandProblem(command).isEmpty();
 }
 
+QString ProjectStore::directoryBeside(const QString& configPath)
+{
+    return QDir(QFileInfo(configPath).absolutePath()).filePath(QStringLiteral("projects"));
+}
+
 bool ProjectStore::validName(const QString& name)
 {
     return Afterglow::validName(name);

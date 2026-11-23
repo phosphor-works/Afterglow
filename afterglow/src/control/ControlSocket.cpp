@@ -3,8 +3,11 @@
 
 #include "ControlSocket.h"
 
+#include "MuxProtocol.h"
 #include "RemoteSockets.h"
 #include "../config/Settings.h"
+
+#include <AfterglowProto/IpcServer.h>
 
 #include <QJsonObject>
 #include <QLoggingCategory>
@@ -87,6 +90,28 @@ void ControlApi::sendText(double pane, const QString& text)
         failed(m_control.sendText(*id, text));
 }
 
+void ControlApi::paste(double pane, const QString& text)
+{
+    if (const auto id = paneId(pane)) {
+        QString code;
+        failWithCode(m_control.paste(*id, text, &code), code);
+    }
+}
+
+void ControlApi::failWithCode(const QString& error, const QString& code)
+{
+    if (error.isEmpty())
+        return;
+    if (code.isEmpty()) {
+        failed(error);
+        return;
+    }
+    // A code of its own goes only through a pending reply. Past the
+    // router's limit of waiting calls, the router fails the call.
+    if (const PendingReply reply = deferCall(error))
+        reply->fail(code, error);
+}
+
 ControlApi::PendingReply ControlApi::deferCall(const QString& noClient)
 {
     auto reply = std::make_shared<PhosphorIpc::IpcPendingReply>(deferReply());
@@ -150,34 +175,96 @@ void ControlApi::screenshot(double pane, const QString& scope)
         reply->fail(code, error);
 }
 
-QString ControlApi::getText(double pane, const QString& scope)
+void ControlApi::getText(double pane, const QString& scope)
 {
-    return getText(pane, scope, {});
+    getText(pane, scope, {});
 }
 
-QString ControlApi::getText(double pane, const QString& scope, const QVariantMap& options)
+void ControlApi::getText(double pane, const QString& scope, const QVariantMap& options)
 {
     const auto id = paneId(pane);
     if (!id)
-        return {};
-    const auto s = Control::scopeFromName(scope);
-    if (!s) {
-        failed(Control::BadTextScope);
-        return {};
-    }
+        return;
+    // The options, then the scope, as the daemon checks them.
     AfterglowVt::TextFormat format;
-    if (failed(Control::textFormat(options, format)))
-        return {};
-    QString text;
-    failed(m_control.readText(*id, *s, text, format));
-    return text;
+    std::optional<AfterglowVt::TextMark> mark;
+    if (failed(Control::textFormat(options, format, &mark)))
+        return;
+    const bool since = scope == QLatin1String("since");
+    if (since != mark.has_value()) {
+        failed(QLatin1String(AfterglowMux::MarkScopeError));
+        return;
+    }
+    const auto s = Control::scopeFromName(scope);
+    if (!s && !since) {
+        failed(QStringLiteral("scope is ") + QLatin1String(AfterglowMux::GetTextScopeNames));
+        return;
+    }
+    // The answer goes from here, so that a refusal can have a code of its
+    // own: TRY_AGAIN for rows that a session pane still gets, STALE_MARK
+    // for a mark from before a reflow or a clear.
+    const PendingReply reply = deferCall(QStringLiteral("getText needs a client connection"));
+    if (!reply)
+        return;
+    QString text, code;
+    bool truncated = false, trimmed = false;
+    const QString error = since ? m_control.readTextSince(*id, *mark, format, text, truncated, trimmed, code)
+                                : m_control.readText(*id, *s, text, format, &truncated, &code);
+    if (!error.isEmpty()) {
+        if (code.isEmpty())
+            reply->fail(error);
+        else
+            reply->fail(code, error);
+        return;
+    }
+    QJsonObject answer{{QStringLiteral("text"), text}, {QStringLiteral("truncated"), truncated}};
+    if (since)
+        answer.insert(QStringLiteral("trimmed"), trimmed);
+    reply->finish(answer);
+}
+
+QVariantMap ControlApi::mark(double pane)
+{
+    QVariantMap mark;
+    if (const auto id = paneId(pane)) {
+        QString code;
+        failWithCode(m_control.markOfPane(*id, mark, code), code);
+    }
+    return mark;
+}
+
+QVariantList ControlApi::shellRegions(double pane)
+{
+    return shellRegions(pane, 0);
+}
+
+QVariantList ControlApi::shellRegions(double pane, double after)
+{
+    QVariantList regions;
+    const auto id = paneId(pane);
+    if (!id)
+        return regions;
+    if (!Control::isWhole(after) || after < 0 || after >= Control::RegionIdLimit) {
+        failWithCode(Control::BadRegionAfter, QLatin1String(AfterglowProto::IpcErrorCode::InvalidArg));
+        return regions;
+    }
+    QString code;
+    failWithCode(m_control.shellRegions(*id, quint64(after), regions, code), code);
+    return regions;
+}
+
+QString ControlApi::launchCode(const QString& error)
+{
+    return error == Control::NoRoomForPane ? QLatin1String(AfterglowMux::Error::NoRoom) : QString();
 }
 
 uint ControlApi::split(double pane, const QString& direction, const QStringList& command)
 {
     quint32 created = 0;
-    if (const auto id = paneId(pane))
-        failed(m_control.split(*id, direction, command, {}, created));
+    if (const auto id = paneId(pane)) {
+        const QString error = m_control.split(*id, direction, command, {}, created);
+        failWithCode(error, launchCode(error));
+    }
     return created;
 }
 
@@ -192,8 +279,10 @@ uint ControlApi::newTab(double pane, const QString& workingDirectory, const QStr
 uint ControlApi::split(double pane, const QString& direction, const QStringList& command, const QVariantMap& options)
 {
     quint32 created = 0;
-    if (const auto id = paneId(pane))
-        failed(m_control.clientSplit(*id, direction, command, options, created));
+    if (const auto id = paneId(pane)) {
+        const QString error = m_control.clientSplit(*id, direction, command, options, created);
+        failWithCode(error, launchCode(error));
+    }
     return created;
 }
 
@@ -256,8 +345,10 @@ void ControlApi::resizePane(double pane, const QString& direction, double cells)
 
 void ControlApi::sendKeys(double pane, const QStringList& keys)
 {
-    if (const auto id = paneId(pane))
-        failed(m_control.sendKeys(*id, keys));
+    if (const auto id = paneId(pane)) {
+        QString code;
+        failWithCode(m_control.sendKeys(*id, keys, &code), code);
+    }
 }
 
 void ControlApi::scroll(double pane, const QString& unit, double amount)
@@ -286,15 +377,7 @@ void ControlApi::setColors(double pane, const QVariantMap& colors, bool reset)
     if (!id)
         return;
     QString code;
-    const QString error = m_control.setColors(*id, colors, reset, &code);
-    if (code.isEmpty()) {
-        failed(error);
-        return;
-    }
-    // A code of its own goes only through a pending reply. Past the
-    // router's limit of waiting calls, the router fails the call.
-    if (const PendingReply reply = deferCall(error))
-        reply->fail(code, error);
+    failWithCode(m_control.setColors(*id, colors, reset, &code), code);
 }
 
 void ControlApi::setFontSize(double pane, const QString& size)
@@ -603,11 +686,35 @@ ControlSocket::ControlSocket(Control& control, SettingsStore& settings, Phosphor
     connect(&control, &Control::contextChanged, this, [this](quint32 p, const QString& context) {
         sendMerged("contextChanged", p, {}, {paneValue(p), context});
     });
+    // At once, as the end of a command: a client waits for the prompt.
+    connect(&control, &Control::shellChanged, this, [this](quint32 p, const QString& state) {
+        sendNow("shellChanged", p, {paneValue(p), state});
+    });
+    // Merged as a title: it comes with each burst of output. It carries no
+    // text, so it needs no read access.
+    connect(&control, &Control::textChanged, this, [this](quint32 p) {
+        sendMerged("textChanged", p, {}, {paneValue(p)});
+    });
     // The value is gated when it goes out: a value that waits must not
     // leave after read access was taken away.
     connect(&control, &Control::userVarChanged, this, [this](quint32 p, const QString& name, const QString& value) {
         sendMerged("userVarChanged", p, name, {paneValue(p), name, value});
     });
+    // The last client of an event went away: what waits for it would go to
+    // no one, and would keep the timer running.
+    connect(&router, &PhosphorIpc::IpcRouter::subscribersChanged, this,
+            [this](const QString& target, const QString& signalName) {
+                if (target != QLatin1String(Target) || m_router.hasSubscribers(target, signalName))
+                    return;
+                for (auto it = m_merged.begin(); it != m_merged.end();) {
+                    if (signalName == QLatin1String(it->event)) {
+                        it = m_merged.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+                scheduleDue();
+            });
     connect(&settings, &SettingsStore::changed, this, &ControlSocket::applySettings);
     applySettings();
 }
@@ -682,7 +789,9 @@ void ControlSocket::sendNow(const char* event, quint32 pane, const QJsonArray& a
 
 void ControlSocket::sendMerged(const char* event, quint32 pane, const QString& name, const QJsonArray& args)
 {
-    if (!m_enabled)
+    // An event that no client subscribed to needs no entry and no timer. A
+    // client that subscribes later gets the next one.
+    if (!m_enabled || !m_router.hasSubscribers(QLatin1String(Target), QLatin1String(event)))
         return;
     if (m_settings.settings().control.eventInterval <= 0) {
         // What still waits from before the interval became 0 goes first.

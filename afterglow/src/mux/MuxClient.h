@@ -52,6 +52,7 @@ struct SessionLink
     /// and the window's own calls.
     std::vector<std::pair<std::string, std::string>> environment;
     std::uint64_t window = 0;
+    bool agent = false; ///< an agent drives the session (SessionOptions::agent)
     /// The way that reached the daemon, which the window's calls take too.
     AfterglowMux::Route route;
 
@@ -61,6 +62,7 @@ struct SessionLink
         , fd(std::exchange(other.fd, -1))
         , environment(std::move(other.environment))
         , window(other.window)
+        , agent(other.agent)
         , route(std::move(other.route))
     {
     }
@@ -101,9 +103,12 @@ enum class MuxLoss : std::uint8_t {
 /// What a session pane that the window closes ends (MuxClient::release).
 enum class MuxRelease : std::uint8_t {
     Pane, ///< its program: the user closed the pane, and the window stays
-    Session, ///< the session: the window closes, and Mux.onClose is kill
-    /// nothing: the window closes, and Mux.onClose is detach, or Afterglow
-    /// quits, or the pane moved to a session of its own (breakOutLater)
+    /// the session: the window closes, and Mux.onClose is kill
+    /// (TerminalWindow::windowCloseRelease)
+    Session,
+    /// nothing: the window closes and keeps the session (Mux.onClose detach,
+    /// a project's or an agent's session), or Afterglow quits, or the pane
+    /// moved to a session of its own (breakOutLater)
     Nothing,
 };
 
@@ -118,6 +123,11 @@ enum class MuxRelease : std::uint8_t {
 class MuxClient : public QObject
 {
     Q_OBJECT
+
+Q_SIGNALS:
+    /// The session became an agent session (agent()).
+    void agentChanged();
+
 public:
     /// The most input of one pane that waits while the channel is full, in
     /// bytes: as much as a pane's own PTY queues. Input past it is refused,
@@ -176,6 +186,12 @@ public:
     {
         return m_environment;
     }
+    /// An agent drives the session (`afterglow mcp`): the attach said so, or
+    /// the daemon's call "agent" when an agent adopted it later.
+    bool agent() const
+    {
+        return m_agent;
+    }
     /// The session's tabs and splits when the window attached: the daemon
     /// sends them first.
     const AfterglowMux::Layout& layout() const
@@ -207,7 +223,8 @@ public:
     /// The pane that showed @p id goes, and with MuxRelease::Pane its program
     /// ends in the daemon. A pane that moved out (breakOutLater) left already. The
     /// last one ends the link: when any pane went
-    /// with MuxRelease::Session, it also ends the session (Mux.onClose),
+    /// with MuxRelease::Session, it also ends the session
+    /// (TerminalWindow::windowCloseRelease),
     /// whichever pane of the window goes last. Both go on this window's
     /// stream, so a window that another one took the session from ends
     /// nothing.
@@ -564,6 +581,7 @@ private:
     void lost();
 
     QString m_session;
+    bool m_agent = false;
     std::size_t m_eventQueue = 0;
     /// To the daemon, and which host the session runs on: for the window's
     /// calls (callDaemon, paneJobs), host(), remote() and the commands host.

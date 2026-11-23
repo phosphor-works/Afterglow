@@ -52,7 +52,8 @@ class Session;
 /// The window says which panes the user can see (Attach::InputType::Visible).
 /// A pane that it does not show, in a tab in the background or a window that
 /// nobody sees, gets frames without its screens (StateWriter::updateHeld):
-/// a program that floods it costs the window nothing to decode. The screens
+/// a program that floods it costs the window nothing to decode, and the
+/// frames say only that its text changed (the window's textChanged). The screens
 /// catch up once the pane shows, before each of its host calls, before its
 /// exit, and when the window reads the pane's text (Attach::InputType::
 /// Refresh). A pane shows until the window says otherwise, also one that
@@ -239,6 +240,14 @@ public:
     void setReplicaHistory(std::size_t rows)
     {
         m_replicaHistory = rows;
+    }
+    /// Whether the attach answer said that the session is an agent session.
+    /// One that becomes one later gets the agent call of the control target
+    /// after its layout (pump()), also when it became one before the window
+    /// started its stream.
+    void setAgentTold(bool told)
+    {
+        m_agentTold = told;
     }
     /// A window shows the session's panes now: connected, and not finishing.
     bool showing() const
@@ -428,6 +437,7 @@ private:
     std::optional<Attach::EventType> m_finish;
     bool m_finishSent = false;
     bool m_layoutSent = false; ///< the first event, before any PaneOpened
+    bool m_agentTold = false; ///< the window knows that the session is an agent's (setAgentTold())
     std::vector<std::string> m_controlReplies; ///< Attach::InputType::ControlReply, for the daemon
     std::string m_controlReplyParts; ///< the ControlReplyPart frames of the reply that comes
     /// By pane: the UploadAnswerPart frames of the answer that comes. The

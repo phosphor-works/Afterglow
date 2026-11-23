@@ -12,6 +12,7 @@
 #include <array>
 #include <climits>
 #include <cmath>
+#include <deque>
 #include <map>
 #include <optional>
 #include <unordered_set>
@@ -48,6 +49,7 @@ enum Tag : std::uint8_t {
     DropFramesTag = 19, ///< frames that no image holds any more
     CellSizeTag = 20, ///< the size of a cell in pixels, which places the images
     ImagesResetTag = 21, ///< the images start over: the first frame of a writer
+    ContentTag = 22, ///< Terminal::contentGeneration(): the text changed, also in a held frame
 };
 
 // The largest stable row id that a reader takes: far past any count of
@@ -63,6 +65,12 @@ constexpr std::uint8_t ClickSpecialKey = 4;
 // The flags of a semantic region: its kind in the low bits.
 constexpr std::uint8_t RegionOpen = 4;
 constexpr std::uint8_t RegionExitCode = 8;
+
+// The byte of the shell's facts after the regions.
+constexpr std::uint8_t ShellMarked = 1;
+constexpr std::uint8_t ShellExited = 2;
+constexpr std::uint8_t ShellExitCode = 4;
+constexpr std::uint8_t ShellContinuation = 8;
 
 // The row flags.
 constexpr std::uint8_t RowWrapped = 1;
@@ -858,6 +866,13 @@ std::string StateWriter::write(const Terminal& t, std::size_t maxBytes, const Re
                 if (r.exitCode)
                     o.signedVarint(*r.exitCode);
             }
+            // The facts that shellState() and the pane objects give, which
+            // the regions do not hold: they can go while their command runs.
+            o.byte(std::uint8_t((t.m_shellMarked ? ShellMarked : 0) | (t.m_programExited ? ShellExited : 0)
+                                | (t.m_lastExitCode ? ShellExitCode : 0) | (t.m_continuation ? ShellContinuation : 0)));
+            if (t.m_lastExitCode)
+                o.signedVarint(*t.m_lastExitCode);
+            o.varint(t.m_lastPromptId);
         }
         sendIfChanged(out, ShellTag, payload, m_shell, first);
 
@@ -911,6 +926,13 @@ std::string StateWriter::write(const Terminal& t, std::size_t maxBytes, const Re
             }
         }
         sendIfChanged(out, ExtraCursorsTag, payload, m_extraCursors, first);
+
+        // A held frame carries no rows: this tells the replica's host that
+        // the text changed (textChanged), as the rows would. In every frame,
+        // so that the value that the replica has is the last one.
+        payload.clear();
+        Out(payload).varint(t.contentGeneration());
+        sendIfChanged(out, ContentTag, payload, m_content, first);
     }
     if (held) {
         // The images wait, but the frames of those that went need not: the
@@ -927,6 +949,9 @@ std::string StateWriter::write(const Terminal& t, std::size_t maxBytes, const Re
         o.varint(std::uint64_t(s->cursor.y));
         o.byte(s->cursor.pendingWrap ? 1 : 0);
     }
+    // The rows that got other text with their ids (Terminal::textEpoch()):
+    // with the cursors, after the rows, as the replica's marks need it.
+    Out(payload).varint(t.m_rowRenewals);
     // The visible rows of both screens first, then their history in the
     // bytes that are left.
     Budget budget{maxBytes};
@@ -1795,6 +1820,14 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
         row.plain = history && plain;
         return r.ok();
     };
+    // Whether two rows of the screen read as the same text.
+    const auto sameText = [](const Row& a, const Row& b) {
+        const auto same = [](const auto& x, const auto& y) {
+            return (!x || x->empty()) ? (!y || y->empty()) : (y && *x == *y);
+        };
+        return a.cells == b.cells && a.wrapped == b.wrapped && a.lineSize == b.lineSize
+            && same(a.graphemes, b.graphemes) && same(a.multicell, b.multicell);
+    };
     // A row that failed half way holds references: release them.
     const auto discard = [](Screen& s, Row& row) {
         row.plain = false;
@@ -1817,6 +1850,9 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
     bool contextsChanged = false;
     bool touched = false;
     bool imagesTouched = false;
+    // The sections that change what the text reads (contentGeneration()):
+    // the other ones give titles, colours, marks and images.
+    bool content = false;
     m_screenChanged = false;
     while (!in.done()) {
         const std::uint8_t tag = in.byte();
@@ -1826,11 +1862,14 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
         In p(payload);
         // Pixels that come for an image that does not show yet change
         // nothing that the replica shows, and the images change no text.
+        // The content count changes nothing that the replica holds.
         if (tag == ImagesTag || tag == PlacementsTag || tag == ImagesResetTag) {
             imagesTouched = true;
-        } else if (tag != FrameTag && tag != DropFramesTag) {
+        } else if (tag != FrameTag && tag != DropFramesTag && tag != ContentTag) {
             touched = true;
         }
+        content = content || tag == AppendTag || tag == PrependTag || tag == ResetTag || tag == CursorTag
+            || tag == ScrollsTag || tag == ContentTag;
         switch (tag) {
         case ModesTag: {
             Modes modes = t.m_modes;
@@ -2005,6 +2044,9 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                     return fail("the state frame has a bad row");
                 }
                 Row& target = s->row(int(y));
+                // A row goes again for a prompt mark alone (its promptStart),
+                // which changes no text.
+                content = content || !sameText(target, row);
                 discard(*s, target);
                 target = std::move(row);
             }
@@ -2190,7 +2232,7 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             }
             const std::uint64_t nextId = p.varint();
             const std::uint64_t count = p.bounded(Terminal::MaxSemanticRegions);
-            std::vector<SemanticRegion> regions;
+            std::deque<SemanticRegion> regions;
             std::uint64_t lastRow = 0;
             for (std::uint64_t i = 0; i < count && p.ok(); ++i) {
                 SemanticRegion r;
@@ -2212,8 +2254,13 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 lastRow = std::max({lastRow, r.start.row, r.end.row});
                 regions.push_back(r);
             }
-            if (!p.ok() || !p.done() || zone > std::uint8_t(Terminal::SemanticZone::Input)
-                || (clicks & ~(ClickModeMask | ClickSpecialKey))
+            const std::uint8_t facts = p.byte();
+            std::optional<int> lastExit;
+            if (facts & ShellExitCode)
+                lastExit = int(p.signedBounded(INT_MIN, INT_MAX));
+            const std::uint64_t promptId = p.varint();
+            if (!p.ok() || !p.done() || (facts & ~(ShellMarked | ShellExited | ShellExitCode | ShellContinuation))
+                || zone > std::uint8_t(Terminal::SemanticZone::Input) || (clicks & ~(ClickModeMask | ClickSpecialKey))
                 || (clicks & ClickModeMask) > std::uint8_t(Terminal::PromptClicks::Relative) || running > 1
                 || redraw > 1) {
                 return fail("the state frame has bad shell marks");
@@ -2231,6 +2278,12 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             t.m_nextSemanticId = nextId;
             t.m_semanticRegions = std::move(regions);
             t.m_semanticRegionsLastRow = lastRow;
+            t.m_shellMarked = facts & ShellMarked;
+            t.m_continuation = facts & ShellContinuation;
+            // A replica whose window ended the program keeps that.
+            t.m_programExited = t.m_programExited || (facts & ShellExited);
+            t.m_lastExitCode = lastExit;
+            t.m_lastPromptId = promptId;
             break;
         }
         case StatusTag: {
@@ -2569,6 +2622,13 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
                 m_screenChanged = true;
             break;
         }
+        case ContentTag: {
+            // Only that it changed: the replica counts its own.
+            p.varint();
+            if (!p.ok() || !p.done())
+                return fail("the state frame has a bad content count");
+            break;
+        }
         case CellSizeTag: {
             const std::uint64_t width = p.bounded(0xffff);
             const std::uint64_t height = p.bounded(0xffff);
@@ -2609,8 +2669,10 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
             s->cursor.y = int(y);
             s->cursor.pendingWrap = pendingWrap;
         }
-        if (!p.done())
+        const std::uint64_t renewals = p.varint();
+        if (!p.ok() || !p.done())
             return fail("the state frame has a bad cursor");
+        t.m_rowRenewals = renewals;
     }
     // The host hears of the scrolls as the writer's did, with the screen
     // that scrolled active, and with the frame applied: the rows that they
@@ -2633,6 +2695,10 @@ bool StateReader::apply(Terminal& t, std::string_view frame, std::string* error)
     } else if (imagesTouched) {
         t.touchImages();
     }
+    // A switch of the screens shows in the modes, which contentGeneration()
+    // compares itself.
+    if (content)
+        ++t.m_contentWrites;
     return true;
 }
 

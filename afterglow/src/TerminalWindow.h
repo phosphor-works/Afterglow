@@ -381,6 +381,8 @@ public:
     }
     /// The name of the session that the window shows, empty for none.
     QString sessionName() const;
+    /// The window shows an agent session (MuxClient::agent).
+    bool showsAgentSession() const;
     /// The ssh destination of the daemon of that session, empty for this
     /// computer.
     QString sessionHost() const;
@@ -393,8 +395,8 @@ public:
         return m_closing;
     }
     /// With @p keep, the session keeps running when the window closes,
-    /// whatever Mux.onClose says: Afterglow quits. Without, Mux.onClose
-    /// decides again: the quit did not happen.
+    /// whatever Mux.onClose says: Afterglow quits. Without,
+    /// windowCloseRelease decides again: the quit did not happen.
     void keepSessionOnClose(bool keep = true);
     /// The window shows the session that a project opened into, a --new
     /// instance too (Control::openProjectSession): the session keeps running
@@ -437,14 +439,16 @@ public:
     /// gave them, their pointer shapes and the keys held over them.
     void adoptBreakOut(const std::shared_ptr<const BreakOut>& kept);
     /// Shows pane @p id of the session, which the daemon started for
-    /// `afterglow ctl split` or `new-tab`, or for startSessionPane: on
-    /// @p side of @p beside, with @p fraction of the split, else in a tab
-    /// after its tab. A split without room becomes a tab. For a session of
-    /// this computer, it keeps @p command, which a project saves. Then the
-    /// window sends its layout. Null when the window is closing, or shows
-    /// the pane already.
+    /// `afterglow ctl split` or `new-tab`, or for startSessionPane, or which
+    /// moved in from another session: on @p side of @p beside, with
+    /// @p fraction of the split, else in a tab after its tab. A split without
+    /// room becomes a tab. For a session of this computer, it keeps
+    /// @p command, which a project saves. @p launched: its program started
+    /// for this placement, as Pane::showSession takes it. Then the window
+    /// sends its layout. Null when the window is closing, or shows the pane
+    /// already.
     Pane* placeSessionPane(std::uint32_t id, Pane* beside, std::optional<SplitTree::Direction> side,
-                           const QStringList& command, double fraction = 0.5);
+                           const QStringList& command, double fraction = 0.5, bool launched = false);
     /// The end of startSessionPane(): the new pane, or null and why not.
     using SessionPaneStarted = std::function<void(Pane* pane, const QString& error)>;
     /// splitPane() of @p from on @p side, or without a side openTab() beside
@@ -547,7 +551,8 @@ private:
     Pane* createPane(const QString& workingDirectory, const QRect& area, const QStringList& command = {},
                      QString* failure = nullptr, const QVariantMap& environment = {}, bool fallback = false);
     /// A pane that shows pane @p id of @p session: no program of its own.
-    Pane* createSessionPane(const std::shared_ptr<MuxClient>& session, std::uint32_t id);
+    /// @p launched as Pane::showSession takes it.
+    Pane* createSessionPane(const std::shared_ptr<MuxClient>& session, std::uint32_t id, bool launched = false);
     /// createPane in a window that shows a session. The pane that the daemon
     /// started for placeSessionPane shows as it is. Else a closing window
     /// refuses, and the daemon starts the program. In a session of this
@@ -589,8 +594,10 @@ private:
     void setClosingRelease(const QList<Pane*>& closing);
     /// What closing session panes ends when the window closes with them:
     /// the session with Mux.onClose kill, else nothing; nothing for the
-    /// session that a project opened into (keepSessionForProject), and when
-    /// Afterglow quits (keepSessionOnClose).
+    /// session that a project opened into (keepSessionForProject), for an
+    /// agent's session (showsAgentSession), which ends with its agent, and
+    /// when Afterglow quits (keepSessionOnClose). The close of the last
+    /// pane or tab is the window's close.
     MuxRelease windowCloseRelease() const;
     /// The tabs and splits of the window, with the titles of its panes, and
     /// their commands for a session of this computer, for the daemon of its
@@ -711,8 +718,9 @@ private:
     /// The jobs that confirmClose names for @p panes, as it shows them (an
     /// overlay's program too); empty when confirmClose is off or none runs.
     /// When the whole window of a session closes and the session runs on
-    /// (Mux.onClose detach, a quit, or the session that a project opened
-    /// into), only the overlays' programs end.
+    /// (windowCloseRelease: Mux.onClose detach, a quit, the session that a
+    /// project opened into, an agent's session), only the overlays' programs
+    /// end.
     QStringList closingJobs(const QList<Pane*>& panes) const;
     /// Where a new tab, split or window starts, given the directory it
     /// would inherit (the workingDirectory setting).
@@ -1187,6 +1195,13 @@ private:
     };
     std::optional<PendingClipboardRead> m_pendingClipboardRead;
     void updateTitle();
+    /// Mux.agentLabel for a window that shows an agent session, else empty.
+    QString agentLabel() const;
+    /// The badge of an agent session at the start of the tab bar
+    /// (ChromeController::agentMarker), from Mux.agentLabel and
+    /// Mux.agentColor, and the prefix of the title: none for a window that
+    /// shows no agent session.
+    void updateAgentMarker();
     void restartBlink();
     enum class ProblemSource {
         Config,
@@ -1776,9 +1791,15 @@ private:
     /// The panes whose break out waits for the daemon's answer
     /// (breakOutOfSession): no other break out takes them.
     QList<QPointer<Pane>> m_leavingPanes;
-    /// The pane that the daemon started, which the next createPane shows
-    /// (placeSessionPane).
-    std::optional<std::uint32_t> m_placingPane;
+    /// The pane that the daemon started, or that moved in, which the next
+    /// createPane shows (placeSessionPane).
+    struct PlacingPane
+    {
+        std::uint32_t id = 0;
+        /// Its program started for the placement (Pane::showSession).
+        bool launched = false;
+    };
+    std::optional<PlacingPane> m_placingPane;
     /// The next createPane starts a program that a project does not save,
     /// and that the daemon of a session does not keep: the pager of a
     /// command's output (showOutputInPager), which reads a file that goes

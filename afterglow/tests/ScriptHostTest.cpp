@@ -1040,6 +1040,29 @@ return s
     EXPECT_EQ(rec.applied[1].value(QStringLiteral("text")), QStringLiteral("2"));
 }
 
+// The snapshot gives each window's agent field to scripts as the host's
+// window maps hold it (Control::state fills it from showsAgentSession).
+TEST_F(ScriptHostTest, AWindowSaysWhetherItShowsAnAgentSession)
+{
+    WRITE(user, QStringLiteral("agent.luau"), R"(
+return {
+    on_bell = function(ev)
+        local agent = {}
+        for _, window in ev.terminal.windows do
+            table.insert(agent, tostring(window.id) .. "=" .. tostring(window.agent))
+        end
+        return afterglow.copy(table.concat(agent, ","))
+    end,
+}
+)");
+    windows = {QVariantMap{{"id", 1}, {"session", "agent-1"}, {"agent", true}},
+               QVariantMap{{"id", 2}, {"session", ""}, {"agent", false}}};
+    host->setEnabled(true);
+    host->dispatch(QStringLiteral("on_bell"), 7);
+    ASSERT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(rec.applied[0].value(QStringLiteral("text")), QStringLiteral("1=true,2=false"));
+}
+
 TEST_F(ScriptHostTest, CreationResultsAreQueuedAndDeliveredOnlyToTheirOwner)
 {
     WRITE(user, QStringLiteral("creator.luau"), R"(
@@ -3768,12 +3791,15 @@ return {
     QElapsedTimer clock;
     clock.start();
     host->dispatch("on_bell", 7);
+    ASSERT_TRUE(firstDiagnostic()["last_error"].toString().isEmpty())
+        << firstDiagnostic()["last_error"].toString().toStdString();
     for (int i = 0; i < 5; ++i)
         QCoreApplication::processEvents();
     EXPECT_TRUE(rec.applied.isEmpty());
+    // A resume that failed (its handler's 20 ms) copies nothing: say why.
     ASSERT_TRUE(await([&] {
         return !rec.applied.isEmpty();
-    }));
+    })) << firstDiagnostic()["last_error"].toString().toStdString();
     EXPECT_GE(clock.elapsed(), 55);
     EXPECT_EQ(rec.applied.last()["text"], "woke");
     // Sleep exists only to be awaited, and only up to ten minutes.
@@ -7474,38 +7500,44 @@ TEST_F(ScriptHostTest, CpuBudgetDropsEventsDelaysResumesAndDisablesAScriptThatKe
 {
     // A run that never ends its loop: each part is well within a command's
     // 100 ms, and each sleep(0) is far below the results limit. Only the
-    // CPU budget stops it.
+    // CPU budget stops it. The spins are wall time, as the watchdog's limits
+    // are: a bell's 4 ms leaves 16 ms of its 20 ms to a loaded machine. The
+    // budget is below the setting's least, so that so short a spin passes it.
     WRITE(user, "hog.luau", R"(
 local function spin(ms) local t = os.clock() while os.clock() - t < ms / 1000 do end end
 return {
     metadata = { commands = { spin = { summary = "Spin" } } },
-    on_bell = function() spin(15) return nil end,
+    on_bell = function() spin(4) return nil end,
     run_command = function(command, ev)
         while true do
-            spin(30)
+            spin(4)
             afterglow.sleep(0)
         end
     end,
 })");
-    host->setCpuBudget(40);
+    host->setCpuBudget(2);
     host->setEnabled(true);
     // Events past the budget are dropped.
     for (int i = 0; i < 6; ++i)
         host->dispatch("on_bell", 7);
     auto stats = firstDiagnostic();
+    ASSERT_TRUE(stats["last_error"].toString().isEmpty()) << stats["last_error"].toString().toStdString();
     EXPECT_GE(stats["dropped_callbacks"].toULongLong(), 1u);
-    EXPECT_GE(stats["cpu_ms"].toDouble(), 40.0);
+    EXPECT_GE(stats["cpu_ms"].toDouble(), 2.0);
     EXPECT_LT(stats["calls"].toULongLong(), 6u);
 
     Client& client = newClient();
     ASSERT_NE(start(QStringLiteral("hog"), QStringLiteral("spin"), client), 0u);
     // The bells spent the budget, so the start itself can wait: count from here.
     const quint64 delayedAtStart = firstDiagnostic()["delayed_callbacks"].toULongLong();
+    // A part that failed ends the run, and nothing disables the script then.
     ASSERT_TRUE(await(
         [&] {
             return host->isDisabled(QStringLiteral("hog"));
         },
-        15000));
+        15000))
+        << "status " << client.status.value_or(-1) << ", stderr: " << client.err.toStdString()
+        << ", last error: " << firstDiagnostic()["last_error"].toString().toStdString();
     stats = firstDiagnostic();
     // Its resumes waited for CPU time, rather than run back to back.
     EXPECT_GT(stats["delayed_callbacks"].toULongLong(), delayedAtStart);
@@ -7799,12 +7831,14 @@ TEST_F(ScriptHostTest, AnEventStormThatTheBudgetDropsDoesNotDisableTheScript)
 {
     // Each on_title uses the budget quickly, as a program that sets its
     // title in a loop makes it. Dropping the extra calls holds the script to
-    // its budget: that is no reason to disable it.
+    // its budget: that is no reason to disable it. The spin is wall time, far
+    // below the 20 ms of an event handler, which a loaded machine could pass:
+    // five such failures in a row disable a script too.
     WRITE(user, "titles.luau", R"(return { on_title = function()
-    local t = os.clock() while os.clock() - t < 0.015 do end
+    local t = os.clock() while os.clock() - t < 0.004 do end
     return nil
 end })");
-    host->setCpuBudget(40);
+    host->setCpuBudget(2);
     host->setEnabled(true);
     QElapsedTimer clock;
     clock.start();
@@ -7813,27 +7847,34 @@ end })");
         QCoreApplication::processEvents();
         QThread::msleep(5);
     }
-    EXPECT_FALSE(host->isDisabled(QStringLiteral("titles")));
-    EXPECT_GT(firstDiagnostic()["dropped_callbacks"].toULongLong(), 0u);
+    const auto stats = firstDiagnostic();
+    EXPECT_FALSE(host->isDisabled(QStringLiteral("titles"))) << stats["error"].toString().toStdString();
+    EXPECT_TRUE(stats["last_error"].toString().isEmpty()) << stats["last_error"].toString().toStdString();
+    EXPECT_GT(stats["dropped_callbacks"].toULongLong(), 0u);
 }
 
 TEST_F(ScriptHostTest, AOneShotTimerPastTheBudgetWaitsInsteadOfBeingDropped)
 {
+    // The burn passes the budget and stays far below the 20 ms of on_bell,
+    // which a loaded machine could pass: then no timer would start.
     WRITE(user, "late.luau", R"(return {
     on_bell = function()
-        local t = os.clock() while os.clock() - t < 0.015 do end
+        local t = os.clock() while os.clock() - t < 0.004 do end
         return afterglow.timer("once", 1)
     end,
     on_timer = function(ev) return afterglow.copy(ev.name) end,
 })");
-    host->setCpuBudget(10);
+    host->setCpuBudget(2);
     host->setEnabled(true);
     host->dispatch("on_bell", 7);
+    ASSERT_TRUE(firstDiagnostic()["last_error"].toString().isEmpty())
+        << firstDiagnostic()["last_error"].toString().toStdString();
     ASSERT_TRUE(await(
         [&] {
             return !rec.applied.isEmpty();
         },
-        4000));
+        4000))
+        << firstDiagnostic()["last_error"].toString().toStdString();
     EXPECT_EQ(rec.applied.first().value("text"), "once");
     EXPECT_GE(firstDiagnostic()["delayed_callbacks"].toULongLong(), 1u);
 }
@@ -7844,17 +7885,19 @@ TEST_F(ScriptHostTest, ARepeatingTimerPastTheBudgetWaitsWithOneCallNotOneForEach
     // past its budget for a second. The ticks that come while its call waits
     // add no call: once time returns, on_timer runs once. Its first call
     // cancels the timer, so a second call could come only from a tick that
-    // waited.
+    // waited. The burn stays far below the 20 ms of on_bell.
     WRITE(user, "late.luau", R"(return {
     on_bell = function()
-        local t = os.clock() while os.clock() - t < 0.015 do end
+        local t = os.clock() while os.clock() - t < 0.004 do end
         return afterglow.timer("tick", 1, 250)
     end,
     on_timer = function(ev) return { afterglow.cancel(ev.name), afterglow.copy(ev.name) } end,
 })");
-    host->setCpuBudget(10);
+    host->setCpuBudget(2);
     host->setEnabled(true);
     host->dispatch("on_bell", 7);
+    ASSERT_TRUE(firstDiagnostic()["last_error"].toString().isEmpty())
+        << firstDiagnostic()["last_error"].toString().toStdString();
     const auto copies = [&] {
         return std::count_if(rec.applied.cbegin(), rec.applied.cend(), [](const QVariantMap& e) {
             return e["kind"] == "copy";
@@ -7864,7 +7907,8 @@ TEST_F(ScriptHostTest, ARepeatingTimerPastTheBudgetWaitsWithOneCallNotOneForEach
         [&] {
             return copies() > 0;
         },
-        4000));
+        4000))
+        << firstDiagnostic()["last_error"].toString().toStdString();
     await(
         [] {
             return false;
@@ -7882,17 +7926,20 @@ TEST_F(ScriptHostTest, ACancelWhileATimersCallWaitsForCpuTimeStopsTheCall)
     // The key waits for CPU time first. Both timers tick behind it, and their
     // calls wait too. The key cancels both: once afterglow.cancel has
     // returned, no on_timer comes, of the one-shot timer or the repeating one.
+    // The burn stays far below the 20 ms of on_bell.
     WRITE(user, "late.luau", R"(return {
     on_bell = function()
-        local t = os.clock() while os.clock() - t < 0.015 do end
+        local t = os.clock() while os.clock() - t < 0.004 do end
         return { afterglow.copy("bell"), afterglow.timer("once", 50), afterglow.timer("tick", 50, 250) }
     end,
     on_key = function(ev) return { afterglow.cancel("once"), afterglow.cancel("tick"), afterglow.copy(ev.key) } end,
     on_timer = function(ev) return afterglow.copy(ev.name) end,
 })");
-    host->setCpuBudget(10);
+    host->setCpuBudget(2);
     host->setEnabled(true);
     host->dispatch("on_bell", 7);
+    ASSERT_TRUE(firstDiagnostic()["last_error"].toString().isEmpty())
+        << firstDiagnostic()["last_error"].toString().toStdString();
     ASSERT_EQ(rec.owners.size(), 1);
     host->dispatchTo(rec.owners[0], "on_key", 7, {{"key", "a"}});
     // The ticks come while the key waits.
@@ -7906,7 +7953,8 @@ TEST_F(ScriptHostTest, ACancelWhileATimersCallWaitsForCpuTimeStopsTheCall)
         [&] {
             return rec.applied.size() > 1;
         },
-        4000));
+        4000))
+        << firstDiagnostic()["last_error"].toString().toStdString();
     // Past the repeating timer's next interval.
     await(
         [] {

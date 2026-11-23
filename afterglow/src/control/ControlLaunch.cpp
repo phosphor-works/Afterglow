@@ -92,7 +92,7 @@ QString paneOptions(const TerminalWindow& window, const QString& cwd, const QStr
 QString launchError(const QString& error, const QString& fallback)
 {
     if (error == TerminalWindow::noRoomForPane())
-        return QStringLiteral("not enough room for another pane");
+        return Control::NoRoomForPane;
     return error.isEmpty() ? fallback : error;
 }
 

@@ -5,6 +5,7 @@
 #include "NestedLoop.h"
 #include "DockArea.h"
 #include <QQuickItem>
+#include <QColor>
 #include "desktop/FileDrop.h"
 #include "desktop/PointerShape.h"
 #include "desktop/FileTransfer.h"
@@ -392,10 +393,15 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         // gone, the pane items go with it.
         const QPointer<Pane> pane = std::exchange(m_menuPane, {});
         const bool paneAlive = pane && tabOf(pane) >= 0;
-        if (id == MenuOpenLink) {
-            openLink(m_menuLink);
-        } else if (id == MenuCopyLink) {
-            QGuiApplication::clipboard()->setText(m_menuLink);
+        // A link is the pane's too: its program may have put it there.
+        const QString link = std::exchange(m_menuLink, QString());
+        if (id == MenuOpenLink || id == MenuCopyLink) {
+            if (!paneAlive)
+                return;
+            if (id == MenuOpenLink)
+                openLink(link);
+            else
+                QGuiApplication::clipboard()->setText(link);
         } else if (id >= TabMenuRename) {
             runTabMenuItem(id);
         } else if (id >= MenuScriptBase) {
@@ -501,6 +507,10 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         // The session follows the settings of the window that shows it, and
         // one of this computer takes its variables.
         m_session->sendSettings(sessionSettings(m_settings.settings(), !m_session->remote()));
+        // An agent drives the session: the tab bar and the title say so,
+        // also when an agent adopts the session later.
+        connect(m_session.get(), &MuxClient::agentChanged, this, &TerminalWindow::updateAgentMarker);
+        updateAgentMarker();
         restoreSession();
     } else if (!options.empty)
         newTab(options.directoryGiven ? options.workingDirectory : startDirectory(options.workingDirectory),
@@ -569,7 +579,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
 TerminalWindow::~TerminalWindow()
 {
     // The panes of a session that close with the window: the daemon keeps
-    // their tabs, and Mux.onClose says what goes, unless Afterglow quits.
+    // their tabs, and windowCloseRelease says what goes.
     // Before the prompts go: a clipboard read of a session that runs on gets
     // the denial.
     setClosingRelease(panes());
@@ -946,7 +956,7 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     return pane;
 }
 
-Pane* TerminalWindow::createSessionPane(const std::shared_ptr<MuxClient>& session, std::uint32_t id)
+Pane* TerminalWindow::createSessionPane(const std::shared_ptr<MuxClient>& session, std::uint32_t id, bool launched)
 {
     // The program runs under the daemon, which holds nothing open: --hold is
     // for a program of the window, and must not go to the next pane, nor
@@ -962,7 +972,7 @@ Pane* TerminalWindow::createSessionPane(const std::shared_ptr<MuxClient>& sessio
     pane->setScrollPolicy(m_settings.settings().scrollOnOutput, m_settings.settings().scrollOnInput);
     // Its size goes to the daemon as a Resize each time the window lays it
     // out (Pane::resize): a new pane's first size went with newPane.
-    pane->showSession(session, id);
+    pane->showSession(session, id, launched);
     Q_EMIT paneCreated(pane);
     return pane;
 }
@@ -973,7 +983,7 @@ Pane* TerminalWindow::createSessionLaunchPane(const QString& workingDirectory, c
 {
     // Its program started already, in the daemon.
     if (const auto placing = std::exchange(m_placingPane, std::nullopt))
-        return createSessionPane(m_session, *placing);
+        return createSessionPane(m_session, placing->id, placing->launched);
     if (m_closing) {
         // Its session may show in a window that took it over already.
         if (failure)
@@ -988,7 +998,7 @@ Pane* TerminalWindow::createSessionLaunchPane(const QString& workingDirectory, c
             *failure = error;
         return nullptr;
     }
-    Pane* pane = createSessionPane(m_session, *id);
+    Pane* pane = createSessionPane(m_session, *id, true);
     if (!m_session->remote())
         pane->setLaunch(workingDirectory, command);
     return pane;
@@ -1094,6 +1104,11 @@ QString TerminalWindow::sessionName() const
     return m_session ? m_session->session() : QString();
 }
 
+bool TerminalWindow::showsAgentSession() const
+{
+    return m_session && m_session->agent();
+}
+
 void TerminalWindow::keepSessionOnClose(bool keep)
 {
     m_keepSession = keep;
@@ -1119,6 +1134,11 @@ MuxRelease TerminalWindow::windowCloseRelease() const
     // The session that a project opened into keeps running for its next
     // open. A save names the window's project but finds no session there.
     if (m_projectSession)
+        return MuxRelease::Nothing;
+    // An agent's session is the agent's: it ends with the agent, not with
+    // the window that showed it. The daemon also takes the release of an
+    // agent session as a detach, for a window that missed the agent event.
+    if (showsAgentSession())
         return MuxRelease::Nothing;
     return m_settings.settings().mux.onClose == MuxSettings::Close::Kill ? MuxRelease::Session : MuxRelease::Nothing;
 }
@@ -1180,14 +1200,14 @@ Pane* TerminalWindow::sessionPane(std::uint32_t id) const
 }
 
 Pane* TerminalWindow::placeSessionPane(std::uint32_t id, Pane* beside, std::optional<SplitTree::Direction> side,
-                                       const QStringList& command, double fraction)
+                                       const QStringList& command, double fraction, bool launched)
 {
     // A closing window waits for its delete, and its panes go with it.
     if (!m_session || m_closing || sessionPane(id))
         return nullptr;
     // Through the paths of a split and a tab, with their room and their
     // effects: createPane takes the pane that the daemon started.
-    m_placingPane = id;
+    m_placingPane = PlacingPane{id, launched};
     const int tab = beside ? tabOf(beside) : -1;
     // A split without room becomes a tab. splitPane shows the tab of
     // @p beside first, and a tab after it would make a second tab
@@ -1216,8 +1236,8 @@ QString TerminalWindow::startSessionPane(Pane* from, std::optional<SplitTree::Di
         return QStringLiteral("this window shows no session");
     if (m_closing)
         return closingRefusal();
-    // Control::prepareLaunch refuses them first, in the same words: this
-    // holds for any other caller.
+    // Control::prepareLaunch refuses them first, with vars, which the
+    // options here do not carry: this holds for any other caller.
     if (options.hold || options.input)
         return QStringLiteral("a pane of a mux session takes no hold or stdin_text: the daemon runs its program");
     if (const QString refused = remoteLaunchError(options); !refused.isEmpty())
@@ -1275,7 +1295,7 @@ QString TerminalWindow::startSessionPane(Pane* from, std::optional<SplitTree::Di
                 return done(nullptr, QStringLiteral("The window of the session closed"));
             }
             Pane* const next = beside && window->tabOf(beside) >= 0 ? beside.data() : nullptr;
-            Pane* placed = window->placeSessionPane(*id, next, side, command, fraction);
+            Pane* placed = window->placeSessionPane(*id, next, side, command, fraction, true);
             if (!placed) {
                 unplaced();
                 return done(nullptr,
@@ -1299,6 +1319,9 @@ struct TerminalWindow::BreakOut
         QHash<QByteArray, ClipboardGrant> grants;
         std::vector<ScriptAppearance> appearance;
         QString pointerShape;
+        /// StatusView::acknowledged: the records keep their serials in the
+        /// daemon, and the ones that the user saw do not show again.
+        quint64 statusAcknowledged = 0;
     };
     std::map<std::uint32_t, Kept> panes;
     /// The keys held over the panes, by physical key, with the pane's ID in
@@ -1469,6 +1492,8 @@ std::shared_ptr<const TerminalWindow::BreakOut> TerminalWindow::finishBreakOut(c
         }
         if (const auto it = m_motion.find(p); it != m_motion.end())
             k.pointerShape = it->second->pointerShape;
+        if (const auto it = m_statusViews.find(p); it != m_statusViews.end())
+            k.statusAcknowledged = it->second.acknowledged;
     }
     for (auto it = m_sentKeys.begin(); it != m_sentKeys.end();) {
         Pane* const held = it->pane.data();
@@ -1530,6 +1555,10 @@ void TerminalWindow::adoptBreakOut(const std::shared_ptr<const BreakOut>& kept)
         }
         if (!k.pointerShape.isEmpty())
             motion(p).pointerShape = k.pointerShape;
+        if (k.statusAcknowledged > 0) {
+            StatusView& view = m_statusViews[p];
+            view.acknowledged = std::max(view.acknowledged, k.statusAcknowledged);
+        }
     }
     // In the order they were pressed, after the presses of this window.
     auto keys = kept->keys;
@@ -1546,6 +1575,7 @@ void TerminalWindow::adoptBreakOut(const std::shared_ptr<const BreakOut>& kept)
     }
     applyPointerShape();
     updateTitle();
+    updateChrome();
     Q_EMIT tabsChanged();
     scheduleRender();
 }
@@ -1675,8 +1705,8 @@ Pane* TerminalWindow::splitFocused(SplitTree::Direction direction, const QString
 
 void TerminalWindow::closePane(Pane* pane)
 {
-    // The last pane of the window closes the window, and Mux.onClose says
-    // what goes. Another one ends its own program. A pane that left its tab
+    // The last pane of the window closes the window, and windowCloseRelease
+    // says what goes. Another one ends its own program. A pane that left its tab
     // already got its release from closeTab.
     if (tabOf(pane) >= 0)
         setClosingRelease({pane});
@@ -1926,10 +1956,34 @@ bool TerminalWindow::paneDrawn(const Pane* pane) const
     const int index = tabOf(pane);
     if (index < 0)
         return false;
+    // The overview draws its cards, up to their limit, as paneSeen counts
+    // them: output past the last card draws no frame.
+    // As overviewPanes() takes them, without the list: this runs for each
+    // output of each pane. One captured pointer, which std::function keeps
+    // without an allocation.
+    if (overviewShowing()) {
+        struct Count
+        {
+            const Pane* pane;
+            std::size_t before = 0;
+            bool found = false;
+        } count{pane};
+        for (std::size_t tab = 0; tab < m_tabs.size() && !count.found; ++tab) {
+            if (const SplitTree* tree = m_tabs[tab]->splits.get()) {
+                tree->forEachPane([&count](Pane* card, const QRect& rect) {
+                    if (count.found || rect.isEmpty())
+                        return;
+                    if (card == count.pane)
+                        count.found = true;
+                    else
+                        ++count.before;
+                });
+            }
+        }
+        return count.found && count.before < std::size_t(AfterglowRender::MaxShaderPanes);
+    }
     if (index == m_currentTab)
         return m_splits && m_splits->isVisible(pane);
-    if (overviewShowing())
-        return true;
     return m_tabTransition.progress.isAnimating() && m_tabs[std::size_t(index)]->id == m_tabTransition.from;
 }
 
@@ -2169,8 +2223,8 @@ QStringList TerminalWindow::closingJobs(const QList<Pane*>& panes) const
     if (!m_settings.settings().confirmClose)
         return jobs;
     // A session's window that closes whole and keeps its session (Mux.onClose
-    // detach, a project's session, a quit) ends no program of the session:
-    // only the overlays, which run here.
+    // detach, a project's or an agent's session, a quit) ends no program of
+    // the session: only the overlays, which run here.
     const bool sessionRunsOn =
         m_session && windowCloseRelease() == MuxRelease::Nothing && panes.size() >= this->panes().size();
     // The jobs of the session's panes come from the daemon in one call: a
@@ -2273,9 +2327,10 @@ void TerminalWindow::requestCloseTabs(const QList<int>& indices)
     // By tab id, not index or address: tabs may move, close or be replaced
     // while the prompt is open.
     confirmClose(panes, what, [this, tabs] {
-        // Every tab of a session's window: the window closes, and Mux.onClose
-        // says what goes, as when its close button closes it. By id: a tab
-        // may have closed, and another opened, while the prompt was open.
+        // Every tab of a session's window: the window closes, and
+        // windowCloseRelease says what goes, as when its close button closes
+        // it. By id: a tab may have closed, and another opened, while the
+        // prompt was open.
         if (m_session && std::all_of(m_tabs.cbegin(), m_tabs.cend(), [&tabs](const auto& tab) {
                 return tabs.contains(tab->id);
             })) {
@@ -2412,8 +2467,8 @@ void TerminalWindow::closeTab(int index)
     }
     if (m_scriptDialog && tabOf(m_scriptDialog->pane) == index)
         finishScriptDialog(false, {});
-    // The last tab closes the window, and Mux.onClose says what goes:
-    // the daemon keeps the tabs as they were. Another tab ends its own
+    // The last tab closes the window, and windowCloseRelease says what
+    // goes: the daemon keeps the tabs as they were. Another tab ends its own
     // programs.
     if (m_session) {
         QList<Pane*> tabPanes;
@@ -2474,6 +2529,10 @@ void TerminalWindow::closeTab(int index)
             --m_currentTab;
         }
         m_layoutSize = QSize(); // the tab bar may have gone
+        // The overview's cards go in tab order up to their limit: one past
+        // it may come in for the tab's cards that went.
+        if (overviewShowing())
+            updatePaneVisibility();
         Q_EMIT tabsChanged();
         scheduleRender();
         return;
@@ -2709,21 +2768,43 @@ void TerminalWindow::setFocusedPane(Pane* pane)
     Q_EMIT focusedPaneChanged(pane);
 }
 
+QString TerminalWindow::agentLabel() const
+{
+    return showsAgentSession() ? m_settings.settings().mux.agentLabel : QString();
+}
+
 void TerminalWindow::updateTitle()
 {
-    if (!m_fixedTitle.isEmpty()) {
-        setTitle(m_fixedTitle);
-        return;
-    }
-    QString t = m_focused ? shownTitle(m_focused) : QString();
+    QString t = m_fixedTitle;
     if (t.isEmpty()) {
-        t = QStringLiteral("afterglow");
+        t = m_focused ? shownTitle(m_focused) : QString();
+        if (t.isEmpty()) {
+            t = QStringLiteral("afterglow");
+        }
+        // Where the shell runs, when it is not here as you: [root] or [deploy@prod-1].
+        if (const QString context = m_focused ? m_focused->contextLabel() : QString(); !context.isEmpty()) {
+            t = QLatin1Char('[') + context + QStringLiteral("] ") + t;
+        }
     }
-    // Where the shell runs, when it is not here as you: [root] or [deploy@prod-1].
-    if (const QString context = m_focused ? m_focused->contextLabel() : QString(); !context.isEmpty()) {
-        t = QLatin1Char('[') + context + QStringLiteral("] ") + t;
+    // An agent drives this window's session: first, before all else, also
+    // before a title that the command line fixed. The tab bar, which can be
+    // hidden, is not the only place that says so.
+    if (const QString agent = agentLabel(); !agent.isEmpty()) {
+        t = QLatin1Char('[') + agent + QStringLiteral("] ") + t;
     }
     setTitle(t);
+}
+
+void TerminalWindow::updateAgentMarker()
+{
+    QVariantMap marker;
+    if (const QString label = agentLabel(); !label.isEmpty()) {
+        const Settings& settings = m_settings.settings();
+        const AfterglowVt::Rgb color = settings.mux.agentColor.value_or(settings.terminal.basePalette[13]);
+        marker = {{QStringLiteral("label"), label}, {QStringLiteral("color"), QColor(color.r, color.g, color.b)}};
+    }
+    m_controller->setAgentMarker(marker);
+    updateTitle();
 }
 
 void TerminalWindow::restartBlink()
@@ -3522,10 +3603,11 @@ bool TerminalWindow::event(QEvent* e)
             if (dropping && !fileDrop)
                 paste = mime->text();
         }
-        // The read may have run an event loop: what decided the drop is checked again.
-        if (!pane || !terminalPanes().contains(pane.data()) || !m_splits || !m_splits->contains(hostOf(pane.data()))
-            || pane->isHeld() || m_controller->wantsKeyboard() || overviewShowing()
-            || (paste.isEmpty() && (fileDrop || dropping))) {
+        // The read may have run an event loop: what decided the drop is checked
+        // again, and the window may have closed in it.
+        if (m_closing || !pane || !terminalPanes().contains(pane.data()) || !m_splits
+            || !m_splits->contains(hostOf(pane.data())) || pane->isHeld() || m_controller->wantsKeyboard()
+            || overviewShowing() || (paste.isEmpty() && (fileDrop || dropping))) {
             drop->ignore();
             return true;
         }
@@ -3614,7 +3696,7 @@ bool TerminalWindow::event(QEvent* e)
         qCInfo(lcWindow) << "window close requested";
         m_closing = true;
         // The session's tabs as they are now, for the next window; then
-        // Mux.onClose says what goes.
+        // windowCloseRelease says what goes.
         setClosingRelease(all);
         // A drag of this window (a selection, or a program's offer) ends first.
         const auto terminals = terminalPanes();
@@ -5557,7 +5639,8 @@ void TerminalWindow::applySettings(const Settings& previous)
         applyShaders();
     }
     // A held key or the pointer over a link: the hover follows the new rules.
-    if (now.modifierRemap != previous.modifierRemap || now.links.modifier != previous.links.modifier)
+    if (now.modifierRemap != previous.modifierRemap || now.links.modifier != previous.links.modifier
+        || now.links.detectUrls != previous.links.detectUrls)
         updateLinkHover();
     if (now.terminal != previous.terminal) {
         // A session pane takes them too, for what the window reads of them
@@ -5569,6 +5652,7 @@ void TerminalWindow::applySettings(const Settings& previous)
     }
     if (m_session)
         m_session->sendSettings(sessionSettings(now, !m_session->remote()));
+    updateAgentMarker();
     if (now.colors != previous.colors) {
         for (Pane* p : findChildren<Pane*>()) {
             applySearchColors(p);
@@ -6371,16 +6455,17 @@ void TerminalWindow::pasteText(Pane* target, const QByteArray& text)
         // could not show as it is (a bidirectional override, a zero-width
         // character, a line separator) shows as its code point.
         const QByteArray shown = truncatedUtf8(normalized, 4000);
+        // By code point: a tag character is two UTF-16 units.
         QString preview;
-        for (const QChar c : QString::fromUtf8(shown)) {
-            const char16_t u = c.unicode();
-            if (u == u'\t')
+        for (const uint code : QString::fromUtf8(shown).toUcs4()) {
+            const char32_t u = char32_t(code);
+            if (u == U'\t')
                 preview += QChar(char16_t(0x2409));
-            else if (disguisesText(u))
+            else if (disguisesCodePoint(u))
                 preview += QStringLiteral("<U+%1>").arg(
-                    QString::number(uint(u), 16).toUpper().rightJustified(4, QLatin1Char('0')));
-            else if (u == u'\n' || (u >= 0x20 && (u < 0x7F || u > 0x9F)))
-                preview += c;
+                    QString::number(code, 16).toUpper().rightJustified(4, QLatin1Char('0')));
+            else if (u == U'\n' || (u >= 0x20 && (u < 0x7F || u > 0x9F)))
+                preview += QString::fromUcs4(&u, 1);
         }
         // "command\n" is one line, not two.
         const int lines = int(normalized.count('\n')) + (normalized.endsWith('\n') ? 0 : 1);

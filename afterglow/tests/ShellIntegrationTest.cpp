@@ -5,6 +5,7 @@
 #include "shell/Ssh.h"
 #include "MuxConnect.h"
 #include <gtest/gtest.h>
+#include <AfterglowVt/Input.h>
 #include <AfterglowVt/Terminal.h>
 #include <QFile>
 #include <QDir>
@@ -15,6 +16,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <chrono>
 #include <csignal>
@@ -27,6 +29,27 @@
 
 using namespace AfterglowPty;
 namespace {
+/// prepare() reads this process's environment for a spawn that does not set
+/// a variable: the opt-out of the pane that runs the tests would turn off
+/// every integration here.
+class WithoutTheRunnersOptOut : public testing::Environment
+{
+public:
+    void SetUp() override
+    {
+        m_saved.emplace("AFTERGLOW_SHELL_INTEGRATION");
+        qunsetenv("AFTERGLOW_SHELL_INTEGRATION");
+    }
+    void TearDown() override
+    {
+        m_saved.reset();
+    }
+
+private:
+    std::optional<Afterglow::Test::Saved> m_saved;
+};
+[[maybe_unused]] testing::Environment* const withoutTheRunnersOptOut =
+    testing::AddGlobalTestEnvironment(new WithoutTheRunnersOptOut);
 QString root()
 {
     return QString::fromUtf8(AFTERGLOW_TEST_SHELL_DIR);
@@ -152,10 +175,14 @@ struct Output : IPtyListener, AfterglowVt::ITerminalHost
     }
 };
 /// A shell of these tests: startup files, history and state in @p home,
-/// never the user's, and @p home/bin first in PATH.
+/// never the user's, and @p home/bin first in PATH. Readline reads
+/// @p home/.inputrc, empty unless the test wrote it: without INPUTRC it
+/// reads /etc/inputrc, which can turn off bracketed paste.
 SpawnOptions isolatedShell(const QString& executable, const QString& home,
                            std::vector<std::pair<std::string, std::string>> extra = {})
 {
+    if (!QFile::exists(home + "/.inputrc"))
+        file(home + "/.inputrc", {});
     SpawnOptions o;
     o.argv = {executable.toStdString(), "-i"};
     o.environment = {{"HOME", home.toStdString()},
@@ -165,6 +192,7 @@ SpawnOptions isolatedShell(const QString& executable, const QString& home,
                      {"XDG_CACHE_HOME", (home + "/cache").toStdString()},
                      {"ZDOTDIR", home.toStdString()},
                      {"PATH", (home + "/bin:" + qEnvironmentVariable("PATH")).toStdString()},
+                     {"INPUTRC", (home + "/.inputrc").toStdString()},
                      {"TERM", "xterm-256color"},
                      {"AFTERGLOW_SHELL_INTEGRATION", "1"}};
     for (auto& e : extra)
@@ -469,7 +497,211 @@ protected:
         }
         return s;
     }
+    // Ctrl+C at a secondary prompt. Readline's SIGINT handler only sets a
+    // flag that its loop checks: a signal between that check and the
+    // blocking read() waits for the next key (1 run in 30 for bash here). A
+    // user's next key draws the prompt; a second Ctrl+C, at a prompt or not,
+    // is that key here. Zle has no such window.
+    void interrupt(Started& s)
+    {
+        ASSERT_TRUE(s.pty->write("\x03"));
+        if (GetParam() != "bash")
+            return;
+        std::unique_lock lock(s.output->mutex);
+        if (!s.output->changed.wait_for(lock, std::chrono::seconds(3), [&s] {
+                return s.output->terminal.shellState() == AfterglowVt::ShellState::Prompt;
+            })) {
+            lock.unlock();
+            ASSERT_TRUE(s.pty->write("\x03"));
+        }
+    }
 };
+// The terminal reads what the shell does from its marks: its prompt, a
+// command that runs, the exit code after it, and the secondary prompt of a
+// command that goes on (bash and zsh: Fish edits such a command in place).
+TEST_P(ShellFeatures, TheMarksTellTheShellsState)
+{
+    if (QStandardPaths::findExecutable(QString::fromStdString(GetParam())).isEmpty())
+        GTEST_SKIP() << GetParam() << " not installed";
+    const std::string shell = GetParam();
+    QTemporaryDir home(QDir::tempPath() + "/afterglow features-XXXXXX");
+    ASSERT_TRUE(home.isValid());
+    Started s = start(home.path(), QStringLiteral("enabled"));
+    ASSERT_TRUE(s.pty);
+    Output& o = *s.output;
+    using AfterglowVt::ShellState;
+    const auto until = [&o](const std::function<bool(const AfterglowVt::Terminal&)>& done) {
+        std::unique_lock lock(o.mutex);
+        return o.changed.wait_for(lock, std::chrono::seconds(8), [&] {
+            return done(o.terminal);
+        });
+    };
+    const auto state = [](ShellState wanted) {
+        return [wanted](const AfterglowVt::Terminal& t) {
+            return t.shellState() == wanted;
+        };
+    };
+    EXPECT_TRUE(until(state(ShellState::Prompt))) << o.take();
+    o.run("false");
+    EXPECT_TRUE(until([](const AfterglowVt::Terminal& t) {
+        return t.shellState() == ShellState::Prompt && t.lastExitCode() == std::optional<int>(1);
+    })) << o.take();
+    // Typed text, then erased: input only while it stands.
+    ASSERT_TRUE(s.pty->write("echo"));
+    EXPECT_TRUE(until([](const AfterglowVt::Terminal& t) {
+        return t.shellInput();
+    })) << o.take();
+    ASSERT_TRUE(s.pty->write("\x7f\x7f\x7f\x7f"));
+    EXPECT_TRUE(until([](const AfterglowVt::Terminal& t) {
+        return !t.shellInput() && t.shellState() == ShellState::Prompt;
+    })) << o.take();
+    // A command that runs.
+    ASSERT_TRUE(s.pty->write("sleep 2\r"));
+    EXPECT_TRUE(until(state(ShellState::Running))) << o.take();
+    EXPECT_TRUE(until([](const AfterglowVt::Terminal& t) {
+        return t.shellState() == ShellState::Prompt && t.lastExitCode() == std::optional<int>(0);
+    })) << o.take();
+    if (shell != "fish") {
+        ASSERT_TRUE(s.pty->write("echo \"a\r"));
+        EXPECT_TRUE(until(state(ShellState::Continuation))) << o.take();
+        ASSERT_TRUE(s.pty->write("b\"\r"));
+        EXPECT_TRUE(until(state(ShellState::Prompt))) << o.take();
+        // Ctrl+C at the secondary prompt: the next primary one. The echo of a
+        // typed key says that the line editor reads: the shell prints the
+        // mark as it draws PS2, before the editor starts.
+        ASSERT_TRUE(s.pty->write("echo \"\r"));
+        EXPECT_TRUE(until(state(ShellState::Continuation))) << o.take();
+        o.take();
+        // A key in neither secondary prompt ("> ", "dquote> "): the wait
+        // finds its echo, not the prompt's text.
+        ASSERT_TRUE(s.pty->write("x"));
+        EXPECT_TRUE(o.wait("x")) << o.take();
+        interrupt(s);
+        EXPECT_TRUE(until(state(ShellState::Prompt)))
+            << shell << " screen:\n"
+            << [&o] {
+                   std::lock_guard screen(o.mutex);
+                   return o.terminal.text(AfterglowVt::Terminal::TextScope::Screen);
+               }();
+    }
+    o.exit();
+}
+
+// A paste of two lines, bracketed as the control call paste sends it, and
+// Enter: the shell runs both lines, and their output regions say how many
+// commands it saw.
+TEST_P(ShellFeatures, APasteOfTwoLinesRunsBoth)
+{
+    if (QStandardPaths::findExecutable(QString::fromStdString(GetParam())).isEmpty())
+        GTEST_SKIP() << GetParam() << " not installed";
+    QTemporaryDir home(QDir::tempPath() + "/afterglow features-XXXXXX");
+    ASSERT_TRUE(home.isValid());
+    Started s = start(home.path(), QStringLiteral("enabled"));
+    ASSERT_TRUE(s.pty);
+    Output& o = *s.output;
+    using AfterglowVt::ShellState;
+    std::uint64_t before = 0;
+    AfterglowVt::Modes modes;
+    {
+        std::unique_lock lock(o.mutex);
+        ASSERT_TRUE(o.changed.wait_for(lock, std::chrono::seconds(8),
+                                       [&] {
+                                           return o.terminal.shellState() == ShellState::Prompt
+                                               && o.terminal.modes().bracketedPaste;
+                                       }))
+            << "bracketed paste: " << o.terminal.modes().bracketedPaste;
+        before = o.terminal.lastPromptId();
+        modes = o.terminal.modes();
+    }
+    ASSERT_TRUE(s.pty->write(AfterglowVt::encodePaste("echo o''ne\nfalse", modes)));
+    ASSERT_TRUE(s.pty->write("\r"));
+    std::unique_lock lock(o.mutex);
+    ASSERT_TRUE(o.changed.wait_for(lock, std::chrono::seconds(8), [&] {
+        return o.terminal.shellState() == ShellState::Prompt && o.terminal.lastPromptId() > before
+            && o.terminal.lastExitCode().has_value();
+    })) << o.text;
+    EXPECT_EQ(o.terminal.lastExitCode(), std::optional<int>(1));
+    std::size_t outputs = 0;
+    std::vector<std::optional<int>> codes;
+    for (const AfterglowVt::SemanticRegion& region : o.terminal.semanticRegions()) {
+        if (region.id > before && region.kind == AfterglowVt::SemanticZoneKind::Output) {
+            ++outputs;
+            codes.push_back(region.exitCode);
+        }
+    }
+    // Each line's own exit code: bash's PS0 ends the line before with its D.
+    if (GetParam() == "bash") {
+        EXPECT_EQ(codes, (std::vector<std::optional<int>>{0, 1}));
+    }
+    // Bash runs each line as a command of its own. Zsh and Fish run the
+    // command line that the paste made as one.
+    EXPECT_EQ(outputs, GetParam() == "bash" ? 2u : 1u);
+    EXPECT_NE(o.text.find("one"), std::string::npos) << o.text;
+    lock.unlock();
+    o.exit();
+}
+
+// Bash: a paste whose last line goes on (an open quote). The secondary
+// prompt ends the line before, so the shell waits at a continuation, and
+// Ctrl+C there leaves the line's exit code. Without promptvars the line
+// still ends, with no code.
+TEST_P(ShellFeatures, BashEndsAPastedLineAtTheSecondaryPrompt)
+{
+    if (GetParam() != "bash")
+        GTEST_SKIP() << "only Bash runs each line of a paste as a command of its own";
+    if (QStandardPaths::findExecutable(QStringLiteral("bash")).isEmpty())
+        GTEST_SKIP() << "bash not installed";
+    using AfterglowVt::ShellState;
+    // One row in a lambda: an ASSERT that fails ends that row, not the next.
+    const auto row = [&](const bool promptvars) {
+        QTemporaryDir home(QDir::tempPath() + "/afterglow paste-XXXXXX");
+        ASSERT_TRUE(home.isValid());
+        Started s = start(home.path(), QStringLiteral("enabled"), {}, promptvars ? "" : "shopt -u promptvars\n");
+        ASSERT_TRUE(s.pty);
+        Output& o = *s.output;
+        AfterglowVt::Modes modes;
+        {
+            std::unique_lock lock(o.mutex);
+            ASSERT_TRUE(o.changed.wait_for(lock, std::chrono::seconds(8), [&] {
+                return o.terminal.shellState() == ShellState::Prompt && o.terminal.modes().bracketedPaste;
+            }));
+            modes = o.terminal.modes();
+        }
+        ASSERT_TRUE(s.pty->write(AfterglowVt::encodePaste("false\necho \"a", modes)));
+        ASSERT_TRUE(s.pty->write("\r"));
+        const auto code = [&o] {
+            for (const AfterglowVt::SemanticRegion& region : o.terminal.semanticRegions())
+                if (region.kind == AfterglowVt::SemanticZoneKind::Output)
+                    return region.exitCode;
+            return std::optional<int>{};
+        };
+        const std::optional<int> wanted = promptvars ? std::optional<int>(1) : std::nullopt;
+        {
+            std::unique_lock lock(o.mutex);
+            EXPECT_TRUE(o.changed.wait_for(lock, std::chrono::seconds(8), [&] {
+                return o.terminal.shellState() == ShellState::Continuation;
+            })) << o.text;
+            EXPECT_EQ(code(), wanted);
+        }
+        interrupt(s);
+        std::unique_lock lock(o.mutex);
+        EXPECT_TRUE(o.changed.wait_for(lock, std::chrono::seconds(8), [&] {
+            return o.terminal.shellState() == ShellState::Prompt;
+        })) << o.text;
+        // The D of the prompt after Ctrl+C (130) finds no command running.
+        EXPECT_EQ(code(), wanted);
+        if (promptvars) {
+            EXPECT_EQ(o.terminal.lastExitCode(), std::optional<int>(1));
+        }
+        lock.unlock();
+        o.exit();
+    };
+    for (const bool promptvars : {true, false}) {
+        SCOPED_TRACE(promptvars);
+        row(promptvars);
+    }
+}
+
 TEST_P(ShellFeatures, ACursorAndTitlesByDefaultAndNoneWithTheirSwitches)
 {
     if (QStandardPaths::findExecutable(QString::fromStdString(GetParam())).isEmpty())
@@ -619,7 +851,11 @@ TEST_P(ShellFeatures, AnOwnPromptAndViBindingsKeepTheRest)
         s.output->exit();
     }
     {
-        const QByteArray rc = bash ? "set -o vi\nshopt -u promptvars\n" : "bindkey -v\n";
+        // Bash: the vi mode of the inputrc, which readline reads only at
+        // its first line, after the first prompt.
+        if (bash)
+            file(home.path() + "/.inputrc", "set editing-mode vi\n");
+        const QByteArray rc = bash ? "shopt -u promptvars\n" : "bindkey -v\n";
         Started s = start(home.path(), QStringLiteral("enabled"), {}, rc);
         ASSERT_TRUE(s.pty);
         const std::string all = s.output->run("true");
@@ -757,8 +993,27 @@ TEST(FishShell, OlderFishGetsMarksAndTheSpecialKey)
     auto pty = startShell(o, output);
     ASSERT_NE(pty, nullptr);
     ASSERT_TRUE(output.wait("\x1b]133;A;special_key=1\x07")) << output.take();
-    ASSERT_TRUE(output.wait("AG_READY>")) << output.take();
-    std::string out = output.run("false");
+    ASSERT_TRUE(output.wait("AG_READY> \x1b]133;B\x07")) << output.take();
+    // The typed text after B is the command line being edited.
+    ASSERT_TRUE(pty->write("echo"));
+    {
+        std::unique_lock lock(output.mutex);
+        EXPECT_TRUE(output.changed.wait_for(lock, std::chrono::seconds(8), [&output] {
+            return output.terminal.shellInput();
+        })) << output.text;
+    }
+    ASSERT_TRUE(pty->write("\x7f\x7f\x7f\x7f"));
+    {
+        std::unique_lock lock(output.mutex);
+        EXPECT_TRUE(output.changed.wait_for(lock, std::chrono::seconds(8), [&output] {
+            return !output.terminal.shellInput();
+        })) << output.text;
+    }
+    // A prompt that the user sets again gets the mark again. The typed line
+    // holds no "AG_READY>", which run() waits for.
+    std::string out = output.run("function fish_prompt; printf 'AG_%s> ' READY; end");
+    EXPECT_NE(out.find("AG_READY> \x1b]133;B\x07"), std::string::npos) << out;
+    out = output.run("false");
     EXPECT_NE(out.find("\x1b]133;C;cmdline_url=false\x07"), std::string::npos) << out;
     EXPECT_NE(out.find("\x1b]133;D;1\x07"), std::string::npos) << out;
     out = output.run("bind --preset | string match -q '*1u*forward-char*'; and printf 'AG_%s\\n' BOUND");

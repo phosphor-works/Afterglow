@@ -87,6 +87,7 @@ void Screen::breakWideAt(Row& row, int x, std::uint32_t fillStyleId)
 
 void Screen::writeCell(Row& row, int x, char32_t cp, std::uint32_t styleId, int width)
 {
+    ++m_contentSerial;
     if (row.cells[std::size_t(x)].isMulticell()) {
         eraseMulticellAt(row, x);
     }
@@ -118,6 +119,7 @@ void Screen::writeCell(Row& row, int x, char32_t cp, std::uint32_t styleId, int 
 
 void Screen::appendGrapheme(Row& row, int x, char32_t cp)
 {
+    ++m_contentSerial;
     if (!row.graphemes) {
         row.graphemes = std::make_unique<GraphemeMap>();
     }
@@ -139,6 +141,7 @@ std::u32string_view Screen::graphemeExtra(const Row& row, int x) const
 
 void Screen::eraseCells(Row& row, int x0, int x1, std::uint32_t fillStyleId)
 {
+    ++m_contentSerial;
     x0 = std::clamp(x0, 0, m_cols);
     x1 = std::clamp(x1, 0, m_cols);
     if (x0 >= x1) {
@@ -211,6 +214,7 @@ const MulticellParams* Screen::multicellParams(const Row& r, int x) const
 void Screen::writeMulticell(int y, int x, char32_t cp, std::u32string_view extra, std::uint32_t styleId,
                             const MulticellParams& params)
 {
+    ++m_contentSerial;
     const int cols = params.columns();
     for (int dy = 0; dy < params.scale; ++dy) {
         Row& r = row(y + dy);
@@ -256,6 +260,7 @@ void Screen::writeMulticell(int y, int x, char32_t cp, std::u32string_view extra
 
 void Screen::eraseMulticell(int y, int x, bool spaces)
 {
+    ++m_contentSerial;
     Row& start = row(y);
     const Cell c = start.cells[std::size_t(x)];
     if (!c.isMulticell()) {
@@ -445,6 +450,7 @@ void Screen::shiftMulticellKeys(Row& row, const std::vector<std::uint16_t>& move
 
 void Screen::insertCells(Row& row, int x, int right, int n, std::uint32_t fillStyleId)
 {
+    ++m_contentSerial;
     right = std::min(right, m_cols - 1);
     if (x > right || n <= 0) {
         return;
@@ -482,6 +488,7 @@ void Screen::insertCells(Row& row, int x, int right, int n, std::uint32_t fillSt
 
 void Screen::deleteCells(Row& row, int x, int right, int n, std::uint32_t fillStyleId)
 {
+    ++m_contentSerial;
     right = std::min(right, m_cols - 1);
     if (x > right || n <= 0) {
         return;
@@ -634,6 +641,7 @@ void Screen::releaseRow(Row& row) noexcept
 
 bool Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool intoHistory)
 {
+    ++m_contentSerial;
     const int height = r.bottom - r.top + 1;
     n = std::clamp(n, 0, height);
     if (n == 0) {
@@ -726,6 +734,7 @@ int Screen::unscroll(int n)
     if (k == 0) {
         return 0;
     }
+    ++m_contentSerial;
     for (int i = 0; i < k; ++i) {
         releaseRow(m_rows.back());
         m_rows.pop_back();
@@ -747,6 +756,7 @@ int Screen::unscroll(int n)
 
 bool Screen::scrollDown(const Region& r, int n, std::uint32_t fillStyleId)
 {
+    ++m_contentSerial;
     const int height = r.bottom - r.top + 1;
     n = std::clamp(n, 0, height);
     if (n == 0) {
@@ -799,6 +809,8 @@ void Screen::clearVacatedSpan(Row& row, int left, int right, std::uint32_t fillS
 
 void Screen::trimHistory()
 {
+    if (historySize() > m_maxScrollback)
+        ++m_contentSerial; // the text of the whole history loses its first rows
     while (historySize() > m_maxScrollback) {
         releaseRow(m_rows.front());
         m_rows.pop_front();
@@ -809,6 +821,8 @@ void Screen::trimHistory()
 
 void Screen::clearHistory()
 {
+    if (historySize() > 0)
+        ++m_contentSerial;
     while (historySize() > 0) {
         releaseRow(m_rows.front());
         m_rows.pop_front();
@@ -841,6 +855,7 @@ void Screen::resize(int cols, int rows, bool reflow, std::optional<std::size_t> 
     if (cols == m_cols && rows == m_rowCount) {
         return;
     }
+    ++m_contentSerial;
     if (cols != m_cols) {
         // Only a width change can move content between rows. A height change
         // keeps every stable id on its row, so selections and searches stay.

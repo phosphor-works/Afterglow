@@ -554,8 +554,10 @@ public:
     {
         return m_ended;
     }
-    /// The next line, without its '\n'; empty after five seconds or at the end.
-    std::string line()
+    /// The next line, without its '\n'. Empty when no byte comes in
+    /// @p timeoutMs (each read starts the wait again), at the end of the
+    /// connection (ended()), and when a poll or a read fails.
+    std::string line(int timeoutMs = 5000)
     {
         while (true) {
             if (const auto end = m_buffer.find('\n'); end != std::string::npos) {
@@ -564,7 +566,7 @@ public:
                 return line;
             }
             pollfd p{m_fd, POLLIN, 0};
-            if (::poll(&p, 1, 5000) <= 0)
+            if (::poll(&p, 1, timeoutMs) <= 0)
                 return {};
             char buffer[4096];
             const ssize_t n = ::read(m_fd, buffer, sizeof buffer);

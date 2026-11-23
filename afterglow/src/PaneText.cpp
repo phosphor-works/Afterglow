@@ -44,9 +44,8 @@ bool Pane::regionArrivingLocked(std::uint64_t id) const
 bool Pane::regionArrivingLocked(const AfterglowVt::SemanticRegion& region) const
 {
     // Its rows by their stable ids, as lastOutputArrivingLocked() checks
-    // those of the last output: blank places of rows on their way, and
-    // older rows that did not come yet.
-    return m_session && !m_stateReader.received(region.start.row, std::max(region.start.row, region.end.row));
+    // those of the last output.
+    return rowsArrivingLocked(region.start.row, std::max(region.start.row, region.end.row));
 }
 
 bool Pane::regionArriving(std::uint64_t id) const
@@ -119,8 +118,10 @@ Pane::RegionRead Pane::readRegionLocked(std::uint64_t id, std::size_t limit,
     RegionRead read;
     // Rows on their way are blank places in the text: it is not the
     // program's yet.
-    if (regionArrivingLocked(id))
+    if (regionArrivingLocked(id)) {
+        read.arriving = true;
         return read;
+    }
     read.text = m_terminal.semanticRegionText(id, limit, &read.truncated, format);
     return read;
 }
@@ -146,7 +147,8 @@ QVariantMap Pane::readRegion(std::uint64_t id, std::size_t limit) const
     return regionResult(std::move(read));
 }
 
-QVariantMap Pane::readOutputRegion(OutputRegion which, std::size_t limit, const AfterglowVt::TextFormat& format) const
+QVariantMap Pane::readOutputRegion(OutputRegion which, std::size_t limit, const AfterglowVt::TextFormat& format,
+                                   bool* arriving) const
 {
     // One refresh and one lock for the lookup and the read: the answer to a
     // refresh of a pane that the user cannot see makes it held again, and a
@@ -166,6 +168,8 @@ QVariantMap Pane::readOutputRegion(OutputRegion which, std::size_t limit, const 
         if (id)
             read = readRegionLocked(*id, limit, format);
     }
+    if (arriving)
+        *arriving = read.arriving;
     return regionResult(std::move(read));
 }
 

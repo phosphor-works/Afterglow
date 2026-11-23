@@ -822,7 +822,7 @@ TEST_F(NativeWindow, TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab)
 {
     auto* original = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* split = window->splitPane(original, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(split, nullptr);
     const auto tabId = window->tabIdOf(original);
@@ -889,7 +889,7 @@ TEST_F(NativeWindow, TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab)
     restartApplication(
         QStringLiteral("single-tab.conf"),
         testSettings({{QStringLiteral("Window"), QJsonObject{{QStringLiteral("tabBar"), QStringLiteral("always")}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     chrome = window->findChild<ChromeController*>();
@@ -947,7 +947,7 @@ TEST_P(NativeRenderer, SurvivesWindowTransferResizeAndSourceDestruction)
                       {QStringLiteral("Window"), QJsonObject{{QStringLiteral("backgroundOpacity"), 0.9}}}}),
         TestScripts);
     WindowOptions options;
-    options.command = {QStringLiteral("/bin/cat")};
+    options.command = {QStringLiteral("cat")};
     QPointer<TerminalWindow> source = application.newWindow(options);
     ASSERT_TRUE(source);
     source->resize(400, 300);
@@ -1338,7 +1338,7 @@ TEST_F(NativeWindow, ZoomedPaneTitlesRenderEveryPanePosition)
 {
     auto* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     first->setUserTitle(QStringLiteral("first title"));
@@ -1368,7 +1368,7 @@ TEST_F(NativeWindow, PasteConfirmationRetainsOriginalPane)
 {
     auto* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     window->revealPane(first);
@@ -1437,7 +1437,7 @@ TEST_F(NativeWindow, ChromeTreatsTitlesAndMenuLabelsLiterally)
 {
     const QString title = QStringLiteral("<b>A&B</b><img src='http://127.0.0.1:9/a'>");
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     ASSERT_NE(window->splitPane(window->focusedPane(), SplitTree::Direction::Right, launch, nullptr), nullptr);
     window->focusedPane()->setUserTitle(title);
     auto* layer = window->findChild<ChromeLayer*>();
@@ -1510,7 +1510,7 @@ TEST_F(NativeWindow, FocusUpdatesTabTitleAndRetiresPreviousSearch)
     auto* first = window->focusedPane();
     first->setUserTitle(QStringLiteral("first"));
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     second->setUserTitle(QStringLiteral("second"));
@@ -1566,7 +1566,7 @@ TEST_F(NativeWindow, SwapFailurePreservesZoomAndSuccessRestoresVisiblePanes)
 {
     auto* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     ASSERT_NE(window->splitPane(first, SplitTree::Direction::Right, launch, nullptr), nullptr);
     ASSERT_TRUE(window->runAction(first, Action::TogglePaneZoom));
     auto* chrome = window->findChild<ChromeController*>();
@@ -1591,7 +1591,7 @@ TEST_F(NativeWindow, RotationMovesLivePanesAndClearsZoom)
 {
     auto* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     auto* third = window->splitPane(second, SplitTree::Direction::Down, launch, nullptr);
@@ -1662,7 +1662,7 @@ TEST_F(NativeWindow, LazyChromeInitializesPanelFocusAndTitle)
               QStringLiteral("clipboard"), QStringLiteral("confirm"), QStringLiteral("script")}) {
             SCOPED_TRACE(kind.toStdString() + (settled ? " after the scene is made" : " while the scene is made"));
             WindowOptions options;
-            options.command = {QStringLiteral("/bin/cat")};
+            options.command = {QStringLiteral("cat")};
             std::unique_ptr<TerminalWindow> fresh(application->newWindow(options));
             EXPECT_TRUE(fresh != nullptr);
             if (!fresh)
@@ -1744,7 +1744,7 @@ TEST_F(NativeWindow, WindowsDeletedWhileTheirChromeLoadsLeaveTheNextChromeSound)
     // a freed window shows as a crash in some runs only: the debug preset's
     // AddressSanitizer build shows it in every run.
     WindowOptions options;
-    options.command = {QStringLiteral("/bin/cat")};
+    options.command = {QStringLiteral("cat")};
     for (int i = 0; i < 20; ++i) {
         delete application->newWindow(options);
         if (i % 4 == 0)
@@ -1786,7 +1786,7 @@ TEST_F(NativeWindow, ClosingStatusWindowRepublishesLauncherAggregate)
                             QStringLiteral("com.canonical.Unity.LauncherEntry"), QStringLiteral("Update"), &observer,
                             SLOT(update(QString, QVariantMap))));
     WindowOptions options;
-    options.command = {QStringLiteral("/bin/cat")};
+    options.command = {QStringLiteral("cat")};
     auto* contributor = application->newWindow(options);
     ASSERT_NE(contributor, nullptr);
     // Terminal status comes from the PTY reader thread and crosses to the GUI thread.
@@ -2103,7 +2103,7 @@ return {
                                     QJsonObject{{QStringLiteral("script:marker.keyed"), QStringLiteral("Ctrl+Alt+M")},
                                                 {QStringLiteral("table:marks"), QStringLiteral("Ctrl+Alt+T")}}},
                                    {QStringLiteral("tables"), QJsonObject{{QStringLiteral("marks"), marks}}}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     auto* chrome = window->findChild<ChromeController*>();
@@ -2112,7 +2112,7 @@ return {
     Pane* first = window->focusedPane();
     ASSERT_NE(first, nullptr);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     ASSERT_EQ(window->focusedPane(), second);
@@ -2271,7 +2271,7 @@ TEST_F(NativeWindow, AnOpenPromptKeepsItsAnswerFromOutsideActionsAndChords)
     // question takes the place of the tab's, which is answered no. The
     // answer to one is never taken for the other.
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* background = window->openTab(launch, nullptr);
     ASSERT_NE(background, nullptr);
     window->revealPane(pane);
@@ -2741,7 +2741,7 @@ TEST_F(NativeWindow, NotificationReplacementAndApplicationImageCache)
     }));
     EXPECT_FALSE(server.images.last().isEmpty());
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Down, launch, nullptr);
     ASSERT_NE(second, nullptr);
     request.id = "another-pane";
@@ -3007,10 +3007,10 @@ TEST_F(NativeWindow, FileTransferPermissionFollowsMovedPane)
 {
     auto* original = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     ASSERT_NE(window->openTab(launch, nullptr), nullptr);
     WindowOptions options;
-    options.command = {QStringLiteral("/bin/cat")};
+    options.command = {QStringLiteral("cat")};
     auto* destination = application->newWindow(options);
     ASSERT_NE(destination, nullptr);
     destination->show();
@@ -3471,7 +3471,7 @@ TEST_F(NativeWindow, APaneDockIsClickedWhereTheWindowChainDrawsIt)
                                    {QStringLiteral("params"),
                                     QJsonObject{{QStringLiteral("crt-curve"),
                                                  QJsonObject{{QStringLiteral("curvature"), Curvature}}}}}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     Pane* pane = window->focusedPane();
@@ -5061,7 +5061,7 @@ TEST_F(NativeWindow, AFingerDragsADividerAsAMouseDoes)
 {
     Pane* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     fillHistory(first, 400);
@@ -5874,10 +5874,12 @@ TEST_F(NativeWindow, TheSelectionScopeOfGetTextIsBoundedAsTheOtherScopes)
     pane->selectAll();
     ASSERT_TRUE(pane->hasSelection());
     QString out;
-    ASSERT_TRUE(test.control.readText(pane->id(), Control::TextScope::Selection, out).isEmpty());
+    bool truncated = false;
+    ASSERT_TRUE(test.control.readText(pane->id(), Control::TextScope::Selection, out, {}, &truncated).isEmpty());
     const std::size_t bytes = std::size_t(out.toUtf8().size());
     EXPECT_LE(bytes, Pane::MaxText);
     EXPECT_GT(bytes, Pane::MaxText - row.size());
+    EXPECT_TRUE(truncated);
 }
 
 TEST_F(NativeWindow, BidiPointerSelectionAndAccessibleGeometryUseVisualCells)
@@ -5912,7 +5914,7 @@ TEST_F(NativeWindow, PaneOverviewChoosesWithKeysAndKeepsZoom)
 {
     auto* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     auto* third = window->splitPane(second, SplitTree::Direction::Down, launch, nullptr);
@@ -6013,7 +6015,7 @@ TEST_F(NativeWindow, PaneOverviewSpansTabsAndSwitchesToTheChosenTab)
     auto* second = window->focusedPane();
     ASSERT_NE(second, first);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* third = window->splitPane(second, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(third, nullptr);
     window->revealPane(second);
@@ -6072,7 +6074,7 @@ TEST_F(NativeWindow, AnOverviewOfCardsInARingStepsThroughThemAndJumpsBetweenTabs
     restartApplication(QStringLiteral("deck.conf"),
                        testSettings({{QStringLiteral("Shaders"),
                                       QJsonObject{{QStringLiteral("overview"), QStringLiteral("pane-deck")}}}}),
-                       {QStringLiteral("/bin/cat")});
+                       {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     auto* first = window->focusedPane();
@@ -6083,7 +6085,7 @@ TEST_F(NativeWindow, AnOverviewOfCardsInARingStepsThroughThemAndJumpsBetweenTabs
     auto* second = window->focusedPane();
     ASSERT_NE(second, first);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* third = window->splitPane(second, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(third, nullptr);
     window->revealPane(second);
@@ -6141,7 +6143,7 @@ TEST_F(NativeWindow, ScriptKeyModeOverviewTabSwitchAndPulse)
 {
     auto* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     EXPECT_EQ(window->paneOrigin(second).from, first->id());
@@ -6468,7 +6470,7 @@ TEST_F(NativeWindow, PaneTitleLabelsSurviveTitleChanges)
 {
     auto* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     ASSERT_NE(window->splitPane(first, SplitTree::Direction::Right, launch, nullptr), nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
     ASSERT_NE(layer, nullptr);
@@ -6503,7 +6505,7 @@ TEST_F(NativeWindow, OverviewReopenedWhileClosingTurnsTheShortWay)
 {
     auto* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     ASSERT_NE(window->splitPane(second, SplitTree::Direction::Down, launch, nullptr), nullptr);
@@ -6535,7 +6537,7 @@ TEST_F(NativeWindow, OverviewRestoresTheZoomOnTheTabItCameFrom)
 {
     auto* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     window->revealPane(first);
@@ -6897,7 +6899,7 @@ TEST_F(NativeWindow, FocusStaysWhenAnUnfocusedPaneExitsOrABackgroundTabLeaves)
 {
     auto* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     auto* third = window->splitPane(second, SplitTree::Direction::Down, launch, nullptr);
@@ -6957,7 +6959,7 @@ TEST_F(NativeWindow, KeyRepeatsOfAKeyThatClosedAModeStayOutOfTheShell)
 TEST_F(NativeWindow, SearchDropsMatchesOfTextThatMovedAndStartsAgain)
 {
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* pane = window->splitPane(window->focusedPane(), SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(pane, nullptr);
     QStringList statuses;
@@ -7228,7 +7230,7 @@ TEST_F(NativeWindow, ASplitRefusedForRoomKeepsTheZoom)
 {
     auto* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* last = first;
     bool refused = false;
     for (int i = 0; i < 64 && !refused; ++i) {
@@ -7253,7 +7255,7 @@ TEST_F(NativeWindow, ASplitRefusedForRoomKeepsTheZoom)
     TestControl test(directory, QStringLiteral("control.conf"), window);
     Control& control = test.control;
     quint32 created = 0;
-    EXPECT_EQ(control.split(last->id(), QStringLiteral("down"), {QStringLiteral("/bin/cat")}, {}, created),
+    EXPECT_EQ(control.split(last->id(), QStringLiteral("down"), {QStringLiteral("cat")}, {}, created),
               QStringLiteral("not enough room for another pane"));
     EXPECT_EQ(created, 0u);
 }
@@ -7262,7 +7264,7 @@ TEST_F(NativeWindow, ClipboardReadFromABackgroundTabAsksWithoutSwitching)
 {
     auto* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* background = window->openTab(launch, nullptr);
     ASSERT_NE(background, nullptr);
     window->revealPane(first);
@@ -7321,7 +7323,7 @@ TEST_F(NativeWindow, ChromeSceneIsMadeBeforeTheFirstFrameThatShowsIt)
     // Made, not rendered: no frame has shown chrome yet.
     EXPECT_EQ(layer->texture(), nullptr);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     ASSERT_NE(window->splitPane(window->focusedPane(), SplitTree::Direction::Right, launch, nullptr), nullptr);
     QElapsedTimer timer;
     timer.start();
@@ -7340,13 +7342,13 @@ TEST_F(NativeWindow, SplitsKeepTheMinimumSizeAndStartShellsAtTheirSizeBeforeAFra
 {
     auto* first = window->focusedPane();
     PaneLaunchOptions narrow;
-    narrow.command = {QStringLiteral("/bin/cat")};
+    narrow.command = {QStringLiteral("cat")};
     narrow.fraction = 0.0005;
     auto* second = window->splitPane(first, SplitTree::Direction::Right, narrow, nullptr);
     ASSERT_NE(second, nullptr);
     // No frame in between: the layout of the first split is not drawn yet.
     PaneLaunchOptions half;
-    half.command = {QStringLiteral("/bin/cat")};
+    half.command = {QStringLiteral("cat")};
     auto* third = window->splitPane(second, SplitTree::Direction::Down, half, nullptr);
     ASSERT_NE(third, nullptr);
     EXPECT_GE(second->cols(), 4);
@@ -7367,7 +7369,7 @@ TEST_F(NativeWindow, ContextMenuActsOnThePaneItOpenedOn)
 {
     auto* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     ASSERT_TRUE(waitFor([&] {
@@ -7490,7 +7492,7 @@ TEST_F(NativeWindow, ScriptDocksTakeCellsFromThePanesAndCanReplaceTheTabBar)
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* other = window->openTab(launch, nullptr);
     ASSERT_NE(other, nullptr);
     window->revealPane(pane);
@@ -8199,7 +8201,7 @@ TEST_F(NativeWindow, MoveTabTellsOfTheMovedPanesAndKeepsTheOverviewOnItsCard)
     auto* first = window->focusedPane();
     ASSERT_NE(first, nullptr);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* beside = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(beside, nullptr);
     ASSERT_TRUE(window->runAction(first, Action::NewTab));
@@ -8275,7 +8277,7 @@ TEST_F(NativeWindow, PaneDocksTakeCellsFromTheirPaneAndTellTheirScriptOfThem)
     auto* first = window->focusedPane();
     ASSERT_NE(first, nullptr);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     expectIdle(window);
@@ -8394,7 +8396,7 @@ TEST_F(NativeWindow, PaneDockClicksReachTheirScriptWithTheirPaneAndNotThePane)
     auto* first = window->focusedPane();
     ASSERT_NE(first, nullptr);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     window->revealPane(first);
@@ -8537,7 +8539,7 @@ TEST_F(NativeWindow, PaneDocksCloseWithTheirPaneAndGoWithItToAnotherWindow)
     auto* first = window->focusedPane();
     ASSERT_NE(first, nullptr);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     expectIdle(window);
@@ -8635,7 +8637,7 @@ TEST_F(NativeWindow, PaneDocksHaveLimitsAndHideWhenTheyDoNotFitOrTheirPaneIsHidd
     auto* first = window->focusedPane();
     ASSERT_NE(first, nullptr);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     expectIdle(window);
@@ -8715,8 +8717,7 @@ TEST_F(NativeWindow, ControlDocksAtAPaneAndFindsNoPaneOnceItClosed)
     auto* first = window->focusedPane();
     ASSERT_NE(first, nullptr);
     quint32 created = 0;
-    ASSERT_TRUE(
-        control.split(first->id(), QStringLiteral("right"), {QStringLiteral("/bin/cat")}, {}, created).isEmpty());
+    ASSERT_TRUE(control.split(first->id(), QStringLiteral("right"), {QStringLiteral("cat")}, {}, created).isEmpty());
     Pane* second = nullptr;
     for (auto* pane : window->panes())
         if (pane->id() == created)
@@ -8745,7 +8746,7 @@ TEST_F(NativeWindow, ControlDocksAtAPaneAndFindsNoPaneOnceItClosed)
     EXPECT_TRUE(first->docks().empty());
     // A pane in another window has its area there.
     WindowOptions options;
-    options.command = {QStringLiteral("/bin/cat")};
+    options.command = {QStringLiteral("cat")};
     auto* elsewhere = application->newWindow(options);
     ASSERT_NE(elsewhere, nullptr);
     control.attachWindow(elsewhere);
@@ -8779,7 +8780,7 @@ TEST_F(NativeWindow, AccessiblePaneDocksAreKeptApartByPaneAndGoWithIt)
     auto* first = window->focusedPane();
     ASSERT_NE(first, nullptr);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     auto dock = [&](Pane* pane, const QString& text) {
@@ -8836,7 +8837,7 @@ TEST_F(NativeWindow, ADragOnAPaneDockTellsItsScriptWithItsPane)
     auto* first = window->focusedPane();
     ASSERT_NE(first, nullptr);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     window->revealPane(first);
@@ -8916,7 +8917,7 @@ TEST_F(NativeWindow, APaneDockDragEndsWhenItsPaneClosesOrStopsShowing)
     auto* first = window->focusedPane();
     ASSERT_NE(first, nullptr);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     DockEvents events(window);
     auto dock = [&](Pane* pane) {
         return window->setScriptDock(QStringLiteral("a@1"),
@@ -9016,7 +9017,7 @@ TEST_F(NativeWindow, APaneDockDragEndsWhenItsPaneClosesOrStopsShowing)
 TEST_F(NativeWindow, APaneDockDragEndsWhenItsWindowCloses)
 {
     WindowOptions options;
-    options.command = {QStringLiteral("/bin/cat")};
+    options.command = {QStringLiteral("cat")};
     QPointer<TerminalWindow> other(application->newWindow(options));
     ASSERT_FALSE(other.isNull());
     other->resize(600, 400);
@@ -9064,7 +9065,7 @@ TEST_F(NativeWindow, APaneDockDragEndsWhenItsWindowCloses)
 TEST_F(NativeWindow, APointerThatNeverEnteredAWindowIsOnNoItemOfItsDocks)
 {
     WindowOptions options;
-    options.command = {QStringLiteral("/bin/cat")};
+    options.command = {QStringLiteral("cat")};
     std::unique_ptr<TerminalWindow> fresh(application->newWindow(options));
     ASSERT_NE(fresh, nullptr);
     // The compositor's own pointer may be over the new window: then it
@@ -9122,7 +9123,7 @@ TEST_F(NativeWindow, TabActionsOfAPaneActOnItsTabWithoutShowingItAndScriptsOpenI
     auto* first = window->focusedPane();
     ASSERT_NE(first, nullptr);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     auto* second = window->openTab(launch, nullptr);
     auto* third = window->openTab(launch, nullptr);
     ASSERT_NE(second, nullptr);
@@ -9252,7 +9253,7 @@ TEST_F(NativeWindow, ControlUndocksThroughAPaneThatMovedOrClosed)
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     // Three tabs, so that the tab bar stays when one pane moves away.
     ASSERT_NE(window->openTab(launch, nullptr), nullptr);
     ASSERT_NE(window->openTab(launch, nullptr), nullptr);
@@ -9274,7 +9275,7 @@ TEST_F(NativeWindow, ControlUndocksThroughAPaneThatMovedOrClosed)
     // The pane moves to another window: the undock still removes the area
     // that it put in this one.
     WindowOptions options;
-    options.command = {QStringLiteral("/bin/cat")};
+    options.command = {QStringLiteral("cat")};
     auto* destination = application->newWindow(options);
     ASSERT_NE(destination, nullptr);
     destination->show();
@@ -9312,8 +9313,7 @@ TEST_F(NativeWindow, ControlUndocksThroughAPaneThatMovedOrClosed)
     quint32 created = 0;
     auto* first = window->focusedPane();
     ASSERT_NE(first, nullptr);
-    ASSERT_TRUE(
-        control.split(first->id(), QStringLiteral("right"), {QStringLiteral("/bin/cat")}, {}, created).isEmpty());
+    ASSERT_TRUE(control.split(first->id(), QStringLiteral("right"), {QStringLiteral("cat")}, {}, created).isEmpty());
     Pane* closing = nullptr;
     for (auto* pane : window->panes())
         if (pane->id() == created)
@@ -9352,12 +9352,12 @@ TEST_F(NativeWindow, ControlRefusesWhatItCannotDoInFull)
     // A split size must be a number, not a string that reads as one.
     quint32 created = 0;
     EXPECT_FALSE(control
-                     .split(pane->id(), QStringLiteral("right"), {QStringLiteral("/bin/cat")},
+                     .split(pane->id(), QStringLiteral("right"), {QStringLiteral("cat")},
                             {{QStringLiteral("size"), QStringLiteral("0.5")}}, created)
                      .isEmpty());
     EXPECT_EQ(created, 0u);
     EXPECT_TRUE(control
-                    .split(pane->id(), QStringLiteral("right"), {QStringLiteral("/bin/cat")},
+                    .split(pane->id(), QStringLiteral("right"), {QStringLiteral("cat")},
                            {{QStringLiteral("size"), 0.5}}, created)
                     .isEmpty());
     EXPECT_NE(created, 0u);
@@ -9450,7 +9450,7 @@ TEST_F(NativeWindow, ControlSendsStatusAndContextOnlyWhenTheyChange)
 TEST_F(NativeWindow, ADividerDragKeepsTheSplitCursorThroughItsFrames)
 {
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     // Two tabs, so that a tab bar shows above the split.
     ASSERT_NE(window->openTab(launch, nullptr), nullptr);
     auto* chrome = window->findChild<ChromeController*>();
@@ -9502,7 +9502,7 @@ TEST_F(NativeWindow, ATabBarDockThatDoesNotFitLeavesTheTabBarInPlace)
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     ASSERT_NE(window->openTab(launch, nullptr), nullptr);
     ASSERT_TRUE(waitFor([&] {
         return chrome->tabBarHeight() > 0;
@@ -9536,7 +9536,7 @@ TEST_F(NativeWindow, ATabBarDockThatAFontChangeHidesGivesTheTabBarBack)
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     ASSERT_NE(window->openTab(launch, nullptr), nullptr);
     ASSERT_TRUE(waitFor([&] {
         return chrome->tabBarHeight() > 0;
@@ -9600,7 +9600,7 @@ TEST_F(NativeWindow, ASplitRightAfterADockCountsTheRoomTheDockTakes)
                                      {QStringLiteral("size"), cols - 6}})
                     .isEmpty());
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     QString error;
     Pane* second = window->splitPane(pane, SplitTree::Direction::Right, launch, &error);
     EXPECT_EQ(second, nullptr);
@@ -9630,7 +9630,7 @@ TEST_F(NativeWindow, ASplitRightAfterABiggerFontStartsAtTheSizeItKeeps)
     for (int step = 0; step < 4; ++step)
         ASSERT_TRUE(window->runAction(pane, Action::FontBigger));
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     QString error;
     Pane* second = window->splitPane(pane, SplitTree::Direction::Right, launch, &error);
     ASSERT_NE(second, nullptr) << error.toStdString();
@@ -9719,7 +9719,7 @@ TEST_F(NativeWindow, AWorkingDirectoryThatIsNoDirectoryInherits)
         QStringLiteral("gone.conf"),
         testSettings({{QStringLiteral("Window"),
                        QJsonObject{{QStringLiteral("workingDirectory"), directory.filePath(QStringLiteral("gone"))}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     Pane* pane = window->focusedPane();
@@ -9730,7 +9730,7 @@ TEST_F(NativeWindow, AWorkingDirectoryThatIsNoDirectoryInherits)
         return pane->workingDirectory() == here;
     })) << pane->workingDirectory().toStdString();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* tab = window->openTab(launch, nullptr, pane);
     ASSERT_NE(tab, nullptr);
     EXPECT_TRUE(waitFor([&] {
@@ -9767,7 +9767,7 @@ TEST_F(NativeWindow, ReportedDirectoryWinsWhenLocalAndANewTabStartsThere)
     report("\x1b]1337;CurrentDir=" + spaced.toUtf8() + "\x07");
     // newTab from a pane starts where that pane is.
     quint32 created = 0;
-    ASSERT_TRUE(control.newTab(pane->id(), {}, {QStringLiteral("/bin/cat")}, created).isEmpty());
+    ASSERT_TRUE(control.newTab(pane->id(), {}, {QStringLiteral("cat")}, created).isEmpty());
     Pane* added = paneWithId(window, created);
     ASSERT_NE(added, nullptr);
     EXPECT_TRUE(waitFor([&] {
@@ -9824,7 +9824,7 @@ TEST_F(NativeWindow, ClosingTheOverviewEndsTheScriptKeyModeItDrove)
 {
     auto* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     ASSERT_NE(window->splitPane(first, SplitTree::Direction::Right, launch, nullptr), nullptr);
     ASSERT_TRUE(settleQueued());
     auto* chrome = window->findChild<ChromeController*>();
@@ -10040,7 +10040,7 @@ TEST_F(NativeWindow, ClosingTheHostPaneCancelsItsOverlay)
 {
     Pane* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     const QString pidFile = directory.filePath(QStringLiteral("overlay.pid"));
@@ -10099,7 +10099,7 @@ TEST_F(NativeWindow, MovingAPaneOrItsTabKeepsItsOverlay)
 {
     Pane* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     auto answer = runOverlay(window, second,
@@ -10150,7 +10150,7 @@ TEST_F(NativeWindow, AResizeReachesTheOverlayAndItsHost)
     const int cols = pane->cols();
     // A split takes half of the pane: the layout gives both the new size.
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     ASSERT_NE(window->splitPane(pane, SplitTree::Direction::Right, launch, nullptr), nullptr);
     ASSERT_TRUE(waitFor([&] {
         return pane->cols() < cols;
@@ -10172,7 +10172,7 @@ TEST_F(NativeWindow, AnOverlayOverAZoomedPaneHasTheZoomedSize)
     Pane* pane = window->focusedPane();
     const int alone = pane->cols();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* other = window->splitPane(pane, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(other, nullptr);
     window->revealPane(pane);
@@ -10396,7 +10396,7 @@ TEST_F(NativeWindow, OverlaysAndScriptDialogsRefuseEachOther)
                              {QStringLiteral("request_id"), QStringLiteral("afterglow.await:2:1")}};
     // ScriptHost hands ScriptControl the overlay as a spec it has read.
     QString specError;
-    const auto spec = OverlaySpec::read({QStringLiteral("/bin/true")}, {}, &specError);
+    const auto spec = OverlaySpec::read({QStringLiteral("true")}, {}, &specError);
     ASSERT_TRUE(spec) << qPrintable(specError);
     const QVariantMap overlay{{QStringLiteral("kind"), QStringLiteral("overlay")},
                               {QStringLiteral("pane"), pane->id()},
@@ -10407,7 +10407,7 @@ TEST_F(NativeWindow, OverlaysAndScriptDialogsRefuseEachOther)
     ASSERT_NE(pane->overlay(), nullptr);
     // One overlay for each pane.
     QString refusal, code;
-    runOverlay(window, pane, {QStringLiteral("/bin/true")}, {}, &refusal, &code);
+    runOverlay(window, pane, {QStringLiteral("true")}, {}, &refusal, &code);
     EXPECT_EQ(code, QStringLiteral("busy"));
     EXPECT_EQ(callbacks.applyOwned(QStringLiteral("a@1"), overlay, ignore).code, QStringLiteral("busy"));
     // No dialog while the overlay has the focus.
@@ -10423,7 +10423,7 @@ TEST_F(NativeWindow, OverlaysAndScriptDialogsRefuseEachOther)
     ASSERT_TRUE(
         window->showScriptDialog(QStringLiteral("a@1"), pane, prompt, [](const QString&, const QVariantMap&) { })
             .isEmpty());
-    runOverlay(window, pane, {QStringLiteral("/bin/true")}, {}, &refusal, &code);
+    runOverlay(window, pane, {QStringLiteral("true")}, {}, &refusal, &code);
     EXPECT_EQ(code, QStringLiteral("busy"));
     const auto refused = callbacks.applyOwned(QStringLiteral("a@1"), overlay, ignore);
     EXPECT_FALSE(refused.error.isEmpty());
@@ -10436,7 +10436,7 @@ TEST_F(NativeWindow, OverlaysAndScriptDialogsRefuseEachOther)
         return !chrome->scriptDialog().value(QStringLiteral("open")).toBool();
     }));
     chrome->setPaletteOpen(true);
-    runOverlay(window, pane, {QStringLiteral("/bin/true")}, {}, &refusal, &code);
+    runOverlay(window, pane, {QStringLiteral("true")}, {}, &refusal, &code);
     EXPECT_EQ(code, QStringLiteral("busy"));
     EXPECT_EQ(pane->overlay(), nullptr);
     chrome->setPaletteOpen(false);
@@ -10447,7 +10447,7 @@ TEST_F(NativeWindow, TheEndOfTheRunThatOpenedAnOverlayClosesIt)
     // Only the overlays of the owner's run close: another run's stays.
     Pane* pane = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* second = window->splitPane(pane, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     const QStringList sleeper{QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("exec sleep 30")};
@@ -10497,7 +10497,7 @@ return {
         QStringLiteral("picker.conf"),
         testSettings({{QStringLiteral("Scripts"),
                        QJsonObject{{QStringLiteral("enabled"), true}, {QStringLiteral("commandTimeout"), 3000}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     auto* chrome = window->findChild<ChromeController*>();
@@ -10758,10 +10758,10 @@ TEST_F(NativeWindow, AnOverlaysClipboardPromptNamesTheTabOfItsHost)
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* background = window->openTab(launch, nullptr);
     ASSERT_NE(background, nullptr);
-    auto answer = runOverlay(window, background, {QStringLiteral("/bin/sleep"), QStringLiteral("30")},
+    auto answer = runOverlay(window, background, {QStringLiteral("sleep"), QStringLiteral("30")},
                              {{QStringLiteral("capture"), QStringLiteral("none")}});
     ASSERT_NE(background->overlay(), nullptr);
     Pane* program = background->overlay()->pane();
@@ -10789,16 +10789,16 @@ TEST_F(NativeWindow, ClosingATabClosesThePromptOfItsOverlaysProgram)
     restartApplication(
         QStringLiteral("close-tab.conf"),
         testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("confirmClose"), false}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* closing = window->openTab(launch, nullptr);
     ASSERT_NE(closing, nullptr);
-    auto answer = runOverlay(window, closing, {QStringLiteral("/bin/sleep"), QStringLiteral("30")},
+    auto answer = runOverlay(window, closing, {QStringLiteral("sleep"), QStringLiteral("30")},
                              {{QStringLiteral("capture"), QStringLiteral("none")}});
     ASSERT_NE(closing->overlay(), nullptr);
     requestClipboardRead(closing->overlay()->pane());
@@ -10836,7 +10836,7 @@ TEST_F(NativeWindow, AnOverlaysBellFlashesItsHost)
     Capture capture(directory, QStringLiteral("bell-capture.conf"), window);
     Control& control = capture.control;
     Pane* pane = window->focusedPane();
-    auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sleep"), QStringLiteral("30")},
+    auto answer = runOverlay(window, pane, {QStringLiteral("sleep"), QStringLiteral("30")},
                              {{QStringLiteral("capture"), QStringLiteral("none")}});
     ASSERT_NE(pane->overlay(), nullptr);
     Pane* program = pane->overlay()->pane();
@@ -10867,7 +10867,7 @@ TEST_F(NativeWindow, AnOverlaysNotificationDoesNotShowWhileTheUserLooksAtIt)
     ASSERT_TRUE(notices.registered);
     Pane* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     window->revealPane(first);
@@ -10878,7 +10878,7 @@ TEST_F(NativeWindow, AnOverlaysNotificationDoesNotShowWhileTheUserLooksAtIt)
             },
             2000))
         GTEST_SKIP() << "the compositor did not activate the window";
-    auto answer = runOverlay(window, first, {QStringLiteral("/bin/sleep"), QStringLiteral("30")},
+    auto answer = runOverlay(window, first, {QStringLiteral("sleep"), QStringLiteral("30")},
                              {{QStringLiteral("capture"), QStringLiteral("none")}});
     ASSERT_NE(first->overlay(), nullptr);
     Pane* program = first->overlay()->pane();
@@ -10903,7 +10903,7 @@ TEST_F(NativeWindow, AnOverlayKnowsWhetherItsTabShows)
 {
     Pane* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* other = window->openTab(launch, nullptr);
     ASSERT_NE(other, nullptr);
     window->revealPane(first);
@@ -10951,12 +10951,12 @@ TEST_F(NativeWindow, AnOverlayFadeThatNoFrameDrawsSwitchesAtOnce)
         return;
     Pane* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     window->revealPane(first);
     expectIdle(window);
-    const QStringList sleeper{QStringLiteral("/bin/sleep"), QStringLiteral("30")};
+    const QStringList sleeper{QStringLiteral("sleep"), QStringLiteral("30")};
     const QVariantMap none{{QStringLiteral("capture"), QStringLiteral("none")}};
 
     // The overview has the tab's image: an overlay opens with no fade.
@@ -11047,7 +11047,7 @@ TEST_F(NativeWindow, AnOverlaysClipboardReadIsDeniedWhenItsTabGoesToAnotherWindo
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* moving = window->openTab(launch, nullptr);
     ASSERT_NE(moving, nullptr);
     // cat -v shows the answers that the program gets.
@@ -11087,7 +11087,7 @@ TEST_F(NativeWindow, UnicodeInputOverAnOverlayEndsWithIt)
     const auto unicodeOpen = [&] {
         return chrome->unicodeInput().value(QStringLiteral("active")).toBool();
     };
-    auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sleep"), QStringLiteral("30")},
+    auto answer = runOverlay(window, pane, {QStringLiteral("sleep"), QStringLiteral("30")},
                              {{QStringLiteral("capture"), QStringLiteral("none")}});
     ASSERT_NE(pane->overlay(), nullptr);
     ASSERT_TRUE(window->runAction(pane, Action::UnicodeInput));
@@ -11121,7 +11121,7 @@ TEST_F(NativeWindow, CancelOverlayPassesTheScriptsKeyModeAndIsInThePaletteOnlyOv
     ASSERT_TRUE(chrome->paletteOpen());
     EXPECT_FALSE(listed());
     chrome->setPaletteOpen(false);
-    auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sleep"), QStringLiteral("30")},
+    auto answer = runOverlay(window, pane, {QStringLiteral("sleep"), QStringLiteral("30")},
                              {{QStringLiteral("capture"), QStringLiteral("none")}}, nullptr, nullptr,
                              QStringLiteral("a@1"), QStringLiteral("afterglow.await:5:1"));
     ASSERT_NE(pane->overlay(), nullptr);
@@ -11155,7 +11155,7 @@ TEST_F(NativeWindow, AnOverlayWaitsForAMenuOrATitlePromptAndClosesASearch)
     Pane* pane = window->focusedPane();
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
-    const QStringList quick{QStringLiteral("/bin/true")};
+    const QStringList quick{QStringLiteral("true")};
     QString refusal, code;
     // The user's answer to them must not go to the overlay.
     chrome->openContextMenu(
@@ -11174,7 +11174,7 @@ TEST_F(NativeWindow, AnOverlayWaitsForAMenuOrATitlePromptAndClosesASearch)
     ASSERT_FALSE(chrome->titlePromptOpen());
     // A search is no question: it closes, and the overlay opens.
     chrome->setSearchOpen(true);
-    auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sleep"), QStringLiteral("30")},
+    auto answer = runOverlay(window, pane, {QStringLiteral("sleep"), QStringLiteral("30")},
                              {{QStringLiteral("capture"), QStringLiteral("none")}}, &refusal, &code);
     EXPECT_TRUE(refusal.isEmpty()) << refusal.toStdString();
     EXPECT_NE(pane->overlay(), nullptr);
@@ -11244,7 +11244,7 @@ TEST_F(NativeWindow, AnOverlaysTitleNamesItsTabAndItsSplit)
 {
     Pane* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     window->revealPane(first);
@@ -11296,7 +11296,7 @@ TEST_F(NativeWindow, ClosingAFocusedHostSendsItNoFocusAndLeavesNoFade)
             },
             2000))
         GTEST_SKIP() << "the compositor did not activate the window";
-    auto answer = runOverlay(window, host, {QStringLiteral("/bin/sleep"), QStringLiteral("30")},
+    auto answer = runOverlay(window, host, {QStringLiteral("sleep"), QStringLiteral("30")},
                              {{QStringLiteral("capture"), QStringLiteral("none")}});
     ASSERT_NE(host->overlay(), nullptr);
     // The window tells the host that the overlay took the focus.
@@ -11345,7 +11345,7 @@ TEST_F(NativeWindow, ClosingAWindowAsksAboutTheProgramOfAnOverlay)
     Pane* pane = window->focusedPane();
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
-    auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sleep"), QStringLiteral("30")},
+    auto answer = runOverlay(window, pane, {QStringLiteral("sleep"), QStringLiteral("30")},
                              {{QStringLiteral("capture"), QStringLiteral("none")}});
     ASSERT_NE(pane->overlay(), nullptr);
     QPointer<TerminalWindow> alive = window;
@@ -11369,7 +11369,7 @@ TEST_F(NativeWindow, AnotherScriptsKeyModeWaitsForAnOverlay)
     Pane* pane = window->focusedPane();
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
-    auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sleep"), QStringLiteral("30")},
+    auto answer = runOverlay(window, pane, {QStringLiteral("sleep"), QStringLiteral("30")},
                              {{QStringLiteral("capture"), QStringLiteral("none")}}, nullptr, nullptr,
                              QStringLiteral("a@1"), QStringLiteral("afterglow.await:6:1"));
     ASSERT_NE(pane->overlay(), nullptr);
@@ -11441,6 +11441,42 @@ public:
             return std::nullopt;
         return QJsonDocument::fromJson(client.readLine()).object();
     }
+    // Subscribes to the event @p event of the control target: true once the
+    // server took it. Before any call that waits for its reply.
+    bool subscribe(const QString& event)
+    {
+        const qint64 id = ++m_id;
+        const QJsonObject frame{{QStringLiteral("type"), QStringLiteral("subscribe")},
+                                {QStringLiteral("id"), id},
+                                {QStringLiteral("target"), QStringLiteral("control")},
+                                {QStringLiteral("signal"), event}};
+        client.write(QJsonDocument(frame).toJson(QJsonDocument::Compact) + '\n');
+        client.flush();
+        const auto reply = next();
+        if (!reply || reply->value(QStringLiteral("type")).toString() != QLatin1String("reply"))
+            return false;
+        m_events.insert(id, event);
+        return true;
+    }
+    // The events that came, as "name:arg1:arg2", until @p count came or
+    // @p ms passed. A count of 0 waits the whole time, to see that none come.
+    QStringList events(int count, int ms = 3000)
+    {
+        QStringList out;
+        QElapsedTimer clock;
+        clock.start();
+        while (clock.elapsed() < ms && (count == 0 || out.size() < count)) {
+            drain(5);
+            while ((count == 0 || out.size() < count) && client.canReadLine()) {
+                const QJsonObject frame = QJsonDocument::fromJson(client.readLine()).object();
+                QString line = m_events.value(frame.value(QStringLiteral("subscriptionId")).toInteger());
+                for (const QJsonValue& arg : frame.value(QStringLiteral("args")).toArray())
+                    line += QLatin1Char(':') + (arg.isString() ? arg.toString() : QString::number(arg.toInteger()));
+                out.append(line);
+            }
+        }
+        return out;
+    }
 
 private:
     SettingsStore m_settings;
@@ -11449,6 +11485,7 @@ private:
     InstanceSocket m_instance;
     std::unique_ptr<ControlSocket> m_socket;
     qint64 m_id = 0;
+    QHash<qint64, QString> m_events; ///< subscription ID -> event
 
 public:
     // Goes first: its close reaches a server that is still there.
@@ -11461,14 +11498,14 @@ TEST_F(NativeWindow, AControlClientThatGoesTakesItsOverlay)
     ASSERT_TRUE(ctl.connected());
     Pane* pane = window->focusedPane();
     // One overlay that ends on its own, then another on the same connection.
-    ctl.overlay(pane->id(), {QStringLiteral("/bin/true")});
+    ctl.overlay(pane->id(), {QStringLiteral("true")});
     const auto first = ctl.next(5000);
     ASSERT_TRUE(first.has_value());
     EXPECT_EQ(first->value(QStringLiteral("type")).toString(), QStringLiteral("reply"));
     ASSERT_TRUE(waitFor([&] {
         return pane->overlay() == nullptr;
     }));
-    ctl.overlay(pane->id(), {QStringLiteral("/bin/sleep"), QStringLiteral("30")},
+    ctl.overlay(pane->id(), {QStringLiteral("sleep"), QStringLiteral("30")},
                 {{QStringLiteral("capture"), QStringLiteral("none")}});
     ASSERT_TRUE(waitFor([&] {
         return pane->overlay() != nullptr;
@@ -11514,6 +11551,86 @@ TEST_F(NativeWindow, AControlClientGetsAnOverlaysOutputOnlyWithReadAccess)
     }
 }
 
+// The control calls mark, getText since and shellRegions of a window: a mark
+// at the cursor, the text written after it, and the shell's regions after an
+// ID. Past Pane::MaxText the text is cut. A reflow makes a mark stale.
+TEST_F(NativeWindow, AControlClientReadsTheTextSinceAMarkAndTheShellRegions)
+{
+    ControlConnection ctl(directory.filePath(QStringLiteral("marks.sock")), window,
+                          {{QStringLiteral("allowReadText"), true}});
+    ASSERT_TRUE(ctl.connected());
+    QPointer<Pane> pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    const auto request = [&](const QString& fn, const QJsonArray& args) {
+        ctl.call(fn, args);
+        return ctl.next(5000).value_or(QJsonObject());
+    };
+    const double id = pane->id();
+    const QJsonObject marked = request(QStringLiteral("mark"), {id});
+    ASSERT_EQ(marked.value(QStringLiteral("type")).toString(), QStringLiteral("reply"))
+        << QJsonDocument(marked).toJson().toStdString();
+    const QJsonObject mark = marked.value(QStringLiteral("result")).toObject();
+    for (const char* key : {"row", "col", "epoch"})
+        EXPECT_TRUE(mark.value(QLatin1String(key)).isDouble()) << key;
+    feedFromReader(pane, "\x1b]133;A\a$ \x1b]133;B\aecho hi\x1b]133;C\a\r\nhi there\r\n\x1b]133;D;3\a");
+    const auto since = [&](const QJsonObject& from) {
+        return request(QStringLiteral("getText"),
+                       {id, QStringLiteral("since"), QJsonObject{{QStringLiteral("mark"), from}}});
+    };
+    QJsonObject read = since(mark);
+    ASSERT_EQ(read.value(QStringLiteral("type")).toString(), QStringLiteral("reply"))
+        << QJsonDocument(read).toJson().toStdString();
+    QJsonObject text = read.value(QStringLiteral("result")).toObject();
+    EXPECT_TRUE(text.value(QStringLiteral("text")).toString().contains(QStringLiteral("$ echo hi\nhi there")))
+        << text.value(QStringLiteral("text")).toString().toStdString();
+    EXPECT_FALSE(text.value(QStringLiteral("truncated")).toBool());
+    EXPECT_FALSE(text.value(QStringLiteral("trimmed")).toBool());
+    // The prompt, the input and the output, oldest first; none after the last.
+    const QJsonObject regions = request(QStringLiteral("shellRegions"), {id, 0});
+    const QJsonArray all = regions.value(QStringLiteral("result")).toArray();
+    ASSERT_EQ(all.size(), 3) << QJsonDocument(regions).toJson().toStdString();
+    QStringList kinds;
+    for (const QJsonValue& region : all)
+        kinds << region.toObject().value(QStringLiteral("kind")).toString();
+    EXPECT_EQ(kinds, (QStringList{QStringLiteral("prompt"), QStringLiteral("input"), QStringLiteral("output")}));
+    EXPECT_EQ(all[2].toObject().value(QStringLiteral("exit_code")).toInt(), 3);
+    EXPECT_TRUE(all[2].toObject().value(QStringLiteral("available")).toBool());
+    const double first = all[0].toObject().value(QStringLiteral("id")).toDouble();
+    const double last = all[2].toObject().value(QStringLiteral("id")).toDouble();
+    EXPECT_EQ(request(QStringLiteral("shellRegions"), {id, first}).value(QStringLiteral("result")).toArray().size(), 2);
+    EXPECT_TRUE(
+        request(QStringLiteral("shellRegions"), {id, last}).value(QStringLiteral("result")).toArray().isEmpty());
+    // More than Pane::MaxText since a new mark: the text is cut. The
+    // scrollback keeps the rows of the mark.
+    auto options = pane->withTerminal([](AfterglowVt::Terminal& terminal) {
+        return terminal.options();
+    });
+    options.maxScrollback = std::max<std::size_t>(options.maxScrollback, 100000);
+    pane->setOptions(options);
+    const QJsonObject before = request(QStringLiteral("mark"), {id}).value(QStringLiteral("result")).toObject();
+    std::string many;
+    // The text has one byte for each line end, where the rows got two.
+    while (many.size() <= Pane::MaxText + Pane::MaxText / 4)
+        many += std::string(100, 'm') + "\r\n";
+    feedFromReader(pane, many);
+    text = since(before).value(QStringLiteral("result")).toObject();
+    EXPECT_TRUE(text.value(QStringLiteral("truncated")).toBool());
+    EXPECT_FALSE(text.value(QStringLiteral("trimmed")).toBool());
+    EXPECT_LE(std::size_t(text.value(QStringLiteral("text")).toString().toUtf8().size()), Pane::MaxText);
+    // A new width renumbers the rows: the mark from before is stale.
+    const QJsonObject now = request(QStringLiteral("mark"), {id}).value(QStringLiteral("result")).toObject();
+    window->resize(window->width() / 2, window->height());
+    const auto staleEpoch = [&] {
+        const QJsonObject again = request(QStringLiteral("mark"), {id}).value(QStringLiteral("result")).toObject();
+        return again.value(QStringLiteral("epoch")) != now.value(QStringLiteral("epoch"));
+    };
+    ASSERT_TRUE(waitFor(staleEpoch));
+    read = since(now);
+    EXPECT_EQ(read.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
+    EXPECT_EQ(read.value(QStringLiteral("code")).toString(), QStringLiteral("STALE_MARK"))
+        << QJsonDocument(read).toJson().toStdString();
+}
+
 TEST_F(NativeWindow, AControlClientGetsAScreenshotAsAPngWhileReadAccessHolds)
 {
     // A tab switch longer than the bound on a frame (2 s): a screenshot waits
@@ -11551,7 +11668,7 @@ TEST_F(NativeWindow, AControlClientGetsAScreenshotAsAPngWhileReadAccessHolds)
 
     // During the switch: the answer comes when it ends, past 2 s.
     PaneLaunchOptions idle;
-    idle.command = {QStringLiteral("/bin/cat")};
+    idle.command = {QStringLiteral("cat")};
     Pane* other = window->openTab(idle, nullptr);
     ASSERT_NE(other, nullptr);
     ASSERT_TRUE(waitFor(
@@ -11617,7 +11734,7 @@ TEST_F(NativeWindow, AControlClientsInputPartsJoinAsTheOverlaysStdin)
         ASSERT_EQ(answer->value(QStringLiteral("result")), QJsonValue(true))
             << QJsonDocument(*answer).toJson().toStdString();
     }
-    ctl.overlay(pane->id(), {QStringLiteral("/bin/cat")}, {{QStringLiteral("input"), QStringLiteral("list")}});
+    ctl.overlay(pane->id(), {QStringLiteral("cat")}, {{QStringLiteral("input"), QStringLiteral("list")}});
     const auto frame = ctl.next(5000);
     ASSERT_TRUE(frame.has_value());
     EXPECT_EQ(frame->value(QStringLiteral("type")).toString(), QStringLiteral("reply"));
@@ -11635,17 +11752,17 @@ TEST_F(NativeWindow, TurningControlOffCancelsTheOverlaysOfItsClients)
     ControlConnection ctl(directory.filePath(QStringLiteral("off.sock")), window);
     ASSERT_TRUE(ctl.connected());
     Pane* pane = window->focusedPane();
-    ctl.overlay(pane->id(), {QStringLiteral("/bin/sleep"), QStringLiteral("30")},
+    ctl.overlay(pane->id(), {QStringLiteral("sleep"), QStringLiteral("30")},
                 {{QStringLiteral("capture"), QStringLiteral("none")}});
     ASSERT_TRUE(waitFor([&] {
         return pane->overlay() != nullptr;
     }));
     // A script's overlay elsewhere is no client's: it stays.
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* other = window->splitPane(pane, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(other, nullptr);
-    auto script = runOverlay(window, other, {QStringLiteral("/bin/sleep"), QStringLiteral("30")},
+    auto script = runOverlay(window, other, {QStringLiteral("sleep"), QStringLiteral("30")},
                              {{QStringLiteral("capture"), QStringLiteral("none")}});
     ASSERT_NE(other->overlay(), nullptr);
     ASSERT_TRUE(ctl.settings().write(QStringLiteral("Control"), QStringLiteral("enabled"), false));
@@ -11667,7 +11784,7 @@ TEST_F(NativeWindow, AFadeOutGoesOnWhileATabSwitchOrTheOverviewStillShowsItsHost
         return;
     Pane* host = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* other = window->openTab(launch, nullptr);
     ASSERT_NE(other, nullptr);
     window->revealPane(host);
@@ -11677,7 +11794,7 @@ TEST_F(NativeWindow, AFadeOutGoesOnWhileATabSwitchOrTheOverviewStillShowsItsHost
     // Ends the overlay over the host once its fade-in is well on: the
     // fade-out then has seconds to run.
     const auto fadeOut = [&](const QString& run) {
-        auto answer = runOverlay(window, host, {QStringLiteral("/bin/sleep"), QStringLiteral("30")},
+        auto answer = runOverlay(window, host, {QStringLiteral("sleep"), QStringLiteral("30")},
                                  {{QStringLiteral("capture"), QStringLiteral("none")}}, nullptr, nullptr,
                                  QStringLiteral("test@1"), run + QStringLiteral("1"));
         if (!host->overlay()
@@ -11764,7 +11881,7 @@ TEST_F(NativeWindow, AFadeThatNoFrameAdvancesEndsAtOnceAlsoInTheTabASwitchLeaves
         return;
     Pane* host = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* zoomed = window->splitPane(host, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(zoomed, nullptr);
     Pane* elsewhere = window->openTab(launch, nullptr);
@@ -11778,7 +11895,7 @@ TEST_F(NativeWindow, AFadeThatNoFrameAdvancesEndsAtOnceAlsoInTheTabASwitchLeaves
     // the other pane hides its host, and a switch leaves the tab. The switch
     // draws that tab, zoomed: no frame advances the fade, which ends with
     // the first one, while the switch still runs.
-    auto answer = runOverlay(window, host, {QStringLiteral("/bin/sleep"), QStringLiteral("30")},
+    auto answer = runOverlay(window, host, {QStringLiteral("sleep"), QStringLiteral("30")},
                              {{QStringLiteral("capture"), QStringLiteral("none")}});
     ASSERT_NE(host->overlay(), nullptr);
     ASSERT_TRUE(window->overlayFade(host).second);
@@ -12124,7 +12241,7 @@ TEST_F(NativeWindow, ClosingTheHostOfAPopupCancelsItAndFramesStop)
 {
     Pane* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     auto answer =
@@ -12155,12 +12272,12 @@ TEST_F(NativeWindow, ClosingTheLastTabFreesItsPanesOutOfAnyTab)
     restartApplication(
         QStringLiteral("last-tab.conf"),
         testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("confirmClose"), false}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     Pane* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     const quint32 tab = window->tabIdOf(first);
@@ -12217,7 +12334,7 @@ TEST_F(NativeWindow, AWindowDeletedWhileItShowsReachesNoSlotOfItsOwn)
     // build-debug/afterglow/afterglow_native_tests). In the default build it
     // mostly passes without the fix, and checks only that the hide came.
     WindowOptions options;
-    options.command = {QStringLiteral("/bin/cat")};
+    options.command = {QStringLiteral("cat")};
     auto* shown = application->newWindow(options);
     ASSERT_NE(shown, nullptr);
     shown->resize(400, 300);
@@ -12242,7 +12359,7 @@ TEST_F(NativeWindow, TerminalEventsReachTheGuiThreadInOrderAndBounded)
     restartApplication(
         QStringLiteral("events.conf"),
         testSettings({{QStringLiteral("Notifications"), QJsonObject{{QStringLiteral("enabled"), false}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     Pane* pane = window->focusedPane();
@@ -12266,9 +12383,11 @@ TEST_F(NativeWindow, TerminalEventsReachTheGuiThreadInOrderAndBounded)
     ASSERT_TRUE(settleQueued());
     EXPECT_FALSE(offThread);
     static_assert(sent > int(Pane::MaxQueuedEvents));
-    ASSERT_EQ(std::size_t(bodies.size()), Pane::MaxQueuedEvents);
-    for (qsizetype i = 0; i < bodies.size(); ++i)
-        ASSERT_EQ(bodies[i], QStringLiteral("n%1").arg(i)) << i;
+    QStringList expected;
+    for (std::size_t i = 0; i < Pane::MaxQueuedEvents; ++i)
+        expected << QStringLiteral("n%1").arg(i);
+    ASSERT_TRUE(bodies == expected) << bodies.size() << " bodies, the first " << bodies.value(0).toStdString()
+                                    << ", the last " << bodies.value(bodies.size() - 1).toStdString();
     // Once the window took them, the next one goes through.
     feedFromReader(pane, "\x1b]9;later\x07");
     ASSERT_TRUE(settleQueued());
@@ -12280,7 +12399,7 @@ TEST_F(NativeWindow, ThePaletteClosesWhenTheFocusMovesToAnotherPane)
 {
     Pane* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     auto* chrome = window->findChild<ChromeController*>();
@@ -12447,7 +12566,7 @@ TEST_F(NativeWindow, ASplitWhoseShellDoesNotStartKeepsTheZoom)
 {
     Pane* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     ASSERT_TRUE(window->runAction(second, Action::TogglePaneZoom));
@@ -12590,7 +12709,7 @@ TEST_F(NativeWindow, APanesDialogsMoveWithItAndOutliveTheWindowItLeft)
     // platform hides the transient children of a window whose surface it
     // destroys.
     WindowOptions options;
-    options.command = {QStringLiteral("/bin/cat")};
+    options.command = {QStringLiteral("cat")};
     QPointer<TerminalWindow> source = application->newWindow(options);
     ASSERT_TRUE(source);
     source->show();
@@ -12603,7 +12722,7 @@ TEST_F(NativeWindow, APanesDialogsMoveWithItAndOutliveTheWindowItLeft)
     QPointer<Pane> pane = source->focusedPane();
     ASSERT_TRUE(pane);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     QPointer<Pane> stays = source->splitPane(pane, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_TRUE(stays);
     PaneDialogs dialogs;
@@ -12632,7 +12751,7 @@ TEST_F(NativeWindow, APanesDialogsFollowItToANewWindow)
     // check ends its own case only.
     const auto follows = [&](Action action) {
         WindowOptions options;
-        options.command = {QStringLiteral("/bin/cat")};
+        options.command = {QStringLiteral("cat")};
         QPointer<TerminalWindow> source = application->newWindow(options);
         ASSERT_TRUE(source);
         QPointer<TerminalWindow> moved;
@@ -12679,7 +12798,7 @@ TEST_F(NativeWindow, AnOverlaysDialogsMoveWithItsHost)
     // The dialogs of an overlay's program ask over its host's window, and
     // go with the host.
     WindowOptions options;
-    options.command = {QStringLiteral("/bin/cat")};
+    options.command = {QStringLiteral("cat")};
     QPointer<TerminalWindow> source = application->newWindow(options);
     ASSERT_TRUE(source);
     source->show();
@@ -12692,11 +12811,11 @@ TEST_F(NativeWindow, AnOverlaysDialogsMoveWithItsHost)
     QPointer<Pane> host = source->focusedPane();
     ASSERT_TRUE(host);
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     QPointer<Pane> stays = source->splitPane(host, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_TRUE(stays);
     auto answer =
-        runOverlay(source, host, {QStringLiteral("/bin/cat")}, {{QStringLiteral("capture"), QStringLiteral("none")}});
+        runOverlay(source, host, {QStringLiteral("cat")}, {{QStringLiteral("capture"), QStringLiteral("none")}});
     ASSERT_NE(host->overlay(), nullptr);
     PaneDialogs dialogs;
     openPaneDialogs(host->overlay()->pane(), directory.filePath(QStringLiteral("sent-from-overlay")), dialogs);
@@ -12727,15 +12846,20 @@ TEST_F(NativeWindow, APanesDialogsCloseWithTheWindowItIsIn)
                        testSettings({{QStringLiteral("Terminal"),
                                       QJsonObject{{QStringLiteral("confirmClose"), false},
                                                   {QStringLiteral("downloadDirectory"), folder}}}}),
-                       {QStringLiteral("/bin/cat")});
+                       {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     // A failed check ends its own case only.
     const auto closes = [&](bool keepQuestion) {
         WindowOptions options;
-        options.command = {QStringLiteral("/bin/cat")};
+        options.command = {QStringLiteral("cat")};
         QPointer<TerminalWindow> closing = application->newWindow(options);
         ASSERT_TRUE(closing);
+        // A check that fails before the close leaves no window for the
+        // next case.
+        const auto cleanup = qScopeGuard([&closing] {
+            delete closing;
+        });
         closing->show();
         ASSERT_TRUE(waitFor([&] {
             return closing && closing->isExposed();
@@ -12768,7 +12892,7 @@ TEST_F(NativeWindow, TheQuickTerminalSlidesOutForItsPanesDialogs)
     // under the quick terminal, modal to it. The quick terminal slides out
     // until its last dialog closes, and then slides in again.
     WindowOptions options;
-    options.command = {QStringLiteral("/bin/cat")};
+    options.command = {QStringLiteral("cat")};
     options.quick = true;
     QPointer<TerminalWindow> quick = application->newWindow(options);
     ASSERT_TRUE(quick);
@@ -12815,7 +12939,7 @@ TEST_F(NativeWindow, TheQuickTerminalSlidesInWhenThePaneOfItsDialogCloses)
     // The pane's dialogs go with it: the quick terminal slid out for them
     // and comes back.
     WindowOptions options;
-    options.command = {QStringLiteral("/bin/cat")};
+    options.command = {QStringLiteral("cat")};
     options.quick = true;
     QPointer<TerminalWindow> quick = application->newWindow(options);
     ASSERT_TRUE(quick);
@@ -12824,7 +12948,7 @@ TEST_F(NativeWindow, TheQuickTerminalSlidesInWhenThePaneOfItsDialogCloses)
         return quick && quick->isExposed();
     }));
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     QPointer<Pane> closing = quick->splitPane(quick->focusedPane(), SplitTree::Direction::Right, launch, nullptr);
     ASSERT_TRUE(closing);
     PaneDialogs dialogs;
@@ -12848,7 +12972,7 @@ TEST_F(NativeWindow, TheQuickTerminalStaysOutFromADownloadsQuestionToItsSaveDial
     // closes it and opens the Save dialog in its place: the quick terminal
     // stays out between the two, and slides in when the Save dialog closes.
     WindowOptions options;
-    options.command = {QStringLiteral("/bin/cat")};
+    options.command = {QStringLiteral("cat")};
     options.quick = true;
     QPointer<TerminalWindow> quick = application->newWindow(options);
     ASSERT_TRUE(quick);
@@ -12902,7 +13026,7 @@ TEST_F(NativeWindow, ADownloadThatEndsBeforeItsAnswerTakesItsDialogs)
     restartApplication(
         QStringLiteral("ended-download.conf"),
         testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("downloadDirectory"), folder}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     Pane* pane = window->focusedPane();
@@ -12946,11 +13070,11 @@ TEST_F(NativeWindow, ARequestFromAClosedPaneOpensNoDialog)
     restartApplication(QStringLiteral("closed-requests.conf"),
                        testSettings({{QStringLiteral("Terminal"),
                                       QJsonObject{{QStringLiteral("clipboardWrite"), QStringLiteral("ask")}}}}),
-                       {QStringLiteral("/bin/cat")});
+                       {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* first = window->focusedPane();
     QPointer<Pane> closing = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_TRUE(closing);
@@ -13047,6 +13171,12 @@ TEST_F(NativeWindow, ADownloadAsksBeforeItsDataAndSavesInTheDownloadFolder)
     }));
     ASSERT_TRUE(send(pane, file));
     ASSERT_TRUE(answerDownloadQuestion(QStringLiteral("Refuse")));
+    // The reader thread took what came after the download: a save that the
+    // refusal let through would have begun by then.
+    ASSERT_TRUE(pane->sendInput("after-refusal"));
+    ASSERT_TRUE(waitFor([&] {
+        return screenOf(pane).contains(QStringLiteral("after-refusal"));
+    }));
     ASSERT_TRUE(settleQueued());
     EXPECT_EQ(QDir(folder).entryList(QDir::Files).size(), 2)
         << QDir(folder).entryList(QDir::Files).join(QLatin1Char(' ')).toStdString();
@@ -13185,10 +13315,16 @@ TEST_F(NativeWindow, AHeldFrameIsDrawnWhenItsHoldTimesOutAndNotBefore)
     Pane* pane = window->focusedPane();
     expectIdle(window);
     const auto before = window->submittedFrames();
-    QElapsedTimer held;
-    held.start();
     // Through the program, as the PTY reader tells the window of output.
     ASSERT_TRUE(pane->sendInput("\x1b[?2026hheld\n"));
+    // The hold starts when the output comes, not when the input goes.
+    ASSERT_TRUE(waitFor([&] {
+        return pane->readTerminal([](const AfterglowVt::Terminal& t) {
+            return t.modes().synchronizedOutput;
+        });
+    }));
+    QElapsedTimer held;
+    held.start();
     drain(700);
     const auto during = window->submittedFrames();
     EXPECT_LE(during - before, 1u) << "frames while the frame was held";
@@ -13207,7 +13343,7 @@ TEST_F(NativeWindow, AMoveBesideAPaneWithNoRoomIsRefused)
     // As a split of that pane: both panes keep the least size, or nothing
     // moves.
     WindowOptions options;
-    options.command = {QStringLiteral("/bin/cat")};
+    options.command = {QStringLiteral("cat")};
     auto* destination = application->newWindow(options);
     ASSERT_NE(destination, nullptr);
     destination->resize(900, 600);
@@ -13216,7 +13352,7 @@ TEST_F(NativeWindow, AMoveBesideAPaneWithNoRoomIsRefused)
         return destination->isExposed() && destination->submittedFrames() > 0;
     }));
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* narrow = destination->focusedPane();
     QString error;
     for (int i = 0; i < 64 && error.isEmpty(); ++i) {
@@ -13386,7 +13522,7 @@ TEST_F(NativeWindow, AProgramsQuestionsMoveWithItsPaneAndAnswerThere)
                        testSettings({{QStringLiteral("Terminal"),
                                       QJsonObject{{QStringLiteral("confirmClose"), false},
                                                   {QStringLiteral("downloadDirectory"), folder}}}}),
-                       {QStringLiteral("/bin/cat")});
+                       {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     // A window whose pane runs @p command, and shows @p ready, beside a
@@ -13412,7 +13548,7 @@ TEST_F(NativeWindow, AProgramsQuestionsMoveWithItsPaneAndAnswerThere)
             return pane && screenOf(pane).contains(ready);
         })) << screenOf(pane).toStdString();
         PaneLaunchOptions launch;
-        launch.command = {QStringLiteral("/bin/cat")};
+        launch.command = {QStringLiteral("cat")};
         QPointer<Pane> stays = source->splitPane(pane, SplitTree::Direction::Right, launch, nullptr);
         ASSERT_TRUE(stays);
         if (echoed)
@@ -13529,7 +13665,7 @@ TEST_F(NativeWindow, ADownloadsSaveDialogMovesWithItsPaneWhenItsWindowCloses)
     ASSERT_TRUE(dialog);
     ASSERT_TRUE(themeDialogShows(dialog)) << "the KDE platform theme did not load: no native dialog";
     WindowOptions plain;
-    plain.command = {QStringLiteral("/bin/cat")};
+    plain.command = {QStringLiteral("cat")};
     auto* destination = application->newWindow(plain);
     ASSERT_NE(destination, nullptr);
     destination->show();
@@ -13569,7 +13705,7 @@ TEST_F(NativeWindow, ADownloadsSaveDialogMovesWithItsPaneTwice)
     restartApplication(
         QStringLiteral("no-confirm.conf"),
         testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("confirmClose"), false}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     QPointer<TerminalWindow> source;
@@ -13583,7 +13719,7 @@ TEST_F(NativeWindow, ADownloadsSaveDialogMovesWithItsPaneTwice)
     ASSERT_TRUE(dialog);
     ASSERT_TRUE(themeDialogShows(dialog)) << "the KDE platform theme did not load: no native dialog";
     WindowOptions plain;
-    plain.command = {QStringLiteral("/bin/cat")};
+    plain.command = {QStringLiteral("cat")};
     QPointer<TerminalWindow> middle = application->newWindow(plain);
     ASSERT_TRUE(middle);
     middle->show();
@@ -13626,7 +13762,7 @@ TEST_F(NativeWindow, ADownloadsSaveDialogGoesWithItsPanesWindow)
     restartApplication(
         QStringLiteral("no-confirm.conf"),
         testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("confirmClose"), false}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     QPointer<TerminalWindow> source;
@@ -14032,7 +14168,7 @@ TEST_F(NativeWindow, ANativeGtkSaveDialogKeepsItsNameWhenItsWindowCloses)
     void* const chooser = choosers.front();
     gtk.setName(chooser, QStringLiteral("typed.txt"));
     WindowOptions plain;
-    plain.command = {QStringLiteral("/bin/cat")};
+    plain.command = {QStringLiteral("cat")};
     auto* destination = application->newWindow(plain);
     ASSERT_NE(destination, nullptr);
     destination->show();
@@ -14069,7 +14205,7 @@ TEST_F(NativeWindow, NewTabFromTheMenuOfABackgroundTabSwitchesTabsOnce)
     // beside that tab, with one switch: from the current tab to the new
     // one, not through the menu's tab first.
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* second = window->openTab(launch, nullptr);
     ASSERT_NE(second, nullptr);
     ASSERT_EQ(window->focusedPane(), second);
@@ -14135,14 +14271,14 @@ TEST_F(NativeWindow, AProgramWhoseTabClosedShowsAndWritesNothing)
                                    {QStringLiteral("bell"), QStringLiteral("visual")},
                                    {QStringLiteral("bellSound"), directory.filePath(QStringLiteral("bell.oga"))},
                                    {QStringLiteral("bellSoundInterval"), 10000}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     QPointer<Pane> first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* second = window->openTab(launch, nullptr);
     ASSERT_NE(second, nullptr);
     feedFromReader(first, "\x1b]99;i=shown;before\x1b\\");
@@ -14291,7 +14427,7 @@ TEST_F(NativeWindow, ASplitFromAfterglowCtlDoesNotShowItsWindow)
     // not active either).
     Pane* first = window->focusedPane();
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     ASSERT_NE(window->openTab(launch, nullptr), nullptr);
     window->hide();
     ASSERT_TRUE(waitFor([&] {
@@ -14311,10 +14447,10 @@ TEST_F(NativeWindow, AProjectSavesTheTabOfTheLastOutputAsAShell)
 {
     // The pager of show_last_output reads a temporary file that goes with
     // its tab: a project saves that tab as a shell, not as the pager.
-    restartApplication(QStringLiteral("pager.conf"),
-                       testSettings({{QStringLiteral("Terminal"),
-                                      QJsonObject{{QStringLiteral("pager"), QStringLiteral("/usr/bin/tail -f")}}}}),
-                       catWithoutEcho());
+    restartApplication(
+        QStringLiteral("pager.conf"),
+        testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("pager"), QStringLiteral("tail -f")}}}}),
+        catWithoutEcho());
     if (HasFatalFailure())
         return;
     Pane* pane = window->focusedPane();
@@ -14322,11 +14458,11 @@ TEST_F(NativeWindow, AProjectSavesTheTabOfTheLastOutputAsAShell)
     ASSERT_TRUE(settleQueued());
     ASSERT_TRUE(window->runAction(pane, Action::ShowLastOutput));
     ASSERT_EQ(window->tabs().size(), 2);
-    Pane* pager = window->focusedPane();
+    QPointer<Pane> pager = window->focusedPane();
     ASSERT_NE(pager, pane);
     ASSERT_TRUE(waitFor([&] {
-        return screenOf(pager).contains(QStringLiteral("result"));
-    })) << screenOf(pager).toStdString();
+        return pager && screenOf(pager).contains(QStringLiteral("result"));
+    })) << (pager ? screenOf(pager).toStdString() : std::string("the pager closed"));
     bool found = false;
     for (const auto tab : window->projectLayout().value(QStringLiteral("tabs")).toArray()) {
         const QJsonObject saved =
@@ -14344,10 +14480,10 @@ TEST_F(NativeWindow, CommandOutputsOpenInThePagerAndACtrlShiftRightClickPicksOne
 {
     // As kitty's show_first_command_output_on_screen,
     // show_last_visited_command_output and mouse_show_command_output.
-    restartApplication(QStringLiteral("pager.conf"),
-                       testSettings({{QStringLiteral("Terminal"),
-                                      QJsonObject{{QStringLiteral("pager"), QStringLiteral("/usr/bin/tail -f")}}}}),
-                       catWithoutEcho());
+    restartApplication(
+        QStringLiteral("pager.conf"),
+        testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("pager"), QStringLiteral("tail -f")}}}}),
+        catWithoutEcho());
     if (HasFatalFailure())
         return;
     Pane* pane = window->focusedPane();
@@ -14357,13 +14493,13 @@ TEST_F(NativeWindow, CommandOutputsOpenInThePagerAndACtrlShiftRightClickPicksOne
                    "\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\two\x1b]133;C\x1b\\\r\nsecond-out\r\n\x1b]133;D;0\x1b\\");
     ASSERT_TRUE(settleQueued());
     const auto pagerShows = [&](const QString& text, const QString& notText) {
-        Pane* pager = window->focusedPane();
+        const QPointer<Pane> pager = window->focusedPane();
         if (pager == pane)
             return false;
         return waitFor([&] {
-                   return screenOf(pager).contains(text);
+                   return pager && screenOf(pager).contains(text);
                })
-            && !screenOf(pager).contains(notText);
+            && pager && !screenOf(pager).contains(notText);
     };
     // Nothing visited yet: a notice, and no tab.
     RegisteredNotificationServer notices;
@@ -14448,7 +14584,7 @@ TEST_F(NativeWindow, CommandOutputModifierChoosesTheRightClickThatOpensAnOutput)
     restartApplication(
         QStringLiteral("output-modifier.conf"),
         testSettings(
-            {{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("pager"), QStringLiteral("/usr/bin/tail -f")}}},
+            {{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("pager"), QStringLiteral("tail -f")}}},
              {QStringLiteral("Mouse"), QJsonObject{{QStringLiteral("commandOutputModifier"), QStringLiteral("alt")}}}}),
         catWithoutEcho());
     if (HasFatalFailure())
@@ -14480,19 +14616,27 @@ TEST_F(NativeWindow, CommandOutputModifierChoosesTheRightClickThatOpensAnOutput)
     ASSERT_TRUE(settleQueued());
     ASSERT_EQ(window->tabs().size(), 2);
     EXPECT_TRUE(pane->lastVisitedOutput());
-    Pane* pager = window->focusedPane();
+    QPointer<Pane> pager = window->focusedPane();
     ASSERT_NE(pager, pane);
     EXPECT_TRUE(waitFor([&] {
-        return screenOf(pager).contains(QStringLiteral("first-out"));
-    })) << screenOf(pager).toStdString();
+        return pager && screenOf(pager).contains(QStringLiteral("first-out"));
+    })) << (pager ? screenOf(pager).toStdString() : std::string("the pager closed"));
 }
 
 TEST_F(NativeWindow, AWindowWhoseJobNamesNothingClosesWithNoQuestion)
 {
     // A job whose name is only characters that disguise text names nothing
-    // in the question: the window closes at once, as with no job.
+    // in the question: the window closes at once, as with no job. A script,
+    // not a link to a program: a multi-call binary (BusyBox) would not run
+    // under that name, and the window would close for want of a job.
     const QString program = directory.filePath(QString(QChar(0x200B)));
-    ASSERT_TRUE(QFile::link(QStringLiteral("/bin/cat"), program));
+    {
+        QFile file(program);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        file.write("#!/bin/sh\nprintf 'job-%s\\n' runs\nread line\n");
+    }
+    ASSERT_TRUE(
+        QFile::setPermissions(program, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
     WindowOptions options;
     options.command = {program};
     QPointer<TerminalWindow> other = application->newWindow(options);
@@ -14501,6 +14645,12 @@ TEST_F(NativeWindow, AWindowWhoseJobNamesNothingClosesWithNoQuestion)
     ASSERT_TRUE(waitFor([&] {
         return other->isExposed();
     }));
+    Pane* job = other->focusedPane();
+    ASSERT_NE(job, nullptr);
+    ASSERT_TRUE(waitFor([&] {
+        return screenOf(job).contains(QStringLiteral("job-runs"));
+    })) << screenOf(job).toStdString();
+    EXPECT_EQ(job->foregroundJob(), QString(QChar(0x200B)));
     auto* chrome = other->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     EXPECT_TRUE(other->close());
@@ -14701,7 +14851,7 @@ TEST_F(NativeWindow, QueuedClipboardWritesAreBoundedByTheirSize)
     // terminal's replies, as text with ESC shown as ^[, so none comes back
     // as a sequence.
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/sleep"), QStringLiteral("30")};
+    launch.command = {QStringLiteral("sleep"), QStringLiteral("30")};
     Pane* pane = window->splitPane(window->focusedPane(), SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(pane, nullptr);
     // Each write is more than half of what the pane's queue holds, one
@@ -15070,12 +15220,12 @@ TEST_F(NativeWindow, AMuxSessionShowsInAWindowAndEndsWithIt)
     ASSERT_TRUE(waitFor([&] {
         return shown->isExposed() && shown->submittedFrames() > 0;
     }));
-    Pane* pane = shown->focusedPane();
+    QPointer<Pane> pane = shown->focusedPane();
     ASSERT_NE(pane, nullptr);
     EXPECT_TRUE(pane->isSessionPane());
     ASSERT_TRUE(waitFor(
         [&] {
-            return screenOf(pane).startsWith(QLatin1Char('$'));
+            return pane && screenOf(pane).startsWith(QLatin1Char('$'));
         },
         5000))
         << screenOf(pane).toStdString();
@@ -15083,12 +15233,12 @@ TEST_F(NativeWindow, AMuxSessionShowsInAWindowAndEndsWithIt)
     // The screens that show the new size can come after the prompt: the
     // window asks for them as it shows the pane, before its first layout.
     ASSERT_TRUE(waitFor([&] {
-        return pane->cols() < 60;
+        return pane && pane->cols() < 60;
     })) << pane->cols();
     ASSERT_TRUE(pane->sendInput("stty size\n"));
     ASSERT_TRUE(waitFor(
         [&] {
-            return screenOf(pane).contains(QStringLiteral("%1 %2").arg(pane->rows()).arg(pane->cols()));
+            return pane && screenOf(pane).contains(QStringLiteral("%1 %2").arg(pane->rows()).arg(pane->cols()));
         },
         5000))
         << screenOf(pane).toStdString();
@@ -15097,7 +15247,7 @@ TEST_F(NativeWindow, AMuxSessionShowsInAWindowAndEndsWithIt)
     ASSERT_TRUE(pane->sendInput("echo li''ve\n"));
     ASSERT_TRUE(waitFor(
         [&] {
-            return screenOf(pane).contains(QStringLiteral("\nlive"));
+            return pane && screenOf(pane).contains(QStringLiteral("\nlive"));
         },
         5000))
         << screenOf(pane).toStdString();
@@ -15351,10 +15501,10 @@ TEST_F(NativeWindow, AMuxSessionsAnimationRunsInTheWindow)
 TEST_F(NativeWindow, AMuxSessionsMarksStatusAndDirectoryReachTheWindow)
 {
     // The pager of the fixture may be missing: tail is not.
-    restartApplication(QStringLiteral("pager.conf"),
-                       testSettings({{QStringLiteral("Terminal"),
-                                      QJsonObject{{QStringLiteral("pager"), QStringLiteral("/usr/bin/tail -f")}}}}),
-                       {QStringLiteral("/bin/cat")});
+    restartApplication(
+        QStringLiteral("pager.conf"),
+        testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("pager"), QStringLiteral("tail -f")}}}}),
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     MuxTest::TestDaemon daemon;
@@ -15411,25 +15561,25 @@ TEST_F(NativeWindow, AMuxSessionsMarksStatusAndDirectoryReachTheWindow)
     Control control(settings, {});
     control.attachWindow(shown);
     quint32 created = 0;
-    ASSERT_TRUE(control.newTab(pane->id(), {}, {QStringLiteral("/bin/cat")}, created).isEmpty());
-    Pane* added = paneWithId(shown, created);
+    ASSERT_TRUE(control.newTab(pane->id(), {}, {QStringLiteral("cat")}, created).isEmpty());
+    QPointer<Pane> added = paneWithId(shown, created);
     ASSERT_NE(added, nullptr);
     EXPECT_TRUE(waitFor([&] {
-        return added->workingDirectory() == QStringLiteral("/");
-    })) << added->workingDirectory().toStdString();
+        return added && added->workingDirectory() == QStringLiteral("/");
+    })) << (added ? added->workingDirectory().toStdString() : std::string("the pane closed"));
     // The last output in the pager, as for a pane of the window's own.
     shown->revealPane(pane);
     const int tabs = int(shown->tabs().size());
     ASSERT_TRUE(shown->runAction(pane, Action::ShowLastOutput));
     ASSERT_EQ(int(shown->tabs().size()), tabs + 1);
-    Pane* pager = shown->focusedPane();
+    QPointer<Pane> pager = shown->focusedPane();
     ASSERT_NE(pager, pane);
     EXPECT_TRUE(waitFor(
         [&] {
-            return screenOf(pager).contains(QStringLiteral("out2"));
+            return pager && screenOf(pager).contains(QStringLiteral("out2"));
         },
         5000))
-        << screenOf(pager).toStdString();
+        << (pager ? screenOf(pager).toStdString() : std::string("the pager closed"));
     delete shown;
 }
 
@@ -15460,10 +15610,10 @@ TEST_F(NativeWindow, ASessionPaneTellsItsProgramWhetherItCanBeSeen)
     ASSERT_TRUE(waitFor([&] {
         return shown->isExposed() && shown->submittedFrames() > 0;
     }));
-    Pane* pane = shown->focusedPane();
+    QPointer<Pane> pane = shown->focusedPane();
     ASSERT_NE(pane, nullptr);
     const auto reports = [&](const char* state) {
-        return screenOf(pane).count(QLatin1String(state));
+        return pane ? screenOf(pane).count(QLatin1String(state)) : 0;
     };
     // The program's first report is the daemon's, from before any window
     // ("cannot be seen"); then the window says that it shows the pane.
@@ -15475,7 +15625,7 @@ TEST_F(NativeWindow, ASessionPaneTellsItsProgramWhetherItCanBeSeen)
         << screenOf(pane).toStdString();
     // A tab of its own hides the pane: the switch tells the daemon.
     PaneLaunchOptions launch;
-    launch.command = {QStringLiteral("/bin/cat")};
+    launch.command = {QStringLiteral("cat")};
     Pane* other = shown->openTab(launch, nullptr);
     ASSERT_NE(other, nullptr);
     shown->revealPane(other);
@@ -15624,16 +15774,18 @@ TEST_F(NativeWindow, ASelectionInASessionPaneFollowsTheScrollsOfItsProgram)
     ASSERT_TRUE(waitFor([&] {
         return shown->isExposed() && shown->submittedFrames() > 0;
     }));
-    Pane* pane = shown->focusedPane();
+    QPointer<Pane> pane = shown->focusedPane();
     ASSERT_NE(pane, nullptr);
     ASSERT_TRUE(waitFor(
         [&] {
-            return screenOf(pane).contains(QStringLiteral("three"));
+            return pane && screenOf(pane).contains(QStringLiteral("three"));
         },
         5000))
         << screenOf(pane).toStdString();
     EXPECT_TRUE(waitFor(
         [&] {
+            if (!pane)
+                return false;
             pane->refreshSnapshot();
             return !pane->snapshot().extraCursors.empty();
         },
@@ -15645,7 +15797,7 @@ TEST_F(NativeWindow, ASelectionInASessionPaneFollowsTheScrollsOfItsProgram)
     ASSERT_TRUE(pane->sendInput("\n"));
     ASSERT_TRUE(waitFor(
         [&] {
-            return screenOf(pane).startsWith(QStringLiteral("one"));
+            return pane && screenOf(pane).startsWith(QStringLiteral("one"));
         },
         5000))
         << screenOf(pane).toStdString();
@@ -15655,7 +15807,7 @@ TEST_F(NativeWindow, ASelectionInASessionPaneFollowsTheScrollsOfItsProgram)
     ASSERT_TRUE(pane->sendInput("\n"));
     ASSERT_TRUE(waitFor(
         [&] {
-            return !screenOf(pane).contains(QStringLiteral("two"));
+            return pane && !screenOf(pane).contains(QStringLiteral("two"));
         },
         5000))
         << screenOf(pane).toStdString();
@@ -15787,7 +15939,7 @@ return {
     restartApplication(QStringLiteral("relay.conf"),
                        testSettings({{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), true}}},
                                      {QStringLiteral("Control"), QJsonObject{{QStringLiteral("enabled"), true}}}}),
-                       {QStringLiteral("/bin/cat")});
+                       {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     RegisteredNotificationServer notices;
@@ -15930,11 +16082,11 @@ TEST_F(NativeWindow, AProtocolWaitOfASessionPaneReadsItsStream)
     QString error;
     QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("wait"), &error);
     ASSERT_NE(shown, nullptr) << error.toStdString();
-    Pane* pane = shown->focusedPane();
+    QPointer<Pane> pane = shown->focusedPane();
     ASSERT_NE(pane, nullptr);
     ASSERT_TRUE(waitFor(
         [&] {
-            return screenOf(pane).startsWith(QLatin1Char('$'));
+            return pane && screenOf(pane).startsWith(QLatin1Char('$'));
         },
         5000))
         << screenOf(pane).toStdString();
@@ -15969,13 +16121,13 @@ TEST_F(NativeWindow, AReadOfASessionThatOutlivesItsWindowGetsTheDenial)
     QString error;
     QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("kept"), &error);
     ASSERT_NE(shown, nullptr) << error.toStdString();
-    Pane* pane = shown->focusedPane();
+    QPointer<Pane> pane = shown->focusedPane();
     ASSERT_NE(pane, nullptr);
     auto* chrome = shown->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     ASSERT_TRUE(waitFor(
         [&] {
-            return screenOf(pane).startsWith(QLatin1Char('$'));
+            return pane && screenOf(pane).startsWith(QLatin1Char('$'));
         },
         5000))
         << screenOf(pane).toStdString();
@@ -16069,8 +16221,8 @@ void loseSession(Application& application, MuxTest::TestDaemon& daemon, Register
     ASSERT_NE(pane, nullptr) << error.toStdString();
     ASSERT_TRUE(pane->isSessionPane());
     // Two panes: the window says why it closes once, not once for each.
-    const QPointer<Pane> split = shown->splitPane(pane, SplitTree::Direction::Right,
-                                                  launchIn(daemon.dir(), {QStringLiteral("/bin/cat")}), &error);
+    const QPointer<Pane> split =
+        shown->splitPane(pane, SplitTree::Direction::Right, launchIn(daemon.dir(), {QStringLiteral("cat")}), &error);
     ASSERT_NE(split, nullptr) << error.toStdString();
     ASSERT_TRUE(split->isSessionPane());
     ASSERT_TRUE(echoes(split, QStringLiteral("second")));
@@ -16125,8 +16277,8 @@ TEST_F(NativeWindow, AnExitInASessionsWindowClosesOnlyThatPane)
     QString error;
     auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("exits"), &error);
     ASSERT_NE(pane, nullptr) << error.toStdString();
-    const QPointer<Pane> split = shown->splitPane(pane, SplitTree::Direction::Right,
-                                                  launchIn(daemon.dir(), {QStringLiteral("/bin/cat")}), &error);
+    const QPointer<Pane> split =
+        shown->splitPane(pane, SplitTree::Direction::Right, launchIn(daemon.dir(), {QStringLiteral("cat")}), &error);
     ASSERT_NE(split, nullptr) << error.toStdString();
     ASSERT_TRUE(echoes(split, QStringLiteral("second")));
     int status = -100;
@@ -16216,7 +16368,7 @@ TEST_F(NativeWindow, ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow)
         5000));
     // Another tab of the session in front: the launch keeps it there.
     QString error;
-    Pane* const other = shown->openTab(launchIn(daemon.dir(), {QStringLiteral("/bin/cat")}), &error);
+    Pane* const other = shown->openTab(launchIn(daemon.dir(), {QStringLiteral("cat")}), &error);
     ASSERT_NE(other, nullptr) << error.toStdString();
     EXPECT_TRUE(other->isSessionPane());
     ASSERT_EQ(shown->focusedPane(), other);
@@ -16247,16 +16399,16 @@ TEST_F(NativeWindow, ALargeInputReachesTheProgramOfASessionWhole)
     QString error;
     QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("paste"), &error);
     ASSERT_NE(shown, nullptr) << error.toStdString();
-    Pane* pane = shown->focusedPane();
+    QPointer<Pane> pane = shown->focusedPane();
     ASSERT_NE(pane, nullptr);
     ASSERT_TRUE(waitFor(
         [&] {
-            return screenOf(pane).startsWith(QLatin1Char('$'));
+            return pane && screenOf(pane).startsWith(QLatin1Char('$'));
         },
         5000))
         << screenOf(pane).toStdString();
     const std::string file = daemon.dir() + "/pasted";
-    ASSERT_TRUE(pane->sendInput("stty -echo; cat > " + file + "\n"));
+    ASSERT_TRUE(pane->sendInput("stty -echo; cat > '" + file + "'\n"));
     // Lines of 100 bytes, as a terminal in canonical mode takes them: 2000 of
     // them are three parts and more.
     std::string text;
@@ -16292,11 +16444,11 @@ TEST_F(NativeWindow, AMuxSessionCanOutliveItsWindow)
     QString error;
     QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("kept"), &error);
     ASSERT_NE(shown, nullptr) << error.toStdString();
-    Pane* pane = shown->focusedPane();
+    QPointer<Pane> pane = shown->focusedPane();
     ASSERT_NE(pane, nullptr);
     ASSERT_TRUE(waitFor(
         [&] {
-            return screenOf(pane).startsWith(QLatin1Char('$'));
+            return pane && screenOf(pane).startsWith(QLatin1Char('$'));
         },
         5000))
         << screenOf(pane).toStdString();
@@ -16319,11 +16471,11 @@ TEST_F(NativeWindow, MuxOnCloseAppliesLiveToAnOpenSessionsWindow)
     QString error;
     QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("live"), &error);
     ASSERT_NE(shown, nullptr) << error.toStdString();
-    Pane* pane = shown->focusedPane();
+    QPointer<Pane> pane = shown->focusedPane();
     ASSERT_NE(pane, nullptr);
     ASSERT_TRUE(waitFor(
         [&] {
-            return screenOf(pane).startsWith(QLatin1Char('$'));
+            return pane && screenOf(pane).startsWith(QLatin1Char('$'));
         },
         5000))
         << screenOf(pane).toStdString();
@@ -16418,7 +16570,7 @@ TEST_F(NativeWindow, ASessionsTabsAndSplitsComeBackWithTheNextWindow)
     ASSERT_NE(top, nullptr) << error.toStdString();
     auto* chrome = shown->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
-    const PaneLaunchOptions cat = launchIn(daemon.dir(), {QStringLiteral("/bin/cat")});
+    const PaneLaunchOptions cat = launchIn(daemon.dir(), {QStringLiteral("cat")});
     // The first tab: the shell above, and a pane below it, of less height.
     PaneLaunchOptions smaller = cat;
     smaller.fraction = 0.3;
@@ -16522,7 +16674,7 @@ TEST_F(NativeWindow, ASessionKeepsTheTabOrderAndTheMovedPanesOfItsWindow)
     QString error;
     auto [shown, first] = showSessionAtPrompt(*application, daemon, QStringLiteral("order"), &error);
     ASSERT_NE(first, nullptr) << error.toStdString();
-    const PaneLaunchOptions cat = launchIn(daemon.dir(), {QStringLiteral("/bin/cat")});
+    const PaneLaunchOptions cat = launchIn(daemon.dir(), {QStringLiteral("cat")});
     // The first tab: the shell and a pane beside it. The second tab: one pane.
     const QPointer<Pane> beside = shown->splitPane(first, SplitTree::Direction::Right, cat, &error);
     ASSERT_NE(beside, nullptr) << error.toStdString();
@@ -16569,6 +16721,64 @@ TEST_F(NativeWindow, ASessionKeepsTheTabOrderAndTheMovedPanesOfItsWindow)
     }));
     EXPECT_EQ(sessionTabs(*again), tabs);
     delete again;
+}
+
+// The same calls for a session pane, in a tab that does not show: its mark
+// is at the cursor that the daemon's terminal has, not at the one of the
+// last screen that the window got, and its regions are those of the daemon.
+TEST_F(NativeWindow, AControlClientMarksAHiddenSessionPaneAtItsCursor)
+{
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(shellSession(daemon, "marks")) << daemon.lastError();
+    QString error;
+    auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("marks"), &error);
+    ASSERT_NE(pane, nullptr) << error.toStdString();
+    const auto cleanup = qScopeGuard([&shown] {
+        delete shown;
+    });
+    ControlConnection ctl(directory.filePath(QStringLiteral("session-marks.sock")), shown,
+                          {{QStringLiteral("allowReadText"), true}});
+    ASSERT_TRUE(ctl.connected());
+    const auto request = [&](const QString& fn, const QJsonArray& args) {
+        ctl.call(fn, args);
+        return ctl.next(5000).value_or(QJsonObject());
+    };
+    const double id = pane->id();
+    // Another tab shows: the daemon holds the screens of this pane.
+    ASSERT_NE(shown->openTab(launchIn(daemon.dir(), {QStringLiteral("cat")}), &error), nullptr) << error.toStdString();
+    ASSERT_TRUE(waitFor([&] {
+        return pane && pane->sessionScreensHeld();
+    }));
+    const QString done = QString::fromStdString(daemon.dir()) + QStringLiteral("/marked");
+    ASSERT_TRUE(
+        pane->sendInput("printf '\\033]133;A\\007$ \\033]133;B\\007\\033]133;C\\007hidden-out\\n"
+                        "\\033]133;D;5\\007'; touch '"
+                        + done.toStdString() + "'\n"));
+    ASSERT_TRUE(waitFor(
+        [&] {
+            return QFileInfo::exists(done);
+        },
+        5000));
+    // The output came before the mark: none of it is text since the mark.
+    const QJsonObject mark = request(QStringLiteral("mark"), {id}).value(QStringLiteral("result")).toObject();
+    const QJsonObject read =
+        request(QStringLiteral("getText"), {id, QStringLiteral("since"), QJsonObject{{QStringLiteral("mark"), mark}}});
+    ASSERT_EQ(read.value(QStringLiteral("type")).toString(), QStringLiteral("reply"))
+        << QJsonDocument(read).toJson().toStdString();
+    EXPECT_FALSE(read.value(QStringLiteral("result"))
+                     .toObject()
+                     .value(QStringLiteral("text"))
+                     .toString()
+                     .contains(QStringLiteral("hidden-out")));
+    // The output region with its code, available: its rows came.
+    const QJsonArray regions =
+        request(QStringLiteral("shellRegions"), {id, 0}).value(QStringLiteral("result")).toArray();
+    ASSERT_FALSE(regions.isEmpty());
+    const QJsonObject output = regions.last().toObject();
+    EXPECT_EQ(output.value(QStringLiteral("kind")).toString(), QStringLiteral("output"));
+    EXPECT_EQ(output.value(QStringLiteral("exit_code")).toInt(), 5);
+    EXPECT_TRUE(output.value(QStringLiteral("available")).toBool());
 }
 
 // The user closes panes and tabs of a session's window: the window asks
@@ -16637,7 +16847,7 @@ TEST_F(NativeWindow, ClosingAPaneOfASessionsWindowEndsOnlyItsProgram)
         EXPECT_TRUE(info && info->attached);
     }
     // A tab that is not the window's last closes as a tab.
-    const QPointer<Pane> tab = shown->openTab(launchIn(daemon.dir(), {QStringLiteral("/bin/cat")}), &error);
+    const QPointer<Pane> tab = shown->openTab(launchIn(daemon.dir(), {QStringLiteral("cat")}), &error);
     ASSERT_NE(tab, nullptr) << error.toStdString();
     EXPECT_TRUE(tab->isSessionPane());
     ASSERT_TRUE(echoes(tab, QStringLiteral("tab")));
@@ -16666,8 +16876,8 @@ TEST_F(NativeWindow, ClosingAPaneOfASessionsWindowEndsOnlyItsProgram)
         },
         5000))
         << (pane ? screenOf(pane).toStdString() : std::string("the pane closed"));
-    const QPointer<Pane> fresh = shown->splitPane(pane, SplitTree::Direction::Down,
-                                                  launchIn(daemon.dir(), {QStringLiteral("/bin/cat")}), &error);
+    const QPointer<Pane> fresh =
+        shown->splitPane(pane, SplitTree::Direction::Down, launchIn(daemon.dir(), {QStringLiteral("cat")}), &error);
     ASSERT_NE(fresh, nullptr) << error.toStdString();
     EXPECT_TRUE(echoes(fresh, QStringLiteral("fresh")));
     // The window's own close asks about the programs that it ends.
@@ -16713,7 +16923,7 @@ TEST_F(NativeWindow, ATabDetachedFromASessionsWindowBecomesANewSession)
                            QStringLiteral("This pane is the only pane of session drag, and it stays in its window")}));
     // Moves within the window: to a tab of its own, and beside a pane of
     // another tab.
-    const PaneLaunchOptions cat = launchIn(daemon.dir(), {QStringLiteral("/bin/cat")});
+    const PaneLaunchOptions cat = launchIn(daemon.dir(), {QStringLiteral("cat")});
     const QPointer<Pane> left = shown->splitPane(pane, SplitTree::Direction::Right, cat, &error);
     ASSERT_NE(left, nullptr) << error.toStdString();
     ASSERT_TRUE(shown->runAction(left, Action::MovePaneToTab));
@@ -16812,7 +17022,7 @@ TEST_F(NativeWindow, ATabDetachedFromASessionsWindowBecomesANewSession)
     // no pane of the session leaves it but as above.
     WindowOptions options;
     options.workingDirectory = directory.path();
-    options.command = {QStringLiteral("/bin/cat")};
+    options.command = {QStringLiteral("cat")};
     QPointer<TerminalWindow> plain = application->newWindow(options);
     ASSERT_NE(plain, nullptr);
     ASSERT_NE(plain->focusedPane(), nullptr);
@@ -16881,7 +17091,7 @@ TEST_F(NativeWindow, APaneJoinsTheSessionOfAnotherWindow)
     // A window without a session takes no pane of it, and gives none.
     WindowOptions options;
     options.workingDirectory = QString::fromStdString(daemon.dir());
-    options.command = {QStringLiteral("/bin/cat")};
+    options.command = {QStringLiteral("cat")};
     QPointer<TerminalWindow> plain = application->newWindow(options);
     ASSERT_NE(plain, nullptr);
     ASSERT_NE(plain->focusedPane(), nullptr);
@@ -16981,6 +17191,10 @@ TEST_F(NativeWindow, APaneThatJoinsAnotherSessionComesStraightBack)
     ASSERT_TRUE(waitFor([&] {
         return QFileInfo::exists(pidFile);
     }));
+    // The program writes its PID before the window heard PaneOpened, and a
+    // pane that is still arriving does not move (TerminalWindow::joinSession).
+    // Its echo comes in a frame, which only an opened channel carries.
+    ASSERT_TRUE(echoes(moving, QStringLiteral("before")));
     const pid_t pid = pid_t(fileContent(pidFile).trimmed().toInt());
     ASSERT_GT(pid, 0);
     const std::uint32_t movingId = moving->sessionPaneId();
@@ -17003,10 +17217,16 @@ TEST_F(NativeWindow, APaneThatJoinsAnotherSessionComesStraightBack)
                      });
     ASSERT_TRUE(waitFor(
         [&] {
-            return away->has_value() && back->has_value();
+            return away->has_value();
         },
         10000));
-    ASSERT_EQ((*away)->first, QString());
+    // A refused first move sends no move back.
+    ASSERT_TRUE((*away)->first.isEmpty()) << (*away)->first.toStdString();
+    ASSERT_TRUE(waitFor(
+        [&] {
+            return back->has_value();
+        },
+        10000));
     // Refused at once, as the pane has not arrived there yet, or the window
     // here still holds it, or taken back: never a lost session.
     const QStringList refusals{QStringLiteral("This pane is still arriving in session there"),
@@ -17128,9 +17348,10 @@ bool runnableScript(const QString& path)
             "if [ -n \"$FAKE_SSH_DELAY\" ]; then sleep \"$FAKE_SSH_DELAY\"; fi\n"
             "while [ \"$#\" -gt 0 ] && [ \"$1\" != -- ]; do shift; done\n"
             "shift 2\n"
-            "XDG_RUNTIME_DIR='%1' XDG_STATE_HOME='%2' PATH='%3:/usr/bin:/bin' exec /bin/sh -c \"$*\"\n")
+            "XDG_RUNTIME_DIR='%1' XDG_STATE_HOME='%2' PATH='%3:%5' exec /bin/sh -c \"$*\"\n")
             .arg(QString::fromStdString(daemon.runtime()), QString::fromStdString(daemon.stateHome()),
-                 QFileInfo(QStringLiteral(AFTERGLOW_MUX)).absolutePath(), fakeSshLog(bin));
+                 QFileInfo(QStringLiteral(AFTERGLOW_MUX)).absolutePath(), fakeSshLog(bin),
+                 QString::fromStdString(MuxTest::testPath()));
     ssh.write(script.toUtf8());
     ssh.close();
     if (!runnableScript(bin + QStringLiteral("/ssh")))
@@ -17323,7 +17544,7 @@ TEST_F(NativeWindow, ANewTabOfASessionWhoseWindowClosesFirstLeavesNoPane)
     PaneLaunchOptions launch;
     // Whole or absent: a read never sees a part of the number.
     launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
-                      QStringLiteral("echo $$ > '%1.part' && mv '%1.part' '%1'; exec /bin/sleep 600").arg(started)};
+                      QStringLiteral("echo $$ > '%1.part' && mv '%1.part' '%1'; exec sleep 600").arg(started)};
     // Shared: an end after the test gave up writes to no freed frame.
     struct Outcome
     {
@@ -17472,7 +17693,7 @@ TEST_F(NativeWindow, ALaunchPastTheLimitOfWaitingCallsOpensNoWindow)
     }
     const auto past =
         connection.send(LaunchApi::Target, "newWindow",
-                        MuxTest::Json::Array{cwd, MuxTest::Json::Array{"/bin/cat"}, MuxTest::Json::Object{}}, &failure);
+                        MuxTest::Json::Array{cwd, MuxTest::Json::Array{"cat"}, MuxTest::Json::Object{}}, &failure);
     ASSERT_TRUE(past) << failure.message;
     std::vector<MuxTest::Json::Value> frames;
     const auto answered = [&](std::int64_t id) {
@@ -17600,7 +17821,7 @@ return {
         testSettings({{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), true}}},
                       {QStringLiteral("Control"), QJsonObject{{QStringLiteral("enabled"), true}}},
                       {QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("sshRemoteCommands"), true}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     MuxTest::TestDaemon daemon;
@@ -17660,7 +17881,7 @@ return {
         testSettings({{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), true}}},
                       {QStringLiteral("Control"), QJsonObject{{QStringLiteral("enabled"), true}}},
                       {QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("sshRemoteCommands"), true}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     const QString bin = directory.filePath(QStringLiteral("ssh-bin"));
@@ -17803,7 +18024,7 @@ TEST_F(NativeWindow, ASessionTakesTheSettingsOfTheWindowThatAttaches)
     restartApplication(QStringLiteral("differs.conf"),
                        testSettings({{QStringLiteral("Colors"),
                                       QJsonObject{{QStringLiteral("background"), QStringLiteral("#010203")}}}}),
-                       {QStringLiteral("/bin/cat")});
+                       {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     QString error;
@@ -17973,7 +18194,7 @@ TEST_F(NativeWindow, ASessionTakesTheVariablesOfTheAfterglowThatShowsIt)
         testSettings({{QStringLiteral("Mux"),
                        QJsonObject{{QStringLiteral("updateEnvironment"),
                                     QJsonArray{QStringLiteral("TEST_UPDATED"), QStringLiteral("TEST_REMOVED")}}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     QString error;
@@ -18114,7 +18335,7 @@ TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne)
     // Mux.onClose at its default: a project's session runs on all the same.
     // Pane b starts in "~": main() points HOME at a directory of the test
     // binary's own.
-    restartApplication(QStringLiteral("project-session.conf"), testSettings(), {QStringLiteral("/bin/cat")});
+    restartApplication(QStringLiteral("project-session.conf"), testSettings(), {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     ASSERT_TRUE(QDir().mkpath(directory.filePath(QStringLiteral("projects"))));
@@ -18371,7 +18592,7 @@ TEST_F(NativeWindow, ASessionsWindowRunsOverlaysAndTakesScreenshotsForCtl)
         QStringLiteral("session-frames.conf"),
         testSettings({{QStringLiteral("Control"),
                        QJsonObject{{QStringLiteral("enabled"), true}, {QStringLiteral("allowReadText"), true}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     MuxTest::TestDaemon daemon;
@@ -18463,7 +18684,7 @@ TEST_F(NativeWindow, ASessionOfAnotherHostRunsNoProgramHere)
              {QStringLiteral("Notifications"), QJsonObject{{QStringLiteral("rateLimit"), 2}}},
              {QStringLiteral("Mux"),
               QJsonObject{{QStringLiteral("updateEnvironment"), QJsonArray{QStringLiteral("TEST_UPDATED")}}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     RegisteredNotificationServer notices;
@@ -18534,6 +18755,331 @@ TEST_F(NativeWindow, ASessionOfAnotherHostRunsNoProgramHere)
         << (split ? screenOf(split).toStdString() : std::string("the pane closed"));
 }
 
+// A window that shows an agent session marks it: one badge at the start of
+// its tab bar, in Mux.agentColor, and a prefix in its title. Scripts see it
+// in the window's snapshot. It takes the
+// screenshots of its panes without its own Control.allowReadText, as the
+// agent's session keeps read access. A plain session gets neither, until an
+// agent adopts it, which Control.allowAdopt of its window allows. An empty
+// Mux.agentLabel takes the badge and the prefix away.
+TEST_F(NativeWindow, AnAgentSessionsWindowMarksItAndTakesItsScreenshots)
+{
+    restartApplication(QStringLiteral("agent.conf"),
+                       testSettings({{QStringLiteral("Window"), QJsonObject{{QStringLiteral("paneTitles"), true}}},
+                                     {QStringLiteral("Control"), QJsonObject{{QStringLiteral("allowAdopt"), true}}}}),
+                       catWithoutEcho());
+    if (HasFatalFailure())
+        return;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    AfterglowMux::SessionOptions options = MuxTest::shellOptions(daemon, "agent-1");
+    options.agent = true;
+    ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
+    ASSERT_TRUE(daemon.newSession(MuxTest::shellOptions(daemon, "plain"))) << daemon.lastError();
+    QString error;
+    QPointer<TerminalWindow> agent = showSession(*application, daemon, QStringLiteral("agent-1"), &error);
+    ASSERT_NE(agent, nullptr) << error.toStdString();
+    const auto closeAgent = qScopeGuard([&agent] {
+        delete agent;
+    });
+    QPointer<TerminalWindow> plain = showSession(*application, daemon, QStringLiteral("plain"), &error);
+    ASSERT_NE(plain, nullptr) << error.toStdString();
+    const auto closePlain = qScopeGuard([&plain] {
+        delete plain;
+    });
+    // A screenshot needs a window that shows.
+    for (const QPointer<TerminalWindow>& w : {agent, plain})
+        ASSERT_TRUE(waitFor([&] {
+            return w && w->isExposed() && w->submittedFrames() > 0;
+        }));
+    const auto marker = [](TerminalWindow* w) {
+        auto* chrome = w ? w->findChild<ChromeController*>() : nullptr;
+        return chrome ? chrome->agentMarker() : QVariantMap();
+    };
+    // The badges that the tab bar draws: one for the window, not one on
+    // each tab.
+    const auto badges = [](TerminalWindow* w) {
+        QList<QQuickItem*> found;
+        auto* layer = w ? w->findChild<ChromeLayer*>() : nullptr;
+        if (!layer || !layer->rootItem())
+            return found;
+        for (QQuickItem* item : visualDescendants(layer->rootItem()))
+            if (item->objectName() == QLatin1String("agentBadge") && item->isVisible())
+                found.append(item);
+        return found;
+    };
+    // The windows' own Control.allowReadText is off (the fixture's default):
+    // the agent session's screenshot of its one pane still comes. The daemon
+    // refuses the plain one, as the window would.
+    SessionCtl agentCtl(daemon, "agent-1");
+    ASSERT_TRUE(agentCtl.ready()) << agentCtl.failure().message;
+    const auto shot = agentCtl.call("screenshot", MuxTest::Json::Array{0, "pane"});
+    ASSERT_TRUE(shot) << agentCtl.failure().message;
+    EXPECT_FALSE((*shot)["png"].toString().empty());
+    SessionCtl plainCtl(daemon, "plain");
+    ASSERT_TRUE(plainCtl.ready()) << plainCtl.failure().message;
+    EXPECT_FALSE(plainCtl.call("screenshot", MuxTest::Json::Array{0, "pane"}));
+    EXPECT_EQ(plainCtl.failure().code, "denied") << plainCtl.failure().message;
+
+    // The tab bar shows with a second tab.
+    ASSERT_NE(agent->openTab(launchIn(daemon.dir(), {QStringLiteral("cat")}), &error), nullptr) << error.toStdString();
+    EXPECT_TRUE(waitFor([&] {
+        return agent && marker(agent).value(QStringLiteral("label")) == QStringLiteral("agent")
+            && agent->title().startsWith(QStringLiteral("[agent] ")) && badges(agent).size() == 1;
+    })) << (agent ? agent->title().toStdString() : std::string());
+    ASSERT_TRUE(agent);
+    // Mux.agentColor is unset: palette color 13 of the window's terminal.
+    {
+        const AfterglowVt::Rgb rgb = agent->focusedPane()->readTerminal([](const AfterglowVt::Terminal& t) {
+            return t.options().basePalette[13];
+        });
+        const QColor color = marker(agent).value(QStringLiteral("color")).value<QColor>();
+        EXPECT_EQ(color, QColor(rgb.r, rgb.g, rgb.b)) << color.name().toStdString();
+        const QQuickItem* label = chromeItemWithText(agent->findChild<ChromeLayer*>(), QStringLiteral("agent"));
+        ASSERT_NE(label, nullptr);
+        EXPECT_EQ(label->property("color").value<QColor>(), color);
+    }
+    ASSERT_TRUE(plain);
+    EXPECT_TRUE(marker(plain).isEmpty());
+    EXPECT_TRUE(badges(plain).isEmpty());
+    EXPECT_FALSE(plain->title().startsWith(QStringLiteral("[agent] "))) << plain->title().toStdString();
+    // Scripts see it in the window's snapshot (Window.agent).
+    TestControl scripts(directory, QStringLiteral("agent-scripts.conf"), agent);
+    scripts.control.attachWindow(plain);
+    const auto agentOf = [&](TerminalWindow* w) {
+        for (const QVariant& window : scripts.control.state().value(QStringLiteral("windows")).toList())
+            if (window.toMap().value(QStringLiteral("id")).toUInt() == w->id())
+                return window.toMap().value(QStringLiteral("agent"));
+        return QVariant();
+    };
+    EXPECT_EQ(agentOf(agent), QVariant(true));
+    EXPECT_EQ(agentOf(plain), QVariant(false));
+    // The calls that the daemon passes to the window keep the agent
+    // session's read access too, without the window's own
+    // Control.allowReadText: the selection, an action that reads text, and
+    // the standard output of an overlay.
+    {
+        QPointer<Pane> focused = agent->focusedPane();
+        ASSERT_NE(focused, nullptr);
+        ASSERT_TRUE(waitFor([&] {
+            return focused && focused->sessionPaneId() != 0;
+        }));
+        const std::int64_t id = focused->sessionPaneId();
+        ASSERT_TRUE(focused->sendInput("selected\n"));
+        ASSERT_TRUE(waitFor(
+            [&] {
+                return focused && screenOf(focused).contains(QStringLiteral("selected"));
+            },
+            5000));
+        focused->selectAll();
+        ASSERT_TRUE(focused->hasSelection());
+        const auto selection = agentCtl.call("getText", MuxTest::Json::Array{id, "selection"});
+        ASSERT_TRUE(selection) << agentCtl.failure().message;
+        EXPECT_EQ(QString::fromStdString((*selection)["text"].toString()), focused->selectedText());
+        EXPECT_EQ(agentCtl.refusal("runAction", MuxTest::Json::Array{id, "copy"}), "answered");
+        const auto ran = agentCtl.call(
+            "overlay", MuxTest::Json::Array{id, MuxTest::Json::Array{"printf", "hi"}, MuxTest::Json::Object{}});
+        ASSERT_TRUE(ran) << agentCtl.failure().message;
+        EXPECT_EQ((*ran)["exit_code"].toInteger(), 0);
+        EXPECT_EQ((*ran)["stdout"].toString(), "hi");
+    }
+
+    // An agent adopts the plain session: its window marks it from then on,
+    // and its screenshots come.
+    MuxTest::IpcConnection::Error adoptError;
+    ASSERT_TRUE(daemon.call(AfterglowMux::Fn::AdoptSession, MuxTest::Json::Array{"plain"}, &adoptError))
+        << adoptError.message;
+    EXPECT_TRUE(waitFor([&] {
+        return plain && marker(plain).value(QStringLiteral("label")) == QStringLiteral("agent")
+            && plain->title().startsWith(QStringLiteral("[agent] "));
+    })) << (plain ? plain->title().toStdString() : std::string());
+    EXPECT_EQ(agentOf(plain), QVariant(true));
+    const auto adoptedShot = plainCtl.call("screenshot", MuxTest::Json::Array{0, "pane"});
+    ASSERT_TRUE(adoptedShot) << plainCtl.failure().message;
+    EXPECT_FALSE((*adoptedShot)["png"].toString().empty());
+
+    // Another label and color, then none: the badge and the prefix go.
+    SettingsStore file(directory.filePath(QStringLiteral("agent.conf")));
+    ASSERT_TRUE(file.write(QStringLiteral("Mux"), QStringLiteral("agentLabel"), QStringLiteral("bot")));
+    ASSERT_TRUE(file.write(QStringLiteral("Mux"), QStringLiteral("agentColor"), QStringLiteral("#30c050")));
+    ASSERT_TRUE(agent->runAction(agent->focusedPane(), Action::ReloadConfig));
+    EXPECT_TRUE(agent->title().startsWith(QStringLiteral("[bot] "))) << agent->title().toStdString();
+    EXPECT_EQ(marker(agent).value(QStringLiteral("color")).value<QColor>(), QColor(0x30, 0xc0, 0x50));
+    EXPECT_TRUE(waitFor([&] {
+        const QQuickItem* label =
+            agent ? chromeItemWithText(agent->findChild<ChromeLayer*>(), QStringLiteral("bot")) : nullptr;
+        return label && label->property("color").value<QColor>() == QColor(0x30, 0xc0, 0x50);
+    }));
+    ASSERT_TRUE(file.write(QStringLiteral("Mux"), QStringLiteral("agentLabel"), QString()));
+    ASSERT_TRUE(agent->runAction(agent->focusedPane(), Action::ReloadConfig));
+    EXPECT_TRUE(marker(agent).isEmpty());
+    EXPECT_FALSE(agent->title().startsWith(QLatin1Char('['))) << agent->title().toStdString();
+    EXPECT_TRUE(waitFor([&] {
+        return agent && badges(agent).isEmpty();
+    }));
+}
+
+// The window of an agent session detaches from it when it closes, whatever
+// Mux.onClose says (kill here, the default): the agent ends the session. Its
+// close asks about no program of the session, which runs on. So does the
+// window of a session that an agent adopted, and the close of its last tab.
+TEST_F(NativeWindow, AnAgentSessionsWindowDetachesWhenItCloses)
+{
+    restartApplication(QStringLiteral("agent-close.conf"),
+                       testSettings({{QStringLiteral("Control"), QJsonObject{{QStringLiteral("allowAdopt"), true}}}}),
+                       catWithoutEcho());
+    if (HasFatalFailure())
+        return;
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    AfterglowMux::SessionOptions options = MuxTest::shellOptions(daemon, "agent-2");
+    options.agent = true;
+    ASSERT_TRUE(daemon.newSession(options)) << daemon.lastError();
+    ASSERT_TRUE(shellSession(daemon, "adopted")) << daemon.lastError();
+    QString error;
+    for (const char* name : {"agent-2", "adopted"}) {
+        SCOPED_TRACE(name);
+        auto [shown, pane] = showSessionAtPrompt(*application, daemon, QString::fromLatin1(name), &error);
+        ASSERT_NE(pane, nullptr) << error.toStdString();
+        const auto cleanup = qScopeGuard([&shown] {
+            delete shown;
+        });
+        if (std::string_view(name) == "adopted") {
+            MuxTest::IpcConnection::Error adoptError;
+            ASSERT_TRUE(daemon.call(AfterglowMux::Fn::AdoptSession, MuxTest::Json::Array{name}, &adoptError))
+                << adoptError.message;
+        }
+        ASSERT_TRUE(waitFor([&] {
+            return shown && shown->showsAgentSession();
+        }));
+        // A program runs: a close that ended the session would ask about it.
+        ASSERT_TRUE(pane->sendInput("cat\n"));
+        ASSERT_TRUE(waitFor(
+            [&] {
+                return pane && pane->foregroundJob() == QStringLiteral("cat");
+            },
+            5000))
+            << (pane ? pane->foregroundJob().toStdString() : std::string("the pane closed"));
+        QPointer<ChromeController> chrome = shown->findChild<ChromeController*>();
+        ASSERT_NE(chrome, nullptr);
+        // The window's close for the agent's session, the last tab's close
+        // for the adopted one.
+        if (std::string_view(name) == "agent-2")
+            shown->close();
+        else
+            ASSERT_TRUE(shown->runAction(pane, Action::CloseTab));
+        EXPECT_FALSE(chrome && chrome->confirmPromptOpen());
+        ASSERT_TRUE(waitDeleting(
+            [&] {
+                return !shown;
+            },
+            5000));
+        EXPECT_TRUE(waitFor(
+            [&] {
+                return sessionDetached(daemon, name);
+            },
+            5000));
+        EXPECT_EQ(sessionPaneCount(daemon, name), 1);
+    }
+}
+
+// A session pane tells the same shell facts in its window as in its daemon:
+// the window's replica gets the state, the input and the last exit code of
+// the daemon's terminal, and the window's shellChanged comes once for each
+// change of the state and for each new prompt, not for each frame.
+TEST_F(NativeWindow, ASessionPaneTellsTheSameShellStateInTheWindowAndTheDaemon)
+{
+    MuxTest::TestDaemon daemon;
+    ASSERT_TRUE(daemon.start()) << daemon.errors();
+    ASSERT_TRUE(daemon.newSession(MuxTest::shellOptions(daemon, "same"))) << daemon.lastError();
+    QString error;
+    QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("same"), &error);
+    ASSERT_NE(shown, nullptr) << error.toStdString();
+    const auto closeFirst = qScopeGuard([&shown] {
+        delete shown;
+    });
+    ASSERT_TRUE(waitFor([&] {
+        return shown && shown->isExposed() && shown->submittedFrames() > 0;
+    }));
+    QPointer<Pane> pane = shown->panes().value(0);
+    ASSERT_NE(pane, nullptr);
+    TestControl test(directory, QStringLiteral("same.conf"), shown);
+    QStringList states;
+    QObject::connect(&test.control, &Control::shellChanged, &test.control, [&](quint32 id, const QString& state) {
+        if (pane && id == pane->id())
+            states.append(state);
+    });
+    const auto windowFacts = [&] {
+        for (const PaneInfo& p : test.control.panes(true))
+            if (pane && p.id == pane->id())
+                return Control::paneMap(p);
+        return QVariantMap();
+    };
+    SessionCtl ctl(daemon, "same");
+    ASSERT_TRUE(ctl.ready()) << ctl.failure().message;
+    const auto daemonFacts = [&] {
+        const auto listed = ctl.call("listPanes", MuxTest::Json::Array{});
+        return listed && !listed->toArray().empty() ? listed->toArray()[0] : MuxTest::Json::Value();
+    };
+    // A prompt, a command that runs a second, its end with code 4 and the
+    // next prompt. Each mark comes in a read of its own.
+    ASSERT_TRUE(ctl.call("sendText",
+                         MuxTest::Json::Array{0,
+                                              "printf '\\033]133;A\\007$ \\033]133;B\\007'; sleep 1; "
+                                              "printf '\\033]133;C\\007'; sleep 1; "
+                                              "printf '\\033]133;D;4\\007\\033]133;A\\007$ \\033]133;B\\007'\n"}))
+        << ctl.failure().message;
+    ASSERT_TRUE(waitFor(
+        [&] {
+            return states.size() >= 3 && windowFacts().value(QStringLiteral("last_exit")).toInt() == 4;
+        },
+        8000))
+        << states.join(QLatin1Char(' ')).toStdString();
+    // Frames came meanwhile (the echo, the shell's own prompt): none of them
+    // is a change.
+    ASSERT_TRUE(waitFor([&] {
+        return daemonFacts()["last_exit"].toInteger() == 4;
+    }));
+    drain(300);
+    EXPECT_EQ(states, (QStringList{QStringLiteral("prompt"), QStringLiteral("running"), QStringLiteral("prompt")}));
+    EXPECT_EQ(windowFacts().value(QStringLiteral("shell")).toString(), QStringLiteral("prompt"));
+    EXPECT_EQ(daemonFacts()["shell"].toString(), "prompt");
+    EXPECT_EQ(daemonFacts()["last_exit"].toInteger(), 4);
+    const QVariantMap facts = windowFacts();
+    ASSERT_TRUE(facts.contains(QStringLiteral("input")));
+    ASSERT_TRUE(daemonFacts()["input"].isBool());
+    EXPECT_EQ(facts.value(QStringLiteral("input")).toBool(), daemonFacts()["input"].toBool());
+    // A command that starts and ends in one read: the state is the prompt
+    // before and after it, and the new prompt counts.
+    ASSERT_TRUE(ctl.call("sendText",
+                         MuxTest::Json::Array{0,
+                                              "printf '\\033]133;C\\007\\033]133;D;7\\007"
+                                              "\\033]133;A\\007$ \\033]133;B\\007'\n"}))
+        << ctl.failure().message;
+    ASSERT_TRUE(waitFor(
+        [&] {
+            return windowFacts().value(QStringLiteral("last_exit")).toInt() == 7;
+        },
+        8000));
+    EXPECT_TRUE(waitFor([&] {
+        return states.size() == 4;
+    })) << states.join(QLatin1Char(' ')).toStdString();
+    EXPECT_EQ(states.value(3), QStringLiteral("prompt"));
+    // The secondary prompt reaches the window too.
+    ASSERT_TRUE(ctl.call("sendText", MuxTest::Json::Array{0, "printf '\\033]133;A;k=s\\007> '\n"}))
+        << ctl.failure().message;
+    ASSERT_TRUE(waitFor(
+        [&] {
+            return windowFacts().value(QStringLiteral("shell")).toString() == QStringLiteral("continuation");
+        },
+        8000))
+        << windowFacts().value(QStringLiteral("shell")).toString().toStdString();
+    EXPECT_EQ(daemonFacts()["shell"].toString(), "continuation");
+    drain(300);
+    EXPECT_EQ(states.size(), 5) << states.join(QLatin1Char(' ')).toStdString();
+    EXPECT_EQ(states.last(), QStringLiteral("continuation"));
+}
+
 // The notifications that a session's program sent while no window showed the
 // session show when a window attaches, also for the pane that has the focus
 // then: no user saw that pane when they came. Notifications.rateLimit counts
@@ -18542,7 +19088,7 @@ TEST_F(NativeWindow, AWindowShowsTheNotificationsOfItsDetachedSession)
 {
     restartApplication(QStringLiteral("kept-notices.conf"),
                        testSettings({{QStringLiteral("Notifications"), QJsonObject{{QStringLiteral("rateLimit"), 2}}}}),
-                       {QStringLiteral("/bin/cat")});
+                       {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     RegisteredNotificationServer notices;
@@ -18566,7 +19112,7 @@ TEST_F(NativeWindow, AWindowShowsTheNotificationsOfItsDetachedSession)
     ASSERT_TRUE(waitFor(
         [&] {
             const auto text = ctl.call("getText", MuxTest::Json::Array{0, "screen"});
-            return text && text->toString().find("\nready") != std::string::npos;
+            return text && (*text)["text"].toString().find("\nready") != std::string::npos;
         },
         5000))
         << ctl.failure().message;
@@ -18603,7 +19149,7 @@ TEST_F(NativeWindow, CtlForASessionReachesItsWindow)
         QStringLiteral("session-ctl.conf"),
         testSettings({{QStringLiteral("Control"),
                        QJsonObject{{QStringLiteral("enabled"), true}, {QStringLiteral("allowReadText"), true}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     RegisteredNotificationServer notices;
@@ -18666,7 +19212,7 @@ TEST_F(NativeWindow, CtlForASessionReachesItsWindow)
     ASSERT_TRUE(pane->hasSelection());
     const auto selection = ctl.call("getText", MuxTest::Json::Array{first, "selection"});
     ASSERT_TRUE(selection) << ctl.failure().message;
-    EXPECT_EQ(QString::fromStdString(selection->toString()), pane->selectedText());
+    EXPECT_EQ(QString::fromStdString((*selection)["text"].toString()), pane->selectedText());
     // A pane that moves to a tab of its own: the answer names it as the
     // daemon does, and the daemon's own list says the same at once.
     const auto moved = ctl.call("movePane", MuxTest::Json::Array{std::int64_t(added), 0, "new-tab"});
@@ -18867,7 +19413,7 @@ TEST_F(NativeWindow, TheOverlaysAndInputsOfASessionsClientsAreTheirOwn)
     restartApplication(
         QStringLiteral("clients.conf"),
         testSettings({{QStringLiteral("Mux"), QJsonObject{{QStringLiteral("onClose"), QStringLiteral("detach")}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     MuxTest::TestDaemon daemon;
@@ -18978,14 +19524,14 @@ TEST_F(NativeWindow, AScriptSplitOfASessionWindowAnswersLater)
 return {
     metadata = { commands = { go = { summary = "Split, then name the new pane" } } },
     run_command = function(command, ev)
-        local made, err = afterglow.await(afterglow.split(ev.pane, "right", "/bin/cat"))
+        local made, err = afterglow.await(afterglow.split(ev.pane, "right", "cat"))
         return afterglow.set_title(ev.pane, made and ("made " .. tostring(made.pane_id)) or ("failed " .. tostring(err and err.message)))
     end,
 }
 )"));
     restartApplication(QStringLiteral("splitter.conf"),
                        testSettings({{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), true}}}}),
-                       {QStringLiteral("/bin/cat")});
+                       {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     MuxTest::TestDaemon daemon;
@@ -19010,7 +19556,7 @@ return {
     };
     Control& control = application->control();
     const auto split = std::make_shared<Made>();
-    control.split(pane->id(), QStringLiteral("right"), {QStringLiteral("/bin/cat")}, {}, record(split));
+    control.split(pane->id(), QStringLiteral("right"), {QStringLiteral("cat")}, {}, record(split));
     EXPECT_FALSE(split->done);
     ASSERT_TRUE(waitFor(
         [&] {
@@ -19028,7 +19574,7 @@ return {
         },
         5000));
     const auto tab = std::make_shared<Made>();
-    control.newTab(pane->id(), {}, {QStringLiteral("/bin/cat")}, {}, record(tab));
+    control.newTab(pane->id(), {}, {QStringLiteral("cat")}, {}, record(tab));
     EXPECT_FALSE(tab->done);
     ASSERT_TRUE(waitFor(
         [&] {
@@ -19083,7 +19629,7 @@ TEST_F(NativeWindow, ASecondBreakOutOfALeavingTabIsRefused)
     QString error;
     auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("leaving"), &error);
     ASSERT_NE(pane, nullptr) << error.toStdString();
-    const PaneLaunchOptions cat = launchIn(daemon.dir(), {QStringLiteral("/bin/cat")});
+    const PaneLaunchOptions cat = launchIn(daemon.dir(), {QStringLiteral("cat")});
     const QPointer<Pane> left = shown->openTab(cat, &error);
     ASSERT_NE(left, nullptr) << error.toStdString();
     const QPointer<Pane> right = shown->splitPane(left, SplitTree::Direction::Right, cat, &error);
@@ -19200,7 +19746,7 @@ TEST_F(NativeWindow, TheScriptEffectsOfASessionWindowAnswerLater)
         later(apply({{QStringLiteral("kind"), QStringLiteral("split")},
                      {QStringLiteral("pane"), pane->id()},
                      {QStringLiteral("direction"), QStringLiteral("right")},
-                     {QStringLiteral("command"), QStringList{QStringLiteral("/bin/cat")}}},
+                     {QStringLiteral("command"), QStringList{QStringLiteral("cat")}}},
                     split),
               split);
     ASSERT_TRUE(beside);
@@ -19214,7 +19760,7 @@ TEST_F(NativeWindow, TheScriptEffectsOfASessionWindowAnswerLater)
     const std::optional<PaneInfo> tabbed =
         later(apply({{QStringLiteral("kind"), QStringLiteral("new_tab")},
                      {QStringLiteral("pane"), pane->id()},
-                     {QStringLiteral("command"), QStringList{QStringLiteral("/bin/cat")}}},
+                     {QStringLiteral("command"), QStringList{QStringLiteral("cat")}}},
                     tab),
               tab);
     ASSERT_TRUE(tabbed);
@@ -19288,7 +19834,7 @@ TEST_F(NativeWindow, ASessionsCallsThatReadTextNeedReadAccess)
         QStringLiteral("no-read.conf"),
         testSettings({{QStringLiteral("Control"),
                        QJsonObject{{QStringLiteral("enabled"), true}, {QStringLiteral("allowReadText"), false}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     MuxTest::TestDaemon daemon;
@@ -19423,16 +19969,22 @@ TEST_F(NativeWindow, AProjectWhoseFileWentStillFindsItsWindow)
     EXPECT_TRUE(reused->result.value(QStringLiteral("reused")).toBool());
     EXPECT_EQ(reused->result.value(QStringLiteral("window_id")).toUInt(), window->id());
     EXPECT_EQ(int(TerminalWindow::windows().size()), windows);
-    // Not into a session, nor into a window, which need the file.
-    const auto refused = std::make_shared<Outcome>();
-    application->control().openProject(QStringLiteral("p"), false, QStringLiteral("window"),
-                                       [refused](const QString& e, const QVariantMap& r) {
-                                           *refused = {true, e, r};
-                                       });
-    ASSERT_TRUE(waitFor([&] {
-        return refused->done;
-    }));
-    EXPECT_FALSE(refused->error.isEmpty());
+    // Not into a session, nor into a window, which need the file: the file
+    // is read first, before any daemon is asked.
+    for (const QString& mode : {QStringLiteral("window"), QStringLiteral("session")}) {
+        SCOPED_TRACE(mode.toStdString());
+        const auto refused = std::make_shared<Outcome>();
+        application->control().openProject(QStringLiteral("p"), false, mode,
+                                           [refused](const QString& e, const QVariantMap& r) {
+                                               *refused = {true, e, r};
+                                           });
+        ASSERT_TRUE(waitFor([&] {
+            return refused->done;
+        }));
+        EXPECT_EQ(refused->error, QStringLiteral("Project is missing, not a regular file, or exceeds 1 MiB"));
+        EXPECT_TRUE(refused->result.isEmpty());
+        EXPECT_EQ(int(TerminalWindow::windows().size()), windows);
+    }
 }
 
 // The pager of Show Last Output in a session runs under the daemon, and can
@@ -19470,7 +20022,7 @@ TEST_F(NativeWindow, SessionShowLastOutputLeavesNoFileBehind)
                                        QJsonObject{{QStringLiteral("onClose"), QStringLiteral("detach")}}}})
                 .toJson());
     }
-    restartApplication(QStringLiteral("pager-session.conf"), testSettings(), {QStringLiteral("/bin/cat")});
+    restartApplication(QStringLiteral("pager-session.conf"), testSettings(), {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     MuxTest::TestDaemon daemon;
@@ -19558,10 +20110,10 @@ TEST_F(NativeWindow, SessionShowLastOutputLeavesNoFileBehind)
 TEST_F(NativeWindow, ShowLastOutputRefusedInRemoteSession)
 {
     // A pager that exists: the refusal is the session's, not the pager's.
-    restartApplication(QStringLiteral("far-pager.conf"),
-                       testSettings({{QStringLiteral("Terminal"),
-                                      QJsonObject{{QStringLiteral("pager"), QStringLiteral("/usr/bin/tail -f")}}}}),
-                       {QStringLiteral("/bin/cat")});
+    restartApplication(
+        QStringLiteral("far-pager.conf"),
+        testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("pager"), QStringLiteral("tail -f")}}}}),
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     RegisteredNotificationServer notices;
@@ -19620,10 +20172,10 @@ TEST_F(NativeWindow, ClosingRemoteSessionWindowRefusesNewPanes)
     ASSERT_TRUE(shown->closing());
     Control& control = application->control();
     quint32 created = 0;
-    const QString split = control.split(id, QStringLiteral("right"), {QStringLiteral("/bin/cat")}, {}, created);
+    const QString split = control.split(id, QStringLiteral("right"), {QStringLiteral("cat")}, {}, created);
     EXPECT_TRUE(split.contains(QLatin1String("is closing"))) << split.toStdString();
     EXPECT_EQ(created, 0u);
-    const QString tab = control.newTab(id, {}, {QStringLiteral("/bin/cat")}, created);
+    const QString tab = control.newTab(id, {}, {QStringLiteral("cat")}, created);
     EXPECT_TRUE(tab.contains(QLatin1String("is closing"))) << tab.toStdString();
     EXPECT_EQ(created, 0u);
     EXPECT_EQ(sessionPaneCount(daemon, "far"), 1);
@@ -19696,17 +20248,16 @@ TEST_F(NativeWindow, RemoteSessionNewPaneStartsWhereItsSourcePaneIs)
         "a pane of session far, which runs on another host, takes no cwd or env: it starts where the pane that it "
         "opens from is");
     created = 0;
-    EXPECT_EQ(control.split(pane->id(), QStringLiteral("right"), {QStringLiteral("/bin/cat")},
+    EXPECT_EQ(control.split(pane->id(), QStringLiteral("right"), {QStringLiteral("cat")},
                             {{QStringLiteral("cwd"), QStringLiteral("/tmp")}}, created),
               refusal);
-    EXPECT_EQ(control.split(pane->id(), QStringLiteral("right"), {QStringLiteral("/bin/cat")},
+    EXPECT_EQ(control.split(pane->id(), QStringLiteral("right"), {QStringLiteral("cat")},
                             {{QStringLiteral("env"), QVariantMap{{QStringLiteral("X"), QStringLiteral("1")}}}},
                             created),
               refusal);
-    EXPECT_EQ(control.newTab(pane->id(), QStringLiteral("/tmp"), {QStringLiteral("/bin/cat")}, created), refusal);
-    EXPECT_EQ(
-        control.newTab(pane->id(), QStringLiteral("/no/such/directory/here"), {QStringLiteral("/bin/cat")}, created),
-        refusal);
+    EXPECT_EQ(control.newTab(pane->id(), QStringLiteral("/tmp"), {QStringLiteral("cat")}, created), refusal);
+    EXPECT_EQ(control.newTab(pane->id(), QStringLiteral("/no/such/directory/here"), {QStringLiteral("cat")}, created),
+              refusal);
     EXPECT_EQ(created, 0u);
     EXPECT_EQ(sessionPaneCount(daemon, "far"), 3);
 }
@@ -19753,7 +20304,7 @@ TEST_F(NativeWindow, SessionLayoutTitlesAreCleaned)
     restartApplication(
         QStringLiteral("mux.conf"),
         testSettings({{QStringLiteral("Mux"), QJsonObject{{QStringLiteral("onClose"), QStringLiteral("detach")}}}}),
-        {QStringLiteral("/bin/cat")});
+        {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     MuxTest::TestDaemon daemon;
@@ -19804,7 +20355,7 @@ TEST_F(NativeWindow, AttachUnderAnotherThemeKeepsProgramColors)
         ASSERT_TRUE(file.open(QIODevice::WriteOnly));
         file.write(R"({"Colors": {"background": "#202020"}})");
     }
-    restartApplication(QStringLiteral("theme.conf"), testSettings(), {QStringLiteral("/bin/cat")});
+    restartApplication(QStringLiteral("theme.conf"), testSettings(), {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     MuxTest::TestDaemon daemon;
@@ -19839,8 +20390,8 @@ TEST_F(NativeWindow, AttachUnderAnotherThemeKeepsProgramColors)
     // window's settings, which came first, and its frames since.
     ASSERT_TRUE(echoes(pane, QStringLiteral("echo attached")));
     EXPECT_TRUE(background(pane) == program);
-    const QPointer<Pane> plain = shown->splitPane(pane, SplitTree::Direction::Right,
-                                                  launchIn(daemon.dir(), {QStringLiteral("/bin/cat")}), &error);
+    const QPointer<Pane> plain =
+        shown->splitPane(pane, SplitTree::Direction::Right, launchIn(daemon.dir(), {QStringLiteral("cat")}), &error);
     ASSERT_NE(plain, nullptr) << error.toStdString();
     ASSERT_TRUE(echoes(plain, QStringLiteral("plain")));
     setLive(shown, config, QStringLiteral("Colors"), QStringLiteral("background"), QStringLiteral("#010203"));
@@ -19873,7 +20424,7 @@ return {
     restartApplication(QStringLiteral("split-run.conf"),
                        testSettings({{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), true}}},
                                      {QStringLiteral("Control"), QJsonObject{{QStringLiteral("enabled"), true}}}}),
-                       {QStringLiteral("/bin/cat")});
+                       {QStringLiteral("cat")});
     if (HasFatalFailure())
         return;
     MuxTest::TestDaemon daemon;
@@ -19913,6 +20464,123 @@ return {
         10000))
         << (placed ? screenOf(placed).toStdString() : std::string("the pane is gone"));
     delete shown;
+}
+
+// textChanged comes with output that writes cells, and with a reflow that
+// changes the text with no output: the program draws nothing for a new size.
+// Titles, bells, a directory, replies and shell marks alone are no change of
+// the text. A client of the control socket gets the events, and shellChanged
+// once for each state of the shell and each new prompt.
+TEST_F(NativeWindow, TextChangedComesWithOutputAndWithAReflow)
+{
+    // Prints each line that it reads as a format of printf: it echoes
+    // nothing of its own.
+    restartApplication(QStringLiteral("text-changed.conf"), testSettings({}),
+                       {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                        QStringLiteral("stty -echo; while IFS= read -r line; do printf \"$line\"; done")});
+    if (HasFatalFailure())
+        return;
+    QPointer<Pane> pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    ControlConnection ctl(directory.filePath(QStringLiteral("text-changed.sock")), window,
+                          {{QStringLiteral("eventInterval"), 0}});
+    ASSERT_TRUE(ctl.connected());
+    ASSERT_TRUE(ctl.subscribe(QStringLiteral("textChanged")));
+    ASSERT_TRUE(ctl.subscribe(QStringLiteral("shellChanged")));
+    const QString changed = QStringLiteral("textChanged:%1").arg(pane->id());
+    const QString shell = QStringLiteral("shellChanged:%1:").arg(pane->id());
+    // Prints @p format, then sets the title to @p title, and waits until the
+    // window has both: what the format did came before.
+    const auto print = [&](const std::string& format, const QString& title) {
+        return pane && pane->sendInput(format + "\\033]2;" + title.toStdString() + "\\007\n") && waitFor([&] {
+                   return pane && pane->title() == title;
+               });
+    };
+    ASSERT_TRUE(print(std::string(150, 'w') + "\\n", QStringLiteral("written")));
+    EXPECT_TRUE(waitFor([&] {
+        return pane && screenOf(pane).contains(QString(40, QLatin1Char('w')));
+    }));
+    EXPECT_TRUE(ctl.events(0, 400).contains(changed));
+    // Quiet: nothing more comes.
+    EXPECT_EQ(ctl.events(0, 400), QStringList());
+    // None of these writes a cell or moves the cursor.
+    struct Case
+    {
+        const char* what;
+        std::string format;
+    };
+    for (const Case& c :
+         {Case{"a title", ""}, Case{"a bell", "\\007"}, Case{"a directory", "\\033]7;file://localhost/tmp\\007"},
+          Case{"a user variable", "\\033]1337;SetUserVar=a=Yg==\\007"}}) {
+        SCOPED_TRACE(c.what);
+        ASSERT_TRUE(print(c.format, QString::fromLatin1(c.what)));
+        EXPECT_EQ(ctl.events(0, 300), QStringList());
+    }
+    // Shell marks alone: the shell's states, and no text.
+    ASSERT_TRUE(print("\\033]133;A\\007\\033]133;B\\007", QStringLiteral("prompt")));
+    ASSERT_TRUE(print("\\033]133;C\\007", QStringLiteral("running")));
+    ASSERT_TRUE(print("\\033]133;D;0\\007\\033]133;A\\007\\033]133;B\\007", QStringLiteral("again")));
+    EXPECT_EQ(ctl.events(0, 400),
+              (QStringList{shell + QStringLiteral("prompt"), shell + QStringLiteral("running"),
+                           shell + QStringLiteral("prompt")}));
+    // A report: its reply goes to the program, which reads no line of it.
+    ASSERT_TRUE(print("\\033[6n", QStringLiteral("reported")));
+    EXPECT_EQ(ctl.events(0, 300), QStringList());
+    // Narrower: the long line wraps again.
+    window->resize(window->width() / 2, window->height());
+    EXPECT_TRUE(ctl.events(1, 5000).contains(changed));
+}
+
+// The control call paste sends text as a paste in the window: between the
+// paste marks while the program asks for them, the line ends as Enter, and
+// no other control. It asks no question for a line end, as a client chose
+// the text, also when the program asks for no paste marks. The keys of
+// sendKeys follow the modes too: Up in application cursor mode (DECCKM).
+TEST_F(NativeWindow, ThePasteCallBracketsAsTheProgramAsks)
+{
+    restartApplication(
+        QStringLiteral("paste.conf"),
+        testSettings({{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("confirmUnsafePaste"), true}}}}),
+        {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+         QStringLiteral("stty raw -echo; printf '\\033[?2004hre''ady'; head -c15 | od -An -tx1 | tr -s ' '; "
+                        "printf '\\033[?2004l\\033[?1hmo''des'; head -c6 | od -An -tx1 | tr -s ' '; "
+                        "exec cat")});
+    if (HasFatalFailure())
+        return;
+    QPointer<Pane> pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    ASSERT_TRUE(waitFor(
+        [&] {
+            return pane && screenOf(pane).contains(QStringLiteral("ready"));
+        },
+        5000));
+    TestControl test(directory, QStringLiteral("paste-control.conf"), window);
+    EXPECT_EQ(test.control.paste(pane->id(), QStringLiteral("a\nb\x1b")), QString());
+    EXPECT_TRUE(waitFor(
+        [&] {
+            return pane && screenOf(pane).contains(QStringLiteral(" 1b 5b 32 30 30 7e 61 0d 62 1b 5b 32 30 31 7e"));
+        },
+        5000))
+        << (pane ? screenOf(pane).toStdString() : std::string("the pane closed"));
+    // No paste marks now, and the cursor keys of application mode.
+    ASSERT_TRUE(waitFor(
+        [&] {
+            return pane && screenOf(pane).contains(QStringLiteral("modes"));
+        },
+        5000));
+    EXPECT_EQ(test.control.paste(pane->id(), QStringLiteral("c\nd")), QString());
+    EXPECT_FALSE(chrome->pasteConfirmOpen());
+    EXPECT_EQ(test.control.sendKeys(pane->id(), {QStringLiteral("Up")}), QString());
+    EXPECT_TRUE(waitFor(
+        [&] {
+            return pane && screenOf(pane).contains(QStringLiteral(" 63 0d 64 1b 4f 41"));
+        },
+        5000))
+        << (pane ? screenOf(pane).toStdString() : std::string("the pane closed"));
+    EXPECT_FALSE(chrome->pasteConfirmOpen());
+    EXPECT_EQ(test.control.paste(4294967295u, QStringLiteral("x")), QStringLiteral("no pane 4294967295"));
 }
 
 TEST_F(NativeWindow, ControlMovesBetweenPanesResizesScrollsAndTypesKeys)
@@ -19981,8 +20649,11 @@ TEST_F(NativeWindow, ControlMovesBetweenPanesResizesScrollsAndTypesKeys)
               QString::fromUtf8(cmdline.readAll().split('\0').value(0)));
     EXPECT_FALSE(foreground.value(QStringLiteral("cmdline")).toStringList().isEmpty());
     // No shell integration reported a prompt.
-    ASSERT_TRUE(map(left->id()).contains(QStringLiteral("at_prompt")));
-    EXPECT_FALSE(map(left->id()).value(QStringLiteral("at_prompt")).toBool());
+    EXPECT_EQ(map(left->id()).value(QStringLiteral("shell")).toString(), QStringLiteral("none"));
+    ASSERT_TRUE(map(left->id()).contains(QStringLiteral("input")));
+    EXPECT_FALSE(map(left->id()).value(QStringLiteral("input")).toBool());
+    ASSERT_TRUE(map(left->id()).contains(QStringLiteral("last_exit")));
+    EXPECT_TRUE(map(left->id()).value(QStringLiteral("last_exit")).isNull());
     // Without read access, the command line goes as the command does.
     EXPECT_TRUE(control.clientPaneMap(map(left->id()))
                     .value(QStringLiteral("foreground"))
@@ -20131,7 +20802,7 @@ TEST_F(NativeWindow, ControlLaunchesWithThePanesTextHeldWithVariablesAndWithoutT
     quint32 created = 0;
     ASSERT_TRUE(
         control
-            .clientSplit(source->id(), QStringLiteral("right"), {QStringLiteral("/bin/cat")},
+            .clientSplit(source->id(), QStringLiteral("right"), {QStringLiteral("cat")},
                          {{QStringLiteral("stdin_text"), QStringLiteral("screen")},
                           {QStringLiteral("stdin_ansi"), true},
                           {QStringLiteral("focus"), false},
@@ -20152,7 +20823,7 @@ TEST_F(NativeWindow, ControlLaunchesWithThePanesTextHeldWithVariablesAndWithoutT
     // when cat ended with the end of its input.
     ASSERT_TRUE(
         control
-            .clientSplit(source->id(), QStringLiteral("right"), {QStringLiteral("/bin/cat")},
+            .clientSplit(source->id(), QStringLiteral("right"), {QStringLiteral("cat")},
                          {{QStringLiteral("stdin_text"), QStringLiteral("screen")}, {QStringLiteral("focus"), false}},
                          created)
             .isEmpty());
@@ -20160,7 +20831,7 @@ TEST_F(NativeWindow, ControlLaunchesWithThePanesTextHeldWithVariablesAndWithoutT
         return !paneById(created);
     }));
     ASSERT_TRUE(control
-                    .clientSplit(source->id(), QStringLiteral("right"), {QStringLiteral("/bin/cat")},
+                    .clientSplit(source->id(), QStringLiteral("right"), {QStringLiteral("cat")},
                                  {{QStringLiteral("stdin_text"), QStringLiteral("screen")},
                                   {QStringLiteral("focus"), false},
                                   {QStringLiteral("hold"), true}},
@@ -20210,7 +20881,7 @@ TEST_F(NativeWindow, ControlLaunchesWithThePanesTextHeldWithVariablesAndWithoutT
         QStringLiteral("newWindow reads no pane: stdin_text is for split and newTab"));
     // Without read access, no pane text reaches a program.
     TestControl closed(directory, QStringLiteral("closed.conf"), window);
-    EXPECT_EQ(closed.control.clientSplit(source->id(), QStringLiteral("right"), {QStringLiteral("/bin/cat")},
+    EXPECT_EQ(closed.control.clientSplit(source->id(), QStringLiteral("right"), {QStringLiteral("cat")},
                                          {{QStringLiteral("stdin_text"), QStringLiteral("screen")}}, created),
               QStringLiteral("reading pane text is off (Control.allowReadText)"));
 }
@@ -20229,10 +20900,10 @@ TEST_F(NativeWindow, ControlNewTabWithoutTheFocusStaysOnTheCurrentTab)
         switches.push_back(to);
     });
     quint32 created = 0;
-    ASSERT_TRUE(test.control
-                    .clientNewTab(source->id(), QString(), {QStringLiteral("/bin/cat")},
-                                  {{QStringLiteral("focus"), false}}, created)
-                    .isEmpty());
+    ASSERT_TRUE(
+        test.control
+            .clientNewTab(source->id(), QString(), {QStringLiteral("cat")}, {{QStringLiteral("focus"), false}}, created)
+            .isEmpty());
     Pane* added = paneWithId(window, created);
     ASSERT_NE(added, nullptr);
     EXPECT_EQ(window->tabs().size(), 2);
@@ -20327,10 +20998,9 @@ TEST_F(NativeWindow, ControlSetsColorsFontOpacityVariablesSignalsAndTheWindow)
 
     // A signal to the program in the foreground: sleep ends, and its pane closes.
     quint32 created = 0;
-    ASSERT_TRUE(control
-                    .split(pane->id(), QStringLiteral("right"), {QStringLiteral("/bin/sleep"), QStringLiteral("60")},
-                           {}, created)
-                    .isEmpty());
+    ASSERT_TRUE(
+        control.split(pane->id(), QStringLiteral("right"), {QStringLiteral("sleep"), QStringLiteral("60")}, {}, created)
+            .isEmpty());
     const auto exists = [this, &created] {
         return paneWithId(window, created) != nullptr;
     };
@@ -20485,6 +21155,8 @@ TEST_F(NativeWindow, AProgramThatAsksForFilesGetsTheArchiveOrCtrlC)
     EXPECT_TRUE(waitFor([&] {
         return screenOf(window->focusedPane()).contains(QStringLiteral(" 03 78"));
     })) << screenOf(window->focusedPane()).toStdString();
+    // The second request asked nothing later either.
+    EXPECT_TRUE(waitForDialogs<QMessageBox>(QStringLiteral("Upload"), 0).isEmpty());
 
     // The command that asked ends (OSC 133 C and D, as the shell reports it)
     // while the question shows: the question closes, refused, and no Ctrl+C
@@ -20529,6 +21201,8 @@ TEST_F(NativeWindow, AProgramThatAsksForFilesGetsTheArchiveOrCtrlC)
     })) << screenOf(window->focusedPane()).toStdString();
     EXPECT_FALSE(screenOf(window->focusedPane()).contains(QStringLiteral(" 03")))
         << screenOf(window->focusedPane()).toStdString();
+    // Once the program read what came after the request, still no question.
+    EXPECT_TRUE(waitForDialogs<QMessageBox>(QStringLiteral("Upload"), 0).isEmpty());
 }
 
 // afterglow ctl for a pane of a session's window: what the daemon keeps
@@ -20580,10 +21254,9 @@ TEST_F(NativeWindow, CtlRefusesWhatTheDaemonOfASessionPaneKeeps)
     quint32 created = 0;
     for (const QVariantMap& options : refused) {
         SCOPED_TRACE(options.firstKey().toStdString());
-        EXPECT_EQ(
-            control.clientSplit(pane->id(), QStringLiteral("right"), {QStringLiteral("/bin/cat")}, options, created),
-            daemons);
-        EXPECT_EQ(control.clientNewTab(pane->id(), QString(), {QStringLiteral("/bin/cat")}, options, created), daemons);
+        EXPECT_EQ(control.clientSplit(pane->id(), QStringLiteral("right"), {QStringLiteral("cat")}, options, created),
+                  daemons);
+        EXPECT_EQ(control.clientNewTab(pane->id(), QString(), {QStringLiteral("cat")}, options, created), daemons);
     }
     ASSERT_TRUE(shown);
     EXPECT_EQ(shown->panes().size(), 1);

@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // The command clients of session panes: `aglow run` and `afterglow run`,
-// whose AFTERGLOW_SOCKET names the daemon. The daemon runs no scripts, so it
-// passes each such connection to the window that shows the session of the
-// client's pane. The window serves it on a connection to its own Afterglow,
+// whose AFTERGLOW_SOCKET names the daemon, and `afterglow mcp`, which selected
+// its agent session. The daemon runs no scripts, so it passes each such
+// connection to the window that shows the session of the client's pane, or
+// of the agent session. The window serves it on a connection to its own Afterglow,
 // whose commands target answers as it answers a pane outside a session. The
 // daemon reads whole request lines and passes them on, and passes the lines
 // of the window back: replies, the output of runs and the end.
@@ -28,14 +29,33 @@ std::string Daemon::startRelay(const IpcRequest& request, std::string line, pid_
                                IpcServerConnection& connection)
 {
     std::uint32_t pane = 0;
-    Session* const session = sessionOfProcess(caller, &pane);
+    // An agent's MCP server selected its agent session: its runs name their
+    // panes, and it reaches no other session. Its process can run in a pane
+    // of another session (an agent in the user's session pane), so the
+    // selection comes first, and a connection that selected a session never
+    // falls back to the session of its pane: that would be the user's.
+    Session* session = nullptr;
+    if (const auto selected = m_selected.find(&connection); selected != m_selected.end()) {
+        session = sessionBySerial(selected->second.serial);
+        if (!session)
+            return ipcError(request.id, Error::NoSuchSession, "session '" + selected->second.name + "' ended");
+        if (!session->options().agent) {
+            return failed(request, "session '" + session->name()
+                                       + "' is no agent session: a connection that selected a session reaches the "
+                                         "commands of scripts only in an agent session");
+        }
+        if (!session->options().control.enabled)
+            return failed(request, "session '" + session->name() + "' takes no control calls (Control.enabled)");
+    } else {
+        session = sessionOfProcess(caller, &pane);
+    }
     if (!session)
         return failed(request, "only a client in a session pane reaches the mux daemon for the commands of scripts");
     Attachment* const window = showing(session->name());
     if (!window)
-        return failed(request,
-                      "no window shows session '" + session->name()
-                          + "', and only a window runs the commands of scripts");
+        return ipcError(request.id, Error::NotAttached,
+                        "no window shows session '" + session->name()
+                            + "', and only a window runs the commands of scripts");
     // Each takes a connection in the window, and its first line waits in the
     // window's queue whatever its room. Only this window's: those of a
     // window that it took the session from end with that window. The
@@ -145,7 +165,7 @@ void Daemon::deliverRelayFrames(Attachment& window)
             if (frame.part == Attach::RelayPart::End) {
                 // The Afterglow ended the connection: all that it sent goes.
                 if (!r.partial.empty())
-                    r.connection->send(std::exchange(r.partial, {}));
+                    sendTo(*r.connection, std::exchange(r.partial, {}));
                 endRelay(frame.relay, false);
                 return;
             }
@@ -157,7 +177,8 @@ void Daemon::deliverRelayFrames(Attachment& window)
                 // No client reads a longer line: the relay ends, rather than
                 // hold a line that grows without a bound.
                 if (r.partial.size() > AfterglowProto::IpcConnection::MaxFrameBytes) {
-                    r.connection->send(
+                    sendTo(
+                        *r.connection,
                         ipcError(std::nullopt, IpcErrorCode::CallFailed,
                                  "the window of session '" + r.session + "' sent a line longer than a client reads"));
                     endRelay(frame.relay, true);
@@ -166,7 +187,7 @@ void Daemon::deliverRelayFrames(Attachment& window)
             }
             std::string rest = r.partial.substr(end + 1);
             r.partial.resize(end + 1);
-            r.connection->send(std::exchange(r.partial, std::move(rest)));
+            sendTo(*r.connection, std::exchange(r.partial, std::move(rest)));
         });
         // A frame that failed (out of memory) ends its relay, whose lines it
         // broke, and not the other relays of the window. The window ended
@@ -195,7 +216,8 @@ void Daemon::answerRelays()
         // The half of a line that did not go is dropped. Out of memory, the
         // client gets no error, and its relay ends all the same.
         contained("a command client", [&] {
-            relay.connection->send(
+            sendTo(
+                *relay.connection,
                 ipcError(std::nullopt, IpcErrorCode::CallFailed,
                          "the window of session '" + relay.session + "' closed, and with it the runs of this client"));
         });

@@ -760,6 +760,62 @@ When the test binary dies first, the kernel stops the `sshd`.
 A socket that went away inside its own call is a use of freed memory, which a normal build does not always show.
 Run the test in the `debug` preset, which has the sanitizers, to see it every time.
 
+## MCP server tests
+
+The tests of `afterglow mcp` have two parts:
+
+| Tests | Binary or script | What they run |
+| --- | --- | --- |
+| `McpTools.*` | `afterglow_mcp_tests` | The tool list, with no daemon. Each schema passes the checks of phosphor-mcp, and the list is the same each time. Each tool sets its four hints, a tool of a pane requires the pane, and the workflow tools take names within their limits. |
+| `McpParts.*` | `afterglow_mcp_tests` | The helpers of the tools, with no daemon. They cut long output, find the end of a command at a prompt, and read exit codes, session names and project splits. |
+| `DaemonLink.*` | `afterglow_mcp_tests` | The connection to the daemon, over a socket pair. Each call is one line, some errors end the connection, and its queue has a limit. |
+| `McpToolsRun.*`, `McpToolsSend.*`, `McpToolsWait.*` and `McpToolsClose.*` | `afterglow_mcp_tests` | The tools `run`, `send`, `wait` and `close_pane` against a fake daemon. The fake daemon answers each call as the test tells it. |
+| `McpToolsProject.*` | `afterglow_mcp_tests` | The tool `open_project` against a fake daemon: a split of a pane that ended, and an open that fails. |
+| `McpToolsSession.*` | `afterglow_mcp_tests` | The server loses its link to a fake daemon. It ends the session that it made, then reports the loss. |
+| `afterglow_mcp_session` | `afterglow/tests/mcp_session.py` | `afterglow mcp` as an MCP client drives it, against a daemon of its own. The cases cover runs and their exit codes, waits, output limits, refusals, sessions and `--adopt`, projects, screenshots and script commands. |
+| `afterglow_mcp_session_window` | `afterglow/tests/mcp_session.py` | The case `script_command_through_a_window`. It opens a window of the session in a headless KWin, on a session bus of its own, and draws on the GPU. |
+
+Run them:
+
+```sh
+ctest --test-dir build --output-on-failure -R '^((McpTools[A-Za-z]*|McpParts|DaemonLink)\.|afterglow_mcp_session)'
+```
+
+Run one case of the runner by its name:
+
+```sh
+python3 -I afterglow/tests/mcp_session.py build/afterglow/afterglow exit_codes
+```
+
+The runner gives each server a private `XDG_RUNTIME_DIR`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME` and `HOME` under `/tmp`.
+A server gets only the variables of an allow list.
+Thus no server reaches your mux daemon, your Afterglow, your session bus or your shell files.
+The servers of a case share one daemon, which the first server of the case starts.
+The daemon ends with the last session of the case, so each case starts with no session.
+
+| Requirement | Without it |
+| --- | --- |
+| Bash | The run fails |
+| Zsh | The `zsh_paste` case skips |
+| gdb | The `gdb_prompt` case skips |
+| `kwin_wayland` and `dbus-run-session` | The `script_command_through_a_window` case skips |
+| A Vulkan device | The `script_command_through_a_window` case skips |
+
+The runner prints `PASS`, `SKIP` or `FAIL` for each case, with the reason of a skip or a failure.
+Without a case name, the runner runs each case except `script_command_through_a_window`.
+
+| Exit status | Meaning |
+| --- | --- |
+| 0 | Each case that ran passed, or some passed and the others skipped |
+| 1 | A case failed |
+| 2 | The command line has no arguments, or names a case that does not exist. The runner does not check the path of the binary. |
+| 77 | Each case that ran skipped. CTest reports `afterglow_mcp_session_window` as Skipped. |
+
+At the end, and after a failure, the runner ends each server, session, window and daemon that it started.
+
+Do not register an `afterglow mcp` from `build/` with an MCP client.
+It starts an `aglow-mux` from `build/`, and the next build breaks that daemon.
+
 ## Mux daemon tests
 
 Run the tests of the [mux daemon](MUX.md), of `afterglow mux` and of the server side of its protocol:
@@ -841,6 +897,7 @@ The `StateSync.*` tests cover these cases:
 - A reload of the window changes only the view options of the replica. These are word separators, bidirectional layout, bold as bright, minimum contrast, the width of ambiguous characters and the length of the history. The colors, the cursor and the images stay those of the writer.
 - A held frame brings the title, the directory, the status and the marks. The screens, the history, the images and the region scrolls wait for the next update, which matches the terminal.
 - A held frame frees the pixels of an image that the program deleted while they went
+- A held frame changes the replica's text count (`contentGeneration`) when the writer's text changed, and a title alone does not. The rows still wait.
 - A mark of the text is reached while the program writes more rows than the frames carry. The replica then has every row of the mark. A new mark waits for the rows that came since, and a reset forgets the mark.
 - The random runs hold some frames, as for a pane that you cannot see, and mark the text, as a read does. When a mark is reached, the replica has its history rows and the rows that were visible at the mark. A resize in a run of held frames comes with the next update.
 

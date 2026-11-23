@@ -5,6 +5,7 @@
 
 #include "Theme.h"
 #include "animation/MomentumScroll.h"
+#include "../ShownText.h"
 
 #include "MuxConnect.h"
 #include "MuxProtocol.h"
@@ -73,6 +74,11 @@ const QString Animation = QStringLiteral("Animation");
 const QString Quick = QStringLiteral("QuickTerminal");
 const QString ControlGroup = QStringLiteral("Control");
 const QString MuxGroup = QStringLiteral("Mux");
+const QString McpGroup = QStringLiteral("Mcp");
+/// The end of each description of the Mcp group.
+const QString McpReadAtStart = QStringLiteral(
+    " The server reads this from the default config file when it starts, and the -o option of Afterglow does not "
+    "change it.");
 const QString AudioGroup = QStringLiteral("Audio");
 const QString ScriptsGroup = QStringLiteral("Scripts");
 const QString MouseGroup = QStringLiteral("Mouse");
@@ -327,6 +333,16 @@ KeyDef curveKey(const QString& key, const QString& def, const QString& descripti
             }};
 }
 
+/// The color settings: the colors of Colors (not its theme or palette) and
+/// Mux.agentColor. Each reads a color name, and an empty value means none.
+bool isColorKey(const QString& group, const KeyDef& def)
+{
+    if (def.expectedType != QMetaType::QString)
+        return false;
+    return (group == Colors && def.key != QLatin1String("theme"))
+        || (group == MuxGroup && def.key == QLatin1String("agentColor"));
+}
+
 /// The curve settings: Animation.*Curve and QuickTerminal.curve.
 bool isCurveKey(const QString& group, const QString& key)
 {
@@ -519,9 +535,9 @@ PhosphorConfig::Schema buildSchema()
                 "and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use "
                 "plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme "
                 "over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, "
-                "after the brightness of the color scheme. A session that afterglow mux new starts has no "
-                "desktop. It takes the dark NAME, and plasma takes only the colors that the color scheme "
-                "file sets. A window that shows the session gives it the colors of the window. A theme "
+                "after the brightness of the color scheme. A session that afterglow mux new or afterglow mcp starts "
+                "has no desktop. It takes the dark NAME, and plasma takes only the colors that the color "
+                "scheme file sets. A window that shows the session gives it the colors of the window. A theme "
                 "replaces each color and the visual bell intensity that it sets. It also replaces the "
                 "divider and popup border colors. Afterglow reads its own JSON themes, Ghostty themes, "
                 "Kitty themes and Konsole color schemes. A value with a slash is a file path. A path can "
@@ -668,7 +684,8 @@ PhosphorConfig::Schema buildSchema()
              "Ask before closing a pane, tab or window where a program is running. The command afterglow mux "
              "kill asks too, before it ends a session where a program is running. Without a terminal on its "
              "input, it refuses until you give --force. With Mux.onClose detach, a window of a mux session keeps "
-             "the session when it closes. The window of a project that opens into a session keeps it too. "
+             "the session when it closes. The window of a project that opens into a session keeps it too, and so "
+             "does the window of an agent session. "
              "Closing such a window, or its last tab or pane, asks nothing about the programs of the session. "
              "They keep running.")},
         {QStringLiteral("hideMouseWhileTyping"), d.hideMouseWhileTyping, QMetaType::Bool,
@@ -775,12 +792,13 @@ PhosphorConfig::Schema buildSchema()
     schema.groups[Window] = {
         intKey(QStringLiteral("padding"), d.window.padding, 0, 200,
                QStringLiteral("Space around the grid in logical pixels.")),
-        intKey(QStringLiteral("initialColumns"), d.window.initialColumns, 10, 1000,
-               QStringLiteral(
-                   "Columns of a new window, and of a new session that afterglow mux new or a project starts.")),
         intKey(
-            QStringLiteral("initialRows"), d.window.initialRows, 4, 500,
-            QStringLiteral("Rows of a new window, and of a new session that afterglow mux new or a project starts.")),
+            QStringLiteral("initialColumns"), d.window.initialColumns, 10, 1000,
+            QStringLiteral("Columns of a new window, and of a new session that afterglow mux new, afterglow mcp or a "
+                           "project starts.")),
+        intKey(QStringLiteral("initialRows"), d.window.initialRows, 4, 500,
+               QStringLiteral("Rows of a new window, and of a new session that afterglow mux new, afterglow mcp or a "
+                              "project starts.")),
         doubleKey(QStringLiteral("backgroundOpacity"), d.window.backgroundOpacity, 0.05, 1.0,
                   QStringLiteral("Opacity of the default background. Text stays opaque.")),
         {QStringLiteral("blur"), d.window.blur, QMetaType::Bool,
@@ -795,16 +813,17 @@ PhosphorConfig::Schema buildSchema()
                 QStringLiteral(
                     "Corners of the border around a popup overlay. The rounded value curves each corner. The square "
                     "value makes each corner a right angle.")),
-        stringKey(QStringLiteral("workingDirectory"), d.window.workingDirectory,
-                  QStringLiteral(
-                      "Starting directory for new tabs, panes and windows. Use inherit, home or a path. The inherit "
-                      "value, or an empty value, uses the focused pane's directory, or for a launch the directory of "
-                      "the launcher. When the pane's directory is not known, it uses the home directory. A path "
-                      "must be absolute, ~, or start with ~/. A path that is not a directory uses inherit. The "
-                      "afterglow -d option overrides this setting. A session of afterglow mux new starts in its "
-                      "--cwd or in the current directory. With --ssh, it starts in its --cwd or in the home "
-                      "directory on that host. In a session of another host, a new tab or pane starts in the "
-                      "directory of the pane that it opens from.")),
+        stringKey(
+            QStringLiteral("workingDirectory"), d.window.workingDirectory,
+            QStringLiteral(
+                "Starting directory for new tabs, panes and windows. Use inherit, home or a path. The inherit "
+                "value, or an empty value, uses the focused pane's directory, or for a launch the directory of "
+                "the launcher. When the pane's directory is not known, it uses the home directory. A path "
+                "must be absolute, ~, or start with ~/. A path that is not a directory uses inherit. The "
+                "afterglow -d option overrides this setting. A session of afterglow mux new or afterglow mcp "
+                "starts in its --cwd or in the current directory. With --ssh, it starts in its --cwd or in the home "
+                "directory on that host. In a session of another host, a new tab or pane starts in the "
+                "directory of the pane that it opens from.")),
         enumKey(
             QStringLiteral("startMode"), StartModeChoices, d.window.startMode,
             QStringLiteral("How new windows open. The normal value opens them at Window.initialColumns and "
@@ -922,7 +941,8 @@ PhosphorConfig::Schema buildSchema()
                     "another tab or pane of the window ends only the programs of that tab or pane. With either "
                     "value, the session keeps running after afterglow mux detach or a takeover by another window. "
                     "It also keeps running after a quit of Afterglow, a crash or a lost connection. The window of "
-                    "a project that opens into a session always keeps its session.")),
+                    "a project that opens into a session always keeps its session. So does the window of an agent "
+                    "session.")),
         intKey(QStringLiteral("eventQueue"), int(d.mux.eventQueue >> 20), int(AfterglowMux::MinEventQueue >> 20),
                int(AfterglowMux::MaxEventQueue >> 20),
                QStringLiteral(
@@ -961,11 +981,58 @@ PhosphorConfig::Schema buildSchema()
                    "shows the session. The next window that shows the session shows them, oldest first. "
                    "Notifications.enabled and Notifications.rateLimit apply to them, so a value above the rate "
                    "limit only drops the newest. Notifications.filters applies when a window shows them, so a "
-                   "filtered notification also takes a place. When a pane has more, the oldest goes. The notifications "
-                   "of a pane "
-                   "take at most 256 KiB, and a larger one keeps no icon. A pane also keeps a bell and a flash, "
-                   "whatever this value. The session does not keep clipboard writes. The value 0 keeps no "
-                   "notifications. A change applies at once to a session that a window shows.")),
+                   "filtered notification also takes a place. When a pane has more, the oldest goes. The "
+                   "notifications of a pane take at most 256 KiB, and a larger one keeps no icon. A pane also keeps "
+                   "a bell and a flash, whatever this value. The session does not keep clipboard writes. The value 0 "
+                   "keeps no notifications. A change applies at once to a session that a window shows.")),
+        stringKey(QStringLiteral("agentLabel"), d.mux.agentLabel,
+                  QStringLiteral("The text of the badge at the start of the tab bar of a window that shows an "
+                                 "agent session. The title of the window starts with it too, such as [agent]. "
+                                 "Afterglow removes the spaces at the ends, the control characters and the "
+                                 "invisible characters that change the direction or the look of text. Then it "
+                                 "keeps the first %1 UTF-16 units. An empty value shows no badge and no prefix. "
+                                 "An agent session is a session that afterglow mcp makes or adopts, or that "
+                                 "afterglow mux new --agent makes.")
+                      .arg(MuxSettings::MaxAgentLabel)),
+        colorKey(QStringLiteral("agentColor"), {},
+                 QStringLiteral("The color of the badge of an agent session. An empty value uses color 13 of the "
+                                "palette, which is bright magenta. The theme or Colors.palette sets that color.")),
+    };
+    schema.groups[McpGroup] = {
+        intKey(QStringLiteral("waitTimeout"), d.mcp.waitTimeout, McpSettings::MinTimeout, McpSettings::MaxTimeout,
+               QStringLiteral("Milliseconds that the run, wait and run_script_command tools of afterglow mcp wait "
+                              "when the call gives no timeout. A value above Mcp.maxWaitTimeout uses "
+                              "Mcp.maxWaitTimeout.%1")
+                   .arg(McpReadAtStart)),
+        intKey(QStringLiteral("maxWaitTimeout"), d.mcp.maxWaitTimeout, McpSettings::MinTimeout, McpSettings::MaxTimeout,
+               QStringLiteral("The longest time in milliseconds that a call of the run, wait and run_script_command "
+                              "tools of afterglow mcp can ask for. A longer timeout uses this value. After the time "
+                              "of run or wait, the command continues, and the agent calls wait again. After the "
+                              "time of run_script_command, the command stops.%1")
+                   .arg(McpReadAtStart)),
+        intKey(QStringLiteral("outputLimit"), d.mcp.outputLimit, McpSettings::MinOutputLimit,
+               McpSettings::MaxOutputLimit,
+               QStringLiteral("The most bytes of UTF-8 text that one result of the run, wait, read and "
+                              "run_script_command tools of afterglow mcp carries. A longer text loses its start, "
+                              "and the result says that it was cut.%1")
+                   .arg(McpReadAtStart)),
+        intKey(QStringLiteral("tailLines"), d.mcp.tailLines, 1, McpSettings::MaxTailLines,
+               QStringLiteral("The number of lines at the end of the output that the run and wait tools of "
+                              "afterglow mcp return. A call can give another number in tail_lines.%1")
+                   .arg(McpReadAtStart)),
+        intKey(QStringLiteral("screenshotMaxSize"), d.mcp.screenshotMaxSize, McpSettings::MinScreenshotSize,
+               McpSettings::MaxScreenshotSize,
+               QStringLiteral("The longest side in pixels of a screenshot that the screenshot tool of afterglow "
+                              "mcp returns. Afterglow scales a larger image down.%1")
+                   .arg(McpReadAtStart)),
+        {QStringLiteral("endSessionOnExit"), d.mcp.endSessionOnExit, QMetaType::Bool,
+         QStringLiteral("End the session of afterglow mcp when the server exits, also when it crashes. A session "
+                        "ends when the last connection that bound it closes. A server binds a session only while "
+                        "this is on, so a server with this off does not keep a session running. When this is off, "
+                        "the session keeps running, and a new server can use it again with --session. A session "
+                        "of afterglow mux new --agent that a server uses with --session also ends with the "
+                        "server. A session that a server adopted with --adopt never ends with the server.%1")
+             .arg(McpReadAtStart)},
     };
     schema.groups[ControlGroup] = {
         {QStringLiteral("enabled"), d.control.enabled, QMetaType::Bool,
@@ -973,14 +1040,17 @@ PhosphorConfig::Schema buildSchema()
              "Allow other programs, such as afterglow ctl and aglow run, to control Afterglow through its "
              "socket. The aglow run command also needs Scripts.enabled. Later launches of Afterglow use the "
              "socket also when this is off. A value other than true, false, yes, no, on, off, 1 or 0 turns it off. "
-             "A mux session follows Control.enabled, Control.allowReadText and Control.eventInterval of the "
-             "window that showed it last.")},
+             "A mux session follows Control.enabled, Control.allowReadText, Control.eventInterval and "
+             "Control.allowAdopt of the window that showed it last, else of the program that started it. A "
+             "change reaches a session only through a window that shows the session. This also applies to an "
+             "agent session.")},
         {QStringLiteral("allowReadText"), d.control.allowReadText, QMetaType::Bool,
          QStringLiteral(
              "Allow control clients, such as afterglow ctl, to read pane text, including scrollback, the commands "
              "that run and the values of user variables. It also allows screenshots of panes, tabs and windows. A "
              "script command that runs for a client, such as aglow run or afterglow run, reads pane text only when "
-             "Scripts.allowReadText is on too.")},
+             "Scripts.allowReadText is on too. The panes of an agent session always have read access through "
+             "the control calls of the session.")},
         {QStringLiteral("allowRemoteReadText"), d.control.allowRemoteReadText, QMetaType::Bool,
          QStringLiteral(
              "Allow a script command that runs from a remote host to read pane text. Such a command runs with "
@@ -992,8 +1062,16 @@ PhosphorConfig::Schema buildSchema()
         intKey(QStringLiteral("eventInterval"), d.control.eventInterval, 0, int(AfterglowMux::MaxEventInterval),
                QStringLiteral(
                    "Shortest time in milliseconds between two events of one kind for one pane, for titles, status, "
-                   "context, bells and each user variable. A newer event replaces one that waits, and the bells in "
-                   "between become one. A value of 0 sends every event.")),
+                   "context, bells, text changes and each user variable. A newer event replaces one that waits, and "
+                   "the bells and text changes in between become one. A text change comes when a program writes "
+                   "cells, also with the text that they had. It also comes when the cursor moves, the view scrolls "
+                   "or a new width wraps the lines again. A value of 0 sends every event.")),
+        {QStringLiteral("allowAdopt"), d.control.allowAdopt, QMetaType::Bool,
+         QStringLiteral(
+             "Allow afterglow mcp --adopt to make an agent session of a mux session that you started. The session "
+             "needs Control.enabled too. This is a guard against a mistake, not a security boundary: any program of "
+             "your user can attach to a session and read its panes. When you turn it off, a session that an agent "
+             "adopted stays an agent session.")},
     };
     schema.groups[ScriptsGroup] = {
         {QStringLiteral("allowReadText"), d.scriptsAllowReadText, QMetaType::Bool,
@@ -1415,8 +1493,7 @@ QStringList malformedValues(const PhosphorConfig::Schema& schema, const QJsonObj
                     out << QStringLiteral("%1 must be one of %2. Using the default")
                                .arg(name, names.join(QStringLiteral(", ")));
                 }
-            } else if (group.key() == Colors && def.expectedType == QMetaType::QString
-                       && def.key != QLatin1String("theme")) {
+            } else if (isColorKey(group.key(), def)) {
                 if (const QString color = raw.toString(); !color.isEmpty() && !Themes::isColorName(color)) {
                     out << QStringLiteral("%1 is not a color. Using the default").arg(name);
                 }
@@ -1661,7 +1738,14 @@ QVariant SettingsStore::persisted(const QString& group, const QString& key) cons
         file.replaceRoot(m_backend->jsonRootSnapshot());
     // Never written: the destructor flushes a dirty document.
     file.clearDirty();
-    const QJsonValue raw = file.jsonRootSnapshot().value(group).toObject().value(key);
+    const QJsonValue groupValue = file.jsonRootSnapshot().value(group);
+    const QJsonValue raw = groupValue.toObject().value(key);
+    // Scripts.enabled and Control.enabled fail closed in read() for a value
+    // that is no boolean, and for a group that is no object: so here.
+    const bool switchKey = key == QLatin1String("enabled") && (group == ScriptsGroup || group == ControlGroup);
+    if (switchKey
+        && ((!groupValue.isUndefined() && !groupValue.isObject()) || (!raw.isUndefined() && !isBoolValue(raw))))
+        return false;
     // As read() takes it: the defaults that malformedValues() lays over a
     // list, a map or a string of another JSON type, and PhosphorConfig's own
     // reading of the rest (an integer key truncates 6.7 to 6).
@@ -2372,12 +2456,34 @@ Settings SettingsStore::read()
     }
     s.mux.signInTimeout = st.read<int>(MuxGroup, QStringLiteral("signInTimeout"));
     s.mux.keptNotifications = st.read<int>(MuxGroup, QStringLiteral("keptNotifications"));
+    // One line in the tab bar and the title: a program can name it in -o,
+    // and a long one would push the tabs away.
+    const QString label =
+        sanitizedLine(st.read<QString>(MuxGroup, QStringLiteral("agentLabel")), std::numeric_limits<qsizetype>::max())
+            .trimmed();
+    if (label.size() > MuxSettings::MaxAgentLabel) {
+        problem(QStringLiteral("Mux.agentLabel is longer than %1 UTF-16 units. Afterglow uses the first %1")
+                    .arg(MuxSettings::MaxAgentLabel));
+    }
+    s.mux.agentLabel = textPrefix(label, MuxSettings::MaxAgentLabel).trimmed();
+    if (const QString agent = st.read<QString>(MuxGroup, QStringLiteral("agentColor")); !agent.isEmpty())
+        s.mux.agentColor = toRgb(agent, {});
+
+    // Mcp: afterglow mcp reads them once, at its start.
+    s.mcp.maxWaitTimeout = st.read<int>(McpGroup, QStringLiteral("maxWaitTimeout"));
+    // As the description says, for every tool that waits.
+    s.mcp.waitTimeout = std::min(st.read<int>(McpGroup, QStringLiteral("waitTimeout")), s.mcp.maxWaitTimeout);
+    s.mcp.outputLimit = st.read<int>(McpGroup, QStringLiteral("outputLimit"));
+    s.mcp.tailLines = st.read<int>(McpGroup, QStringLiteral("tailLines"));
+    s.mcp.screenshotMaxSize = st.read<int>(McpGroup, QStringLiteral("screenshotMaxSize"));
+    s.mcp.endSessionOnExit = st.read<bool>(McpGroup, QStringLiteral("endSessionOnExit"));
 
     // Control
     s.control.enabled = st.read<bool>(ControlGroup, QStringLiteral("enabled"));
     s.control.allowReadText = st.read<bool>(ControlGroup, QStringLiteral("allowReadText"));
     s.control.allowRemoteReadText = st.read<bool>(ControlGroup, QStringLiteral("allowRemoteReadText"));
     s.control.eventInterval = st.read<int>(ControlGroup, QStringLiteral("eventInterval"));
+    s.control.allowAdopt = st.read<bool>(ControlGroup, QStringLiteral("allowAdopt"));
 
     // Scripts
     s.scripts = st.read<bool>(ScriptsGroup, QStringLiteral("enabled"));

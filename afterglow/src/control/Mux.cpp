@@ -58,6 +58,12 @@ Commands:
         --cwd DIR             Start in DIR, not in the current directory.
         --detach              Create the session without a window, and
                               print its name.
+        --agent               Create an agent session, as afterglow mcp
+                              does: it keeps read access for afterglow ctl,
+                              and its window marks it. An afterglow mcp
+                              --session NAME with Mcp.endSessionOnExit on
+                              binds it, and the session ends when that
+                              server exits.
   attach [NAME] [--no-takeover]
                               Show a session in a window. Without NAME, the
                               only session, or a new one when none runs.
@@ -116,6 +122,7 @@ struct NewOptions
     std::optional<std::string> name;
     std::optional<QString> cwd;
     bool detach = false;
+    bool agent = false; ///< --agent
     QStringList command;
     std::optional<std::string> host; ///< --ssh
 };
@@ -273,6 +280,8 @@ int newSession(int argc, char** argv, const std::string& command = "new")
                 o.cwd = QString::fromLocal8Bit(argv[++i]);
         } else if (arg == "--detach") {
             o.detach = true;
+        } else if (arg == "--agent") {
+            o.agent = true;
         } else if (std::string problem; takeSsh(argc, argv, i, o.host, &problem)) {
             if (!problem.empty())
                 return usage(problem);
@@ -354,6 +363,7 @@ int newSession(int argc, char** argv, const std::string& command = "new")
             session.launch.argv.push_back(word.toStdString());
         session.launch.workingDirectory = cwd.toStdString();
         sessionValues(session, settings, o.command);
+        session.agent = o.agent;
         Reached reached = AfterglowMux::reach(*route, true, signInWaitMs(settings), &error);
         if (!reached.connection)
             return fail(command, error.empty() ? std::string("aglow-mux did not start") : error);
@@ -377,6 +387,7 @@ int newSession(int argc, char** argv, const std::string& command = "new")
             return fail(command, "no directory " + printable(directory->toStdString()));
         session = localSessionOptions(settings, *directory, o.command,
                                       QString::fromStdString(o.name.value_or(std::string())));
+        session.agent = o.agent;
         QString why;
         const QString made = newLocalSession({route->sockets, AfterglowMux::currentEnvironment()}, session, &why);
         if (made.isEmpty())
@@ -431,10 +442,15 @@ int listSessions(int argc, char** argv)
     // As the names print: printable() can make a name of another host longer.
     for (const auto& s : list)
         width = std::max(width, printable(s.name).size());
-    std::printf("%-*s  %-8s  %5s\n", int(width), "NAME", "STATE", "PANES");
+    std::printf("%-*s  %-8s  %5s  %s\n", int(width), "NAME", "STATE", "PANES", "AGENT");
     for (const auto& s : list) {
-        std::printf("%-*s  %-8s  %5d\n", int(width), printable(s.name).c_str(), s.attached ? "attached" : "detached",
-                    s.panes);
+        // An agent session, and the connections of agents that it ends with.
+        // A word for each row: a blank column would end the line in spaces.
+        const std::string agent = !s.agent ? std::string("no")
+            : s.bound > 0                  ? "yes, bound to " + std::to_string(s.bound)
+                                           : std::string("yes");
+        std::printf("%-*s  %-8s  %5d  %s\n", int(width), printable(s.name).c_str(),
+                    s.attached ? "attached" : "detached", s.panes, agent.c_str());
     }
     return 0;
 }

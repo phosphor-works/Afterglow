@@ -137,14 +137,20 @@ MSG_CTL = (
     'drive their instance.'
 )
 MSG_MUX = (
-    "`afterglow mux`, `afterglow ctl --session`, `aglow-mux` (`afterglow-mux` in an older build) and "
-    "`afterglow --mux-attach` reach the user's mux daemon, which holds the user's terminal sessions. Its sockets "
+    "`afterglow mux`, `afterglow ctl --session`, `afterglow mcp`, `aglow-mux` (`afterglow-mux` in an older build) "
+    "and `afterglow --mux-attach` reach the user's mux daemon, which holds the user's terminal sessions. Its sockets "
     'are in $XDG_RUNTIME_DIR/aglow-mux and $XDG_STATE_HOME/aglow-mux (else ~/.local/state/aglow-mux), so '
     'WAYLAND_DISPLAY does not isolate it. Name a private runtime directory and a private state directory under /tmp '
     'on the command (XDG_RUNTIME_DIR=/tmp/... XDG_STATE_HOME=/tmp/...), and kill the sessions that you made with the '
     'same variables. Never stop, kill, restart or mask aglow-mux.service, and never remove the files in the two '
-    "socket directories of the user: that ends or strands the user's sessions. `afterglow mux` alone and its "
-    '--help connect to nothing.'
+    "socket directories of the user: that ends or strands the user's sessions. `afterglow mcp` also needs a private "
+    'XDG_CONFIG_HOME and HOME under /tmp: save_project writes to the projects folder of the configuration. '
+    '`afterglow mux` alone, and the --help of `afterglow mux` and `afterglow mcp`, connect to nothing.'
+)
+MSG_MCP_BUILD = (
+    "An MCP server from build/ starts an aglow-mux from build/, which the next build breaks, and it reaches the "
+    "user's mux daemon. Register the afterglow that the user installed, or test the build of `afterglow mcp` with "
+    'private XDG directories (afterglow/tests/mcp_session.py).'
 )
 MSG_LAUNCH = (
     "This starts Afterglow on the user's own Wayland display: it opens a window on the user's desktop, or hands the "
@@ -507,11 +513,28 @@ def isolated_mux(env):
     return state.startswith('/') and os.path.realpath(state) not in users
 
 
+def isolated_config(env):
+    """Whether afterglow mcp writes its projects elsewhere than the user's: a literal XDG_CONFIG_HOME and HOME
+    under /tmp."""
+    return all(under_tmp(env.get(name) or '') for name in ('XDG_CONFIG_HOME', 'HOME'))
+
+
+def registers_build_server(word, args):
+    """Whether claude mcp add registers an afterglow from a build tree (build/ or a preset's build-NAME/) as an MCP
+    server."""
+    if word != 'claude' or args[:2] != ['mcp', 'add']:
+        return False
+    return any(os.path.basename(a) == 'afterglow' and re.search(r'(^|/)build(-[^/]+)?/', a) for a in args[2:])
+
+
 def reaches_mux(word, args):
-    """Whether afterglow ARGS or a daemon of MUX_DAEMONS reaches a mux daemon: afterglow mux (but not its help),
-    afterglow ctl --session, afterglow --mux-attach, and the daemon itself (but not its --help or --version)."""
+    """Whether afterglow ARGS or a daemon of MUX_DAEMONS reaches a mux daemon: afterglow mux and afterglow mcp (but
+    not their help), afterglow ctl --session, afterglow --mux-attach, and the daemon itself (but not its --help or
+    --version)."""
     if word == 'afterglow':
         if args[:2] == ['ctl', '--session']:
+            return True
+        if args[:1] == ['mcp'] and args[1:2] not in (['-h'], ['--help']):
             return True
         if any(a == '--mux-attach' or a.startswith('--mux-attach=') for a in args):
             return True
@@ -534,7 +557,7 @@ def drives_instance(word, args):
 LAUNCH_VALUES = {'-d', '--working-directory', '--title', '--config', '-o', '--override', '--class', '--mux-attach'}
 NO_WINDOW = {'-h', '--help', '-?', '--help-all', '-v', '--version', '--config-reference'}
 # The words after afterglow that run something else than the terminal
-NO_TERMINAL = {'ctl', 'ssh', 'mux', 'run', 'transfer', 'dnd', 'icat', 'clipboard'}
+NO_TERMINAL = {'ctl', 'ssh', 'mux', 'mcp', 'run', 'transfer', 'dnd', 'icat', 'clipboard'}
 
 
 def launches_window(args):
@@ -620,6 +643,10 @@ def check_bash(command, cwd=None):
             return message
         if reaches_mux(word, args) and not isolated_mux(env):
             return MSG_MUX
+        if word == 'afterglow' and reaches_mux(word, args) and args[:1] == ['mcp'] and not isolated_config(env):
+            return MSG_MUX
+        if registers_build_server(word, args):
+            return MSG_MCP_BUILD
         if word == 'systemctl' and stops_mux_unit(args):
             return MSG_MUX
         if removes_mux_files(word, args, cwd):

@@ -14,6 +14,7 @@ Copy a `.luau` file into `scripts/` beside the active configuration file.
 The usual directory is `~/.config/phosphor-works/afterglow/scripts/`.
 A script can handle terminal events and add [commands](#commands).
 Run a command with `aglow run <id> <command>`, from the command palette, from the context menu, with a key or with `afterglow ctl action`.
+An agent runs it with the `run_script_command` tool of [`afterglow mcp`](MCP.md#run_script_command).
 A command that a script marks `remote` can also run from a remote host, with `aglow run` in an `afterglow ssh` session.
 It can also run with `aglow run` in a pane of a [mux session of another host](MUX.md#script-commands-in-a-session-pane).
 Set `Scripts.enabled=false` to disable scripting.
@@ -170,7 +171,7 @@ A generic `action` runs in the pane's tab, and shows that tab first.
 `close_tab`, `rename_tab`, `move_tab_left`, `move_tab_right` and `detach_tab` act on the pane's tab and do not show it, as the tab menu does.
 `close_tab` asks first when a program runs in the tab and `Terminal.confirmClose` is on.
 With `Mux.onClose` at `detach`, closing the last tab of a mux session asks nothing about the programs of the session (see [MUX.md](MUX.md#windows-of-a-session)).
-The same is true in a window that a project opened into its session, and while Afterglow quits.
+The same is true in a window that a project opened into its session, in the window of an [agent session](MUX.md#agent-sessions), and while Afterglow quits.
 In these windows, `close` of the last pane and `close_tab` of the last tab leave the programs of the session running.
 `exec`, `select`, `prompt` and `overlay` deliver their results when the process or the dialog finishes.
 `open_project` for a project that opens into a mux session delivers its result when the window of the session opens.
@@ -320,11 +321,12 @@ When a program clears its last status, or the terminal resets, `ev.state` is `id
 
 | Record | Fields |
 | --- | --- |
-| Window | `id`, `focused`, `active_tab`, `active_pane`, `project`, `project_directory`, `overview`, `session`, `session_host`, `cols`, `rows` |
+| Window | `id`, `focused`, `active_tab`, `active_pane`, `project`, `project_directory`, `overview`, `session`, `session_host`, `agent`, `cols`, `rows` |
 | Tab | `id`, `window`, `index`, `title`, `active`, `active_pane` |
 | Pane | `id`, `window`, `tab_id`, `tab`, `title`, `cwd`, `command`, `cols`, `rows`, `focused`, `context` |
 
 `session` is the mux session that the window shows, else empty. `session_host` is the ssh destination of its daemon, empty for this computer.
+`agent` is `true` when that session is an [agent session](MUX.md#agent-sessions), else `false`.
 
 `cwd` is the local directory that the shell reported last, or the working directory of the pane's foreground process.
 It is `""` when it is not known.
@@ -653,6 +655,7 @@ A scroll or a drop outside the popup does nothing.
 
 A command is an operation that a script adds.
 You can run it from a shell, from the command palette, from the context menu, with a key, with `afterglow ctl action` or from a remote host.
+An agent can run it with the `run_script_command` tool of the MCP server.
 A single-file script declares its commands in `metadata.commands`.
 A package declares them in `package.json` (see [packages](PACKAGES.md#commands)).
 
@@ -690,7 +693,7 @@ A script with commands must have a `run_command` function.
 
 | Source | How |
 | --- | --- |
-| `shell` | `aglow run <id> <command> [ARGS…]` (see [control](CONTROL.md#aglow-run)) |
+| `shell` | `aglow run <id> <command> [ARGS…]` (see [control](CONTROL.md#aglow-run)). The `run_script_command` tool of the [MCP server](MCP.md#run_script_command) also runs a command as `shell`, through the window that shows the agent's session. A handler cannot tell its runs from those of `aglow run`. |
 | `palette` | The command palette, for a command with `palette` |
 | `menu` | The Scripts submenu of the context menu, for a command with `palette` |
 | `key` | `script:<id>.<command>` in `Keybinds.bindings`, in a key table or in a key sequence (see [input](INPUT.md)) |
@@ -717,7 +720,7 @@ Remote runs and local runs share `Scripts.commandRunLimit`. A remote process can
 | --- | --- |
 | `args` | List of strings, at most 256, each at most 4,096 UTF-16 units |
 | `cwd` | The client's directory. Else the pane's directory. Else an empty string, for a run with neither. At most 4,096 UTF-16 units: a run with a longer directory does not start. For a `remote` run, a directory on the remote host, as text, or an empty string when the client gives none. Do not use it as a local path. An overlay with this `cwd` starts in `$HOME` when the directory does not exist on this computer |
-| `pane` | For a shell run: `--pane N`, else the pane that runs the shell, else the focused pane. For `control`, the pane that `afterglow ctl` names, else the focused pane. For `remote`, the pane that runs the ssh session, or the pane of the client in a mux session of another host. For other sources, the pane of the palette, key or menu. Only `{ id }` when the pane closed before the run started. `nil` when there is no pane |
+| `pane` | For a shell run: `--pane N`, else the pane that runs the shell, else the focused pane. For a run of `run_script_command`, the pane of the agent's session that the tool names. For `control`, the pane that `afterglow ctl` names, else the focused pane. For `remote`, the pane that runs the ssh session, or the pane of the client in a mux session of another host. For other sources, the pane of the palette, key or menu. Only `{ id }` when the pane closed before the run started. `nil` when there is no pane |
 | `stdin` | All of the client's stdin as one string, for a command with `stdin = true` that runs from the shell or from a remote host. `nil` for another source. `nil` also when `aglow run` reads no stdin: with `-n`, or when stdin is a terminal. A run with more stdin than `Scripts.commandStdinLimit` does not start. `aglow run` refuses stdin that is not UTF-8 text and exits with status 2 |
 | `source` | `"shell"`, `"palette"`, `"key"`, `"menu"`, `"control"` or `"remote"` |
 | `remote` | For `remote`: `{ host }`, the host of the ssh session as `afterglow ssh` names it, or the host of the mux session as `--ssh` names it. 1 to 255 characters with no control characters. `nil` for another source |
@@ -1215,7 +1218,6 @@ Results contain `text`, `available` and `truncated`.
 Another value is refused with `invalid_effect`.
 A missing selection or unavailable region returns `available=false`.
 In a pane of a mux session, `scrollback`, `last-output` and the regions of `semantic_regions` are not available while their rows still come from the daemon. They return `available=false`, and a script can read again later.
-So does the last output of a session pane while its rows still come from the mux daemon, right after a window shows the session.
 For a session pane that you cannot see, `read_text`, `read_region` and `semantic_regions` first get the screen and the history from the mux daemon.
 They do this also for a pane that shows again before its screen came.
 They wait at most 5 seconds for them (see [MUX.md](MUX.md#limits)).
@@ -1245,7 +1247,7 @@ Reset does not reuse IDs. Retained positions follow text reflow.
 Set `Scripts.allowReadText=false` to deny these queries.
 While it is `false`, `afterglow.action` also fails for `copy`, `paste`, `select_all`, `show_last_output`, `show_first_output_on_screen` and `show_last_visited_output`.
 It controls terminal queries, not operating-system file or process access.
-A command run can have a client: `aglow run`, or a `SCRIPT.COMMAND` call of the `commands` target.
+A command run can have a client: `aglow run`, a `SCRIPT.COMMAND` call of the `commands` target, or the `run_script_command` tool of the [MCP server](MCP.md#run_script_command).
 In the handler of such a run, these queries also need `Control.allowReadText`.
 The output of the command can take the text to a process outside the window (see [control](CONTROL.md)).
 Other handlers do not need `Control.allowReadText`.

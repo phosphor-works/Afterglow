@@ -237,7 +237,51 @@ struct MuxSettings
     /// window shows the session, for the next window. The default equals
     /// AfterglowMux::DefaultKeptNotifications, which ConfigTest checks.
     int keptNotifications = 8;
+    /// The text of the badge at the start of the tab bar of a window that
+    /// shows an agent session, and of the title's prefix: trimmed, without
+    /// control characters, at most MaxAgentLabel UTF-16 units. Empty: no
+    /// marker.
+    QString agentLabel = QStringLiteral("agent");
+    static constexpr qsizetype MaxAgentLabel = 32;
+    /// The badge's color; none: the palette's bright magenta (color13) of
+    /// the theme or of Colors.palette.
+    std::optional<AfterglowVt::Rgb> agentColor;
     bool operator==(const MuxSettings&) const = default;
+};
+
+/// What `afterglow mcp` reads once at its start, from the default config
+/// file: a change applies to the next server.
+struct McpSettings
+{
+    /// The bounds of the times in ms: a day at most.
+    static constexpr int MinTimeout = 1000;
+    static constexpr int MaxTimeout = 86400000;
+    /// getText of a window and of the daemon cuts a text at 1 MiB
+    /// (Pane::MaxText and MuxPane::MaxText): a result never holds more.
+    static constexpr int MinOutputLimit = 1024;
+    static constexpr int MaxOutputLimit = 1 << 20;
+    /// The bounds of tailLines, and of the tail_lines of a call.
+    static constexpr int MaxTailLines = 1000000;
+    /// The bounds of screenshotMaxSize in pixels.
+    static constexpr int MinScreenshotSize = 64;
+    static constexpr int MaxScreenshotSize = 16384;
+    /// The time in ms that run, wait and run_script_command wait when the
+    /// call gives none. read() caps it at maxWaitTimeout.
+    int waitTimeout = 120000;
+    /// The longest time in ms that a call of run, wait or
+    /// run_script_command can ask for.
+    int maxWaitTimeout = 3600000;
+    /// The most bytes of UTF-8 text that one result of run, wait, read or
+    /// run_script_command carries.
+    int outputLimit = 65536;
+    /// The lines of output of run and wait when the call gives no tail_lines.
+    int tailLines = 200;
+    /// The longest side of a screenshot in pixels: a larger one is scaled down.
+    int screenshotMaxSize = 2048;
+    /// Bind the session to the server, so that the daemon ends it when the
+    /// last bound connection closes. Never an adopted session.
+    bool endSessionOnExit = true;
+    bool operator==(const McpSettings&) const = default;
 };
 
 struct ControlSettings
@@ -246,14 +290,20 @@ struct ControlSettings
     /// with Scripts.enabled, the "commands" target (aglow run, afterglow run)
     /// and the remote sockets that afterglow ssh forwards
     /// (Terminal.sshRemoteCommands). The mux daemon follows this, and
-    /// allowReadText and eventInterval, of the window that showed a session
-    /// last (sessionSettings in MuxSessions.cpp).
+    /// allowReadText, eventInterval and allowAdopt, of the window that showed
+    /// a session last (sessionSettings in MuxSessions.cpp): a change reaches
+    /// a session only through a window that shows it.
     bool enabled = true;
-    bool allowReadText = false; ///< let it read pane contents
+    /// Let clients read pane contents. A pane of an agent session has read
+    /// access whatever this says, for the calls that its daemon passes on.
+    bool allowReadText = false;
     /// Let a script command that runs from a remote host read pane text,
     /// and let other handlers write to such a run.
     bool allowRemoteReadText = false;
     int eventInterval = 100; ///< ms between two events of one kind for one pane, 0 sends every event
+    /// Let `afterglow mcp --adopt` make an agent session of a session that
+    /// the user started. A guard against a mistake, not a boundary.
+    bool allowAdopt = false;
     bool operator==(const ControlSettings&) const = default;
 };
 
@@ -324,6 +374,7 @@ struct Settings
     QuickTerminalSettings quickTerminal;
     ControlSettings control;
     MuxSettings mux;
+    McpSettings mcp;
     MouseSettings mouse;
     LinkSettings links;
     HighlightColors colors;
@@ -545,7 +596,9 @@ public:
     /// It reads the value as read() does: a value of another JSON type is
     /// the default, and a number of an integer key loses its fraction. A
     /// list keeps its entries as the file holds them; the caller skips those
-    /// that read() skips. An invalid QVariant for an undeclared key.
+    /// that read() skips. Scripts.enabled and Control.enabled are false for a
+    /// value that is no boolean and for a group that is no object, as read()
+    /// keeps them off. An invalid QVariant for an undeclared key.
     QVariant persisted(const QString& group, const QString& key) const;
 
     /// "Group.key=value" as an override; the value is JSON when it parses

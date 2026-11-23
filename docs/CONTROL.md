@@ -7,6 +7,8 @@ Other programs can control Afterglow with the command line or the control socket
 They can list panes, send text, create panes, set titles, show notifications and run actions.
 They can also run a program over a pane (an [overlay](#overlays)), save a [screenshot](#screenshots) and run the commands of scripts.
 The `watch` command writes each event as a JSON line, such as `{"args":[3,"vim"],"event":"titleChanged"}`.
+It writes `textChanged` only with `--text-changes`: a watch in a pane that it watches would feed itself.
+[`afterglow mcp`](MCP.md) gives an agent such as Claude Code MCP tools that drive the panes of a mux session of its own.
 
 ```sh
 afterglow ctl --help
@@ -119,6 +121,7 @@ The tmux panes that exist already keep the old values. Use `--pane` in them.
 
 Set `Control.allowReadText=true` to permit external terminal text queries and screenshots.
 Set `Control.enabled=false` to remove the `control` and `commands` targets.
+Set `Control.allowAdopt=true` to let `afterglow mcp --adopt` make an [agent session](MUX.md#agent-sessions) of a session that you started.
 These settings are separate from [script text permissions](SCRIPTING.md#text-and-semantic-regions).
 
 | Item | With `Control.allowReadText=false` |
@@ -136,9 +139,13 @@ These settings are separate from [script text permissions](SCRIPTING.md#text-and
 | Titles in `listPanes` and `titleChanged` | Sent. A shell can put the running command in the title. |
 | The `cwd` and `context` fields of `listPanes`, the text of `statusChanged` and the context of `contextChanged` | Sent. Programs set them with escape sequences, as they set titles. |
 | `read_text`, `read_region` and `semantic_regions` in a script command that `aglow run` or a `SCRIPT.COMMAND` call started | Fail with an error. The output of the command would take the text to the client. They also need `Scripts.allowReadText`. |
+| `mark`, `shellRegions`, and the `shell`, `input` and `last_exit` fields of `listPanes` | Sent. They tell where the shell's prompts and outputs are and what the shell does, not the text. `input` tells whether the command line has typed text. |
+| `shellChanged` and `textChanged` | Sent. They tell when the shell changes its state and when cells change, not the text. |
 
 These settings do not apply to accessibility clients.
 See [terminal text](DESKTOP.md#terminal-text).
+A pane of an [agent session](MUX.md#agent-sessions) always has read access, whatever `Control.allowReadText` says.
+This includes the calls that the daemon passes to the window that shows the session.
 
 `Control.enabled=false` removes the `control` and `commands` targets, and ends their event subscriptions.
 Each subscriber then gets an `error` line with the subscription's `id` and the code `NO_SUCH_TARGET`.
@@ -205,9 +212,19 @@ The events of a run arrive before the reply of the run.
 | `INVALID_ARG` | The number or the type of the arguments is wrong. |
 | `INVOCATION_FAILED` | The call could not run. |
 | `MALFORMED_REQUEST` | The line is not a valid request, or a limit is reached. |
+| `TRY_AGAIN` | The pane cannot answer now. Send the call again later. See the table below. |
+| `STALE_MARK` | `getText` with the scope `since` got a mark from before the pane changed its width or cleared its screen. Take a new mark. See [text since a mark](#text-since-a-mark). |
+| `NO_ROOM` | `split` of a pane that has no room for another pane. |
 | `no_pane`, `busy`, `spawn_failed`, `cancelled` | An `overlay` call failed. See [overlays](#overlays). |
 | `denied`, `busy`, `no_pane`, `not_shown`, `failed`, `cancelled` | A `screenshot` call failed. See [screenshots](#screenshots). |
 | `session_pane` | A `setColors` call names a pane of a mux session. The daemon of the session has its colors. |
+
+| `TRY_AGAIN` from | Calls | Cause |
+| --- | --- | --- |
+| A window, for a pane of a mux session | `getText`, `mark`, `shellRegions`, `paste`, `sendKeys` | The pane has no frame from its daemon yet. |
+| A window, for a pane of a mux session | `getText` with the scope `scrollback`, `last-output`, `first-output-on-screen`, `last-visited-output` or `since` | The rows of the text still come from the daemon. |
+| The daemon | `getText`, `mark`, `shellRegions`, `sendKeys`, `paste`, `getColors`, `setColors` | The pane decodes an image. |
+| The daemon | The calls that it passes to the window | The window did not take the calls before this one yet (`Mux.eventQueue`). |
 
 In a session pane, `AFTERGLOW_SOCKET` is the socket of the [mux daemon](MUX.md#control-of-a-session).
 A client of that socket first selects the session with a call of the `mux` target.
@@ -221,8 +238,24 @@ The daemon answers only calls and subscriptions. It answers with the codes above
 | `VERSION_MISMATCH` | The client speaks another protocol version than the daemon. |
 | `TOO_MANY_PANES` | `split` or `newTab` in a session that has 256 panes, the most that a session can have. |
 | `SPAWN_FAILED` | The daemon cannot start the program of the new pane of `split` or `newTab`. |
+| `NOT_ATTACHED` | No window shows the session, and only a window can do the call. Also for a script command from a session pane, through `aglow run` or an `afterglow ssh` session. Also for `run_script_command` of the [MCP server](MCP.md). |
+| `NOT_AT_PROMPT` | `paste` with the option `prompt`, and the shell of the pane is not at a prompt with an empty command line. Nothing went to the pane. |
+| `LAST_PANE` | `close` with the option `endSession` false, when no other pane of the session runs a program. Nothing closed. |
 
 Outside a session pane, `phosphorctl` from the Phosphor shell can also use the socket: `phosphorctl --socket "$AFTERGLOW_SOCKET" list`.
+
+### Session calls
+
+The mux daemon takes options for some calls that a window does not take.
+They come as the last argument, an object.
+
+| Call | Option | Function |
+| --- | --- | --- |
+| `paste` | `prompt` | With `true`, the text goes only when the shell of the pane is at a primary prompt with an empty command line. Else the call fails with `NOT_AT_PROMPT`, and nothing goes. The check and the write are one step. |
+| `paste` | `enter` | With `true`, the Enter key goes after the text, in the same write. It also goes after an empty text. |
+| `close` | `endSession` | With `false`, a pane does not close when no other pane of the session runs a program: the call fails with `LAST_PANE`. With the option, the answer is an object with `sessionEnded`, which is true when the close ended the session. |
+
+Each option is a boolean. Another key fails the call with `INVALID_ARG`.
 
 ## Launches
 
@@ -275,12 +308,15 @@ Another number fails with `CALL_FAILED`.
 | `listPanes` | None | A [pane object](#pane-object) for each pane |
 | `focusedPane` | None | The pane that step 3 or 4 of the target order selects |
 | `sendText` | pane, text | None |
-| `getText` | pane, scope, options (optional) | The text, at most 1 MiB. Scopes are `screen`, `scrollback`, `selection`, `last-output`, `first-output-on-screen` and `last-visited-output`. The last two are the outputs of the [command output actions](INPUT.md#command-output), and empty when there is none. For a pane of a mux session whose rows still come from its daemon, `scrollback` and `last-output` fail with `the rows of pane N are still arriving from its session: try again`. See [text options](#text-options). |
-| `split` | pane, direction, command, options (optional) | The new pane. Directions are `left`, `right`, `up` and `down`. See [launch options](#launch-options). |
+| `paste` | pane, text | None. Sends the text as a paste in the window does. With bracketed paste on (mode 2004), the program gets it between the paste marks. A tab stays. Each line end goes as a carriage return, the Enter key. Every other control character is left out, also DEL and an escape, so the text cannot end the paste early. Unlike a paste in the window, there is no question for text with a line end. A program that asked for [paste events](INPUT.md#paste) gets none. An empty text sends nothing, not even the paste marks. While the daemon's pane decodes an image, it fails with `TRY_AGAIN`. The daemon also takes the options of a [session paste](#session-calls). |
+| `getText` | pane, scope, options (optional) | An object: `text`, and `truncated`, which is true when the limit of 1 MiB cut the text. Scopes are `screen`, `scrollback`, `selection`, `last-output`, `first-output-on-screen`, `last-visited-output` and `since`. `first-output-on-screen` and `last-visited-output` are the outputs of the [command output actions](INPUT.md#command-output), and empty when there is none. `since` is the text from a mark of the `mark` call to the cursor, and its answer also has `trimmed` (see [text since a mark](#text-since-a-mark)). A cut text of `last-output` and `since` keeps its end, where the result of a command is. A cut text of the other scopes keeps its start, unless the option `keep_end` is true. For a pane of a mux session, it can fail with `TRY_AGAIN` (see [protocol](#protocol)). See [text options](#text-options). |
+| `mark` | pane | An object: `row` and `col`, the cursor's place, and `epoch`, the layout of the rows. Give it to `getText` with the scope `since`. |
+| `shellRegions` | pane, after (optional) | A list of the shell's regions (shell integration) whose ID is larger than `after`, oldest first. An `after` that is not a whole number from 0 fails with `INVALID_ARG`: `shellRegions takes (pane[, after])`. See [shell regions](#shell-regions). |
+| `split` | pane, direction, command, options (optional) | The new pane. Directions are `left`, `right`, `up` and `down`. A pane that has no room for another pane fails with `NO_ROOM`. See [launch options](#launch-options). |
 | `newTab` | pane, working directory, command, options (optional) | The new tab's pane. See [launch options](#launch-options). |
 | `newWindow` | working directory, command, options (optional) | The new window's pane. See [launch options](#launch-options). |
 | `focus` | pane | None |
-| `close` | pane | None. The pane closes without a question, also when a program runs in it. |
+| `close` | pane | None. The pane closes without a question, also when a program runs in it. The daemon also takes the option of a [session close](#session-calls). |
 | `setTitle` | pane, title | None. An empty title gives the title back to the programs. |
 | `setTabTitle` | pane, title | None. Sets the title of the pane's tab. An empty title gives the title back to the focused pane of the tab. |
 | `getColors` | pane | An object of the pane's colors as `#rrggbb`: `foreground`, `background`, `cursor`, `selection_foreground`, `selection_background`, and `color0` to `color255`. `null` for a color that follows another: the cursor that has the text's color, and a selection that inverts the cells. |
@@ -296,7 +332,7 @@ Another number fails with `CALL_FAILED`.
 | `scroll` | pane, unit, amount | None. The unit is `lines` or `pages`, with an amount that scrolls down when it is positive and up when it is negative. `prompt` jumps to the prompt that many prompts below, or above with a negative amount. `top` and `bottom` go to the ends, with any amount. Fails while the pane shows a full-screen program, and for `prompt` when there is no prompt in that direction. |
 | `signal` | pane, channel, value | None. Channels are 0 to 7. |
 | `notify` | pane, title, body | None |
-| `runAction` | pane, action | None. Actions are keybind action names, or `script:ID.COMMAND`, which starts a [script command](#script-commands) with no arguments and returns before it ends. A keybind action runs in the pane's tab and shows it first. `close_tab`, `rename_tab`, `move_tab_left`, `move_tab_right` and `detach_tab` do not show it. `close_tab` asks first when a program runs in the tab and `Terminal.confirmClose` is on. With `Mux.onClose` at `detach`, closing the last tab of a mux session asks nothing about the programs of the session. They keep running. The call returns before the answer. A keybind action fails while its window shows a prompt or a script dialog, so that it cannot change the answer. For `script:ID.COMMAND`, a pane of 0 is the focused pane. When no pane has the focus, the command runs with no pane. |
+| `runAction` | pane, action | None. Actions are keybind action names, or `script:ID.COMMAND`, which starts a [script command](#script-commands) with no arguments and returns before it ends. A keybind action runs in the pane's tab and shows it first. `close_tab`, `rename_tab`, `move_tab_left`, `move_tab_right` and `detach_tab` do not show it. `close_tab` asks first when a program runs in the tab and `Terminal.confirmClose` is on. With `Mux.onClose` at `detach`, closing the last tab of a mux session asks nothing about the programs of the session. They keep running. The same is true for an [agent session](MUX.md#agent-sessions), whatever `Mux.onClose` says. The call returns before the answer. A keybind action fails while its window shows a prompt or a script dialog, so that it cannot change the answer. For `script:ID.COMMAND`, a pane of 0 is the focused pane. When no pane has the focus, the command runs with no pane. |
 | `movePane` | pane, target, placement | An object: the pane after the move. See [projects](PROJECTS.md). The placement is `left`, `right`, `up` or `down` beside the target, `new-tab`, or `new-window` with target 0. `new-tab` goes to the window of the target, or to the pane's own window with target 0. A pane of a mux session that moves to a new window goes to a new session. A pane of a mux session that moves into the window of another session of the same daemon joins that session. The object then has its new pane ID (see [MUX.md](MUX.md#move-panes-and-tabs)). |
 | `detachTab` | pane | An object: the pane in its new window. For a tab of a mux session, it has the new pane ID in the new session. |
 | `openDirectory` | directory, layout | An object: the window and its pane |
@@ -347,6 +383,11 @@ It leaves the panes of mux sessions, because their daemons have their colors.
 It then writes on standard error how many panes kept their colors.
 `afterglow ctl --session NAME set-colors --all` sets the colors of the panes of a session.
 
+`afterglow ctl ls` prints one line for each pane, with the columns `PANE`, `WIN`, `TAB`, `SHELL`, `TITLE` and `DIRECTORY`.
+A `*` after the pane ID marks the focused pane. `TAB` is the position of the tab from 0.
+`SHELL` is the [shell state](#shell-states). `TITLE` takes 30 cells: a longer title is cut, and a shorter one is padded.
+`afterglow ctl ls --json` prints the [pane objects](#pane-object) of `listPanes`.
+
 ## Text options
 
 The options of `getText` are an object, as `kitten @ get-text` has them.
@@ -357,10 +398,51 @@ The options of `getText` are an object, as `kitten @ get-text` has them.
 | `ansi` | boolean | Each change of color or attribute as an SGR sequence, and each link as OSC 8. Each line ends with a reset. Blanks at the end of a line stay when they show a background or a link. |
 | `cursor` | boolean | At the end, the cursor's place on the screen (CUP), its shape (DECSCUSR) and whether it shows (DECTCEM). Only for the `screen`, `scrollback` and `last-output` scopes. |
 | `wrap_markers` | boolean | A carriage return where a row wraps into the next one. |
+| `keep_end` | boolean | A text that the limit cuts keeps its end, not its start. `last-output` and `since` keep their end also without it. |
+| `mark` | object | The answer of the `mark` call. Only for the scope `since`, which needs it. |
 
-Another key, or a value that is not a boolean, fails the call.
-The selection is plain text: `ansi`, `cursor` or `wrap_markers` with the `selection` scope fails the call.
-`cursor` with `first-output-on-screen` or `last-visited-output` also fails the call.
+Another key fails the call. So does a value of the wrong type: `mark` is an object, and the other options are booleans.
+The selection is plain text: `ansi`, `cursor`, `wrap_markers` or `keep_end` with the `selection` scope fails the call.
+`cursor` with `first-output-on-screen`, `last-visited-output` or `since` also fails the call.
+
+### Text since a mark
+
+A client that runs a command reads its output with a mark:
+
+1. Call `mark` before the command. The answer is the cursor's place.
+2. Send the command.
+3. Call `getText` with the scope `since` and the option `mark`.
+
+The text goes from the mark to the cursor, and keeps its end when it is cut.
+A mark has the keys `row`, `col` and `epoch`. Each is a whole number from 0 to 9007199254740992, and `col` goes to 2147483647.
+A mark without one of the keys, or with another value, fails the call.
+
+| Case | Text |
+| --- | --- |
+| Since the mark, the pane changed its width (a reflow), or a program scrolled rows back down (`CSI + T`). Also when a program erased the whole primary screen (`CSI 2 J`, or `CSI J` with the cursor at the top left) or reset the terminal (RIS). | None. The call fails with the code `STALE_MARK`: `the mark is from before the pane changed its width or cleared its screen: take a new mark`. |
+| The mark's row left the scrollback | The text from the oldest row that is kept. `trimmed` is true. |
+| The alternate screen shows (a full-screen program) | The text of the screen. It has no history. |
+| The cursor is above the mark (a program moved it up) | The text of the screen |
+
+### Shell regions
+
+With shell integration, the shell marks its prompt, the command line and the output of each command (OSC 133).
+Afterglow keeps the newest 1024 of these regions for each pane.
+`shellRegions` gives an object for each region:
+
+| Field | Content |
+| --- | --- |
+| `id` | The region ID. It grows with each new region, and a reset (RIS) does not start it again. |
+| `kind` | `prompt`, `input` or `output` |
+| `open` | True for the newest region, while it goes on |
+| `exit_code` | The exit code that the shell gave at the end of an output region, else `null` |
+| `start_trimmed` | True when the start of the region left the scrollback |
+| `available` | False when all of the region left the scrollback |
+
+Bash runs a paste of many lines one command at a time, and gives an output region for each command.
+A command over several lines, such as a `for` loop or a string with a line end, is one command.
+The `commandStarted` events of the commands after the first have an empty command.
+Zsh and Fish run the whole paste as one command, with one output region.
 
 ## Launch options
 
@@ -384,7 +466,9 @@ Thus a new pane of a session takes fewer options:
 | --- | --- |
 | `afterglow ctl --session NAME`, or `afterglow ctl` in a pane of a session | `env` only. `afterglow ctl` refuses the other options with a usage error. |
 | A `split` or `newTab` call to a window that shows a session | `env`, `focus` and `size`. The call fails with `hold`, `stdin_text` or `vars`. |
+
 `afterglow ctl overlay --stdin-text SCOPE` reads the text with `getText` first, and sends it as the overlay's standard input.
+When the limit of 1 MiB cut the text, it writes a note on stderr, and the program gets the part that was kept.
 
 ## Overlays
 
@@ -433,7 +517,7 @@ Ctrl+C then goes to the program of the overlay, not to `afterglow ctl`.
 The `cancel_overlay` action closes the overlay of the focused pane.
 `afterglow ctl overlay` then exits with status 1.
 
-While an overlay runs, `sendText` and `getText` act on the pane under it, not on the program of the overlay.
+While an overlay runs, `sendText`, `paste`, `sendKeys` and `getText` act on the pane under it, not on the program of the overlay.
 Thus `afterglow ctl send-text` types into the pane under the overlay.
 A `screenshot` shows the overlay, as the window shows it.
 
@@ -528,12 +612,32 @@ Thus take screenshots on a connection without subscriptions.
 | `rows` | Rows |
 | `focused` | True for the focused pane of the active window |
 | `context` | Where the shell runs when it is not local as you, such as `root` or `deploy@prod-1`. Empty otherwise. |
-| `at_prompt` | True while the cursor is in a shell prompt or its input (shell integration). False while a command runs, and without shell integration. |
+| `shell` | What the shell does, from its marks (shell integration). See [shell states](#shell-states). |
+| `input` | True when the command line at the prompt has text that the user typed before the cursor. False when the shell does not mark its command line (OSC 133 B). |
+| `last_exit` | The exit code of the last command of the shell, or `null` when it is not known |
 | `user_vars` | An object: the user variables that the program set with OSC 1337 `SetUserVar`, at most 256 |
 | `foreground` | The leader of the foreground process group of the pane: an object with `pid`, `cmdline` (a list of the arguments) and `cwd`. At the prompt it is the shell. `null` when it is not known, for example after the program exited. In a window, a pane of a mux session has `null`. With `afterglow ctl --session`, the daemon gives it. |
 | `neighbors` | An object with `left`, `right`, `up` and `down`. Each is the pane beside the pane on that side in its tab, as `focusNeighbor` finds it. Each is 0 at the edge. |
 
-`at_prompt`, `user_vars`, `foreground` and `neighbors` are only in the objects of `listPanes`.
+`shell`, `input`, `last_exit`, `user_vars`, `foreground` and `neighbors` are only in the objects of `listPanes`.
+
+### Shell states
+
+| State | Meaning |
+| --- | --- |
+| `none` | The shell marked no prompt since the terminal started or reset, or the program exited. The pane has no shell integration, or runs another program. |
+| `prompt` | The shell shows its prompt, and waits for a command |
+| `continuation` | The shell shows its secondary prompt (`PS2`): the command is not complete, for example after an open quote. Ctrl+C gives the primary prompt again. |
+| `running` | A command runs, or the shell has not shown its next prompt yet |
+
+The shell integration of Afterglow marks the secondary prompt in bash and zsh, unless the prompt has marks of its own.
+Fish edits an incomplete command in place, and has no secondary prompt.
+A command that takes the place of the shell, such as `exec bash --norc`, stays `running`.
+A shell without integration sends no marks, so no prompt comes to end the command.
+A redraw of the same prompt, such as after a resize, is no new prompt.
+An OSC 133 `N` mark always starts a new prompt, because it also ends the command before it.
+A shell that sends no `A` mark can start its prompt with a `P` mark.
+A `P` mark starts a new prompt when no command runs and no prompt shows, such as after the output of a command.
 
 ## Events
 
@@ -550,6 +654,8 @@ Thus take screenshots on a connection without subscriptions.
 | `focusChanged` | pane |
 | `userVarChanged` | pane, name, value |
 | `contextChanged` | pane, context, such as `root` or `deploy@prod-1`. Sent when the context changes. |
+| `shellChanged` | pane, state (see [shell states](#shell-states)). Sent when the state changes, and when the shell shows a new prompt. A short command can start and end between two reads of the pane's output. The state is then `prompt` before and after, and the new prompt is the only event. |
+| `textChanged` | pane. Sent when a program writes cells of the pane, or the cursor moves, the view scrolls or the text reflows. Cells written again with the same text count too. Titles, bells, colors, replies and shell marks alone do not count. It carries no text, and needs no read access. A client that waits for text reads it with `getText` when the event comes. A window also sends it for a pane of a mux session that no tab shows, when the text changes in the daemon. `afterglow ctl watch` prints it only with `--text-changes`. |
 
 The states of `statusChanged` are `idle`, `working`, `done`, `blocked` and `error`.
 When a program clears its last status, or the terminal resets, the state is `idle` and the text is empty.
@@ -557,7 +663,7 @@ An empty context means that Afterglow knows of no remote, elevated or container 
 
 `Control.eventInterval` sets the shortest time in milliseconds between two events of one kind for one pane.
 The default is 100, and the range is 0 to 10000.
-These events are merged: `titleChanged`, `statusChanged`, `contextChanged`, `userVarChanged` (for each name) and `bell`.
+These events are merged: `titleChanged`, `statusChanged`, `contextChanged`, `userVarChanged` (for each name), `textChanged` and `bell`.
 An event that comes before the interval ends waits, and a newer event of the same kind replaces it.
 Bells that wait become one `bell` event.
 The client gets the event that waits when the interval ends.
@@ -740,7 +846,7 @@ Remote commands need all of these:
 When one of these is missing, `afterglow ssh` forwards no socket and prints nothing, with two exceptions.
 With `-v`, `afterglow ssh` prints why it forwards no socket. Without `AFTERGLOW_SOCKET` or `AFTERGLOW_PANE_ID`, it prints nothing, also with `-v`.
 When the remote `aglow` has another protocol, `afterglow ssh` prints one line on standard error.
-It prints that line once for each host and version, and records them in `$XDG_STATE_HOME/afterglow/ssh-remote`, by default under `~/.local/state`.
+It prints that line once for each host and version, and records them in `$XDG_STATE_HOME/phosphor-works/afterglow/ssh-remote`, by default under `~/.local/state`.
 The file holds only hashes, at most 512. To see the line again, delete the file.
 
 Before the session starts, `afterglow ssh` runs one probe over the shared connection:
@@ -914,7 +1020,10 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | Sessions of remote commands | 16 for each pane, 256 in Afterglow | `openRemoteSocket` fails, and `afterglow ssh` forwards no socket. |
 | Connections to the socket of one ssh session | 64 at the same time | Afterglow closes the new connection before it reads a request, and logs a warning once until a connection closes. `aglow run` fails with exit status 1. |
 | Request line | 1 MiB | The socket closes the connection. `afterglow ctl send-text` sends long text in parts. |
+| `getText` text | 1 MiB of UTF-8, with the escape sequences of `ansi` and `cursor` | The text is cut, and `truncated` is true. `last-output` and `since` keep the end of the text, from the start of a row. The other scopes keep its start, up to the last whole character or escape sequence that fits. `afterglow ctl get-text` writes the text, and a note on stderr. |
+| Shell regions | 1024 for each pane | The oldest region goes when a new one begins. |
 | `afterglow ctl send-text` text | 32 MiB of UTF-8 | `afterglow ctl` exits with status 2 and sends nothing. It checks the text before it connects. |
+| `paste` text | The request line of 1 MiB, with the JSON escaping of the text | The socket closes the connection, as for any longer request. `afterglow ctl paste` exits with status 2 and sends nothing. It checks the text before it connects. It does not send a paste in parts, because each part would get its own paste marks. `afterglow ctl paste --stdin` reads at most 1 MiB less 4 KiB. |
 | Text that a program has not read | 32 MiB for each pane | `sendText` fails. Parts that `afterglow ctl send-text` sent before stay typed. |
 | Lines that do not parse, one after the other | 16 | The socket closes the connection at the next one. |
 | Waiting output to one client | 16 MiB | The socket closes the connection to a client that does not read its events. |
@@ -943,7 +1052,7 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | `setTitle` title | 256 UTF-16 units | The title is cut. |
 | `setTabTitle` title | 256 UTF-16 units | The title is cut. |
 | The cells of `setWindowState` | 10000 columns and 10000 rows | The call fails. `afterglow ctl window` exits with status 2 before it connects. A size under 4 columns or 2 rows gets room for 4 columns and 2 rows. |
-| The text of `getText` and of `stdin_text` | 1 MiB of UTF-8, with the escape sequences of `ansi` and `cursor`. | The text is cut after the last whole character or escape sequence that fits. |
+| The text of `stdin_text` | 1 MiB of UTF-8, with the escape sequences of `stdin_ansi` | The text is cut as `getText` cuts it for its scope. |
 | User variables of a pane | 256 names | `setUserVar` with a new name fails. A launch with more `vars` fails. A new name from the program (OSC 1337 `SetUserVar`) is ignored, and Afterglow logs a warning. |
 | Keys of one `sendKeys` call | 4096 | The call fails, and no key goes. `afterglow ctl send-key` exits with status 2 before it connects. |
 | Cells of one `resizePane` call | 10000 | The call fails. `afterglow ctl resize` exits with status 2 before it connects. |
@@ -951,7 +1060,7 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | The `cmdline` of `foreground` in `listPanes` | 4096 bytes of the process's arguments | The last argument that goes past the limit is cut, and the arguments after it are left out. |
 | `notify` title | 256 UTF-16 units | The title is cut. |
 | `notify` body | 2048 UTF-16 units | The body is cut. |
-| Wait for the screen and the history of a pane of a mux session that you cannot see, or that shows again before its screen came, before `getText`, a screenshot or a script read of its text | 5 seconds | The read gets the text that the window has, which can be older. The window does not draw or take input while it waits. |
+| Wait for the screen and the history of a pane of a mux session, before `getText`, a screenshot or a script read of its text. Only for a pane that you cannot see, or that shows again before its screen came. | 5 seconds | `getText` with the scope `scrollback`, `last-output` or `since` fails with `TRY_AGAIN`. Other reads get the text that the window has, which can be older. The window does not draw or take input while it waits. |
 
 `screenshot` has no size limit.
 A reply with a long scrollback can take more than the 10 seconds of `afterglow ctl`.
@@ -965,6 +1074,9 @@ Keys and other clients can type between two parts.
 
 `afterglow ctl send-text --stdin` types standard input as it is.
 It refuses standard input that is not UTF-8 text. It then exits with status 2 and sends nothing.
+
+`afterglow ctl paste` takes its text as `send-text` does, with the same escapes, `--raw` and `--stdin`.
+It sends the text in one `paste` call.
 
 ## Text escapes
 
@@ -987,7 +1099,7 @@ To send text that starts with `--`, put it after `--`: `afterglow ctl send-text 
 
 ## Words after `--`
 
-Only `send-text`, `set-title`, `set-tab-title`, `notify`, `split`, `new-tab`, `new-window` and `overlay` read words after `--`.
+Only `send-text`, `paste`, `set-title`, `set-tab-title`, `notify`, `split`, `new-tab`, `new-window` and `overlay` read words after `--`.
 The other commands stop with a usage error when you give such words.
 
 The word after an option that takes a value, such as `--pane`, `--cwd` or `--title`, is that value.
@@ -1020,7 +1132,7 @@ A program that turned on the Kitty keyboard protocol gets that encoding, and a r
 | --- | --- |
 | 0 | The command succeeded. `afterglow ctl --help` also exits with status 0. |
 | 1 | An error, for example no Afterglow, a call that failed or no reply in time. |
-| 2 | A usage error, for example an unknown command, a missing argument or an option that the command does not take. An option given two times is a usage error too. So is an `overlay` option or command that breaks a rule. `afterglow ctl` with no command also gives status 2. So does refused text for `send-text`: over 32 MiB, or standard input that is not UTF-8 text. So does standard input for `overlay` over 4 MiB or not UTF-8 text. So does `screenshot` when its `FILE`, or `-`, is a terminal, or when `FILE` is a socket. `afterglow ctl` finds these errors before it connects. |
+| 2 | A usage error, for example an unknown command, a missing argument or an option that the command does not take. An option given two times is a usage error too. So is an `overlay` option or command that breaks a rule. `afterglow ctl` with no command also gives status 2. So does refused text for `send-text` and `paste`: over 32 MiB, or standard input that is not UTF-8 text. So does a `paste` text that does not fit in one request of 1 MiB. So does standard input for `overlay` over 4 MiB or not UTF-8 text. So does `screenshot` when its `FILE`, or `-`, is a terminal, or when `FILE` is a socket. `afterglow ctl` finds these errors before it connects. |
 | 0 to 255 from `overlay` | `afterglow ctl overlay` exits with the exit status of its program. Thus a status of 1 or 2 can come from the program. A failed or canceled overlay gives 1. So does an exit status outside 0 to 255. |
 
 `afterglow ctl focus --direction` exits with status 1 at the edge of the tab.

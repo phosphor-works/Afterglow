@@ -377,9 +377,30 @@ Terminal::Terminal(int cols, int rows, ITerminalHost& host, const TerminalOption
     m_margins = Region{0, rows - 1, 0, cols - 1};
     m_tabStops.assign(std::size_t(cols), false);
     resetTabStops();
+    m_contentSeen = contentState();
 }
 
 Terminal::~Terminal() = default;
+
+Terminal::ContentState Terminal::contentState() const noexcept
+{
+    const Screen& p = *m_primary;
+    const Screen& a = *m_alternate;
+    return {m_contentWrites,      p.contentSerial(),    a.contentSerial(), m_active == m_alternate.get(),
+            p.cursor.x,           p.cursor.y,           a.cursor.x,        a.cursor.y,
+            p.cursor.pendingWrap, a.cursor.pendingWrap, p.viewportOffset()};
+}
+
+std::uint64_t Terminal::contentGeneration() const noexcept
+{
+    // Compared when read, not counted at each change: a parse touches the
+    // cursor at nearly every byte, and only the reads need to know.
+    if (const ContentState now = contentState(); !(now == m_contentSeen)) {
+        m_contentSeen = now;
+        ++m_contentGeneration;
+    }
+    return m_contentGeneration;
+}
 
 void Terminal::feed(std::string_view bytes)
 {
@@ -831,6 +852,7 @@ void Terminal::changeRectAttributes(const Params& p, bool reverse)
     const std::optional<SgrChange> change =
         !reverse && p.count > 4 ? std::optional<SgrChange>(std::in_place, p, 4) : std::nullopt;
     StyleTable& styles = m_active->styles();
+    ++m_contentWrites; // the cells change in place
     // Neighbouring cells mostly share a style: one lookup per run of them,
     // not per cell, since a rectangle can be the whole screen.
     std::uint32_t lastOld = 0;
@@ -1094,17 +1116,19 @@ Rgb Terminal::resolve(Color color, bool foreground) const noexcept
 
 void Terminal::scrollViewport(long rows)
 {
+    // At the top or the bottom of the history the view stays: no change.
+    const std::size_t before = m_active->viewportOffset();
     m_active->scrollViewport(rows);
-    touch();
+    if (m_active->viewportOffset() != before)
+        touch();
 }
 
 void Terminal::setViewportOffset(std::size_t rows)
 {
-    const long delta = long(rows) - long(m_active->viewportOffset());
-    if (delta != 0) {
-        m_active->scrollViewport(delta);
+    const std::size_t before = m_active->viewportOffset();
+    m_active->scrollViewport(long(rows) - long(before));
+    if (m_active->viewportOffset() != before)
         touch();
-    }
 }
 
 void Terminal::resetViewport()
@@ -1191,6 +1215,8 @@ void Terminal::print(char32_t cp)
     } else {
         m_singleShift = 0;
     }
+    // A character changes cells, some of them in place (the wrap flag).
+    ++m_contentWrites;
 
     // Preserve directional controls as visible cells when bidi layout is enabled.
     Unicode::Props props = propsOf(cp);
@@ -1235,7 +1261,6 @@ void Terminal::print(char32_t cp)
                     --cur.x;
                 }
             }
-            touch();
             return;
         }
     } else if (m_modes.graphemeClustering) {
@@ -1414,6 +1439,7 @@ void Terminal::printAscii(const char* text, std::size_t length)
         print(char32_t(static_cast<unsigned char>(text[0])));
         i = 1;
     }
+    ++m_contentWrites; // the cells below change in place
     Screen& scr = *m_active;
     StyleTable& styles = scr.styles();
     Cursor& cur = cursor();
@@ -1471,6 +1497,7 @@ void Terminal::printCodepoints(const char32_t* cps, std::size_t n)
         }
         return;
     }
+    ++m_contentWrites; // the cells below change in place
     Screen& scr = *m_active;
     Cursor& cur = cursor();
     Row* line = nullptr;
@@ -1739,6 +1766,7 @@ void Terminal::horizontalTab(int count)
         }
         // Mode 41: wrap first, so the tab lands on the next line.
         m_active->row(cur.y).wrapped = true;
+        ++m_contentWrites;
         carriageReturn();
         index();
     }
@@ -1809,6 +1837,7 @@ void Terminal::setLineSize(LineSize size)
 {
     // DECDWL / DECDHL / DECSWL. Blocks on the line cannot be doubled.
     Row& row = m_active->row(cursor().y);
+    ++m_contentWrites; // the text of a double-width line is its left half
     if (row.multicell) {
         for (int x = 0; x < cols(); ++x) {
             if (row.cells[std::size_t(x)].isMulticell()) {
@@ -1949,6 +1978,7 @@ void Terminal::placeMulticell(char32_t cp, std::u32string_view extra, const Mult
     if (width > cols() || height > rows()) {
         return; // never fits: discarded
     }
+    ++m_contentWrites; // wrap flags and line sizes change in place
     if (cur.pendingWrap) {
         if (m_modes.autowrap) {
             m_active->row(cur.y).wrapped = true;
@@ -2067,11 +2097,18 @@ void Terminal::setProtection(bool on, bool iso)
 
 void Terminal::eraseDisplay(int mode, bool selective)
 {
+    // ED 2 on the primary screen leaves rows whose ids name the text that
+    // comes next (textEpoch()), and so does ED 0 from the top left corner,
+    // which erases the same rows (clear as CSI H CSI J). ED 22 moves the text
+    // into the scrollback with its ids first.
+    const bool fromHome = mode == 0 && cursor().x == 0 && cursor().y == 0;
+    bool renews = (mode == 2 || mode == 22 || fromHome) && !m_modes.altScreen && !selective;
     if (mode == 22) {
         // kitty: the screen goes into the scrollback, down to its last line
         // with text, and is then erased as ED 2. Only the primary screen
         // with the full scrolling region has a scrollback to go to.
         if (!m_modes.altScreen && m_margins.top == 0 && m_margins.bottom == rows() - 1) {
+            renews = false;
             int used = rows();
             while (used > 0 && std::ranges::all_of(m_active->row(used - 1).cells, &Cell::isEmpty)) {
                 --used;
@@ -2085,6 +2122,7 @@ void Terminal::eraseDisplay(int mode, bool selective)
     if (mode == 2 || mode == 3) {
         m_extraCursors.clear();
     }
+    ++m_contentWrites; // a selective erase can spare every cell, but not the wrap flag
     Screen& scr = *m_active;
     Cursor& cur = cursor();
     const std::uint32_t fill = acquireFill();
@@ -2100,6 +2138,13 @@ void Terminal::eraseDisplay(int mode, bool selective)
             graphics.eraseInternalCells(cur.y, cur.y, cur.x, cols() - 1, scr, m_cellWidth, m_cellHeight);
             graphics.eraseInternalCells(cur.y + 1, rows() - 1, 0, cols() - 1, scr, m_cellWidth, m_cellHeight);
         }
+        // From the top left corner it erases the whole screen, as ED 2: the
+        // output of a running command goes on from the top.
+        if (fromHome && !selective) {
+            outputScreenErased();
+        }
+        if (renews)
+            ++m_rowRenewals;
         break;
     case 1:
         for (int y = 0; y < cur.y; ++y) {
@@ -2120,6 +2165,8 @@ void Terminal::eraseDisplay(int mode, bool selective)
         if (!selective) {
             outputScreenErased();
         }
+        if (renews)
+            ++m_rowRenewals;
         break;
     case 3:
         // Only the saved lines go (xterm): images on the screen stay with its text.
@@ -2154,6 +2201,7 @@ void Terminal::outputScreenErased()
 
 void Terminal::eraseLine(int mode, bool selective)
 {
+    ++m_contentWrites; // as eraseDisplay()
     Screen& scr = *m_active;
     Cursor& cur = cursor();
     Row& row = scr.row(cur.y);
@@ -2697,6 +2745,7 @@ void Terminal::fullReset()
     m_promptClicks = PromptClicks::Keys;
     m_promptSpecialKey = false;
     m_secondaryPrompt = {};
+    m_continuation = false;
     m_sixelPaletteReady = false;
     // The context stack (OSC 3008) belongs to the processes, not the terminal
     // state: the uapi spec keeps it through resets.
@@ -2724,6 +2773,16 @@ void Terminal::fullReset()
     }
     m_semanticRegions.clear();
     m_semanticRegionsLastRow = 0;
+    m_promptRegionId = m_outputRegionId = 0;
+    // The shell's next prompt is a new one, and until it comes there is no
+    // shell to tell of. A command that ran before the reset still ends with
+    // its D, which gives its code.
+    m_shellMarked = false;
+    m_endSincePrompt = false;
+    m_lastExitCode.reset();
+    // The screen and its history are erased: the ids of the rows that come
+    // name new text.
+    ++m_rowRenewals;
     m_hasSelectionFg = m_hasSelectionBg = false;
     m_reportedDark = -1;
     clearColorStack();
@@ -3320,6 +3379,8 @@ void Terminal::unscroll(int n)
     gone.delta = back;
     moveAnchors(gone, true);
     scr.unscroll(back);
+    // The ids of the rows that went name the rows that come next.
+    ++m_rowRenewals;
     // Rows the history did not have come in blank above the others.
     if (n > back) {
         scrollDown(n - back);
@@ -4123,6 +4184,8 @@ Terminal::Mark Terminal::cursorMark() const
 void Terminal::finishCommand(int exitCode)
 {
     m_commandRunning = false;
+    m_outputRegionId = 0;
+    m_lastExitCode = exitCode >= 0 ? std::optional<int>(exitCode) : std::nullopt;
     m_host.commandFinished(exitCode);
 }
 
@@ -4216,11 +4279,18 @@ public:
     {
     }
 
+    /// The columns of @p row that the screen shows: the left half of a
+    /// double-width or double-height line.
+    int visibleColumns(const Row& row) const
+    {
+        return row.lineSize == LineSize::Single ? m_screen.cols() : std::max(1, m_screen.cols() / 2);
+    }
+
     /// Writes the cells @p c0 to @p c1 of @p row, then a line feed with
     /// @p newline. False once the limit cut the text.
     bool row(const Row& row, int c0, int c1, bool continues, bool newline)
     {
-        c1 = std::min(c1, m_screen.cols());
+        c1 = std::min(c1, visibleColumns(row));
         // The blanks at the end of a line go, unless they show a background
         // or a link in ANSI.
         int end = c1;
@@ -4228,10 +4298,15 @@ public:
             while (end > c0 && blank(row.at(end - 1)))
                 --end;
         }
+        // A block of text sizing (OSC 66) keeps its text under the left
+        // column of each of its rows: it goes once, at its top row, or at
+        // the first row of the text when its top is above it.
+        const bool first = std::exchange(m_first, false);
         std::string line;
         for (int x = c0; x < end; ++x) {
             const Cell& c = row.at(x);
-            if (c.isTail() || c.isSpacerHead() || (c.isMulticell() && (c.multicellDx() || c.multicellDy()))) {
+            if (c.isTail() || c.isSpacerHead()
+                || (c.isMulticell() && (c.multicellDx() || (c.multicellDy() && !first)))) {
                 continue;
             }
             if (m_format.ansi)
@@ -4288,14 +4363,18 @@ public:
         return std::move(m_out);
     }
 
-    /// Whether @p row gives an empty line: blanks that its end trims. A row
-    /// that continues keeps its blanks.
-    bool writesNothing(const Row& row, bool continues) const
+    /// Whether the cells @p c0 to @p c1 of @p row give an empty line:
+    /// blanks that its end trims. A row that continues keeps its blanks.
+    bool writesNothing(const Row& row, bool continues, int c0 = 0, int c1 = Screen::MaxColumns) const
     {
         if (continues)
             return false;
-        for (int x = 0; x < m_screen.cols(); ++x) {
+        c1 = std::min(c1, visibleColumns(row));
+        for (int x = std::max(c0, 0); x < c1; ++x) {
             const Cell& c = row.at(x);
+            // The lower rows of a block write its text only at the top of a text.
+            if (c.isMulticell() && c.multicellDy())
+                continue;
             if (m_format.ansi ? !blank(c) : !c.isEmpty() && c.codepoint() != U' ')
                 return false;
         }
@@ -4376,30 +4455,44 @@ private:
         }
     }
 
-    /// The bytes of @p line that fit in @p room: no part of a character or
-    /// of an escape sequence.
+    /// The bytes of @p line that fit in @p room: no part of a grapheme
+    /// cluster (a character and its marks, one cell) or of an escape
+    /// sequence.
     static std::size_t cut(const std::string& line, std::size_t room)
     {
+        if (line.size() <= room)
+            return line.size();
         std::size_t safe = 0;
-        for (std::size_t i = 0; i < line.size();) {
+        Unicode::GraphemeSegmenter clusters;
+        for (std::size_t i = 0; i < line.size() && i <= room;) {
             std::size_t next = i + 1;
+            bool boundary = true;
             if (line[i] == '\x1b' && next < line.size() && line[next] == '[') {
                 // A CSI ends with its final byte.
                 ++next;
                 while (next < line.size() && !(line[next] >= 0x40 && line[next] <= 0x7e))
                     ++next;
                 ++next;
+                clusters.reset(); // a sequence stands between two cells
             } else if (line[i] == '\x1b' && next < line.size() && line[next] == ']') {
                 // An OSC ends with ESC backslash.
                 const std::size_t end = line.find("\x1b\\", next);
                 next = end == std::string::npos ? line.size() : end + 2;
+                clusters.reset();
             } else {
-                while (next < line.size() && (static_cast<unsigned char>(line[next]) & 0xc0) == 0x80)
-                    ++next;
+                std::size_t at = i;
+                char32_t cp = 0;
+                if (detail::nextUtf8(line, at, cp)) {
+                    next = at;
+                    boundary = clusters.breaksBefore(cp);
+                } else {
+                    while (next < line.size() && (static_cast<unsigned char>(line[next]) & 0xc0) == 0x80)
+                        ++next;
+                }
             }
-            if (next > room)
-                break;
-            safe = i = next;
+            if (boundary)
+                safe = i;
+            i = std::min(next, line.size());
         }
         return safe;
     }
@@ -4410,6 +4503,7 @@ private:
     std::string m_out;
     bool m_truncated = false;
     bool m_onlyLineFeedCut = false;
+    bool m_first = true; ///< no row was written yet
     Style m_style;
     std::uint32_t m_link = 0;
 };
@@ -4424,37 +4518,114 @@ std::string Terminal::textBetween(const Mark& from, const Mark& to, std::size_t 
 std::string Terminal::textBetween(const Mark& from, const Mark& to, std::size_t maxBytes, bool* truncated,
                                   const TextFormat& format, bool trimmed) const
 {
-    if (truncated)
-        *truncated = false;
     const Screen& scr = *m_primary;
     const long long first = scr.absoluteIndexOf(from.row);
     const long long last = scr.absoluteIndexOf(to.row);
     if (last < 0) {
+        if (truncated)
+            *truncated = false;
         return {};
     }
-    const long long start = first < 0 ? 0 : first; // the start scrolled out of history
-    const int startCol = first < 0 ? 0 : from.col;
+    // The start scrolled out of history: from the oldest row kept.
+    return textOfRows(scr, first < 0 ? 0 : first, first < 0 ? 0 : from.col, last, to.col, maxBytes, truncated, format,
+                      trimmed);
+}
+
+std::string Terminal::textOfRows(const Screen& scr, long long first, int firstCol, long long last, int lastCol,
+                                 std::size_t maxBytes, bool* truncated, const TextFormat& format, bool trimmed) const
+{
+    if (truncated)
+        *truncated = false;
+    if (first > last)
+        return {};
+    long long start = first;
+    int startCol = std::max(firstCol, 0);
+    long long end = last;
+    int endCol = lastCol;
+    TextWriter blanks(scr, format, 0);
+    // A start after the last column (a mark at a pending wrap): the text
+    // starts on the next row, with no lone wrap marker or line feed.
+    if (start < end && startCol >= blanks.visibleColumns(scr.absoluteRow(std::size_t(start)))) {
+        ++start;
+        startCol = 0;
+    }
+    // Rows that write nothing at the end: the caller trims their line feeds,
+    // so they take no room.
+    if (trimmed) {
+        while (end > start && !scr.absoluteRow(std::size_t(end - 1)).wrapped
+               && blanks.writesNothing(scr.absoluteRow(std::size_t(end)), false, 0, endCol)) {
+            --end;
+            endCol = scr.cols();
+        }
+    }
+    bool startCut = false;
+    if (format.keepEnd) {
+        // The rows from the end that fit, each measured alone. Alone, a row
+        // takes no less than in the text, but after a row that wraps: there
+        // the text first ends the style and the link that row left open.
+        constexpr std::size_t CarriedEnds = 3 + 7; // ESC [ m and an empty OSC 8
+        std::size_t total = 0;
+        long long fit = end + 1;
+        while (fit > start) {
+            const long long i = fit - 1;
+            const Row& row = scr.absoluteRow(std::size_t(i));
+            const bool continues = row.wrapped && i < end;
+            const std::size_t carried =
+                format.ansi && i > start && scr.absoluteRow(std::size_t(i - 1)).wrapped ? CarriedEnds : 0;
+            if (total + carried > maxBytes)
+                break;
+            TextWriter measure(scr, format, maxBytes - total - carried);
+            if (!measure.row(row, i == start ? startCol : 0, i == end ? endCol : scr.cols(), continues,
+                             !continues && i < end))
+                break;
+            total += measure.take().size() + carried;
+            fit = i;
+        }
+        // All rows fit: nothing is cut. Not even the last row fits: it goes
+        // from its start, cut at the limit.
+        const long long from = std::min(fit, end);
+        for (long long j = start; j < from && !startCut; ++j) {
+            const Row& row = scr.absoluteRow(std::size_t(j));
+            startCut = !blanks.writesNothing(row, row.wrapped && j < end, j == start ? startCol : 0);
+        }
+        if (from > start) {
+            start = from;
+            startCol = 0;
+        }
+    }
     TextWriter writer(scr, format, maxBytes);
     long long i = start;
-    for (; i <= last; ++i) {
+    for (; i <= end; ++i) {
         const Row& row = scr.absoluteRow(std::size_t(i));
-        const bool continues = row.wrapped && i < last;
-        if (!writer.row(row, i == start ? startCol : 0, i == last ? to.col : scr.cols(), continues,
-                        !continues && i < last))
+        const bool continues = row.wrapped && i < end;
+        if (!writer.row(row, i == start ? startCol : 0, i == end ? endCol : scr.cols(), continues,
+                        !continues && i < end))
             break;
     }
     if (truncated) {
         *truncated = writer.truncated();
         if (*truncated && trimmed && writer.onlyLineFeedCut()) {
             bool lost = false;
-            for (long long j = i + 1; j <= last && !lost; ++j) {
+            for (long long j = i + 1; j <= end && !lost; ++j) {
                 const Row& row = scr.absoluteRow(std::size_t(j));
-                lost = !writer.writesNothing(row, row.wrapped && j < last);
+                lost = !writer.writesNothing(row, row.wrapped && j < end, 0, j == end ? endCol : scr.cols());
             }
             *truncated = lost;
         }
+        *truncated = *truncated || startCut;
     }
     return writer.take();
+}
+
+std::string Terminal::screenText(const Screen& scr, std::size_t top, std::size_t maxBytes, bool* truncated,
+                                 const TextFormat& format) const
+{
+    const auto first = static_cast<long long>(top);
+    std::string out = textOfRows(scr, first, 0, first + scr.rows() - 1, scr.cols(), maxBytes, truncated, format, true);
+    while (!out.empty() && out.back() == '\n') {
+        out.pop_back();
+    }
+    return out;
 }
 
 std::string Terminal::text(TextScope scope, std::size_t maxBytes, bool* truncated) const
@@ -4472,8 +4643,11 @@ std::string Terminal::text(TextScope scope, std::size_t maxBytes, bool* truncate
     std::string out;
     switch (scope) {
     case TextScope::LastOutput:
-        if (m_outputStart.valid)
+        if (m_outputStart.valid) {
             out = textBetween(m_outputStart, m_outputEnd.valid ? m_outputEnd : cursorMark(), room, &cut, format);
+            // Its start left the scrollback: a part of it is gone.
+            cut = cut || m_primary->absoluteIndexOf(m_outputStart.row) < 0;
+        }
         break;
     case TextScope::All: {
         const Screen& scr = *m_primary;
@@ -4485,33 +4659,10 @@ std::string Terminal::text(TextScope scope, std::size_t maxBytes, bool* truncate
         }
         break;
     }
-    case TextScope::Screen: {
-        // The active screen's visible rows.
-        const Screen& scr = *m_active;
-        TextWriter writer(scr, format, room);
-        const auto rowAt = [&scr](int y) -> const Row& {
-            return scr.absoluteRow(scr.viewportTop() + std::size_t(y));
-        };
-        int y = 0;
-        for (; y < scr.rows(); ++y) {
-            const bool continues = rowAt(y).wrapped && y + 1 < scr.rows();
-            if (!writer.row(rowAt(y), 0, scr.cols(), continues, !continues && y + 1 < scr.rows()))
-                break;
-        }
-        cut = writer.truncated();
-        // Its end is trimmed: blank rows that the limit left out lose nothing.
-        if (cut && writer.onlyLineFeedCut()) {
-            cut = false;
-            for (int k = y + 1; k < scr.rows() && !cut; ++k) {
-                cut = !writer.writesNothing(rowAt(k), rowAt(k).wrapped && k + 1 < scr.rows());
-            }
-        }
-        out = writer.take();
-        while (!out.empty() && out.back() == '\n') {
-            out.pop_back();
-        }
+    case TextScope::Screen:
+        // The active screen's rows that the view shows.
+        out = screenText(*m_active, m_active->viewportTop(), room, &cut, format);
         break;
-    }
     }
     if (cursorFits) {
         out += cursor;
@@ -4540,7 +4691,8 @@ int Terminal::cursorStyleNumber() const noexcept
 
 void Terminal::programExited()
 {
-    m_programExited = true;
+    // The shell's state changes to None with it (shellState()).
+    const bool exited = !std::exchange(m_programExited, true);
     m_host.terminalProtocol(0, {});
     // A download that waits for its answer gets none now: the host's
     // question goes. What the program sent after its head is still parsed,
@@ -4558,14 +4710,15 @@ void Terminal::programExited()
     // left as any output, holds no frame for a redraw and moves no cursor
     // for a click.
     const bool prompt = m_semanticZone != SemanticZone::Output || m_promptRedrawPending
-        || m_promptClicks != PromptClicks::Keys || m_promptSpecialKey || m_secondaryPrompt.valid;
+        || m_promptClicks != PromptClicks::Keys || m_promptSpecialKey || m_secondaryPrompt.valid || m_continuation;
     m_semanticZone = SemanticZone::Output;
     m_promptRedrawPending = false;
     m_promptClicks = PromptClicks::Keys;
     m_promptSpecialKey = false;
     m_secondaryPrompt = {};
+    m_continuation = false;
     const bool status = m_programStatus.endActivity();
-    if (prompt || status) {
+    if (exited || prompt || status) {
         touch();
     }
     if (status) {
@@ -5128,7 +5281,7 @@ void Terminal::oscCommand(std::string_view payload, bool bel)
     }
 }
 
-void Terminal::closeSemanticRegion(std::optional<int> exitCode)
+void Terminal::closeSemanticRegion()
 {
     if (m_semanticRegions.empty() || !m_semanticRegions.back().open)
         return;
@@ -5137,13 +5290,12 @@ void Terminal::closeSemanticRegion(std::optional<int> exitCode)
     region.end = {mark.row, mark.col};
     m_semanticRegionsLastRow = std::max(m_semanticRegionsLastRow, mark.row);
     region.open = false;
-    region.exitCode = exitCode;
 }
 
-void Terminal::beginSemanticRegion(SemanticZoneKind kind)
+std::uint64_t Terminal::beginSemanticRegion(SemanticZoneKind kind)
 {
     if (m_modes.altScreen)
-        return;
+        return 0;
     closeSemanticRegion();
     const auto mark = cursorMark();
     SemanticRegion region;
@@ -5153,13 +5305,14 @@ void Terminal::beginSemanticRegion(SemanticZoneKind kind)
     m_semanticRegionsLastRow = std::max(m_semanticRegionsLastRow, mark.row);
     region.open = true;
     if (m_semanticRegions.size() == MaxSemanticRegions)
-        m_semanticRegions.erase(m_semanticRegions.begin());
+        m_semanticRegions.pop_front();
     m_semanticRegions.push_back(region);
+    return region.id;
 }
 
 std::vector<SemanticRegion> Terminal::semanticRegions() const
 {
-    auto result = m_semanticRegions;
+    std::vector<SemanticRegion> result(m_semanticRegions.begin(), m_semanticRegions.end());
     for (auto& region : result) {
         if (region.open) {
             const auto mark = cursorMark();
@@ -5190,6 +5343,73 @@ std::optional<std::string> Terminal::semanticRegionText(std::uint64_t id, std::s
                            truncated, format);
     }
     return std::nullopt;
+}
+
+ShellState Terminal::shellState() const noexcept
+{
+    // A program that exited, a shell or not, has no prompt any more. A
+    // command runs from its C to its D, also across a reset, which the
+    // shell does not see.
+    if (m_programExited)
+        return ShellState::None;
+    if (m_commandRunning)
+        return ShellState::Running;
+    if (!m_shellMarked)
+        return ShellState::None;
+    if (m_semanticZone == SemanticZone::Output)
+        return ShellState::Running;
+    return m_continuation ? ShellState::Continuation : ShellState::Prompt;
+}
+
+bool Terminal::shellInput() const
+{
+    if (m_semanticZone != SemanticZone::Input || !m_inputStart.valid || m_modes.altScreen)
+        return false;
+    // To the cursor, not to the end of its row: a right prompt (zsh's
+    // RPROMPT) and an autosuggestion stand after it. When the row of the
+    // mark left the scrollback, every row that is kept up to the cursor
+    // came after it, and is typed text: the text starts at the oldest.
+    const std::string typed = textBetween(m_inputStart, cursorMark(), 4096);
+    return typed.find_first_not_of(" \n") != std::string::npos;
+}
+
+TextMark Terminal::textMark() const
+{
+    const Mark mark = cursorMark();
+    return {mark.row, mark.col, textEpoch()};
+}
+
+std::string Terminal::textSince(const TextMark& from, std::size_t maxBytes, bool* truncated, bool* trimmed, bool* stale,
+                                const TextFormat& format) const
+{
+    if (trimmed)
+        *trimmed = false;
+    if (stale)
+        *stale = from.epoch != textEpoch();
+    // The ids name rows of other text now: no text could be the right one.
+    if (from.epoch != textEpoch()) {
+        if (truncated)
+            *truncated = false;
+        return {};
+    }
+    // The live screen, not the part of the history that the view shows.
+    if (m_modes.altScreen)
+        return screenText(*m_active, m_active->historySize(), maxBytes, truncated, format);
+    const Mark cursor = cursorMark();
+    // The cursor went above the mark's row: a program moved it there and
+    // wrote over the rows of the mark. What it wrote since is on the screen.
+    if (from.row > cursor.row)
+        return screenText(*m_primary, m_primary->historySize(), maxBytes, truncated, format);
+    if (trimmed && from.row < m_primary->rowsDropped())
+        *trimmed = true;
+    const int col = std::clamp(from.col, 0, m_primary->cols());
+    // A carriage return left the cursor before the mark on its row: what
+    // the program wrote over the row after the mark.
+    const Mark to = from.row == cursor.row && col > cursor.col ? Mark{cursor.row, m_primary->cols(), true} : cursor;
+    std::string out = textBetween({from.row, col, true}, to, maxBytes, truncated, format, true);
+    while (!out.empty() && out.back() == '\n')
+        out.pop_back();
+    return out;
 }
 
 std::optional<std::uint64_t> Terminal::commandOutputAt(std::uint64_t row) const
@@ -5377,18 +5597,18 @@ void Terminal::semanticPrompt(std::string_view args)
         }
         pos = next;
     }
-    if (kind == 'A' && secondary) {
-        // The secondary (PS2) prompt of the command line being typed: no new
-        // prompt, so the typed command, the prompt mark and the click
-        // settings stay. Only click_events=2 needs where it starts.
-        if (m_semanticZone != SemanticZone::Output && !m_modes.altScreen) {
-            m_secondaryPrompt = cursorMark();
-        }
+    if ((kind == 'A' || kind == 'P') && secondary) {
+        continuationPrompt();
         return;
     }
     switch (kind) {
     case 'A': // prompt start
-    case 'N': // new command: prompt start after implicitly finishing the last one
+    case 'N': { // new command: prompt start after implicitly finishing the last one
+        // Shells send A again each time they draw the same prompt again (a
+        // resize, Ctrl+L, an async prompt segment), with no C or D between:
+        // that prompt goes on, with its region and its id. N ends the last
+        // command by itself: it always starts a new prompt.
+        const bool fresh = kind == 'N' || promptIsNew();
         if (m_commandRunning) {
             m_outputEnd = cursorMark();
             finishCommand(-1); // no D: the exit code is unknown
@@ -5397,42 +5617,63 @@ void Terminal::semanticPrompt(std::string_view args)
         if (!commandGiven) {
             m_explicitCommand.reset(); // nor one a shell reported (OSC 633 E) in the last
         }
-        // Back at the shell: whatever a program reported in flight is over.
-        // An iTerm2 file in parts goes on over one prompt: a job in the
-        // background (imgcat &) still sends it while the shell shows its
-        // prompt. A second prompt with no part since the first means the
-        // sender is gone (an interrupted imgcat): its data is given back.
-        // Only a prompt after a command counts: shells send A again each
-        // time they redraw the same prompt (a resize, Ctrl+L, an async
-        // prompt segment, a continuation line), with no C between. A D
-        // alone is no command either: Afterglow's bash and zsh integration
-        // sends one after each command, also after Enter on an empty line.
-        if (m_iterm2Receiving && m_commandSincePrompt) {
-            if (m_iterm2PromptSincePart) {
-                endITerm2Multipart();
+        backAtPrompt();
+        if (fresh) {
+            ++m_lastPromptId;
+            m_promptRegionId = beginSemanticRegion(SemanticZoneKind::Prompt);
+        } else if (!m_modes.altScreen) {
+            // The prompt drawn again starts here. The input that it had
+            // comes again after its next B.
+            if (!m_semanticRegions.empty() && m_semanticRegions.back().open
+                && m_semanticRegions.back().kind == SemanticZoneKind::Input
+                && m_semanticRegions.back().id > m_promptRegionId) {
+                m_semanticRegions.pop_back();
+            }
+            if (!m_semanticRegions.empty() && m_semanticRegions.back().id == m_promptRegionId) {
+                SemanticRegion& region = m_semanticRegions.back();
+                const Mark mark = cursorMark();
+                region.start = region.end = {mark.row, mark.col};
+                region.open = true;
+                m_semanticRegionsLastRow = std::max(m_semanticRegionsLastRow, mark.row);
             } else {
-                m_iterm2PromptSincePart = true;
+                // Its region went (scrolled out, evicted): a new region,
+                // for the same prompt.
+                m_promptRegionId = beginSemanticRegion(SemanticZoneKind::Prompt);
             }
         }
-        m_commandSincePrompt = false;
-        if (m_programStatus.endActivity()) {
-            m_host.programStatusChanged();
-        }
-        beginSemanticRegion(SemanticZoneKind::Prompt);
+        m_shellMarked = true;
         m_semanticZone = SemanticZone::Prompt;
         m_promptClicks = clicks;
         m_promptSpecialKey = specialKey;
         m_secondaryPrompt = {};
+        m_continuation = false;
         if (!m_modes.altScreen) {
             m_active->row(cursor().y).promptStart = true;
         }
         break;
-    case 'P': // continuation prompt line
-        beginSemanticRegion(SemanticZoneKind::Prompt);
+    }
+    case 'P': // a part of the prompt (k=i, k=r, k=c)
+        // Only a shell that sends no A starts a prompt with it, from the
+        // output of a command, as A starts one. A right prompt (k=r) drawn
+        // after the input mark leaves the cursor in it.
+        if (m_commandRunning || m_semanticZone != SemanticZone::Output)
+            break;
+        if (promptIsNew()) {
+            backAtPrompt();
+            ++m_lastPromptId;
+        }
+        m_promptRegionId = beginSemanticRegion(SemanticZoneKind::Prompt);
+        m_shellMarked = true;
         m_semanticZone = SemanticZone::Prompt;
+        // The row of the prompt, as for A: jumps to prompts, clicks that
+        // move the cursor and a resize that keeps the prompt find it.
+        if (!m_modes.altScreen) {
+            m_active->row(cursor().y).promptStart = true;
+        }
         break;
     case 'B': // prompt end, user input begins
         beginSemanticRegion(SemanticZoneKind::Input);
+        m_shellMarked = true;
         m_semanticZone = SemanticZone::Input;
         m_promptRedrawPending = false;
         if (!m_modes.altScreen) {
@@ -5440,33 +5681,35 @@ void Terminal::semanticPrompt(std::string_view args)
         }
         break;
     case 'C': { // command output begins
-        beginSemanticRegion(SemanticZoneKind::Output);
+        m_outputRegionId = beginSemanticRegion(SemanticZoneKind::Output);
         m_semanticZone = SemanticZone::Output;
         m_promptClicks = PromptClicks::Keys;
         m_promptSpecialKey = false;
         m_secondaryPrompt = {};
+        m_continuation = false;
         m_promptRedrawPending = false;
         m_commandSincePrompt = true;
         std::optional<std::string> reported = std::exchange(m_explicitCommand, std::nullopt);
-        if (!m_modes.altScreen) {
-            // The command line the shell reported, else what was typed
-            // between B and here.
-            std::string command = reported ? std::move(*reported)
-                : m_inputStart.valid       ? textBetween(m_inputStart, cursorMark())
-                                           : std::string{};
-            m_inputStart = {};
-            while (!command.empty() && (command.back() == '\n' || command.back() == ' ')) {
-                command.pop_back();
-            }
-            m_outputStart = cursorMark();
-            m_outputEnd = {};
-            m_commandRunning = true;
-            m_host.commandStarted(command);
+        // The command line the shell reported, else what was typed between
+        // B and here. On the alternate screen, where a killed full-screen
+        // program left the shell, the command runs too: only its rows are
+        // not the primary screen's, so it has no output to read and no
+        // typed text.
+        std::string command = reported                 ? std::move(*reported)
+            : m_inputStart.valid && !m_modes.altScreen ? textBetween(m_inputStart, cursorMark())
+                                                       : std::string{};
+        m_inputStart = {};
+        while (!command.empty() && (command.back() == '\n' || command.back() == ' ')) {
+            command.pop_back();
         }
+        m_outputStart = m_modes.altScreen ? Mark{} : cursorMark();
+        m_outputEnd = {};
+        m_commandRunning = true;
+        m_host.commandStarted(command);
         break;
     }
     case 'D': { // command finished, D ; exit-code
-        m_semanticZone = SemanticZone::Output;
+        m_endSincePrompt = true;
         m_promptRedrawPending = false;
         int code = -1;
         if (args.size() > 2 && args[1] == ';') {
@@ -5477,9 +5720,25 @@ void Terminal::semanticPrompt(std::string_view args)
         }
         // Also while a full-screen program still has the alternate screen
         // (it was killed): the marks are on the primary screen either way.
+        // A D with no command (Enter on an empty line) leaves the shell at
+        // its prompt.
         if (m_commandRunning) {
+            m_semanticZone = SemanticZone::Output;
             m_outputEnd = cursorMark();
-            closeSemanticRegion(code >= 0 ? std::optional<int>(code) : std::nullopt);
+            closeSemanticRegion();
+            // The code is the output's, also when a program's marks opened
+            // another region in it since.
+            for (auto it = m_semanticRegions.rbegin(); it != m_semanticRegions.rend() && m_outputRegionId; ++it) {
+                if (it->id == m_outputRegionId) {
+                    if (it->open) {
+                        it->end = {m_outputEnd.row, m_outputEnd.col};
+                        it->open = false;
+                    }
+                    if (code >= 0)
+                        it->exitCode = code;
+                    break;
+                }
+            }
             finishCommand(code);
         }
         break;
@@ -5487,6 +5746,48 @@ void Terminal::semanticPrompt(std::string_view args)
     default:
         break;
     }
+}
+
+void Terminal::backAtPrompt()
+{
+    // Back at the shell: whatever a program reported in flight is over. An
+    // iTerm2 file in parts goes on over one prompt: a job in the background
+    // (imgcat &) still sends it while the shell shows its prompt. A second
+    // prompt with no part since the first means the sender is gone (an
+    // interrupted imgcat): its data is given back. Only a prompt after a
+    // command counts: a prompt drawn again has no C before it. A D alone is
+    // no command either: Afterglow's bash and zsh integration sends one after
+    // each command, also after Enter on an empty line.
+    if (m_iterm2Receiving && m_commandSincePrompt) {
+        if (m_iterm2PromptSincePart) {
+            endITerm2Multipart();
+        } else {
+            m_iterm2PromptSincePart = true;
+        }
+    }
+    m_commandSincePrompt = false;
+    m_endSincePrompt = false;
+    if (m_programStatus.endActivity()) {
+        m_host.programStatusChanged();
+    }
+}
+
+void Terminal::continuationPrompt()
+{
+    // The secondary (PS2) prompt of the command line being typed: no new
+    // prompt, so the typed command, the prompt mark and the click settings
+    // stay. Only click_events=2 needs where it starts. The shell has drawn
+    // it: a prompt that waited for its repaint after a resize has it.
+    if (m_commandRunning)
+        return;
+    // The mark is of the primary screen's rows, as the clicks read them.
+    if (!m_modes.altScreen)
+        m_secondaryPrompt = cursorMark();
+    m_continuation = true;
+    m_promptRedrawPending = false;
+    m_shellMarked = true;
+    if (m_semanticZone == SemanticZone::Output)
+        m_semanticZone = SemanticZone::Prompt;
 }
 
 void Terminal::vscodeShellIntegration(std::string_view args)
@@ -5525,6 +5826,9 @@ void Terminal::vscodeShellIntegration(std::string_view args)
         break;
     case 'E':
         m_explicitCommand = withoutControls(unescape(rest.substr(0, rest.find(';'))));
+        break;
+    case 'F': // the continuation prompt starts; G, its end, and H and I, a right prompt, change nothing
+        continuationPrompt();
         break;
     case 'P':
         if (rest.starts_with("Cwd=")) {
@@ -5630,7 +5934,6 @@ void Terminal::iterm2(std::string_view args, bool bel)
     } else if (key == "ClearScrollback") {
         m_primary->clearHistory();
         dropGoneImages(m_graphics[0], *m_primary);
-        touch();
     } else if (key == "ReportCellSize") {
         char buf[96];
         std::snprintf(buf, sizeof buf, "\x1b]1337;ReportCellSize=%d.0;%d.0;1.0%s", m_cellHeight, m_cellWidth,
@@ -5745,7 +6048,6 @@ void Terminal::iterm2File(std::string_view args, std::string_view base64)
     cur.x = std::min(col + cellsWide, cols() - 1);
     cur.pendingWrap = col + cellsWide >= cols();
     clampToLine();
-    touch();
 }
 
 std::optional<std::size_t> Terminal::redrawablePromptStart() const
@@ -5756,6 +6058,14 @@ std::optional<std::size_t> Terminal::redrawablePromptStart() const
     // Only a prompt start on screen counts. A shell that sends A but never C
     // would otherwise leave a stale mark far up whose rows we must not blank.
     const Screen& scr = *m_primary;
+    // At a secondary prompt the shell draws that one again, not the lines
+    // that it accepted before it: those reflow as any output.
+    if (m_secondaryPrompt.valid) {
+        const long long at = scr.absoluteIndexOf(m_secondaryPrompt.row);
+        const auto top = static_cast<long long>(scr.historySize());
+        if (at >= top && at <= top + scr.cursor.y)
+            return std::size_t(at);
+    }
     for (int y = scr.cursor.y; y >= 0; --y) {
         if (scr.row(y).promptStart) {
             return scr.historySize() + std::size_t(y);

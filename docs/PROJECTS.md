@@ -164,8 +164,8 @@ Examine commands in imported layouts before you open them.
 
 A project with `"session": true` opens into a session of the [mux daemon](MUX.md) of this computer.
 The session has the name of the project.
-A window keeps its session running when it closes only when it opened from a project into that session, also with `--new`.
-For these windows, `Mux.onClose` does not apply. It decides for the other windows of sessions.
+A window that opened from a project into its session keeps that session running when it closes, also with `--new`.
+For these windows, `Mux.onClose` does not apply. It also does not apply to the window of an [agent session](MUX.md#agent-sessions), which always keeps its session. It decides for the other windows of sessions.
 A save under a project name does not change what a close does.
 To end the session, run `afterglow mux kill NAME`, or end its programs.
 `--into-session` and `--no-session` of `afterglow ctl open-project` choose for one open.
@@ -206,6 +206,8 @@ The ID maps connect saved labels to runtime IDs.
 Project creation uses the structural action budget.
 Window snapshots contain `project`. An unnamed window has an empty project name.
 
+The `open_project` tool of the [MCP server](MCP.md#open_project) opens a project in the agent's own mux session.
+The `save_project` tool saves that session as a project, also when no window shows it.
 The [project script](../examples/scripts/projects.luau) shows a native selector.
 The [control socket](CONTROL.md#control-calls) supplies `projects`, `saveProject` and `openProject`.
 The CLI prints save and open results as JSON.

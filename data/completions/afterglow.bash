@@ -10,7 +10,7 @@
 # loads the completion of aglow when it is first needed. Without
 # bash-completion, source aglow.bash as well.
 
-_afterglow_ctl_commands="ls send-text get-text split move-pane detach-tab new-tab new-window focus close set-title
+_afterglow_ctl_commands="ls send-text paste get-text split move-pane detach-tab new-tab new-window focus close set-title
 set-tab-title resize send-key scroll signal notify scripts open-directory projects save-project open-project action
 watch overlay screenshot colors set-colors set-font-size set-opacity set-user-var signal-program window"
 # Key names that ctl send-key takes, of many more.
@@ -243,7 +243,7 @@ _afterglow_ctl()
     fi
     case $command in
     ls) _afterglow_unused --json ;;
-    send-text)
+    send-text | paste)
         # --stdin takes no text, and the text takes no --stdin.
         if _afterglow_given --stdin; then
             _afterglow_unused $pane
@@ -301,7 +301,8 @@ _afterglow_ctl()
     open-directory) _afterglow_unused --layout ;;
     save-project) _afterglow_unused $pane --overwrite ;;
     open-project) _afterglow_unused --new "--into-session|--no-session" ;;
-    watch | scripts | projects) ;;
+    watch) _afterglow_unused --text-changes ;;
+    scripts | projects) ;;
     *) _afterglow_unused $pane ;;
     esac
 }
@@ -357,7 +358,7 @@ _afterglow_mux()
             ;;
         --name) return ;;
         esac
-        _afterglow_unused --name --cwd --detach --ssh
+        _afterglow_unused --name --cwd --detach --agent --ssh
         ;;
     kill | attach | detach | ls)
         if [[ $prev == --ssh ]]; then
@@ -373,6 +374,26 @@ _afterglow_mux()
         fi
         ;;
     esac
+}
+
+# afterglow mcp [--session NAME] [--adopt] [--cwd DIR]: its options, and the
+# directory of --cwd. No session name is offered for --session: a completion
+# runs no program but aglow run --complete.
+_afterglow_mcp()
+{
+    case $prev in
+    --cwd)
+        _afterglow_files -d
+        return
+        ;;
+    --session) return ;;
+    esac
+    local start=2
+    if ((cword == 2)) && [[ $cur == -* ]]; then
+        _afterglow_matching -h --help
+    fi
+    # The usage is the whole command line.
+    _afterglow_given -h || _afterglow_given --help || _afterglow_unused --session --adopt --cwd
 }
 
 # Whether the option $1 is on the command line before the cursor.
@@ -424,6 +445,10 @@ _afterglow()
             ;;
         mux)
             _afterglow_mux
+            return
+            ;;
+        mcp)
+            _afterglow_mcp
             return
             ;;
         run | transfer | dnd | icat | clipboard)
@@ -483,7 +508,7 @@ _afterglow()
     --title | -o | --override | --class) return ;;
     esac
     if ((cword == 1)) && [[ $cur != -* ]]; then
-        _afterglow_matching ctl mux run ssh transfer dnd icat clipboard
+        _afterglow_matching ctl mux mcp run ssh transfer dnd icat clipboard
         return
     fi
     local start=1

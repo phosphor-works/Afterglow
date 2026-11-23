@@ -107,8 +107,13 @@ public:
     /// Shows pane @p id of a mux session in place of a program of its own:
     /// the terminal becomes a replica of the session's, and input goes to the
     /// daemon. Closing the pane ends its program in the daemon, unless the
-    /// window says otherwise (setSessionRelease).
-    void showSession(std::shared_ptr<MuxClient> session, std::uint32_t id);
+    /// window says otherwise (setSessionRelease). @p launched: its program
+    /// started for this pane, by the window (MuxClient::newPane or
+    /// newPaneLater) or by the daemon for a split or a tab of a control
+    /// client (`afterglow ctl`, `afterglow mcp`), so its first prompt and
+    /// text are news, as for a program of its own. Else the program ran before the window showed it (the layout of
+    /// an attach, a pane that moved in), and its first frame tells nothing.
+    void showSession(std::shared_ptr<MuxClient> session, std::uint32_t id, bool launched = false);
     bool isSessionPane() const
     {
         return m_session != nullptr;
@@ -172,6 +177,29 @@ public:
     /// once, and so do the moves that look at its rows (search,
     /// jumpToPrompt, selectOutput). GUI thread, without m_mutex.
     void refreshSession() const;
+    /// While one lives, refreshSession() waits for one answer at most: a
+    /// call that checks the first frame (Control::notSynced) and then reads
+    /// takes one round trip. Nothing applies frames between the two, as only
+    /// the wait reads them. GUI thread.
+    class RefreshOnce
+    {
+    public:
+        explicit RefreshOnce(const Pane& pane)
+            : m_pane(pane)
+        {
+            if (m_pane.m_refreshScopes++ == 0)
+                m_pane.m_refreshedInScope = false;
+        }
+        ~RefreshOnce()
+        {
+            --m_pane.m_refreshScopes;
+        }
+        RefreshOnce(const RefreshOnce&) = delete;
+        RefreshOnce& operator=(const RefreshOnce&) = delete;
+
+    private:
+        const Pane& m_pane;
+    };
     /// MuxClient: the answer to Refresh @p ticket of this pane came, and the
     /// frames that it names applied. When it answers the Refresh that the
     /// pane waits for, or a later one, a pane that the user can see keeps
@@ -401,8 +429,24 @@ public:
     /// for a session pane, whose program runs in the daemon, and when the
     /// signal cannot go. On false, errno is kill(2)'s when it failed, else 0.
     bool signalProgram(int signal);
-    /// The cursor is in a shell prompt or its input (OSC 133 A or B, before C).
-    bool atShellPrompt() const;
+    /// Terminal::shellState, shellInput and lastExitCode, under one lock.
+    /// A session pane that the user cannot see has the marks of its held
+    /// frames but not their rows (sessionScreensHeld): its input says what
+    /// the command line held when the pane showed last.
+    struct ShellFacts
+    {
+        AfterglowVt::ShellState state = AfterglowVt::ShellState::None;
+        bool input = false;
+        std::optional<int> lastExit;
+    };
+    ShellFacts shellFacts() const;
+    /// Terminal::textMark(), of a session pane once its screens came
+    /// (refreshSession).
+    AfterglowVt::TextMark textMark() const;
+    /// The semantic regions whose id is larger than @p after, oldest first,
+    /// as semanticRegions() has them: a region whose rows are on their way
+    /// from the daemon is not available.
+    std::vector<AfterglowVt::SemanticRegion> semanticRegionsAfter(std::uint64_t after) const;
     /// The directory the shell reported last (OSC 7, 9;9, 633, 1337) when it
     /// is local and exists, else the foreground job's directory from /proc.
     /// A session pane's program runs under the daemon, which reads that
@@ -418,9 +462,15 @@ public:
     /// At most MaxText bytes of UTF-8, as the terminal reads by default.
     /// @p arriving, when given, says that a session pane's rows of the
     /// scope are still on their way from the daemon: the text has blank
-    /// lines in their place.
+    /// lines in their place. @p truncated, when given: the text stopped at
+    /// MaxText.
     QString text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::TextFormat& format = {},
-                 bool* arriving = nullptr);
+                 bool* arriving = nullptr, bool* truncated = nullptr);
+    /// Terminal::textSince(), at most MaxText bytes, with @p stale as the
+    /// terminal gives it, and @p arriving, when given, as text() has it for
+    /// the rows from @p from to the cursor.
+    QString textSince(const AfterglowVt::TextMark& from, const AfterglowVt::TextFormat& format, bool* truncated,
+                      bool* trimmed, bool* stale, bool* arriving);
     static constexpr std::size_t MaxText = 1024 * 1024;
     /// The events of one budget that wait for the GUI thread (queueEvent()).
     static constexpr std::size_t MaxQueuedEvents = 256;
@@ -436,9 +486,10 @@ public:
     };
     /// readRegion() of the output region @p which, with one look at the
     /// session and one lock: not available when there is none. @p format as
-    /// for regionText().
-    QVariantMap readOutputRegion(OutputRegion which, std::size_t limit,
-                                 const AfterglowVt::TextFormat& format = {}) const;
+    /// for regionText(). @p arriving: not available because the session
+    /// pane still gets the region's rows, not because there is none.
+    QVariantMap readOutputRegion(OutputRegion which, std::size_t limit, const AfterglowVt::TextFormat& format = {},
+                                 bool* arriving = nullptr) const;
     /// At most `limit` bytes of text. The caller bounds the limit: scripts
     /// to their max_bytes range, show_last_output to Terminal.pagerOutputLimit.
     /// Not available while a session pane's rows of the scope (its last
@@ -669,6 +720,18 @@ Q_SIGNALS:
     /// requests below, emitted on the GUI thread (queueEvent).
     void commandBegan(const QString& command);
     void commandEnded(const QString& command, int exitCode, qint64 durationMs);
+    /// What the shell does changed (Terminal::shellState), or the shell
+    /// drew a new prompt. Emitted on the GUI thread after the output, the
+    /// session frames or the action of the user that changed it, and after
+    /// the commandBegan and commandEnded that they queued before it.
+    void shellStateChanged(AfterglowVt::ShellState state);
+    /// What text() and the screen show could differ
+    /// (Terminal::contentGeneration): cells written, the cursor moved, the
+    /// view scrolled, the text reflowed. Titles, bells, colours, replies
+    /// and shell marks alone do not count. Emitted as shellStateChanged
+    /// is, before it. Not for a session pane's first frame, which only
+    /// shows what the session had.
+    void textChanged();
     /// An OSC 99 desktop notification request. @p missed as for
     /// notificationRequested.
     void desktopNotificationRequested(const AfterglowVt::NotificationRequest& request, bool missed);
@@ -738,8 +801,11 @@ private:
     void queueDesktopNotification(const AfterglowVt::NotificationRequest& request, bool missed);
     /// Posts one deliverEvents() unless one is posted already.
     void postEvents();
-    /// GUI thread: emits the queued events in order.
-    void deliverEvents();
+    /// GUI thread: emits the queued events in order. With @p checkShell,
+    /// then textChanged and shellStateChanged as the terminal was when the
+    /// events were taken: the start or end of a command comes before the
+    /// state that it left.
+    void deliverEvents(bool checkShell = false);
     /// As much as one clipboard write may carry.
     static constexpr std::size_t MaxQueuedEventBytes = AfterglowVt::ClipboardAssembler::MaxWrite;
     std::deque<std::function<void()>> m_events; ///< guarded by m_mutex
@@ -1054,6 +1120,30 @@ private:
     QDeadlineTimer m_holdDeadline; ///< when the frame refreshSnapshot holds is drawn anyway
 
     std::atomic<bool> m_notifyPending{false};
+    /// What shellStateChanged and textChanged read of the terminal.
+    struct ShellReading
+    {
+        AfterglowVt::ShellState state = AfterglowVt::ShellState::None;
+        std::uint64_t prompt = 0; ///< Terminal::lastPromptId
+        std::uint64_t content = 0; ///< Terminal::contentGeneration
+    };
+    ShellReading readShellLocked() const; ///< m_mutex held
+    /// The reading that shellStateChanged and textChanged told last. GUI
+    /// thread only.
+    ShellReading m_shellTold;
+    /// GUI thread: emits textChanged when the content of @p now is another
+    /// than m_shellTold's, and shellStateChanged when its state is another
+    /// or the shell drew a new prompt.
+    void tellShellState(const ShellReading& now);
+    /// GUI thread: one deliverEvents(true) for the changes that come with no
+    /// output (a resize, a view move, a reset), after the events of the
+    /// output that came meanwhile.
+    void queueShellCheck();
+    bool m_shellCheckQueued = false; ///< GUI thread: queueShellCheck
+    /// The terminal's rows from @p first to @p last (stable row ids) are on
+    /// their way from the daemon (StateReader::received): blank places, or
+    /// older rows that did not come yet. False for other panes. m_mutex held.
+    bool rowsArrivingLocked(std::uint64_t first, std::uint64_t last) const;
     QTimer m_animationTimer;
     bool m_seen = true; ///< setSeen()
     /// The state that setVisible() gave the terminal last, which only it
@@ -1078,6 +1168,7 @@ private:
     {
         std::optional<std::string> text;
         bool truncated = false;
+        bool arriving = false; ///< no text: the session pane still gets its rows
     };
     RegionRead readRegionLocked(std::uint64_t id, std::size_t limit, const AfterglowVt::TextFormat& format) const;
     /// readRegion()'s answer, converted after the lock.
@@ -1093,7 +1184,12 @@ private:
     /// the daemon held, asked since the last change of setSessionVisible().
     /// 0 for none.
     mutable std::uint64_t m_sessionRefresh = 0;
+    /// GUI thread: the RefreshOnce objects that live, and whether a refresh
+    /// waited since the first of them.
+    mutable int m_refreshScopes = 0;
+    mutable bool m_refreshedInScope = false;
     bool m_sessionSynced = false; ///< GUI thread: a frame of the session applied (sessionSynced)
+    bool m_sessionLaunched = false; ///< GUI thread: showSession's launched
     bool m_snapshotSynced = false; ///< GUI thread: m_snapshot is of a frame of the session
     /// GUI thread: the last reported directory that knownDirectory checked,
     /// and whether it was a directory then.

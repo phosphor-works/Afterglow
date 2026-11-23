@@ -16,6 +16,9 @@ public:
         : m_directory(std::move(directory))
     {
     }
+    /// The directory of the projects of the config file @p configPath: the
+    /// projects folder beside it.
+    static QString directoryBeside(const QString& configPath);
     static bool validName(const QString& name);
     static QString validate(const QJsonObject& document);
     /// The most arguments of a pane command, and the most UTF-8 bytes of one

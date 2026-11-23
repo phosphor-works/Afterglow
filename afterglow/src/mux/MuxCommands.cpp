@@ -139,6 +139,24 @@ std::optional<std::string> MuxCommands::forWindow(const std::string& line, std::
     return written;
 }
 
+std::optional<quint32> MuxCommands::relayPane(const Host& host, std::uint32_t pane, const QString& session,
+                                              QString* error)
+{
+    // Pane 0: a client in no pane of the session, such as one that selected
+    // an agent session. It runs on the focused pane of the session's window,
+    // as on a session of this computer (forWindow).
+    if (pane == 0) {
+        const auto focused = host.focused ? host.focused() : std::nullopt;
+        if (!focused)
+            *error = QStringLiteral("no pane of session '%1' has the focus in its window").arg(session);
+        return focused;
+    }
+    const auto shown = host.pane ? host.pane(pane) : std::nullopt;
+    if (!shown)
+        *error = QStringLiteral("no pane %1 of session '%2' shows in its window").arg(pane).arg(session);
+    return shown;
+}
+
 void MuxCommands::setHost(Host host)
 {
     m_host = std::move(host);
@@ -230,10 +248,8 @@ void MuxCommands::open(const Attach::RelayFrame& open)
         // A client of another host gets what an ssh session of that host
         // gets: the commands marked remote, on its own pane.
         const QString host = ssh ? QString::fromStdString(open.host) : m_remoteHost;
-        const auto pane = m_host.pane ? m_host.pane(open.pane) : std::nullopt;
-        if (!pane)
-            error = QStringLiteral("no pane %1 of session '%2' shows in its window").arg(open.pane).arg(m_session);
-        else if (m_host.remote)
+        const auto pane = relayPane(m_host, open.pane, m_session, &error);
+        if (pane && m_host.remote)
             path = m_host.remote(*pane, host, !ssh, &error);
     }
     if (path.isEmpty()) {

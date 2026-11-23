@@ -368,6 +368,14 @@ struct Mirror
         if (guard < 4096 && replica.text(Scope::Screen) != source.text(Scope::Screen)) {
             __builtin_trap();
         }
+        // The shell's facts, which a window's pane objects and an agent's
+        // runs read from the replica.
+        if (guard < 4096
+            && (replica.shellState() != source.shellState() || replica.lastExitCode() != source.lastExitCode()
+                || replica.lastPromptId() != source.lastPromptId()
+                || replica.semanticRegions().size() != source.semanticRegions().size())) {
+            __builtin_trap();
+        }
         // Nothing waits: the text of any mark went.
         if (guard < 4096 && marked && !writer.textMarked()) {
             __builtin_trap();

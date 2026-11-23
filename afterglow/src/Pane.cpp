@@ -124,7 +124,7 @@ Pane::~Pane()
     m_fileTransfers.reset();
     m_pty.reset();
     // A session pane that the user closes ends its program, or its session,
-    // or leaves it running (Mux.onClose): the window said which. One that
+    // or leaves it running (windowCloseRelease): the window said which. One that
     // the session left ends nothing.
     if (m_session)
         m_session->release(m_sessionPane, m_sessionGone ? MuxRelease::Nothing : m_sessionRelease);
@@ -191,6 +191,8 @@ void Pane::setOptions(const AfterglowVt::TerminalOptions& options)
         m_terminal.setViewOptions(options);
     else
         m_terminal.setOptions(options);
+    // A shorter scrollback drops rows of the text.
+    queueShellCheck();
 }
 
 void Pane::resize(int cols, int rows, int cellWidth, int cellHeight)
@@ -206,22 +208,30 @@ void Pane::resize(int cols, int rows, int cellWidth, int cellHeight)
         m_session->sendResize(m_sessionPane, AfterglowMux::PaneSize{cols, rows, cellWidth, cellHeight});
         return;
     }
-    std::lock_guard lock(m_mutex);
-    const PendingSize size{cols, rows, cellWidth, cellHeight};
-    // The size that the terminal takes: a pending one (applyPendingLocked)
-    // is ahead of it.
-    const bool same = m_pendingSize ? *m_pendingSize == size
-                                    : cols == m_terminal.cols() && rows == m_terminal.rows()
-            && cellWidth == m_terminal.cellWidth() && cellHeight == m_terminal.cellHeight();
-    if (same)
-        return;
-    // While the reader thread decodes an image, the terminal is its own: it
-    // takes the size, and the PTY with it, at the end of its feed. The window
-    // draws the pane at the size it has meanwhile, as it does a session pane
-    // until the daemon's frame, and a drag of the window goes on.
-    m_pendingSize = size;
-    if (!m_decoding)
+    {
+        std::lock_guard lock(m_mutex);
+        const PendingSize size{cols, rows, cellWidth, cellHeight};
+        // The size that the terminal takes: a pending one (applyPendingLocked)
+        // is ahead of it.
+        const bool same = m_pendingSize ? *m_pendingSize == size
+                                        : cols == m_terminal.cols() && rows == m_terminal.rows()
+                && cellWidth == m_terminal.cellWidth() && cellHeight == m_terminal.cellHeight();
+        if (same)
+            return;
+        // While the reader thread decodes an image, the terminal is its own:
+        // it takes the size, and the PTY with it, at the end of its feed, and
+        // its output tells of the change. The window draws the pane at the
+        // size it has meanwhile, as it does a session pane until the
+        // daemon's frame, and a drag of the window goes on.
+        m_pendingSize = size;
+        if (m_decoding)
+            return;
         applyPendingLocked();
+    }
+    // A reflow changes the text with no output: a program such as cat draws
+    // nothing for the new size. Queued: the window resizes its panes while
+    // it lays them out, and the receivers may ask for their text.
+    queueShellCheck();
 }
 
 void Pane::setVisible(bool visible)
@@ -277,6 +287,7 @@ bool Pane::sendInput(std::string_view bytes, bool reportFailure)
                     Q_EMIT contentChanged();
                 },
                 Qt::QueuedConnection);
+            queueShellCheck();
         }
     }
     const bool accepted = writeProgram(bytes);
@@ -533,6 +544,7 @@ bool Pane::moveCopyCursor(int dx, int dy, int edge)
     m_selection.head = m_copyCursor;
     revealRow(m_terminal, std::size_t(m_copyCursor.row - screen.rowsDropped()));
     ++m_selectionSerial;
+    queueShellCheck();
     return true;
 }
 void Pane::toggleCopySelection(AfterglowVt::SelectionMode mode)
@@ -566,18 +578,21 @@ void Pane::scrollHistory(double fraction)
     const long top = std::clamp(std::lround(std::clamp(fraction, 0.0, 1.0) * double(screen.totalRows())), 0L,
                                 long(screen.historySize()));
     m_terminal.scrollViewport(long(screen.viewportTop()) - top);
+    queueShellCheck();
 }
 
 void Pane::scrollViewport(long rows)
 {
     std::lock_guard lock(m_mutex);
     m_terminal.scrollViewport(rows);
+    queueShellCheck();
 }
 
 std::size_t Pane::setViewportOffset(std::size_t rowsBack)
 {
     std::lock_guard lock(m_mutex);
     m_terminal.setViewportOffset(rowsBack);
+    queueShellCheck();
     return m_terminal.screen().viewportOffset();
 }
 
@@ -681,6 +696,7 @@ void Pane::captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string q
                           std::size_t(m_terminal.screen().absoluteIndexOf(m_searchMatches.back().start.row)));
             ++m_selectionSerial;
         }
+        queueShellCheck();
         search(QString::fromStdU32String(m_searchQuery), 0, m_searchRegex);
         // A search that started again just now (the layout changed) takes
         // the moved text fresh: only a result that stays is stale.
@@ -743,6 +759,7 @@ void Pane::search(const QString& query, int direction, bool regex)
                 m_terminal.screen().absoluteIndexOf(m_searchMatches[std::size_t(m_searchCurrent)].start.row);
             if (row >= 0)
                 revealRow(m_terminal, std::size_t(row));
+            queueShellCheck();
             status = tr("%1 of %2").arg(m_searchCurrent + 1).arg(count);
         } else
             status = tr("No matches");
@@ -878,6 +895,7 @@ bool Pane::jumpToPrompt(int direction)
                 m_terminal.scrollViewport(long(top) - long(abs));
                 if (const auto output = m_terminal.commandOutputAt(scr.rowsDropped() + abs))
                     m_lastVisitedOutput = output;
+                queueShellCheck();
                 return true;
             }
         }
@@ -893,6 +911,7 @@ bool Pane::jumpToPrompt(int direction)
             m_terminal.scrollViewport(long(top) - target);
             if (const auto output = m_terminal.commandOutputAt(scr.rowsDropped() + abs))
                 m_lastVisitedOutput = output;
+            queueShellCheck();
             return true;
         }
     }
@@ -1077,6 +1096,7 @@ bool Pane::applyColors(const std::vector<std::string>& payloads)
             ++count;
         }
     }
+    // Colors change no text and no shell state: no shell check.
     if (count > 0)
         Q_EMIT contentChanged();
     return applied;
@@ -1171,10 +1191,66 @@ bool Pane::setUserVar(const QString& name, const QString& value)
                        std::string_view(v.constData(), std::size_t(v.size())));
 }
 
-bool Pane::atShellPrompt() const
+Pane::ShellReading Pane::readShellLocked() const
+{
+    return {m_terminal.shellState(), m_terminal.lastPromptId(), m_terminal.contentGeneration()};
+}
+
+void Pane::tellShellState(const ShellReading& now)
+{
+    const ShellReading told = std::exchange(m_shellTold, now);
+    if (now.content != told.content)
+        Q_EMIT textChanged();
+    // A new prompt counts as a change: a short command starts and ends
+    // within one read, and its state is the prompt before and after it.
+    if (now.state != told.state || now.prompt != told.prompt)
+        Q_EMIT shellStateChanged(now.state);
+}
+
+void Pane::queueShellCheck()
+{
+    if (std::exchange(m_shellCheckQueued, true))
+        return;
+    QMetaObject::invokeMethod(
+        this,
+        [this] {
+            m_shellCheckQueued = false;
+            deliverEvents(true);
+        },
+        Qt::QueuedConnection);
+}
+
+Pane::ShellFacts Pane::shellFacts() const
 {
     std::lock_guard lock(m_mutex);
-    return m_terminal.atShellPrompt();
+    return {m_terminal.shellState(), m_terminal.shellInput(), m_terminal.lastExitCode()};
+}
+
+AfterglowVt::TextMark Pane::textMark() const
+{
+    // A session pane that the user could not see has an older cursor until
+    // a refresh: a mark there would take output that came before it.
+    refreshSession();
+    std::lock_guard lock(m_mutex);
+    return m_terminal.textMark();
+}
+
+std::vector<AfterglowVt::SemanticRegion> Pane::semanticRegionsAfter(std::uint64_t after) const
+{
+    // As semanticRegions(): whether a region is available depends on the
+    // rows that came.
+    refreshSession();
+    std::vector<AfterglowVt::SemanticRegion> regions;
+    {
+        std::lock_guard lock(m_mutex);
+        regions = m_terminal.semanticRegions();
+        std::erase_if(regions, [after](const AfterglowVt::SemanticRegion& region) {
+            return region.id <= after;
+        });
+        for (AfterglowVt::SemanticRegion& region : regions)
+            region.available = region.available && !regionArrivingLocked(region);
+    }
+    return regions;
 }
 
 void Pane::announceTitle()
@@ -1190,13 +1266,14 @@ void Pane::announceTitle()
     Q_EMIT titleUpdated(shown);
 }
 
-QString Pane::text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::TextFormat& format, bool* arriving)
+QString Pane::text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::TextFormat& format, bool* arriving,
+                   bool* truncated)
 {
     refreshSession();
     std::string text;
     {
         std::lock_guard lock(m_mutex);
-        text = m_terminal.text(scope, MaxText, nullptr, format);
+        text = m_terminal.text(scope, MaxText, truncated, format);
         if (arriving) {
             using Scope = AfterglowVt::Terminal::TextScope;
             *arriving = scope == Scope::LastOutput ? lastOutputArrivingLocked()
@@ -1204,6 +1281,25 @@ QString Pane::text(AfterglowVt::Terminal::TextScope scope, const AfterglowVt::Te
         }
     }
     // Converted after the lock: the reader thread waits on it.
+    return QString::fromStdString(text);
+}
+
+QString Pane::textSince(const AfterglowVt::TextMark& from, const AfterglowVt::TextFormat& format, bool* truncated,
+                        bool* trimmed, bool* stale, bool* arriving)
+{
+    refreshSession();
+    std::string text;
+    {
+        std::lock_guard lock(m_mutex);
+        text = m_terminal.textSince(from, MaxText, truncated, trimmed, stale, format);
+        // As the last output: rows from the mark to the cursor that did not
+        // come yet are blank places in the text.
+        if (arriving) {
+            const AfterglowVt::TextMark cursor = m_terminal.textMark();
+            *arriving =
+                !m_terminal.modes().altScreen && from.row <= cursor.row && rowsArrivingLocked(from.row, cursor.row);
+        }
+    }
     return QString::fromStdString(text);
 }
 
@@ -1249,16 +1345,21 @@ bool Pane::historyArrivingLocked() const
         return false;
     // From id 0: received() then counts the older rows that the daemon has
     // and did not send yet, as well as the blank places of newer ones.
-    return !m_stateReader.received(0, screen.rowsDropped() + screen.totalRows() - 1);
+    return rowsArrivingLocked(0, screen.rowsDropped() + screen.totalRows() - 1);
+}
+
+bool Pane::rowsArrivingLocked(std::uint64_t first, std::uint64_t last) const
+{
+    // A session pane's history comes over several frames: newer rows that did
+    // not come yet are blank places, and after an attach, older rows are
+    // missing until they come.
+    return m_session && !m_stateReader.received(first, last);
 }
 
 bool Pane::lastOutputArrivingLocked() const
 {
-    // A session pane's history comes over several frames: newer rows that did
-    // not come yet are blank places, and after an attach, older rows are
-    // missing until they come (StateReader::received).
     const auto rows = m_terminal.lastOutputRows();
-    return m_session && rows && !m_stateReader.received(rows->first, rows->second);
+    return rows && rowsArrivingLocked(rows->first, rows->second);
 }
 
 QString Pane::runningCommand() const
@@ -1482,10 +1583,12 @@ bool Pane::showsSession(const QString& name, const QString& host) const
         && m_session->host() == host;
 }
 
-void Pane::showSession(std::shared_ptr<MuxClient> session, std::uint32_t id)
+void Pane::showSession(std::shared_ptr<MuxClient> session, std::uint32_t id, bool launched)
 {
     m_session = std::move(session);
     m_sessionPane = id;
+    // Before bind(), which may apply frames that waited.
+    m_sessionLaunched = launched;
     m_session->bind(id, *this);
 }
 
@@ -1525,8 +1628,12 @@ std::uint64_t Pane::askSessionRefresh() const
 
 void Pane::refreshSession() const
 {
-    if (const std::uint64_t ticket = askSessionRefresh())
+    if (m_refreshScopes > 0 && m_refreshedInScope)
+        return;
+    if (const std::uint64_t ticket = askSessionRefresh()) {
         m_session->waitRefreshed({{m_sessionPane, ticket}});
+        m_refreshedInScope = m_refreshScopes > 0;
+    }
 }
 
 void Pane::sessionRefreshed(std::uint64_t ticket) const
@@ -1557,6 +1664,11 @@ bool Pane::applySessionFrame(std::string_view frame)
             for (const AfterglowVt::StatusRecord& r : m_terminal.programStatus().records()) {
                 m_statusBaseline = std::max<quint64>(m_statusBaseline, r.serial);
             }
+            // The blank replica became the session's: no news of the text
+            // or the shell of a program that ran before the window showed
+            // it. The first prompt of one that the window started is news.
+            if (!m_sessionLaunched)
+                m_shellTold = readShellLocked();
         }
         // As for output of a program of its own: a frame that changed the
         // screen, its images included, is that output. History that catches
@@ -1582,6 +1694,9 @@ bool Pane::applySessionFrame(std::string_view frame)
             },
             Qt::QueuedConnection);
     }
+    // After the frames and the host calls of this read: a command's start
+    // or end that they bring comes before the state that it left.
+    queueShellCheck();
     Q_EMIT contentChanged();
     return true;
 }
@@ -1734,6 +1849,7 @@ void Pane::clearScreen()
         t.clearScreenAndHistory();
         return t.atShellPrompt() && !t.modes().altScreen;
     });
+    queueShellCheck();
     if (atPrompt)
         sendInput("\x0c");
 }
@@ -1746,9 +1862,18 @@ void Pane::resetTerminal()
             m_session->sendReset(m_sessionPane);
         return;
     }
-    withTerminal([](AfterglowVt::Terminal& t) {
+    // A reset forgets the shell's marks: at a prompt the shell draws it
+    // again, with its marks, as for a session pane (MuxPane::reset). Only a
+    // shell that marks its prompts gets the key, not a program that would
+    // read it.
+    const bool atPrompt = withTerminal([](AfterglowVt::Terminal& t) {
+        const bool prompt = t.shellState() == AfterglowVt::ShellState::Prompt && !t.modes().altScreen;
         t.reset();
+        return prompt;
     });
+    queueShellCheck();
+    if (atPrompt)
+        sendInput("\x0c");
 }
 
 void Pane::titleChanged(std::string_view title)
@@ -1840,11 +1965,12 @@ void Pane::postEvents()
         Qt::QueuedConnection);
 }
 
-void Pane::deliverEvents()
+void Pane::deliverEvents(bool checkShell)
 {
     std::deque<std::function<void()>> events;
     std::size_t droppedRequests = 0;
     std::size_t droppedCommands = 0;
+    ShellReading shell;
     {
         std::lock_guard lock(m_mutex);
         // Cleared under the lock: an event queued after the swap posts
@@ -1853,6 +1979,10 @@ void Pane::deliverEvents()
         events.swap(m_events);
         droppedRequests = std::exchange(m_requestBudget, {}).dropped;
         droppedCommands = std::exchange(m_commandBudget, {}).dropped;
+        // Under the same lock: the reader thread may queue a command's start
+        // after the swap, which the next delivery brings before its state.
+        if (checkShell)
+            shell = readShellLocked();
     }
     if (droppedRequests > 0)
         qCWarning(lcPane) << "dropped" << droppedRequests
@@ -1862,6 +1992,8 @@ void Pane::deliverEvents()
                           << "command events that came faster than the window took them";
     for (const auto& event : events)
         event();
+    if (checkShell)
+        tellShellState(shell);
 }
 
 void Pane::setRemoteSocket(const AfterglowProto::Remote::Answer& answer,
@@ -2379,6 +2511,9 @@ void Pane::ptyData(std::string_view bytes)
             [this] {
                 m_notifyPending.store(false);
                 advanceAnimations();
+                // The events of the output that came since this was posted
+                // go first: their state is the one that the terminal has now.
+                deliverEvents(true);
                 Q_EMIT contentChanged();
             },
             Qt::QueuedConnection);
@@ -2438,6 +2573,7 @@ void Pane::ptyClosed(int status)
         QMetaObject::invokeMethod(
             this,
             [this] {
+                deliverEvents(true);
                 Q_EMIT contentChanged();
             },
             Qt::QueuedConnection);
@@ -2464,6 +2600,7 @@ void Pane::holdStartFailure()
             + "]\r\n");
         m_held.store(true);
     }
+    queueShellCheck();
     Q_EMIT contentChanged();
 }
 

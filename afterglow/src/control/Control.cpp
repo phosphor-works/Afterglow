@@ -14,6 +14,7 @@
 #include "../mux/MuxClient.h"
 
 #include <AfterglowPty/Pty.h>
+#include <AfterglowVt/Input.h>
 #include <AfterglowVt/KeyNames.h>
 
 #include <algorithm>
@@ -214,6 +215,12 @@ void Control::attachPane(Pane* pane)
                 if (guard)
                     Q_EMIT commandFinished(id, c, code, ms);
             });
+    connect(pane, &Pane::shellStateChanged, this, [this, id](AfterglowVt::ShellState state) {
+        Q_EMIT shellChanged(id, QString::fromLatin1(AfterglowVt::shellStateName(state)));
+    });
+    connect(pane, &Pane::textChanged, this, [this, id] {
+        Q_EMIT textChanged(id);
+    });
     connect(pane, &Pane::statusChanged, this, [this, id, guard = QPointer<Pane>(pane)] {
         if (!guard) {
             return;
@@ -285,7 +292,10 @@ PaneInfo Control::describe(TerminalWindow* w, Pane* p, bool facts, bool cmdline)
     if (!facts)
         return info;
     info.facts = true;
-    info.atPrompt = p->atShellPrompt();
+    const Pane::ShellFacts shell = p->shellFacts();
+    info.shell = shell.state;
+    info.input = shell.input;
+    info.lastExit = shell.lastExit;
     info.userVars = p->userVars();
     if (const auto process = p->foreground(cmdline)) {
         PaneInfo::Foreground foreground{process->pid, {}, QString::fromStdString(process->cwd)};
@@ -460,7 +470,9 @@ QVariantMap Control::paneMap(const PaneInfo& p)
     QVariantMap neighbors;
     for (std::size_t side = 0; side < p.neighbors.size(); ++side)
         neighbors.insert(neighborName(Neighbors[side]), p.neighbors[side]);
-    map.insert(QStringLiteral("at_prompt"), p.atPrompt);
+    map.insert(QStringLiteral("shell"), QString::fromLatin1(AfterglowVt::shellStateName(p.shell)));
+    map.insert(QStringLiteral("input"), p.input);
+    map.insert(QStringLiteral("last_exit"), p.lastExit ? QVariant(*p.lastExit) : QVariant::fromValue(nullptr));
     map.insert(QStringLiteral("user_vars"), userVars);
     map.insert(QStringLiteral("foreground"), foreground);
     map.insert(QStringLiteral("neighbors"), neighbors);
@@ -486,6 +498,7 @@ QVariantMap Control::state() const
                                    {QStringLiteral("overview"), w->overviewState()},
                                    {QStringLiteral("session"), w->sessionName()},
                                    {QStringLiteral("session_host"), w->sessionHost()},
+                                   {QStringLiteral("agent"), w->showsAgentSession()},
                                    {QStringLiteral("cols"), grid.width()},
                                    {QStringLiteral("rows"), grid.height()}});
         for (const auto& tab : w->tabs()) {
@@ -523,6 +536,34 @@ QString Control::sendText(quint32 id, const QString& text)
     }
     // The caller hears of a refusal; the user gets no notice as well.
     return p->sendInput(text.toStdString(), false) ? QString() : QStringLiteral("program closed or input queue full");
+}
+
+QString Control::paste(quint32 id, const QString& text, QString* code)
+{
+    Pane* p = find(id);
+    if (!p) {
+        return noPane(id);
+    }
+    // No paste at all: an empty bracketed paste would still reach the
+    // program, as two markers with nothing between them.
+    if (text.isEmpty())
+        return {};
+    // A blank replica's modes are none of the program's: no bracketed paste.
+    if (QString error; notSynced(*p, error, code))
+        return error;
+    // As a paste in the window (TerminalWindow::pasteText): bracketed when
+    // the program asked for it, with the line ends as Enter and no other
+    // control. No question for an unsafe paste: the client chose the text,
+    // as with sendText. Encoded outside the terminal's lock.
+    const AfterglowVt::Modes modes = p->readTerminal([](const AfterglowVt::Terminal& t) {
+        return t.modes();
+    });
+    const QByteArray utf8 = text.toUtf8();
+    const std::string bytes =
+        AfterglowVt::encodePaste(std::string_view(utf8.constData(), std::size_t(utf8.size())), modes);
+    if (bytes.empty())
+        return {};
+    return p->sendInput(bytes, false) ? QString() : QStringLiteral("program closed or input queue full");
 }
 
 QString Control::focus(quint32 id)
@@ -596,7 +637,7 @@ QString Control::resizePane(quint32 id, const QString& direction, double cells)
     return {};
 }
 
-QString Control::sendKeys(quint32 id, const QStringList& keys)
+QString Control::sendKeys(quint32 id, const QStringList& keys, QString* code)
 {
     if (keys.isEmpty())
         return QStringLiteral("sendKeys needs a key");
@@ -614,6 +655,9 @@ QString Control::sendKeys(quint32 id, const QStringList& keys)
     Pane* p = find(id);
     if (!p)
         return noPane(id);
+    // A blank replica's keyboard modes are none of the program's.
+    if (QString error; notSynced(*p, error, code))
+        return error;
     // Encoded for the program's keyboard mode, as a typed key is.
     const std::string bytes = p->readTerminal([&named](const AfterglowVt::Terminal& t) {
         std::string out;
@@ -758,16 +802,16 @@ std::optional<OverlaySpec> Control::clientOverlaySpec(const QStringList& argv, c
 }
 
 QString Control::clientOverlay(const QString& owner, quint32 pane, const OverlaySpec& spec, OverlayReply reply,
-                               QString& code)
+                               QString& code, bool agentSession)
 {
     return overlay(
         owner, {}, pane, spec,
-        [reply = std::move(reply), self = QPointer<Control>(this)](const QString& error, const QString& code,
-                                                                   const QVariantMap& result) {
+        [reply = std::move(reply), self = QPointer<Control>(this),
+         agentSession](const QString& error, const QString& code, const QVariantMap& result) {
             if (!error.isEmpty())
                 return reply(error, code, {});
             QVariantMap answer = result;
-            if (!self || !self->m_settings.settings().control.allowReadText)
+            if (!self || (!agentSession && !self->m_settings.settings().control.allowReadText))
                 answer.remove(QStringLiteral("stdout"));
             reply({}, {}, answer);
         },

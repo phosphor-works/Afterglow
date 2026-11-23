@@ -5,6 +5,7 @@
 
 #include "ControlSocket.h"
 #include "IpcClient.h"
+#include "SessionLaunch.h"
 #include "../Pane.h"
 #include "../PaneLaunch.h"
 #include "../config/Keybinds.h"
@@ -63,16 +64,18 @@ of the active window or of the window that was active last.
 With --session NAME, the commands act on mux session NAME (afterglow mux),
 and pane IDs are those of the mux daemon. In a pane of a session, they act
 on that session. While no window shows the session, only ls, send-text,
-get-text, send-key, colors, set-colors, set-user-var, signal-program, split,
-new-tab, move-pane, detach-tab, close, watch and focus without --direction
-work. get-text then reads no --selection or --last-visited-output: the
-window has them.
+paste, get-text, send-key, colors, set-colors, set-user-var, signal-program,
+split, new-tab, move-pane, detach-tab, close, focus and watch work. get-text
+then reads no --selection or --last-visited-output: the window has them.
 For a session, split and new-tab prepare the program with the settings of
 the default config file, not the --config or -o of a running Afterglow.
 
   ls [--json]                           list panes
   send-text [--raw] TEXT...             type TEXT (\n, \r, \t, \e, \\ and \xHH for U+00HH unless --raw)
   send-text --stdin                     type standard input (UTF-8 text)
+  paste [--raw] TEXT...                 paste TEXT, as a paste in the window: bracketed when the
+                                        program asks, the line ends as Enter, no other controls
+  paste --stdin                         paste standard input (UTF-8 text, in one request of 1 MiB)
   get-text [--screen|--scrollback|--selection|--last-output|--first-output-on-screen|
             --last-visited-output] [--ansi] [--cursor] [--wrap-markers]
                                         print pane text (needs Control.allowReadText), with
@@ -140,7 +143,8 @@ the default config file, not the --config or -o of a running Afterglow.
                                         (cells, or N% of the pane) or --border makes a
                                         popup at POS (center, top, bottom, left, right,
                                         top-left, top-right, bottom-left or bottom-right)
-  watch                                 print events as JSON lines until interrupted
+  watch [--text-changes]                print events as JSON lines until interrupted, and
+                                        textChanged only with --text-changes
 
 LAUNCH options of split and new-tab, as kitten @ launch has them:
   --env NAME=VALUE   set a variable for CMD (NAME alone removes it), again for more
@@ -182,11 +186,27 @@ constexpr int ScreenshotTimeoutMs = 3 * ReplyTimeoutMs;
 // Its own default, which the usage names, the same as that setting's.
 constexpr int DefaultResizeCells = 2;
 static_assert(Control::MaxResizeCells == WindowSettings::MaxResizeStepCells);
+static_assert(std::size_t(CtlMaxText) == AfterglowPty::Pty::MaxPendingInput);
+// The most bytes of a paste's text in its one request, with its escapes.
+constexpr qsizetype CtlMaxPaste = IpcClient::MaxLineBytes - CtlRequestRoom;
 
 int fail(const QString& message, int status = 1)
 {
     std::fprintf(stderr, "afterglow ctl: %s\n", qPrintable(message));
     return status;
+}
+
+/// The note on stderr for a text of @p pane that getText cut: the text on
+/// stdout stays the pane's. A window and the daemon cut at the same limit.
+void textCut(qint64 pane)
+{
+    fail(QStringLiteral("the text of pane %1 is cut at its limit of %2 MiB").arg(pane).arg(Pane::MaxText >> 20));
+}
+
+/// The refusal of a paste that does not fit in its one request.
+QString pasteTooLong()
+{
+    return QStringLiteral("a paste goes in one request of %1 MiB").arg(IpcClient::MaxLineBytes >> 20);
 }
 
 /// The control target of the afterglow that runs this pane, else of the main
@@ -460,42 +480,6 @@ private:
     std::optional<InheritedEnvironment> m_environment; ///< sessionEnvironment()
 };
 
-/// @p path with a leading ~ as the home directory.
-QString expandHome(const QString& path)
-{
-    return path == QLatin1String("~") || path.startsWith(QLatin1String("~/")) ? QDir::homePath() + path.mid(1) : path;
-}
-
-/// The program of a new tab or split of a session, prepared as a window
-/// that shows the session prepares one, with the settings of the default
-/// config file and over @p inherited, the session's environment: the
-/// daemon runs it there. Shell integration reads the shell and the saved
-/// variables from it, not from this command's environment (ctl can run from
-/// an ssh login or cron). Without @p inherited, the daemon gave none: this
-/// process's. Without @p directory, it starts where the pane is
-/// (Window.workingDirectory inherit), which the daemon knows.
-QJsonValue sessionLaunch(QString directory, const QStringList& command, const InheritedEnvironment* inherited,
-                         const QVariantMap& environment = {})
-{
-    SettingsStore store;
-    const Settings& settings = store.settings();
-    directory = expandHome(directory);
-    if (directory.isEmpty()) {
-        const QString setting = settings.window.workingDirectory;
-        if (setting == QLatin1String("home"))
-            directory = QDir::homePath();
-        else if (!setting.isEmpty() && setting != QLatin1String("inherit") && QFileInfo(expandHome(setting)).isDir())
-            directory = expandHome(setting);
-    }
-    // As TerminalWindow prepares a pane of its session.
-    AfterglowMux::Launch launch =
-        localLaunch(settings, directory.isEmpty() ? QDir::homePath() : directory, command, inherited, environment);
-    if (directory.isEmpty())
-        launch.workingDirectory.clear();
-    return QJsonDocument::fromJson(QByteArray::fromStdString(AfterglowProto::Json::write(AfterglowMux::toJson(launch))))
-        .object();
-}
-
 QString unescape(const QString& s)
 {
     QString out;
@@ -709,17 +693,40 @@ std::optional<QString> stdinScopeError(const QString& scope)
 const QString NoCurrentDirectory = QStringLiteral("the current directory was removed, so give an absolute directory");
 
 const QStringList Commands = {
-    QStringLiteral("ls"),           QStringLiteral("send-text"),      QStringLiteral("get-text"),
-    QStringLiteral("split"),        QStringLiteral("move-pane"),      QStringLiteral("detach-tab"),
-    QStringLiteral("new-tab"),      QStringLiteral("new-window"),     QStringLiteral("focus"),
-    QStringLiteral("close"),        QStringLiteral("set-title"),      QStringLiteral("signal"),
-    QStringLiteral("notify"),       QStringLiteral("scripts"),        QStringLiteral("open-directory"),
-    QStringLiteral("projects"),     QStringLiteral("save-project"),   QStringLiteral("open-project"),
-    QStringLiteral("action"),       QStringLiteral("watch"),          QStringLiteral("overlay"),
-    QStringLiteral("screenshot"),   QStringLiteral("resize"),         QStringLiteral("send-key"),
-    QStringLiteral("scroll"),       QStringLiteral("set-tab-title"),  QStringLiteral("colors"),
-    QStringLiteral("set-colors"),   QStringLiteral("set-font-size"),  QStringLiteral("set-opacity"),
-    QStringLiteral("set-user-var"), QStringLiteral("signal-program"), QStringLiteral("window"),
+    QStringLiteral("ls"),
+    QStringLiteral("send-text"),
+    QStringLiteral("paste"),
+    QStringLiteral("get-text"),
+    QStringLiteral("split"),
+    QStringLiteral("move-pane"),
+    QStringLiteral("detach-tab"),
+    QStringLiteral("new-tab"),
+    QStringLiteral("new-window"),
+    QStringLiteral("focus"),
+    QStringLiteral("close"),
+    QStringLiteral("set-title"),
+    QStringLiteral("signal"),
+    QStringLiteral("notify"),
+    QStringLiteral("scripts"),
+    QStringLiteral("open-directory"),
+    QStringLiteral("projects"),
+    QStringLiteral("save-project"),
+    QStringLiteral("open-project"),
+    QStringLiteral("action"),
+    QStringLiteral("watch"),
+    QStringLiteral("overlay"),
+    QStringLiteral("screenshot"),
+    QStringLiteral("resize"),
+    QStringLiteral("send-key"),
+    QStringLiteral("scroll"),
+    QStringLiteral("set-tab-title"),
+    QStringLiteral("colors"),
+    QStringLiteral("set-colors"),
+    QStringLiteral("set-font-size"),
+    QStringLiteral("set-opacity"),
+    QStringLiteral("set-user-var"),
+    QStringLiteral("signal-program"),
+    QStringLiteral("window"),
 };
 
 // The standard input of `overlay`, as much as an overlay takes. It goes in
@@ -785,10 +792,10 @@ int runCtl(int argc, char** argv)
         args = args.mid(0, dash);
     }
     // Only these read words after "--": elsewhere they would be dropped unseen.
-    static const QStringList TakesTrailing = {QStringLiteral("new-window"), QStringLiteral("split"),
-                                              QStringLiteral("new-tab"),    QStringLiteral("send-text"),
-                                              QStringLiteral("set-title"),  QStringLiteral("notify"),
-                                              QStringLiteral("overlay"),    QStringLiteral("set-tab-title")};
+    static const QStringList TakesTrailing = {
+        QStringLiteral("new-window"), QStringLiteral("split"),   QStringLiteral("new-tab"),
+        QStringLiteral("send-text"),  QStringLiteral("paste"),   QStringLiteral("set-title"),
+        QStringLiteral("notify"),     QStringLiteral("overlay"), QStringLiteral("set-tab-title")};
     if (!trailing.isEmpty() && !TakesTrailing.contains(command)) {
         return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
     }
@@ -1018,7 +1025,9 @@ int runCtl(int argc, char** argv)
         if (client.toDaemon()) {
             if (!launch.windowOnly.isEmpty())
                 return QStringLiteral("%1 is not for a pane of a mux session").arg(launch.windowOnly);
-            callArgs.append(sessionLaunch(directory, trailing, client.sessionEnvironment(), launch.environment));
+            const SettingsStore store;
+            callArgs.append(
+                sessionLaunch(store.settings(), directory, trailing, client.sessionEnvironment(), launch.environment));
         } else if (!launch.options.isEmpty()) {
             callArgs.append(launch.options);
         }
@@ -1052,22 +1061,29 @@ int runCtl(int argc, char** argv)
             return 0;
         }
         // TAB is the tab's position from 0, as in --json.
-        std::printf("%-5s %-4s %-4s %-30s %s\n", "PANE", "WIN", "TAB", "TITLE", "DIRECTORY");
+        std::printf("%-5s %-4s %-4s %-12s %-30s %s\n", "PANE", "WIN", "TAB", "SHELL", "TITLE", "DIRECTORY");
         for (const QJsonValue& value : panes) {
             const QJsonObject p = value.toObject();
             const QString id = QString::number(p.value(QLatin1String("id")).toInteger())
                 + (p.value(QLatin1String("focused")).toBool() ? QStringLiteral("*") : QString());
-            std::printf("%-5s %-4lld %-4lld %s %s\n", qPrintable(id), p.value(QLatin1String("window")).toInteger(),
-                        p.value(QLatin1String("tab")).toInteger(),
+            std::printf("%-5s %-4lld %-4lld %-12s %s %s\n", qPrintable(id),
+                        p.value(QLatin1String("window")).toInteger(), p.value(QLatin1String("tab")).toInteger(),
+                        qPrintable(printable(p.value(QLatin1String("shell")).toString())),
                         qPrintable(column(printable(p.value(QLatin1String("title")).toString()), 30)),
                         qPrintable(printable(p.value(QLatin1String("cwd")).toString())));
         }
         return 0;
     }
     if (command == QLatin1String("watch")) {
+        // textChanged comes with each burst of output, also with the lines
+        // that a watch prints into a pane that it watches, which would then
+        // feed itself: only when asked for.
+        const bool textChanges = takeFlag(QStringLiteral("--text-changes"));
         if (const auto error = extra(0))
             return usage(*error);
         for (const QString& event : events()) {
+            if (event == QLatin1String("textChanged") && !textChanges)
+                continue;
             if (!client.subscribe(event))
                 return 1;
         }
@@ -1163,7 +1179,8 @@ int runCtl(int argc, char** argv)
     };
 
     // The commands on a pane check their arguments before the pane is
-    // looked up, and send-text --stdin reads its input then: a usage error
+    // looked up, and send-text, paste and overlay read their standard
+    // input then: a usage error
     // or refused input never waits for a connection, nor fails as one. Each
     // leaves what it does with the pane in act.
     std::function<int(qint64 pane)> act;
@@ -1179,18 +1196,20 @@ int runCtl(int argc, char** argv)
         act = [&, name = args.first(), overwrite](qint64 pane) {
             return printObject(QStringLiteral("saveProject"), {pane, name, overwrite});
         };
-    } else if (command == QLatin1String("send-text")) {
+    } else if (command == QLatin1String("send-text") || command == QLatin1String("paste")) {
+        const bool paste = command == QLatin1String("paste");
         QString text;
         // Refused as aglow run refuses its input, with the status of a
-        // usage error.
-        const QString tooLong = QStringLiteral("text over %1 MiB").arg(CtlMaxText >> 20);
+        // usage error. A paste goes in one request: no more is read for it.
+        const qsizetype most = paste ? CtlMaxPaste : CtlMaxText;
+        const QString tooLong = paste ? pasteTooLong() : QStringLiteral("text over %1 MiB").arg(CtlMaxText >> 20);
         if (takeFlag(QStringLiteral("--stdin"))) {
             if (const auto error = extra(0))
                 return usage(*error);
             if (!trailing.isEmpty())
                 return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
             int status = 0;
-            const std::optional<QString> input = readStdin(CtlMaxText, tooLong, status);
+            const std::optional<QString> input = readStdin(most, tooLong, status);
             if (!input)
                 return status;
             text = *input;
@@ -1202,12 +1221,28 @@ int runCtl(int argc, char** argv)
             if (!raw) {
                 text = unescape(text);
             }
-            if (text.toUtf8().size() > CtlMaxText)
+            if (text.toUtf8().size() > most)
                 return fail(tooLong, AfterglowProto::Run::UsageError);
         }
-        act = [&sendText, text](qint64 pane) {
-            return sendText(pane, text);
-        };
+        if (paste) {
+            // One request: a paste in parts would bracket each part as a
+            // paste of its own. The text with its JSON escaping fits in the
+            // request line, with room for the rest of the request.
+            const qsizetype escaped = QJsonDocument(QJsonArray{text}).toJson(QJsonDocument::Compact).size();
+            if (escaped > CtlMaxPaste) {
+                return fail(QStringLiteral("%1, and this text needs %2 bytes there with its escapes")
+                                .arg(pasteTooLong())
+                                .arg(escaped),
+                            AfterglowProto::Run::UsageError);
+            }
+            act = [&run, text](qint64 pane) {
+                return run(QStringLiteral("paste"), {pane, text});
+            };
+        } else {
+            act = [&sendText, text](qint64 pane) {
+                return sendText(pane, text);
+            };
+        }
     } else if (command == QLatin1String("screenshot")) {
         const bool tab = takeFlag(QStringLiteral("--tab"));
         const bool window = takeFlag(QStringLiteral("--window"));
@@ -1305,8 +1340,13 @@ int runCtl(int argc, char** argv)
             const auto result = client.call(QStringLiteral("getText"), callArgs);
             if (!result)
                 return 1;
-            const QByteArray text = result->toString().toUtf8();
+            const QJsonObject answer = result->toObject();
+            const QByteArray text = answer.value(QLatin1String("text")).toString().toUtf8();
             std::fwrite(text.constData(), 1, std::size_t(text.size()), stdout);
+            if (answer.value(QLatin1String("truncated")).toBool()) {
+                // On stderr: the text on stdout stays the pane's.
+                textCut(pane);
+            }
             // A line feed after the cursor's sequences would move the
             // cursor that they put back.
             if (!text.endsWith('\n') && !options.contains(QLatin1String("cursor"))) {
@@ -1742,7 +1782,10 @@ int runCtl(int argc, char** argv)
                 const auto text = client.call(QStringLiteral("getText"), textArgs);
                 if (!text)
                     return 1;
-                overlayInput = text->toString().toUtf8();
+                overlayInput = text->toObject().value(QLatin1String("text")).toString().toUtf8();
+                // The program reads what was kept, as the text of get-text.
+                if (text->toObject().value(QLatin1String("truncated")).toBool())
+                    textCut(pane);
             }
             if (overlayInput) {
                 // In parts before the call: a list can be larger than one request.

@@ -81,9 +81,13 @@ enum class EventType : std::uint8_t {
     /// connection of the call, the same for its calls. The window answers
     /// with ControlReply. Calls with the ID 0 are the daemon's own, and get
     /// no answer: focus (pane), placePane (pane, beside pane, right, down,
-    /// left, up or tab, command, title) for a pane that the daemon started or
-    /// moved into the session, and paneLeft (pane, session) before the
-    /// PaneClosed of a pane that `afterglow ctl` moved to another session.
+    /// left, up or tab, command, title, started) for a pane that the daemon
+    /// started (started true) or moved into the session, paneLeft (pane,
+    /// session) before the PaneClosed of a pane that `afterglow ctl` moved
+    /// to another session, agent () once the session became an agent
+    /// session (Fn::AdoptSession) after the attach answer, and clientGone
+    /// (client) when the connection of a client whose overlays or inputs the
+    /// window keeps closed.
     Control = 9,
     /// A part of a command connection that the window serves: an encoded
     /// RelayFrame in `payload`.
@@ -128,7 +132,8 @@ enum class InputType : std::uint8_t {
     Reset = 3, ///< the user reset the pane's terminal (Action::ResetTerminal)
     Clear = 4, ///< the user cleared the pane's screen and history (Action::ClearScreen)
     /// the user closed the window, or its last tab or pane, and Mux.onClose
-    /// is kill: the session ends (ActionChannel only)
+    /// is kill: the session ends, unless it is an agent session, which the
+    /// daemon detaches instead (ActionChannel only)
     Kill = 5,
     Visible = 6, ///< whether the user can see the pane (mode 2033), in `visible` (ActionChannel only)
     Layout = 7, ///< the window's tabs and splits, as JSON in `bytes` (MuxLayout.h), after each change; pane 0
@@ -212,7 +217,8 @@ std::optional<Input> decodeInput(std::string_view frame);
 
 /// A client that calls the commands of scripts reaches the daemon, which
 /// runs no scripts: a client in a session pane (`aglow run`, target
-/// AfterglowProto::Run::Target), or a client on the remote host of an
+/// AfterglowProto::Run::Target), a connection that selected an agent session
+/// (`afterglow mcp`, the same target), or a client on the remote host of an
 /// `afterglow ssh` in a session pane, through the socket that the daemon
 /// keeps for that ssh session. The daemon passes the connection to the
 /// window that shows the session: its request lines go to the window in
@@ -242,7 +248,10 @@ struct RelayFrame
     RelayPart part = RelayPart::Bytes;
     std::string bytes{}; ///< Bytes: never empty
     /// Open: the daemon's ID of the pane of the client, or of the ssh
-    /// session that the client's socket belongs to. Never 0.
+    /// session that the client's socket belongs to. 0 for a client of the
+    /// commands target that selected an agent session (`afterglow mcp`),
+    /// also one that runs in a session pane: its runs name their panes.
+    /// Never 0 for Remote.
     std::uint32_t pane = 0;
     RelayKind kind = RelayKind::Commands; ///< Open
     std::string host{}; ///< Open of RelayKind::Remote: the host of the ssh session (ev.remote.host), never empty

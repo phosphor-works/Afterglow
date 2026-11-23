@@ -321,18 +321,18 @@ QString Control::runScriptAction(quint32 id, const QString& action)
     return runAction(id, action);
 }
 
-QString Control::runClientAction(quint32 id, const QString& action)
+QString Control::runClientAction(quint32 id, const QString& action, bool agentSession)
 {
     // These move pane text to the clipboard, into other panes or into a pager
     // file: the same reading that getText needs permission for.
-    if (!m_settings.settings().control.allowReadText && readsPaneText(action))
+    if (!agentSession && !m_settings.settings().control.allowReadText && readsPaneText(action))
         return QStringLiteral("action %1 reads pane text, which is off (Control.allowReadText)").arg(action);
     return runAction(id, action);
 }
 
-QVariantMap Control::clientPaneMap(QVariantMap pane) const
+QVariantMap Control::clientPaneMap(QVariantMap pane, bool agentSession) const
 {
-    if (m_settings.settings().control.allowReadText)
+    if (agentSession || m_settings.settings().control.allowReadText)
         return pane;
     if (pane.contains(QStringLiteral("command")))
         pane.insert(QStringLiteral("command"), QString());

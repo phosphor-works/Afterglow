@@ -62,8 +62,11 @@ struct PaneInfo
     /// The facts below are known: listPanes gathers them, with a read of
     /// /proc for each pane, and the other users of a pane's map do not.
     bool facts = false;
-    /// The cursor is in a shell prompt or its input (OSC 133).
-    bool atPrompt = false;
+    /// What the shell does (OSC 133), whether its command line holds typed
+    /// text, and the exit code of its last command.
+    AfterglowVt::ShellState shell = AfterglowVt::ShellState::None;
+    bool input = false;
+    std::optional<int> lastExit;
     /// The values of OSC 1337 SetUserVar.
     QMap<QString, QString> userVars;
     /// The leader of the foreground process group, for a pane whose program
@@ -228,7 +231,11 @@ public:
     /// goes out. A refusal returns its error at once with @p code: denied,
     /// busy past MaxScreenshots, or no_pane. Else @p reply gets the answer
     /// once, also with the code not_shown, failed or cancelled.
-    QString screenshot(quint32 pane, CaptureScope scope, ScreenshotReply reply, QString& code);
+    /// With @p agentSession, for a pane of an agent session that the
+    /// daemon passed on: the session's read access holds, which the daemon
+    /// checked, and the window's Control.allowReadText is not asked.
+    QString screenshot(quint32 pane, CaptureScope scope, ScreenshotReply reply, QString& code,
+                       bool agentSession = false);
     /// Screenshots from the call to the answer, of every client: each holds
     /// a frame and its PNG. A client that goes does not stop its frame or
     /// encode, so the count drops only as they end.
@@ -260,10 +267,38 @@ public:
     /// Moves @p pane's tab to a new window, as movePane() does.
     void detachTab(quint32 pane, PaneMoved done);
     QString sendText(quint32 pane, const QString& text);
-    /// Honours Control.allowReadText.
+    /// The control call paste: @p text as a paste of the pane's program,
+    /// encoded for its modes. Nothing goes for an empty text. @p code, with
+    /// an error: TRY_AGAIN for a session pane whose modes did not come yet.
+    QString paste(quint32 pane, const QString& text, QString* code = nullptr);
+    /// Honours Control.allowReadText, except with @p agentSession: a pane of
+    /// an agent session that the daemon passed on, whose read access the
+    /// daemon keeps whatever the window's settings say.
     /// @p format: plain, or with styles, wrap markers or the cursor (not for
-    /// a selection, which is plain text).
-    QString readText(quint32 pane, TextScope scope, QString& out, const AfterglowVt::TextFormat& format = {});
+    /// a selection, which is plain text). The end of the last output stays
+    /// when the text is cut (TextFormat::keepEnd).
+    /// @p truncated: the limit of MaxText cut the text. @p code, with an
+    /// error: TRY_AGAIN for rows that a session pane still gets.
+    QString readText(quint32 pane, TextScope scope, QString& out, const AfterglowVt::TextFormat& format = {},
+                     bool* truncated = nullptr, QString* code = nullptr, bool agentSession = false);
+    /// The text of the getText scope since: from @p mark (markOfPane) to
+    /// the cursor, as readText, with its end kept. A mark of another layout
+    /// epoch fails with @p code STALE_MARK.
+    QString readTextSince(quint32 pane, const AfterglowVt::TextMark& mark, const AfterglowVt::TextFormat& format,
+                          QString& out, bool& truncated, bool& trimmed, QString& code);
+    /// The control call mark: the cursor's place, for getText since:
+    /// {row, col, epoch}. @p code TRY_AGAIN for a session pane that has no
+    /// frame yet.
+    QString markOfPane(quint32 pane, QVariantMap& mark, QString& code);
+    /// The control call shellRegions: the regions after @p after, as
+    /// markOfPane with @p code.
+    QString shellRegions(quint32 pane, quint64 after, QVariantList& regions, QString& code);
+    /// The words of the failure of shellRegions, with the code INVALID_ARG,
+    /// for an @p after that is not a region ID: as the daemon says them.
+    static const QString BadRegionAfter;
+    /// The region IDs that shellRegions takes are below this, as the daemon
+    /// reads a whole number that a JSON number holds exactly.
+    static constexpr double RegionIdLimit = double(1LL << 53);
     /// Bounded script query, subject to Scripts.allowReadText. With
     /// @p clientRun, for a command run whose output goes to a client
     /// (`aglow run`, a socket call), also to Control.allowReadText: the
@@ -331,8 +366,8 @@ public:
     /// doubles, and a conversion would wrap or round one that is not.
     static bool isWhole(double value);
     /// Sends the keys that @p keys name as typed keys: none when a name
-    /// names no key.
-    QString sendKeys(quint32 pane, const QStringList& keys);
+    /// names no key. @p code as paste() has it.
+    QString sendKeys(quint32 pane, const QStringList& keys, QString* code = nullptr);
     /// @p unit: lines, pages, top, bottom or prompt. A positive @p amount
     /// goes down, to the newest text: a whole number of at most
     /// MaxScrollAmount either way.
@@ -398,11 +433,13 @@ public:
     /// Scripts.allowReadText, and script commands are refused.
     QString runScriptAction(quint32 pane, const QString& action);
     /// runAction for a client of the control socket or of a session: the
-    /// actions that read pane text need Control.allowReadText.
-    QString runClientAction(quint32 pane, const QString& action);
+    /// actions that read pane text need Control.allowReadText, or
+    /// @p agentSession as readText() has it.
+    QString runClientAction(quint32 pane, const QString& action, bool agentSession = false);
     /// @p pane, a paneMap, as it leaves for a client: commands can carry
-    /// secrets, and leave only with Control.allowReadText.
-    QVariantMap clientPaneMap(QVariantMap pane) const;
+    /// secrets, and leave only with Control.allowReadText, or
+    /// @p agentSession as readText() has it.
+    QVariantMap clientPaneMap(QVariantMap pane, bool agentSession = false) const;
     /// Keybinds::readsPaneText for the action named @p action.
     static bool readsPaneText(const QString& action);
 
@@ -442,14 +479,16 @@ public:
                                                         QString& error);
     /// Then overlay() for @p owner with no request ID. The result's stdout
     /// leaves only with Control.allowReadText, checked as it goes out: read
-    /// access can go while the program runs.
+    /// access can go while the program runs. With @p agentSession as
+    /// readText() has it, it always leaves.
     QString clientOverlay(const QString& owner, quint32 pane, const OverlaySpec& spec, OverlayReply reply,
-                          QString& code);
+                          QString& code, bool agentSession = false);
     /// Reads back the next frame of @p pane's window, as it shows on screen,
-    /// cut to @p scope. It needs Control.allowReadText (see captureRefusal()).
+    /// cut to @p scope. It needs Control.allowReadText (see captureRefusal()),
+    /// except with @p agentSession as screenshot() has it.
     /// A refusal returns its error at once, with @p code denied or no_pane.
     /// Else @p reply gets the image, or not_shown or failed.
-    QString capture(quint32 pane, CaptureScope scope, CaptureReply reply, QString& code);
+    QString capture(quint32 pane, CaptureScope scope, CaptureReply reply, QString& code, bool agentSession = false);
     /// Why a screenshot is refused now, with @p code denied, or empty. A
     /// picture shows more than getText reads (an overlay over the pane, the
     /// chrome, a paste preview), and it takes the same permission.
@@ -477,9 +516,16 @@ public:
     /// The names of the text scopes, for the words of an error.
     static const QString TextScopeNames;
     static const QString BadTextScope;
-    /// The format that the options of getText ask for: ansi, cursor and
-    /// wrap_markers, each a boolean. An error for another key or type.
-    static QString textFormat(const QVariantMap& options, AfterglowVt::TextFormat& format);
+    /// The format that the options of getText ask for: ansi, cursor,
+    /// wrap_markers and keep_end, each a boolean, and the mark of the scope
+    /// since in @p mark ({row, col, epoch}, as markOfPane gives it). An
+    /// error for another key or type, and for a mark with no @p mark to
+    /// take it.
+    static QString textFormat(const QVariantMap& options, AfterglowVt::TextFormat& format,
+                              std::optional<AfterglowVt::TextMark>* mark = nullptr);
+    /// The refusal of a split that the pane has no room for, which the
+    /// control socket gives the code NO_ROOM.
+    static const QString NoRoomForPane;
     static std::optional<TextScope> scopeFromName(const QString& name);
     /// The capture scope that @p name (pane, tab or window) names.
     static std::optional<CaptureScope> captureScopeFromName(const QString& name);
@@ -500,6 +546,10 @@ Q_SIGNALS:
     void userVarChanged(quint32 pane, const QString& name, const QString& value);
     /// Where the pane's shell runs changed (OSC 3008, RemoteHost).
     void contextChanged(quint32 pane, const QString& context);
+    /// What the pane's shell does changed (OSC 133): shellStateName().
+    void shellChanged(quint32 pane, const QString& state);
+    /// The pane's text, or how it shows, changed. No text goes with it.
+    void textChanged(quint32 pane);
     /// A key for the script holding a window's key mode.
     void scriptKey(const QString& owner, quint32 pane, const QVariantMap& key);
     /// An event of a script's dock for the owner's @p handler; @p pane is a
@@ -512,6 +562,13 @@ Q_SIGNALS:
 
 private:
     static QString noPane(quint32 id);
+    /// The error of a read of a session pane's rows that are still on
+    /// their way from the daemon, and of a session pane with no frame yet.
+    static QString arrivingError(quint32 pane);
+    /// Whether @p pane is a session pane that has no frame yet: its replica
+    /// is a blank terminal, whose text, marks, regions and modes are none of
+    /// the program's. Then arrivingError(), and @p code TRY_AGAIN.
+    static bool notSynced(const Pane& pane, QString& error, QString* code);
     /// The refusal of a side that is not left, right, up or down.
     static QString badDirection();
     /// What a control client's launch asks for besides a script's.

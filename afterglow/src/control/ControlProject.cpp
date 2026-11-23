@@ -18,7 +18,7 @@
 namespace Afterglow {
 ProjectStore Control::projects() const
 {
-    return ProjectStore(QDir(QFileInfo(m_settings.path()).absolutePath()).filePath(QStringLiteral("projects")));
+    return ProjectStore(ProjectStore::directoryBeside(m_settings.path()));
 }
 QStringList Control::projectNames() const
 {

@@ -25,6 +25,7 @@ With `--ssh`, the shell of your login on the host finds the program that `Mux.re
 `afterglow mux new` starts the daemon when no daemon answers on a [socket](#sockets).
 `afterglow mux attach` without `NAME` starts it too when no session runs, because it then creates a session.
 A [project](PROJECTS.md#projects-and-mux-sessions) that opens into a session starts it too, from **Switch Project**, `afterglow ctl open-project` or a script.
+[`afterglow mcp`](MCP.md) starts it when no daemon answers, because it then creates the session of its agent.
 `afterglow mux new --ssh` and `aglow-mux proxy --start` start the daemon of another host (see [sessions on another host](#sessions-on-another-host)).
 `afterglow mux attach NAME`, `afterglow mux detach`, `afterglow mux ls`, `afterglow mux kill` and `afterglow ctl --session` do not start the daemon.
 
@@ -94,10 +95,10 @@ A signal that the daemon gets as ignored stays ignored. Thus `nohup afterglow mu
 
 | Command | Function |
 | --- | --- |
-| `afterglow mux new` | Creates a session and shows it in a window. Options: `--name NAME`, `--cwd DIR`, `--detach`, `--ssh DESTINATION`, `-- COMMAND...`. |
+| `afterglow mux new` | Creates a session and shows it in a window. Options: `--name NAME`, `--cwd DIR`, `--detach`, `--agent`, `--ssh DESTINATION`, `-- COMMAND...`. With `--agent`, an [agent session](#agent-sessions). |
 | `afterglow mux attach [NAME]` | Shows a session in a window. Options: `--no-takeover`, `--ssh DESTINATION`. |
 | `afterglow mux detach [NAME]` | Closes the window of the session. The session keeps running. Option: `--ssh DESTINATION`. |
-| `afterglow mux ls` | Lists the sessions, with the columns `NAME`, `STATE` and `PANES`. Option: `--ssh DESTINATION`. |
+| `afterglow mux ls` | Lists the sessions, with the columns `NAME`, `STATE`, `PANES` and `AGENT`. `AGENT` is `yes` for an [agent session](#agent-sessions), or `yes, bound to N` when N connections bound it. For another session, it is `no`. Option: `--ssh DESTINATION`. |
 | `afterglow mux kill NAME` | Ends a session and its programs. Options: `--force`, `--ssh DESTINATION`. |
 | `afterglow mux server` | Runs `aglow-mux` in the foreground |
 | `afterglow mux --help` | Prints the usage |
@@ -153,7 +154,7 @@ The Reset and Clear actions of a pane reset or clear the terminal of that pane i
 | Event | Result |
 | --- | --- |
 | You close a pane or a tab, and the window has other panes | The programs of the pane or the tab end, as in a window outside a session. The session keeps running. |
-| You close the window, or its last pane or tab | `Mux.onClose`: `kill` (the default) ends the session and its programs, as in a window outside a session. `detach` keeps the session running, with its tabs and splits. A window that a [project](PROJECTS.md#projects-and-mux-sessions) opened into its session always keeps it, also with `--new`. A save under a project name does not change this. |
+| You close the window, or its last pane or tab | `Mux.onClose`: `kill` (the default) ends the session and its programs, as in a window outside a session. `detach` keeps the session running, with its tabs and splits. A window that a [project](PROJECTS.md#projects-and-mux-sessions) opened into its session always keeps it, also with `--new`. A save under a project name does not change this. A window of an [agent session](#agent-sessions) always keeps it too. |
 | You quit Afterglow | The session keeps running, whatever `Mux.onClose` says. When a window stops the quit with a question, `Mux.onClose` applies again to the windows that stay open. At your last logout, the daemon can end too (see [start](#start)). |
 | `afterglow mux detach NAME` | The window closes. The session keeps running. In a session pane, `NAME` defaults to the session that holds that pane (see [detach in a session pane](#detach-in-a-session-pane)). With `--ssh`, `NAME` is necessary. |
 | Another window shows the session (`afterglow mux attach`) | The window closes, with a notice. The session keeps running. |
@@ -231,6 +232,8 @@ The programs of the pane or the tab go on in a new session, which gets the next 
 A new window shows that session.
 Until the new window shows the pane, the pane stays in its window, and another move of it fails.
 The new session has the environment and the terminal settings of the first session.
+When the first session is an [agent session](#agent-sessions), the new session is one too.
+It ends with the same connections that bound the first session, and an adopted session gives an adopted session.
 
 The pane gets a new pane ID in the window, and the tab gets a new tab ID.
 Control clients get `paneClosed` and then `paneCreated`, not `paneMoved`.
@@ -292,7 +295,7 @@ These moves take a pane into another session:
 | `left`, `right`, `up`, `down` | Beside the target pane, in half of its room |
 | `new-tab` | In a new tab after the tab of the target pane |
 
-When a window shows the other session and the target pane has no room for the split, the pane goes in a new tab after the tab of the target pane.
+A window can show the other session while the target pane has no room for the split. The pane then goes in a new tab after the tab of the target pane.
 
 The daemon moves the pane with its program, its history and its terminal state. The program keeps running, with the same process.
 The window of the other session shows the pane. When no window shows that session, the next window shows the pane.
@@ -507,7 +510,7 @@ When the ssh connection breaks, the window closes with a notice, and the session
 ## Environment
 
 The programs of a session run with the environment of the Afterglow that started the session, not with the environment of the daemon.
-That Afterglow is `afterglow mux new`, or the Afterglow that opened a [project](PROJECTS.md#projects-and-mux-sessions) into the session.
+That Afterglow is `afterglow mux new`, `afterglow mcp`, or the Afterglow that opened a [project](PROJECTS.md#projects-and-mux-sessions) into the session.
 A new tab or split of the window starts from that environment too, not from the environment of the window's Afterglow.
 Thus a session does not get variables of the daemon's systemd unit, such as `INVOCATION_ID`.
 The Afterglow that started the session prepares the program as a window prepares a new pane.
@@ -618,11 +621,12 @@ It acts on them as on the panes of other windows.
 A pane ID in the daemon and a pane ID in a window can have the same value.
 
 The daemon follows `Control.enabled` and `Control.allowReadText` of the window that showed the session last, else those of the Afterglow that started the session.
+An [agent session](#agent-sessions) keeps its read access.
 A window that answers a command follows its own settings too.
 
 | Command | No window shows the session | A window shows the session |
 | --- | --- | --- |
-| `ls`, `send-text`, `send-key`, `get-text` (screen, scrollback and last output, also with `--ansi`, `--cursor` and `--wrap-markers`) | The daemon acts | The daemon acts |
+| `ls`, `send-text`, `paste`, `send-key`, `get-text` (screen, scrollback and last output, also with `--ansi`, `--cursor` and `--wrap-markers`) | The daemon acts | The daemon acts |
 | `colors`, `set-colors`, `set-user-var`, `signal-program` | The daemon acts on its terminal and its program of the pane | The daemon acts, and the window shows the colors with the next frame. The control socket of the window does not set the colors and the user variables of a session pane, or signal its program. The daemon has them. |
 | `close` | The daemon closes the pane, and its program ends. When it is the last pane of the session, the session ends, whatever `Mux.onClose` says. | As without a window |
 | `split` | The daemon starts the program. The pane goes beside its pane, on the side that the command names, and gets the focus. | The daemon starts the program, and the window places the pane in the same way |
@@ -632,8 +636,8 @@ A window that answers a command follows its own settings too.
 | `move-pane`, `detach-tab` | The daemon moves the pane in its layout. A move to a new window makes a new session, as in a window (see [move panes and tabs](#move-panes-and-tabs)). No window shows the new session. A move to a pane of another session joins that session (see [move a pane to another session](#move-a-pane-to-another-session)). | The window moves the pane, as a drag in the window does. A move to a pane of another session joins that session, as without a window. |
 | `get-text --selection`, `get-text --last-visited-output` | Refused with `only a window that shows session 'NAME' has its SCOPE`: only a window has a selection and an output that a jump visited | The window answers |
 | `get-text --first-output-on-screen` | The daemon reads its own screen, which shows the newest rows | The window answers, from the rows that it shows |
-| `set-title`, `set-tab-title`, `resize`, `scroll`, `set-font-size`, `set-opacity`, `window`, `signal`, `notify`, `action`, `new-window`, `open-directory`, `projects`, `save-project`, `open-project`, `scripts` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window answers |
-| `overlay`, `screenshot` | Refused with `no window shows session 'NAME', and only a window can do CALL` | The window runs the overlay or takes the picture, and answers when it is done |
+| `set-title`, `set-tab-title`, `resize`, `scroll`, `set-font-size`, `set-opacity`, `window`, `signal`, `notify`, `action`, `new-window`, `open-directory`, `projects`, `save-project`, `open-project`, `scripts` | Refused with `NOT_ATTACHED`: `no window shows session 'NAME', and only a window can do CALL` | The window answers |
+| `overlay`, `screenshot` | Refused with `NOT_ATTACHED`: `no window shows session 'NAME', and only a window can do CALL` | The window runs the overlay or takes the picture, and answers when it is done |
 | `watch` | The daemon sends the events of the session | The daemon sends the events of the session |
 
 In the refusal, `CALL` is the name of the [control call](CONTROL.md#control-calls) of the command, such as `setTitle`, `runAction` or `screenshot`.
@@ -641,7 +645,23 @@ In the refusal, `CALL` is the name of the [control call](CONTROL.md#control-call
 The daemon finds the `neighbors` of `ls` and the pane of `focus --direction` from the splits of the session's layout.
 It weighs distances as a window does, in the size of the pane that a window measured last, else in cells.
 The `foreground` of `ls` is the process in the daemon's terminal of the pane.
-While a pane decodes an image, `get-text`, `send-key`, `colors` and `set-colors` fail at once with `pane N decodes an image: try again`.
+While a pane decodes an image, some calls fail at once with the code `TRY_AGAIN` and `pane N decodes an image: try again`.
+These calls are `getText`, `sendKeys`, `paste`, `getColors`, `setColors`, `mark` and `shellRegions`.
+The daemon answers the calls `mark` and `shellRegions`, and `getText` with the scope `since`, with or without a window (see [text since a mark](CONTROL.md#text-since-a-mark)).
+A `since` mark from before the pane changed its width or cleared its screen fails with the code `STALE_MARK` (see [text since a mark](CONTROL.md#text-since-a-mark)).
+
+The daemon answers the call `layout` itself, with or without a window.
+It takes no arguments. It gives the tabs and splits of the session as the daemon keeps them for the next window.
+The [MCP server](MCP.md#save_project) saves a project of a session from it.
+
+| Field of the `layout` result | Value |
+| --- | --- |
+| `tabs` | The tabs, in order. Each has `tree`, `focused` (a pane ID), `zoomed` (a pane ID, or 0) and `title`. |
+| `current` | The index of the tab that shows |
+| `values` | The panes that have a title or a command: each with `id`, `title` and `command`, a list of words |
+
+A tree lists its nodes in preorder. A split is `["right", RATIO]` or `["down", RATIO]` before its two sides, and a pane is its ID.
+The commands are empty without `Control.allowReadText`.
 A window waits up to 5 seconds for its own reads (see [limits](#limits)).
 The daemon checks the arguments in another order than a window does.
 `screenshot` fails with `denied` before the daemon checks the pane ID.
@@ -651,9 +671,10 @@ The overlay of `afterglow ctl overlay` runs on the computer of the window, over 
 Its program and its `--cwd` are of that computer.
 It belongs to the client that asked for it, and it closes when that client goes.
 The standard input of `afterglow ctl overlay` goes to the window in parts.
-`screenshot` needs `Control.allowReadText`, of the session and of the window.
+`screenshot` needs `Control.allowReadText`, of the session and of the window. For an [agent session](#agent-sessions), only that of the session, which it keeps.
 
 `afterglow ctl watch` gets the [events](CONTROL.md#events) of the panes of the session from the daemon, also while no window shows it.
+It gets `textChanged` only with `--text-changes`, as for a window.
 
 | Event | For a session |
 | --- | --- |
@@ -661,6 +682,7 @@ The standard input of `afterglow ctl overlay` goes to the window in parts.
 | `paneMoved` | When the window that shows the session moves a pane, as for a pane of its own. Also when `afterglow ctl move-pane` moves one while no window shows the session. |
 | `focusChanged` | When another pane has the focus in the tab that shows |
 | `titleChanged`, `statusChanged`, `bell`, `userVarChanged`, `commandStarted`, `commandFinished` | As in a window |
+| `shellChanged`, `textChanged` | As in a window, from the daemon's terminal of the pane, also while no window shows the session |
 | `contextChanged` | Never. The daemon knows no context of a pane, and `ls` gives it as empty. |
 
 A move to a new window (`afterglow ctl move-pane 0 new-window`) and `afterglow ctl detach-tab` end the pane for the watchers of the old session.
@@ -708,10 +730,60 @@ With `inherit`, the default, it starts in the directory of the program in the fo
 `new-window` opens a window outside the session in the Afterglow of the window, and prints the ID of its pane there.
 The results of `open-directory`, `open-project` and `save-project` also use the IDs of that Afterglow for their window and its panes.
 
+### Agent sessions
+
+An agent session is the session of a program that drives its panes for an agent, such as [`afterglow mcp`](MCP.md).
+`afterglow mux new --agent` also makes one.
+With `Mcp.endSessionOnExit` on, `afterglow mcp --session NAME` binds such a session, and the session ends when that server exits.
+`afterglow mcp --session NAME --adopt` makes an agent session of a session that you started (see `adoptSession` below).
+
+| What | An agent session | Another session |
+| --- | --- | --- |
+| Read access (`getText`, `screenshot`, the commands in events) | Always. A window that shows the session does not take it away. This includes the calls that the daemon passes to the window. These are `getText` of the selection and an `action` that reads text, such as `copy`. It also includes the commands in the results of `move-pane` and `detach-tab`, and the standard output of an `overlay`. | `Control.allowReadText` of the window that showed it last |
+| The window that shows it | One badge at the start of the tab bar, and `[LABEL] ` before the title, also before a title that you set. `LABEL` is `Mux.agentLabel`, and `Mux.agentColor` colors the badge. | No badge |
+| A hidden tab bar | Only the prefix of the title shows | Nothing |
+| An empty `Mux.agentLabel` | No badge and no prefix | Nothing |
+| `screenshot` | The window takes it without its own `Control.allowReadText` | The window needs its own `Control.allowReadText` too |
+| You close its window, or the last pane or tab of the window | The window detaches, whatever `Mux.onClose` says. The session keeps running. The daemon also takes a kill from the window of an agent session as a detach. | `Mux.onClose` |
+| End | With the last connection that bound it, when one did (see below). Else, as another session. | With its last program, or `afterglow mux kill` |
+
+`Control.enabled` applies to an agent session as to another session.
+The daemon takes it from the window that showed the session last, else from the program that started the session.
+A change of `Control.enabled` in your settings reaches a session only through a window that shows the session.
+To stop the agents of a session that no window shows, end the session with `afterglow mux kill NAME`.
+You can also show it in a window with `Control.enabled` off.
+
+These calls of the `mux` target change a session:
+
+| Call | Arguments | Result |
+| --- | --- | --- |
+| `adoptSession` | name | Makes the session an agent session, for the rest of its life. A window that shows it marks it at once. An adopted session is never bound: it is yours. The adoption of an agent session that an agent started removes its bindings. It needs `Control.allowAdopt` too. |
+| `bindSession` | name | The session ends when the last connection that bound it closes, also when its client crashes or is killed. A close at the [limit of waiting output](#limits) does not end it. Only for an agent session that was made as one, such as one of `afterglow mux new --agent`. The option `{"bind": true}` of `newSession` binds the new session in the same way, before the answer. |
+| `unbindSession` | name | The session no longer ends with this connection |
+
+| Call | Failure | Code |
+| --- | --- | --- |
+| Each of them | No session has the name | `NO_SUCH_SESSION` |
+| `adoptSession` | The session has `Control.enabled` or `Control.allowAdopt` off | `CALL_FAILED` |
+| `bindSession` | The session is not an agent session, or an agent adopted it | `CALL_FAILED` |
+
+`Control.allowAdopt` is off by default. It is a guard against a mistake, not a security boundary.
+Any program of your user can attach to a session and read its panes.
+When you turn it off, a session that an agent adopted stays an agent session.
+Panes that break out of an agent session make a new agent session. It keeps the bindings of the old session, and its adoption.
+A pane of a session without `Control.allowReadText` cannot move into an agent session.
+
+The text of a pane is the input of the agent. A program in a pane can write text that tries to steer the agent.
+An agent session limits what the agent reaches through its tools to the panes of that session.
+It is no security boundary: an agent that runs commands can also run `afterglow ctl`.
+
 ### Script commands in a session pane
 
 In a session pane, `aglow run` and `afterglow run` run the commands of the scripts of the window that shows the session.
 The daemon runs no scripts. It passes the connection of the command to that window.
+A client that selected an [agent session](#agent-sessions) with `selectSession` reaches the commands of its window in the same way, from any process.
+The [MCP server](MCP.md#run_script_command) does this.
+Its runs name a pane of the session.
 The window runs the command as for one of its own panes, with its own settings (`Control.enabled`, `Scripts.enabled` and the limits of `Scripts`).
 A command acts on the pane that it names, as the window shows it. `aglow run` names the pane of the client, unless `--pane` names another pane of the session.
 A command that names no pane (pane 0) acts on the focused pane of the window that shows the session.
@@ -720,17 +792,23 @@ The output, the exit status and the input of the command are as for a pane outsi
 A session of another host (`--ssh`) gets what an [ssh session](CONTROL.md#remote-commands) of that host gets.
 Its panes run only the commands that a script marks `remote`, and only with `Terminal.sshRemoteCommands` on in the window.
 A command acts on the pane of the client, and `ev.source` is `remote`.
+A client in no pane of the session, such as one that selected an agent session, acts on the focused pane of the window.
+This is the same as in a session of this computer.
 `ev.remote.host` is the host of the session, as `--ssh` names it.
 `aglow run` with no arguments lists only the commands that are marked `remote`.
 A command that is not marked `remote` fails as a command that does not exist.
 
 | Case | Result |
 | --- | --- |
-| No window shows the session | `CALL_FAILED`: `no window shows session 'NAME', and only a window runs the commands of scripts` |
-| The client does not run in a session pane of the daemon, nor below a program of one. A program that runs a terminal of its own, such as an editor, stays in the pane. A server that left the pane, such as a tmux server, does not. | `CALL_FAILED`: `only a client in a session pane reaches the mux daemon for the commands of scripts` |
+| No window shows the session | `NOT_ATTACHED`: `no window shows session 'NAME', and only a window runs the commands of scripts` |
+| The client selected no session, and does not run in a session pane of the daemon, nor below a program of one. A program that runs a terminal of its own, such as an editor, stays in the pane. A server that left the pane, such as a tmux server, does not. | `CALL_FAILED`: `only a client in a session pane reaches the mux daemon for the commands of scripts` |
+| The session that the client selected ended | `NO_SUCH_SESSION`: `session 'NAME' ended` |
+| The client selected a session that is no agent session | `CALL_FAILED`: `session 'NAME' is no agent session: a connection that selected a session reaches the commands of scripts only in an agent session` |
+| The client selected an agent session that has `Control.enabled` off | `CALL_FAILED`: `session 'NAME' takes no control calls (Control.enabled)` |
 | The session has 64 command clients already | `CALL_FAILED`: `session 'NAME' has 64 command clients already` |
 | The window's ID of the pane makes the run request longer than 1 MiB. `aglow run` refuses such a run before it sends it. | `CALL_FAILED`: `with the window's ID of its pane, the run request is over 1 MiB` |
 | The run names a pane of the daemon that the window does not show | `CALL_FAILED`: `no pane N of session 'NAME' shows in its window` |
+| The run names no pane (pane 0), and no pane of the session has the focus in its window | `CALL_FAILED`: `no pane of session 'NAME' has the focus in its window` |
 | The window closes or detaches while the command runs | The command ends. The client gets `the window of session 'NAME' closed, and with it the runs of this client`, and exits with status 1. |
 
 ### Remote commands of an ssh session in a session pane
@@ -757,7 +835,7 @@ Thus `afterglow ssh` in an overlay gets no socket of the daemon.
 The daemon gives a socket only to an `afterglow ssh` that runs in the pane that it names, or below a program of that pane.
 It finds them by their processes.
 A process of another terminal that names the pane gets `CALL_FAILED`: `` only `afterglow ssh` in pane N opens a remote socket for it ``.
-When no window shows the session, a client of the remote host gets `CALL_FAILED`: `no window shows session 'NAME', and only a window runs the commands of scripts`.
+When no window shows the session, a client of the remote host gets `NOT_ATTACHED`: `no window shows session 'NAME', and only a window runs the commands of scripts`.
 
 ## What the daemon answers
 
@@ -873,7 +951,7 @@ A request that the window got already gets no answer from the daemon.
 A clipboard read that waits for your answer gets the denial when its window closes and the session keeps running.
 When a session pane closes in the window, a file transfer that the window ran gets no more answers.
 A pane can move to a new session or to another session while a request of its program waits for the window.
-A bell, a flash and a notification then go to the window that shows the session of the pane now, else to the next window of that session.
+A bell, a flash and a notification then go to the window that shows the new session of the pane. Else they go to the next window of that session.
 Another request gets the answer of a session that no window shows.
 
 ## Limits
@@ -884,8 +962,9 @@ Another request gets the answer of a session that no window shows.
 | Socket path | 107 bytes | The daemon and the client leave out a socket with a longer path. When no socket is left, they stop and name the path. |
 | Open files | The hard limit of `RLIMIT_NOFILE`. The daemon raises its soft limit to the hard limit when it starts. | A new connection closes at once. A new session gets an error that says why its program cannot start. A PNG or iTerm2 image does not decode. |
 | Request line | 1 MiB, with its newline | The daemon answers `MALFORMED_REQUEST` and closes the connection. A new session sends the environment of `afterglow` in its request. A very large environment makes `afterglow mux new` fail with `the request is over 1 MiB`. |
+| Text of `getText` | 1 MiB of UTF-8, as in a window | The text is cut, and `truncated` is true. `last-output` and `since` keep the end of the text (see [limits of the control socket](CONTROL.md#limits)). |
 | Lines that do not parse, one after the other | 16 | Each line gets `MALFORMED_REQUEST`. The daemon closes the connection after its answer to the 17th line. |
-| Waiting output to one client | 32 MiB | The daemon closes the connection to a client that does not read its answers |
+| Waiting output to one client | 32 MiB | The daemon closes the connection to a client that does not read its answers. An [agent session](#agent-sessions) that this connection bound last does not end. The daemon logs that its client `did not read its output in time`, and the session keeps running, bound to no client. An MCP server that bound the session binds it again on a new connection, and closes that connection. Then the session ends, unless another server binds it. When no server binds it again, `afterglow mux kill` ends it. |
 | Environment, arguments and directory of a session | UTF-8 text | `afterglow mux new` changes each byte that is not UTF-8 to U+FFFD |
 | Wait for a window to start its stream after the answer to its attach call | 5 seconds | The session is free for another window, and the window does not show it |
 | Command of a pane that the daemon keeps for a project | 64 arguments of at most 4096 bytes | The pane saves as a shell |
@@ -906,7 +985,7 @@ Another request gets the answer of a session that no window shows.
 | Requests that wait for a window | `Mux.eventQueue` (1 to 64 MiB, 4 MiB by default) in the queue of the session, and as much in the queue of each pane. A request that finds the queue of its pane empty passes the limit. The queue of the session also takes one request of any size while it is below the limit. | The answer of a session that no window shows (see [requests that wait](#requests-that-wait)) |
 | One request to a window | 129 MiB: the largest clipboard write that a terminal takes, and its types | The answer of a session that no window shows |
 | Notifications that a pane keeps while no window shows the session | `Mux.keptNotifications` (0 to 100, 8 by default), and 256 KiB | The oldest goes. A notification of more than 256 KiB keeps no icon. |
-| Watch events of a pane that wait for the daemon | 1,024 events or 4 MiB | A new title, status or value of a user variable replaces the last one of its kind that waits. Other new events are dropped. |
+| Watch events of a pane that wait for the daemon | 1,024 events or 4 MiB | A new title, status, shell state or value of a user variable replaces the last one of its kind that waits. A change of the text moves the `textChanged` that waits to the end. Other new events are dropped. |
 | Variables of `Mux.updateEnvironment` | 256 names | Afterglow uses the first 256 and reports the others as a problem of the configuration |
 | First answer of the daemon of another host, through ssh, to an `afterglow mux` command | `Mux.signInTimeout` (5 to 600 seconds, 120 by default) | The command stops with an error |
 | First answer of the daemon of another host, through ssh, to a window | 5 seconds. ssh asks for nothing (`BatchMode`). | The window does not open, and the launch fails with an error |
