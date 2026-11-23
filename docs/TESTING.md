@@ -797,6 +797,7 @@ The daemon ends with the last session of the case, so each case starts with no s
 | --- | --- |
 | Bash | The run fails |
 | Zsh | The `zsh_paste` case skips |
+| Fish | The `fish_holds_an_incomplete_command` case skips |
 | gdb | The `gdb_prompt` case skips |
 | `kwin_wayland` and `dbus-run-session` | The `script_command_through_a_window` case skips |
 | A Vulkan device | The `script_command_through_a_window` case skips |

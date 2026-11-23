@@ -880,6 +880,10 @@ TEST(McpToolsRun, AStaleMarkReadsTheLastOutput)
     ASSERT_FALSE(result.value(QLatin1String("isError")).toBool()) << textOf(result).toStdString();
     EXPECT_EQ(structured(result).value(QLatin1String("output")).toString(), QStringLiteral("the output"));
     EXPECT_TRUE(structured(result).value(QLatin1String("truncated")).toBool());
+    // In the structured result too, for a client that reads only that.
+    const QJsonArray notes = structured(result).value(QLatin1String("notes")).toArray();
+    ASSERT_EQ(notes.size(), 1);
+    EXPECT_TRUE(notes.at(0).toString().contains(QLatin1String("changed its width")));
     EXPECT_EQ(h.daemon.callsOf(QStringLiteral("getText")).last().args.at(1).toString(), QStringLiteral("last-output"));
 }
 
@@ -1106,6 +1110,114 @@ TEST(McpToolsWait, ClosedCountsAPaneThatClosedBeforeTheList)
         QStringLiteral("wait"), {{QStringLiteral("pane"), 99}, {QStringLiteral("until"), QStringLiteral("closed")}});
     EXPECT_TRUE(never.value(QLatin1String("isError")).toBool());
     EXPECT_TRUE(textOf(never).contains(QLatin1String("no pane 99"))) << textOf(never).toStdString();
+}
+
+// After a send, the line in progress still shows the prompt that the input
+// answered: the next wait until text reads from where the input went, and
+// so does each later check while the cursor is on that row. A check on a
+// later row reads from the start of the row.
+TEST(McpToolsWait, TextAfterASendReadsFromWhereTheInputWent)
+{
+    Harness h;
+    const QJsonObject sent{{QStringLiteral("row"), 10}, {QStringLiteral("col"), 4}, {QStringLiteral("epoch"), 1}};
+    qint64 cursorRow = 10;
+    int checks = 0;
+    h.daemon.answer = [&](const QString& fn, const QJsonArray& args) {
+        if (fn == QLatin1String("mark")) {
+            return reply(cursorRow == 10 ? sent
+                                         : QJsonObject{{QStringLiteral("row"), cursorRow},
+                                                       {QStringLiteral("col"), 4},
+                                                       {QStringLiteral("epoch"), 1}});
+        }
+        if (fn == QLatin1String("getText")) {
+            // The echo, and the cursor on a new row from the second check on.
+            // Then the next prompt, at the fourth.
+            if (++checks == 2)
+                cursorRow = 12;
+            return reply(
+                QJsonObject{{QStringLiteral("text"), checks < 4 ? QStringLiteral("x") : QStringLiteral(">>> ")},
+                            {QStringLiteral("truncated"), false}});
+        }
+        if (fn == QLatin1String("sendText"))
+            return reply(QJsonValue());
+        return promptDaemon(fn, args, [] {
+            return reply(QJsonArray());
+        });
+    };
+    const QJsonObject wrote =
+        h.call(QStringLiteral("send"), {{QStringLiteral("pane"), 1}, {QStringLiteral("text"), QStringLiteral("x\r")}});
+    ASSERT_FALSE(wrote.value(QLatin1String("isError")).toBool()) << textOf(wrote).toStdString();
+    // The mark goes before the input.
+    ASSERT_EQ(h.daemon.calls.size(), 2);
+    EXPECT_EQ(h.daemon.calls.at(0).fn, QStringLiteral("mark"));
+    EXPECT_EQ(h.daemon.calls.at(1).fn, QStringLiteral("sendText"));
+    const qint64 id = h.start(QStringLiteral("wait"),
+                              {{QStringLiteral("pane"), 1},
+                               {QStringLiteral("until"), QStringLiteral("text")},
+                               {QStringLiteral("pattern"), QStringLiteral("^>>> $")},
+                               {QStringLiteral("timeout_ms"), 5000}});
+    for (int i = 0; i < 4 && checks < 4; ++i) {
+        h.run(50);
+        h.daemon.event(QStringLiteral("textChanged"), {1});
+    }
+    const QJsonObject result = h.result(id);
+    EXPECT_EQ(structured(result).value(QLatin1String("status")).toString(), QStringLiteral("matched"))
+        << textOf(result).toStdString();
+    const auto texts = h.daemon.callsOf(QStringLiteral("getText"));
+    ASSERT_EQ(texts.size(), 4);
+    const auto markOf = [&](qsizetype i) {
+        return texts.at(i).args.at(2).toObject().value(QLatin1String("mark")).toObject();
+    };
+    // The row of the send: from where the input went, at each check.
+    EXPECT_EQ(markOf(0), sent);
+    EXPECT_EQ(markOf(1), sent);
+    EXPECT_EQ(markOf(2), sent);
+    // A later row: from its start.
+    EXPECT_EQ(markOf(3), rowMark(12, 1));
+}
+
+// A send while a wait until text runs: that wait reads what the input makes,
+// and the next wait reads from its own start, not from the send.
+TEST(McpToolsWait, ASendDuringATextWaitLeavesNoMark)
+{
+    Harness h;
+    const QJsonObject sent{{QStringLiteral("row"), 10}, {QStringLiteral("col"), 4}, {QStringLiteral("epoch"), 1}};
+    bool answered = false;
+    h.daemon.answer = [&](const QString& fn, const QJsonArray& args) {
+        if (fn == QLatin1String("mark"))
+            return reply(sent);
+        if (fn == QLatin1String("getText")) {
+            return reply(QJsonObject{{QStringLiteral("text"), answered ? QStringLiteral("got y") : QString()},
+                                     {QStringLiteral("truncated"), false}});
+        }
+        if (fn == QLatin1String("sendText")) {
+            answered = true;
+            return reply(QJsonValue());
+        }
+        return promptDaemon(fn, args, [] {
+            return reply(QJsonArray());
+        });
+    };
+    const qint64 id = h.start(QStringLiteral("wait"),
+                              {{QStringLiteral("pane"), 1},
+                               {QStringLiteral("until"), QStringLiteral("text")},
+                               {QStringLiteral("pattern"), QStringLiteral("got y")},
+                               {QStringLiteral("timeout_ms"), 5000}});
+    h.run(50);
+    h.call(QStringLiteral("send"), {{QStringLiteral("pane"), 1}, {QStringLiteral("text"), QStringLiteral("y\r")}});
+    h.daemon.event(QStringLiteral("textChanged"), {1});
+    EXPECT_EQ(structured(h.result(id)).value(QLatin1String("status")).toString(), QStringLiteral("matched"));
+    h.daemon.calls.clear();
+    h.start(QStringLiteral("wait"),
+            {{QStringLiteral("pane"), 1},
+             {QStringLiteral("until"), QStringLiteral("text")},
+             {QStringLiteral("pattern"), QStringLiteral("never")},
+             {QStringLiteral("timeout_ms"), 200}});
+    h.run(100);
+    const auto texts = h.daemon.callsOf(QStringLiteral("getText"));
+    ASSERT_FALSE(texts.isEmpty());
+    EXPECT_EQ(texts.first().args.at(2).toObject().value(QLatin1String("mark")).toObject().value(QLatin1String("col")),
+              QJsonValue(0));
 }
 
 // A pane that decodes an image when a wait starts: its mark comes a moment

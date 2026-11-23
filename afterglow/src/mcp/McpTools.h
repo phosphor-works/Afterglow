@@ -142,6 +142,9 @@ private:
     /// moment later, and startWait waits for it.
     void markWait(quint64 serial);
     void send(PhosphorMcp::McpCall call);
+    /// The mark of the pane before the input of a send, in m_sendMarks,
+    /// then the input.
+    void markSend(const CallPtr& call, const std::shared_ptr<const SendCalls>& calls);
     void sendFrom(const CallPtr& call, const std::shared_ptr<const SendCalls>& calls, qsizetype index);
     void read(PhosphorMcp::McpCall call);
     void screenshot(PhosphorMcp::McpCall call);
@@ -245,6 +248,9 @@ private:
     QSet<quint32> m_held;
     /// The last run of each pane, which wait until finished goes on with.
     QHash<quint32, RunRecord> m_runs;
+    /// The cursor of each pane before the input of the last send, until a
+    /// wait until text reads from it.
+    QHash<quint32, QJsonObject> m_sendMarks;
     /// The shell state of each pane, from listPanes and shellChanged.
     QHash<quint32, QString> m_shells;
     /// The panes whose shell marks its prompts and has not marked one yet:
