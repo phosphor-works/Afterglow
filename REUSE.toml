@@ -30,6 +30,7 @@ SPDX-License-Identifier = "GPL-3.0-or-later"
 [[annotations]]
 path = [
     ".claude/settings.json",
+    ".mcp.json",
     "CMakePresets.json",
     "flake.lock",
     "data/benchmarks/*.json",

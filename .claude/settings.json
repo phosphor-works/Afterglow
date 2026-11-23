@@ -1,8 +1,21 @@
 {
+  "enabledMcpjsonServers": ["afterglow"],
+  "permissions": {
+    "allow": [
+      "mcp__afterglow__list_panes",
+      "mcp__afterglow__run",
+      "mcp__afterglow__open_pane",
+      "mcp__afterglow__close_pane",
+      "mcp__afterglow__wait",
+      "mcp__afterglow__read",
+      "mcp__afterglow__screenshot",
+      "mcp__afterglow__list_script_commands"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__afterglow__run",
         "hooks": [
           {
             "type": "command",
