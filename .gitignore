@@ -5,6 +5,9 @@
 /.cache/
 compile_commands.json
 __pycache__/
+# The qmlls configuration Qt writes beside a QML module when
+# QT_QML_GENERATE_QMLLS_INI is on. It names a local build directory.
+.qmlls.ini
 
 # Local state of coding agents. The checked-in Claude setup is .claude/settings.json,
 # .claude/hooks/, .claude/skills/ and .claude/agents/.
