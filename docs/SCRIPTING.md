@@ -97,6 +97,7 @@ A wait inside a coroutine that the script creates is an error.
 
 Each part of a handler between waits has the time limit of the handler type.
 An event handler has 20 ms for each part. A command has 100 ms for each part.
+These limits count the CPU time of the script (see [execution limits](#execution-limits)).
 A script can have 16 waiting handlers, 48 effects that they wait for and 16 sleeps.
 Another wait returns the error code `busy`.
 The `busy` result event has `ok`, `kind`, `request_id`, `data` and `error`, but no `terminal`.
@@ -234,8 +235,14 @@ An effect with a malformed request ID is refused and not applied. It receives no
 | Effects in one `await_all` | 16 | An error in the handler |
 | Sleeps at once | 16 | `busy` |
 | Delay of one sleep | 0 to 600,000 ms | `invalid_effect` |
-| Handler time of one script, `Scripts.cpuBudget` | 250 ms in each second. 10 to 1,000 ms | Afterglow drops or delays the calls (see [CPU time](#cpu-time)) |
+| CPU time of one script, `Scripts.cpuBudget` | 250 ms in each second. 10 to 1,000 ms | Afterglow drops or delays the calls (see [CPU time](#cpu-time)) |
 | Log message | 2,048 characters | Afterglow cuts the message |
+
+The time limits and `Scripts.cpuBudget` count the CPU time of the script, not the time on a clock.
+Time that the system gives to other programs does not count.
+So a handler that does little work does not fail when the computer is busy.
+A loop that does not end still fails at the limit.
+If Afterglow cannot read the CPU time, it uses the time on a clock.
 
 A list with more than 64 effects applies nothing and causes an error.
 A disabled script stays disabled until its source or package configuration changes.
@@ -275,8 +282,8 @@ It loads the file again only after the file changes.
 
 ### CPU time
 
-`Scripts.cpuBudget` is the handler time that one script can use in each second. The default is 250 ms.
-Afterglow adds the time of each part of each call in the last second.
+`Scripts.cpuBudget` is the CPU time that the handlers of one script can use in each second. The default is 250 ms.
+Afterglow adds the CPU time of each part of each call in the last second.
 This includes events, results, the parts after each wait, `on_unload`, and the cleanup of a run that ended.
 When a script has used its budget, these steps occur:
 
@@ -301,7 +308,7 @@ Each second in which a call had to wait counts.
 After 5 such seconds, each less than 3 seconds after the one before, Afterglow disables the script.
 A dropped event does not count. So a program that changes its title very fast does not disable a script whose `on_title` uses the budget: Afterglow drops the extra `on_title` calls.
 But when such a script also has a call that waits, for example a key in a key mode, that second counts.
-`cpu_ms` in the [diagnostics](#diagnostics) is the handler time of the last second.
+`cpu_ms` in the [diagnostics](#diagnostics) is the CPU time of the handlers in the last second.
 
 An effect can cause an event: `set_title` causes `on_title`, `focus` causes `on_focus`, and a `split` causes `on_pane_created`.
 A handler that replies to its own event, or two scripts that reply to the events of each other, run without end.
@@ -771,7 +778,7 @@ These notifications count against `Notifications.rateLimit` of the pane, or agai
 
 | Limit | Value | Past the limit |
 | --- | --- | --- |
-| Each part of the handler between waits | 100 ms. You cannot change it | The run ends with exit status 1 |
+| Each part of the handler between waits | 100 ms of CPU time. You cannot change it | The run ends with exit status 1 |
 | The total time of a run, `Scripts.commandTimeout` | 1,000 to 3,600,000 ms. Default 600,000 ms | The run ends with exit status 124 |
 | Runs of one script at once, `Scripts.commandRunLimit` | 1 to 16. Default 16 | A new run fails with exit status 1 and a message |
 | Stdin, `Scripts.commandStdinLimit` | 0 to 4,096 KiB. Default 1,024 KiB. 0 refuses any input that is not empty | The run does not start. `aglow run` exits with status 2 |
@@ -1274,15 +1281,16 @@ For a `disabled` script whose file changed and does not load, `error` is the loa
 `version` is the package version. A single-file script has none.
 `status` is `active`, `disabled`, `last-good`, `failed` or `superseded`.
 An error in a package module names the module file and its line.
-Timing fields are `last_call_ms`, `max_call_ms` and `total_call_ms`.
-`cpu_ms` is the handler time of the last second, which `Scripts.cpuBudget` limits.
+Timing fields are `last_call_ms`, `max_call_ms` and `total_call_ms`: the last call, the longest call and all calls together.
+`cpu_ms` is the CPU time of the calls in the last second, which `Scripts.cpuBudget` limits.
 Diagnostics also count what Afterglow dropped.
 `dropped_callbacks` counts calls dropped at either handler call limit, or at the CPU budget.
 It also counts the ticks and the changes that a waiting call of a timer or a watcher takes in.
 `delayed_callbacks` counts calls that waited for the CPU budget.
 `dropped_effects` and `dropped_results` count dropped effects and results.
 `waiting` is the number of handlers that wait for a result.
-Timing measures VM handler execution, not asynchronous process duration.
+The timing fields count the CPU time of the handlers, as the time limits do.
+They do not count the time of processes and file reads that run while a handler waits.
 Deferred failures count when the operation completes.
 A dialog that the user closes, and an effect that ends with its run, give `cancelled`. They do not count as effect errors.
 Unchanged instances retain counters. Replacements start new counters.

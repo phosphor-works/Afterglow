@@ -166,7 +166,7 @@ Increase `state_version` when the stored structure changes.
 Export `migrate(value, oldVersion, newVersion)` to return the new object.
 Afterglow calls `migrate` once, from the stored version to the current `state_version`.
 Handle every older version in that one call.
-Migration and `on_load` each use the 100 ms command deadline.
+Migration and `on_load` each use the 100 ms command limit, in CPU time (see [execution limits](SCRIPTING.md#execution-limits)).
 
 Afterglow validates migration output before activation.
 It writes the new state only after the replacement compiles and initializes.

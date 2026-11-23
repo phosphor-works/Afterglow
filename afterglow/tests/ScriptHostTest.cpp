@@ -17,13 +17,18 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <pthread.h>
 #include <signal.h>
+#include <time.h>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <deque>
 #include <optional>
 #include <ostream>
 #include <cerrno>
 #include <sys/stat.h>
+#include <thread>
 
 #include <QCoreApplication>
 #include <QDir>
@@ -3912,7 +3917,8 @@ return {
     }));
     EXPECT_EQ(client.status, 1);
     EXPECT_TRUE(client.err.startsWith("The command failed after a wait: ")) << client.err.toStdString();
-    EXPECT_TRUE(client.err.contains(QStringLiteral("took longer than %1 ms").arg(ScriptHost::CommandCallTimeoutMs)))
+    EXPECT_TRUE(
+        client.err.contains(QStringLiteral("used more than %1 ms of CPU time").arg(ScriptHost::CommandCallTimeoutMs)))
         << client.err.toStdString();
 }
 
@@ -5151,7 +5157,8 @@ TEST_F(ScriptHostTest, FailedCommandHandlersEndTheirRunOnStderr)
     EXPECT_TRUE(later.err.contains("broken after a wait")) << later.err.toStdString();
     start("cmds", "spin", spin);
     EXPECT_EQ(spin.status, 1);
-    EXPECT_TRUE(spin.err.contains(QStringLiteral("took longer than %1 ms").arg(ScriptHost::CommandCallTimeoutMs)))
+    EXPECT_TRUE(
+        spin.err.contains(QStringLiteral("used more than %1 ms of CPU time").arg(ScriptHost::CommandCallTimeoutMs)))
         << spin.err.toStdString();
 }
 
@@ -7500,22 +7507,24 @@ TEST_F(ScriptHostTest, CpuBudgetDropsEventsDelaysResumesAndDisablesAScriptThatKe
 {
     // A run that never ends its loop: each part is well within a command's
     // 100 ms, and each sleep(0) is far below the results limit. Only the
-    // CPU budget stops it. The spins are wall time, as the watchdog's limits
-    // are: a bell's 4 ms leaves 16 ms of its 20 ms to a loaded machine. The
-    // budget is below the setting's least, so that so short a spin passes it.
+    // CPU budget stops it. The limits and the budget count CPU time, so the
+    // burn is a count of steps: a time on a clock can pass while a loaded
+    // machine gives the thread no CPU. The steps take about 3 ms of CPU time,
+    // over the 1 ms budget and far below the 20 ms of a bell. The budget is
+    // below the setting's least, so that so short a burn passes it.
     WRITE(user, "hog.luau", R"(
-local function spin(ms) local t = os.clock() while os.clock() - t < ms / 1000 do end end
+local function burn() local n = 0 for _ = 1, 600000 do n += 1 end end
 return {
     metadata = { commands = { spin = { summary = "Spin" } } },
-    on_bell = function() spin(4) return nil end,
+    on_bell = function() burn() return nil end,
     run_command = function(command, ev)
         while true do
-            spin(4)
+            burn()
             afterglow.sleep(0)
         end
     end,
 })");
-    host->setCpuBudget(2);
+    host->setCpuBudget(1);
     host->setEnabled(true);
     // Events past the budget are dropped.
     for (int i = 0; i < 6; ++i)
@@ -7523,7 +7532,7 @@ return {
     auto stats = firstDiagnostic();
     ASSERT_TRUE(stats["last_error"].toString().isEmpty()) << stats["last_error"].toString().toStdString();
     EXPECT_GE(stats["dropped_callbacks"].toULongLong(), 1u);
-    EXPECT_GE(stats["cpu_ms"].toDouble(), 2.0);
+    EXPECT_GE(stats["cpu_ms"].toDouble(), 1.0);
     EXPECT_LT(stats["calls"].toULongLong(), 6u);
 
     Client& client = newClient();
@@ -7546,6 +7555,106 @@ return {
     // Its run ended with the disable, and said why.
     EXPECT_EQ(client.status, 1);
     EXPECT_TRUE(client.err.contains(QLatin1String("Scripts.cpuBudget"))) << client.err.toStdString();
+}
+
+namespace {
+
+/// How long holdOffTheCpu keeps the thread that takes the signal off the CPU.
+constexpr int HeldOffMs = 3 * ScriptHost::EventTimeoutMs;
+
+// Keeps the thread off the CPU, as a scheduler that runs other programs does.
+void holdOffTheCpu(int)
+{
+    const int saved = errno;
+    timespec ts{0, HeldOffMs * 1000000L};
+    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) { }
+    errno = saved;
+}
+
+qint64 cpuNs(clockid_t clock)
+{
+    timespec ts{};
+    clock_gettime(clock, &ts);
+    return qint64(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+}
+
+} // namespace
+
+TEST_F(ScriptHostTest, AHandlerHeldOffTheCpuPastItsLimitIsNotStopped)
+{
+    // The handler spins for 70 ms of wall time. A signal holds the thread
+    // off the CPU for 60 ms of it: the wall clock passes the 20 ms limit, and
+    // the handler uses about 10 ms of CPU time. The limit counts CPU time, so
+    // the handler ends as it should.
+    WRITE(user, "held.luau", R"(return { on_bell = function()
+    local t = os.clock() while os.clock() - t < 0.070 do end
+    return afterglow.copy("done")
+end })");
+    host->setEnabled(true);
+    const pthread_t gui = pthread_self();
+    clockid_t guiClock{};
+    ASSERT_EQ(pthread_getcpuclockid(gui, &guiClock), 0);
+    struct sigaction hold{};
+    hold.sa_handler = holdOffTheCpu;
+    sigemptyset(&hold.sa_mask);
+    hold.sa_flags = SA_RESTART;
+    struct sigaction previous{};
+    ASSERT_EQ(sigaction(SIGUSR1, &hold, &previous), 0);
+    const auto restore = qScopeGuard([&previous] {
+        sigaction(SIGUSR1, &previous, nullptr);
+    });
+    std::atomic<bool> calling{false};
+    std::atomic<bool> held{false};
+    std::thread holder([&] {
+        using namespace std::chrono_literals;
+        const auto giveUp = std::chrono::steady_clock::now() + 10s;
+        while (!calling && std::chrono::steady_clock::now() < giveUp)
+            std::this_thread::sleep_for(1ms);
+        // A few ms of CPU time after the call starts put the thread inside
+        // the spin, well short of its limit.
+        const qint64 started = cpuNs(guiClock);
+        while (calling && cpuNs(guiClock) - started < 5000000 && std::chrono::steady_clock::now() < giveUp)
+            std::this_thread::sleep_for(200us);
+        if (calling) {
+            pthread_kill(gui, SIGUSR1);
+            held = true;
+        }
+    });
+    QElapsedTimer wall;
+    wall.start();
+    calling = true;
+    host->dispatch("on_bell", 7);
+    calling = false;
+    const qint64 wallMs = wall.elapsed();
+    holder.join();
+    ASSERT_TRUE(held);
+    ASSERT_GE(wallMs, HeldOffMs) << "the signal came after the call";
+    const auto stats = firstDiagnostic();
+    EXPECT_TRUE(stats["last_error"].toString().isEmpty()) << stats["last_error"].toString().toStdString();
+    EXPECT_EQ(stats["handler_errors"].toULongLong(), 0u);
+    ASSERT_TRUE(await([&] {
+        return !rec.applied.isEmpty();
+    }));
+    EXPECT_EQ(rec.applied.first().value("text"), "done");
+    // The call's time in the diagnostics is CPU time too.
+    EXPECT_LT(stats["last_call_ms"].toDouble(), ScriptHost::EventTimeoutMs) << "wall " << wallMs << " ms";
+}
+
+TEST_F(ScriptHostTest, ABusyLoopIsStoppedAtItsLimitOfCpuTime)
+{
+    WRITE(user, "busy.luau", "return { on_bell = function() while true do end end }");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    const auto stats = firstDiagnostic();
+    EXPECT_EQ(stats["handler_errors"].toULongLong(), 1u);
+    const QString error = stats["last_error"].toString();
+    EXPECT_TRUE(error.startsWith(QLatin1String("on_bell: "))) << error.toStdString();
+    EXPECT_TRUE(error.contains(QStringLiteral("used more than %1 ms of CPU time").arg(ScriptHost::EventTimeoutMs)))
+        << error.toStdString();
+    // The interrupt comes once the call has used its limit, the event's and
+    // not the command's.
+    EXPECT_GE(stats["last_call_ms"].toDouble(), ScriptHost::EventTimeoutMs);
+    EXPECT_LT(stats["last_call_ms"].toDouble(), ScriptHost::CommandCallTimeoutMs);
 }
 
 TEST_F(ScriptHostTest, ARemoteRunReadsTextAndTakesOtherOutputOnlyWithAllowRemoteReadText)
@@ -7831,14 +7940,14 @@ TEST_F(ScriptHostTest, AnEventStormThatTheBudgetDropsDoesNotDisableTheScript)
 {
     // Each on_title uses the budget quickly, as a program that sets its
     // title in a loop makes it. Dropping the extra calls holds the script to
-    // its budget: that is no reason to disable it. The spin is wall time, far
-    // below the 20 ms of an event handler, which a loaded machine could pass:
-    // five such failures in a row disable a script too.
+    // its budget: that is no reason to disable it. The burn stays far below
+    // the 20 ms of CPU time of an event handler: five such failures in a row
+    // would disable the script too.
     WRITE(user, "titles.luau", R"(return { on_title = function()
-    local t = os.clock() while os.clock() - t < 0.004 do end
+    local n = 0 for _ = 1, 600000 do n += 1 end
     return nil
 end })");
-    host->setCpuBudget(2);
+    host->setCpuBudget(1);
     host->setEnabled(true);
     QElapsedTimer clock;
     clock.start();
@@ -7855,16 +7964,16 @@ end })");
 
 TEST_F(ScriptHostTest, AOneShotTimerPastTheBudgetWaitsInsteadOfBeingDropped)
 {
-    // The burn passes the budget and stays far below the 20 ms of on_bell,
-    // which a loaded machine could pass: then no timer would start.
+    // The burn passes the budget and stays far below the 20 ms of CPU time
+    // of on_bell: past it, no timer would start.
     WRITE(user, "late.luau", R"(return {
     on_bell = function()
-        local t = os.clock() while os.clock() - t < 0.004 do end
+        local n = 0 for _ = 1, 600000 do n += 1 end
         return afterglow.timer("once", 1)
     end,
     on_timer = function(ev) return afterglow.copy(ev.name) end,
 })");
-    host->setCpuBudget(2);
+    host->setCpuBudget(1);
     host->setEnabled(true);
     host->dispatch("on_bell", 7);
     ASSERT_TRUE(firstDiagnostic()["last_error"].toString().isEmpty())
@@ -7885,15 +7994,15 @@ TEST_F(ScriptHostTest, ARepeatingTimerPastTheBudgetWaitsWithOneCallNotOneForEach
     // past its budget for a second. The ticks that come while its call waits
     // add no call: once time returns, on_timer runs once. Its first call
     // cancels the timer, so a second call could come only from a tick that
-    // waited. The burn stays far below the 20 ms of on_bell.
+    // waited. The burn stays far below the 20 ms of CPU time of on_bell.
     WRITE(user, "late.luau", R"(return {
     on_bell = function()
-        local t = os.clock() while os.clock() - t < 0.004 do end
+        local n = 0 for _ = 1, 600000 do n += 1 end
         return afterglow.timer("tick", 1, 250)
     end,
     on_timer = function(ev) return { afterglow.cancel(ev.name), afterglow.copy(ev.name) } end,
 })");
-    host->setCpuBudget(2);
+    host->setCpuBudget(1);
     host->setEnabled(true);
     host->dispatch("on_bell", 7);
     ASSERT_TRUE(firstDiagnostic()["last_error"].toString().isEmpty())
@@ -7926,16 +8035,16 @@ TEST_F(ScriptHostTest, ACancelWhileATimersCallWaitsForCpuTimeStopsTheCall)
     // The key waits for CPU time first. Both timers tick behind it, and their
     // calls wait too. The key cancels both: once afterglow.cancel has
     // returned, no on_timer comes, of the one-shot timer or the repeating one.
-    // The burn stays far below the 20 ms of on_bell.
+    // The burn stays far below the 20 ms of CPU time of on_bell.
     WRITE(user, "late.luau", R"(return {
     on_bell = function()
-        local t = os.clock() while os.clock() - t < 0.004 do end
+        local n = 0 for _ = 1, 600000 do n += 1 end
         return { afterglow.copy("bell"), afterglow.timer("once", 50), afterglow.timer("tick", 50, 250) }
     end,
     on_key = function(ev) return { afterglow.cancel("once"), afterglow.cancel("tick"), afterglow.copy(ev.key) } end,
     on_timer = function(ev) return afterglow.copy(ev.name) end,
 })");
-    host->setCpuBudget(2);
+    host->setCpuBudget(1);
     host->setEnabled(true);
     host->dispatch("on_bell", 7);
     ASSERT_TRUE(firstDiagnostic()["last_error"].toString().isEmpty())
@@ -8067,10 +8176,10 @@ TEST_F(ScriptHostTest, ACommandRunThatWaitedForCpuTimeGetsTheStateWhenItsHandler
 {
     WRITE(user, "late.luau", R"(return {
     metadata = { commands = { title = { summary = "Title" } } },
-    on_bell = function() local t = os.clock() while os.clock() - t < 0.015 do end return nil end,
+    on_bell = function() local n = 0 for _ = 1, 600000 do n += 1 end return nil end,
     run_command = function(command, ev) return afterglow.output(ev, ev.pane.title .. "\n") end,
 })");
-    host->setCpuBudget(10);
+    host->setCpuBudget(1);
     host->setEnabled(true);
     host->dispatch("on_bell", 7);
     Client& client = newClient();
