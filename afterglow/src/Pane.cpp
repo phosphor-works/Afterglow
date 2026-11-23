@@ -1469,7 +1469,7 @@ QString Pane::workingDirectory() const
     return QFileInfo(asked).isDir() ? asked : QString();
 }
 
-std::optional<QString> Pane::localPathDirectory(const QStringList& remoteCommands) const
+std::optional<QString> Pane::localPathDirectory(const QStringList& remoteClients) const
 {
     QString reported;
     {
@@ -1483,7 +1483,7 @@ std::optional<QString> Pane::localPathDirectory(const QStringList& remoteCommand
     // nothing of where its output comes from: its name does. The kernel
     // keeps the first 15 bytes of a process name.
     if (const QString job = foregroundJob(); !job.isEmpty()) {
-        const bool remote = std::any_of(remoteCommands.cbegin(), remoteCommands.cend(), [&](const QString& name) {
+        const bool remote = std::any_of(remoteClients.cbegin(), remoteClients.cend(), [&](const QString& name) {
             return job == name || job == QString::fromUtf8(name.toUtf8().left(15));
         });
         if (remote)

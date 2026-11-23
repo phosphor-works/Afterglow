@@ -5052,7 +5052,7 @@ std::optional<TerminalWindow::LinkHover> TerminalWindow::pathAtCell(Pane* pane, 
     if (span == paths.end())
         return std::nullopt;
     // Paths in a pane on another machine name its files, not ours.
-    const std::optional<QString> directory = pane->localPathDirectory(m_settings.settings().links.remoteCommands);
+    const std::optional<QString> directory = pane->localPathDirectory(m_settings.settings().links.remoteClients);
     if (!directory)
         return std::nullopt;
     LinkHover found;
@@ -5591,7 +5591,7 @@ void TerminalWindow::urlModeKey(QKeyEvent* e)
             if (action == QLatin1String("open")) {
                 // As a click on the path: a file of this computer that exists.
                 std::optional<QString> directory =
-                    found ? found->localPathDirectory(m_settings.settings().links.remoteCommands) : QString();
+                    found ? found->localPathDirectory(m_settings.settings().links.remoteClients) : QString();
                 if (!directory) {
                     refuse(tr("The pane shows the files of another computer."));
                     return;
@@ -5786,7 +5786,7 @@ void TerminalWindow::applySettings(const Settings& previous)
     // A held key or the pointer over a link: the hover follows the new rules.
     if (now.modifierRemap != previous.modifierRemap || now.links.modifier != previous.links.modifier
         || now.links.detectUrls != previous.links.detectUrls || now.links.detectPaths != previous.links.detectPaths
-        || now.links.remoteCommands != previous.links.remoteCommands)
+        || now.links.remoteClients != previous.links.remoteClients)
         updateLinkHover();
     if (now.terminal != previous.terminal) {
         // A session pane takes them too, for what the window reads of them

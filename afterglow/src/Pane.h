@@ -460,8 +460,8 @@ public:
     /// None while the pane's paths name another machine's files: its shell
     /// runs on another host or in a container (OSC 3008, iTerm2 RemoteHost),
     /// its last OSC 7 named another host, or its foreground job is one of
-    /// @p remoteCommands (Links.remoteCommands), as foregroundJob() names it.
-    std::optional<QString> localPathDirectory(const QStringList& remoteCommands) const;
+    /// @p remoteClients (Links.remoteClients), as foregroundJob() names it.
+    std::optional<QString> localPathDirectory(const QStringList& remoteClients) const;
     /// workingDirectory without a call to the daemon, for what reads every
     /// pane often (Control::describe, the snapshot of each script event): a
     /// session pane gives only what its shell reported, and a pane of a
