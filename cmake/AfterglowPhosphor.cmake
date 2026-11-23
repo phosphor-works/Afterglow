@@ -24,7 +24,17 @@ endif()
 
 # From here on AFTERGLOW_PHOSPHOR_LIBS_DIR names the tree in use, the pinned one
 # when the cache entry is empty. afterglow/ and tools/aglow/ read it.
-if(AFTERGLOW_PHOSPHOR_LIBS_DIR)
+#
+# A build that holds the whole phosphor-libs tree already, such as the workspace
+# superbuild that adds it before every app, has its targets: Afterglow uses
+# that tree and adds none of its libraries a second time.
+# PHOSPHOR_LIBS_CMAKE_DIR is the cache entry the tree sets for its users.
+set(AFTERGLOW_PHOSPHOR_LIBS_IN_BUILD OFF)
+if(TARGET PhosphorChannel AND PHOSPHOR_LIBS_CMAKE_DIR)
+    get_filename_component(AFTERGLOW_PHOSPHOR_LIBS_DIR "${PHOSPHOR_LIBS_CMAKE_DIR}" DIRECTORY)
+    set(AFTERGLOW_PHOSPHOR_LIBS_IN_BUILD ON)
+    message(STATUS "Afterglow: phosphor-libs is already in this build, at ${AFTERGLOW_PHOSPHOR_LIBS_DIR}")
+elseif(AFTERGLOW_PHOSPHOR_LIBS_DIR)
     get_filename_component(AFTERGLOW_PHOSPHOR_LIBS_DIR "${AFTERGLOW_PHOSPHOR_LIBS_DIR}" ABSOLUTE)
 else()
     afterglow_fetch_dependency(phosphor-libs)
@@ -50,14 +60,21 @@ include("${CMAKE_CURRENT_LIST_DIR}/AfterglowInstallDirs.cmake")
 
 # The phosphor libraries' install rules are for a system install of phosphor
 # (headers, CMake packages, the plugin in Qt's directory). Afterglow installs
-# the parts it uses privately instead, so they are skipped here.
-macro(install)
-    if(NOT AFTERGLOW_INSIDE_PHOSPHOR)
-        _install(${ARGN})
-    endif()
-endmacro()
+# the parts it uses privately instead, so they are skipped here. Not in a build
+# that holds the tree already: its install rules are that build's to keep, and
+# install() is a global command that every later project would go through.
+if(NOT AFTERGLOW_PHOSPHOR_LIBS_IN_BUILD)
+    macro(install)
+        if(NOT AFTERGLOW_INSIDE_PHOSPHOR)
+            _install(${ARGN})
+        endif()
+    endmacro()
+endif()
 
 function(afterglow_add_phosphor_libs)
+    if(AFTERGLOW_PHOSPHOR_LIBS_IN_BUILD)
+        return()
+    endif()
     # The phosphor libraries' own test suites are not part of this build.
     set(BUILD_TESTING OFF)
     set(AFTERGLOW_INSIDE_PHOSPHOR ON)
@@ -79,27 +96,30 @@ if(AFTERGLOW_AGLOW_ONLY)
     return()
 endif()
 
-# The script mode of cmake/AfterglowDependencies.cmake puts the archives of
-# both pin files into one directory. An offline build that names it as
-# AFTERGLOW_DEPS_ARCHIVES then needs no second option for the archives of the
-# libraries.
-if(AFTERGLOW_DEPS_ARCHIVES AND NOT PHOSPHOR_DEPS_ARCHIVES)
-    set(PHOSPHOR_DEPS_ARCHIVES "${AFTERGLOW_DEPS_ARCHIVES}" CACHE PATH
-        "Directory with the archives that the phosphor-libs tree pins, for an offline build" FORCE)
-endif()
+# The tree already in the build brought its own pins with it.
+if(NOT AFTERGLOW_PHOSPHOR_LIBS_IN_BUILD)
+    # The script mode of cmake/AfterglowDependencies.cmake puts the archives of
+    # both pin files into one directory. An offline build that names it as
+    # AFTERGLOW_DEPS_ARCHIVES then needs no second option for the archives of the
+    # libraries.
+    if(AFTERGLOW_DEPS_ARCHIVES AND NOT PHOSPHOR_DEPS_ARCHIVES)
+        set(PHOSPHOR_DEPS_ARCHIVES "${AFTERGLOW_DEPS_ARCHIVES}" CACHE PATH
+            "Directory with the archives that the phosphor-libs tree pins, for an offline build" FORCE)
+    endif()
 
-# The pins of the archives that the libraries fetch (Luau, jsoncons). The module
-# must be included at the top scope: its PHOSPHOR_DEPS list is a directory
-# variable, and a library that included it itself would hide the list from its
-# siblings. It loads no second CPM: cmake/AfterglowDependencies.cmake has
-# loaded one. An older tree has no such module, and include() alone would then
-# fail without saying why.
-if(NOT EXISTS "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/cmake/PhosphorDependencies.cmake")
-    message(FATAL_ERROR
-        "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/cmake/PhosphorDependencies.cmake not found. "
-        "This phosphor-libs tree is older than the commit that cmake/AfterglowDependencies.cmake pins.")
+    # The pins of the archives that the libraries fetch (Luau, jsoncons). The module
+    # must be included at the top scope: its PHOSPHOR_DEPS list is a directory
+    # variable, and a library that included it itself would hide the list from its
+    # siblings. It loads no second CPM: cmake/AfterglowDependencies.cmake has
+    # loaded one. An older tree has no such module, and include() alone would then
+    # fail without saying why.
+    if(NOT EXISTS "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/cmake/PhosphorDependencies.cmake")
+        message(FATAL_ERROR
+            "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/cmake/PhosphorDependencies.cmake not found. "
+            "This phosphor-libs tree is older than the commit that cmake/AfterglowDependencies.cmake pins.")
+    endif()
+    include("${AFTERGLOW_PHOSPHOR_LIBS_DIR}/cmake/PhosphorDependencies.cmake")
 endif()
-include("${AFTERGLOW_PHOSPHOR_LIBS_DIR}/cmake/PhosphorDependencies.cmake")
 
 afterglow_add_phosphor_libs(
     phosphor-paths
