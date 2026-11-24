@@ -106,6 +106,10 @@ KILL_BY_NAME = {'pkill', 'killall', 'killall5', 'skill'}
 PRIVILEGED = {'sudo', 'sudoedit', 'doas', 'su', 'pkexec', 'run0'}
 INSTALL_TARGET = re.compile(r'^install(/(strip|local|fast))?$')
 
+# The run tool of `afterglow mcp`: a shell command in a pane of the agent session. send, which types into a
+# program, is not checked: CLAUDE.md says to run shell commands with run.
+MCP_RUN = 'mcp__afterglow__run'
+
 MSG_LOCAL = (
     '.Codex/, __pycache__/, build*/ and .cache/ are local state and never go into git, and `git add -f` would '
     'bypass .gitignore. Stage only source files, by name.'
@@ -617,7 +621,9 @@ def removes_mux_files(word, args, cwd):
 
 # The checks
 
-def check_bash(command, cwd=None):
+def check_bash(command, cwd=None, agent_pane=False):
+    """AGENT_PANE: the command runs in a pane of the agent session of `afterglow mcp`, whose AFTERGLOW_SOCKET and
+    AFTERGLOW_PANE_ID are those of that session: afterglow ctl and aglow run act on it, not on the user's windows."""
     cmds = list(simple_commands(command))
     words, kills_found = set(), False
     for changes, wrappers, word, args in cmds:
@@ -651,7 +657,7 @@ def check_bash(command, cwd=None):
             return MSG_MUX
         if removes_mux_files(word, args, cwd):
             return MSG_MUX
-        if drives_instance(word, args) and not isolated_client(env):
+        if drives_instance(word, args) and not agent_pane and not isolated_client(env):
             return MSG_CTL
         if word == 'afterglow' and launches_window(args) and not reaches_mux(word, args) \
                 and not isolated_launch(env):
@@ -687,11 +693,12 @@ def check(call):
     cwd = call.get('cwd')
     if not isinstance(tool, str) or not isinstance(params, dict) or not (cwd is None or isinstance(cwd, str)):
         raise ValueError('the hook input has a field of the wrong type')
-    if tool == 'Bash':
+    if tool in ('Bash', MCP_RUN):
         command = params.get('command', '')
         if not isinstance(command, str):
             raise ValueError('the command is not a string')
-        return check_bash(command, cwd)
+        # The pane's directory is not in the call: git's checks take the session's.
+        return check_bash(command, cwd, agent_pane=tool == MCP_RUN)
     if tool in ('Edit', 'Write', 'MultiEdit', 'NotebookEdit'):
         path = params.get('file_path') or params.get('notebook_path') or ''
         if not isinstance(path, str):

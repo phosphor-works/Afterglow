@@ -125,6 +125,16 @@ wrong, and points to the skills that hold the procedures.
 - Never use `pkill`, `killall` or `kill $(pgrep -f ...)`. List with `pgrep -a NAME`, then `kill PID` for a process
   that you started from `build/`.
 - The context is small. Read logs with `grep` and `tail`, never in full.
+- `.mcp.json` starts `afterglow mcp` from `PATH`: the tools of the `afterglow` server act on an agent session of
+  the user's mux daemon, with no window. Use Bash for builds, tests, `gdb -batch` and other commands that end
+  within a call: in a measurement Bash took fewer tokens, and gdb in a pane took 9 times as long. Use a pane for a
+  program that must run on across turns: a nested KWin, a server, gdb while you ask new questions over several
+  turns, or a long run that `wait` watches for its first `FAILED`. Use `run` for shell commands in a pane: the
+  guard checks its command, not what `send` types.
+- A pane of the agent session runs in the cgroup of the user's `aglow-mux.service`: builds and tests there keep
+  the `systemd-run --user --scope` prefix. Its `AFTERGLOW_SOCKET` and `AFTERGLOW_PANE_ID` are those of the agent
+  session, so `afterglow ctl` and `aglow` there act on that session. `afterglow mux`, `afterglow mcp` and a
+  window of `afterglow` reach the user's daemon and display from a pane too.
 
 ## Build and test
 
@@ -166,6 +176,7 @@ The skills in `.claude/skills/`:
 
 - `ag-build`: build directories, the Phosphor checkout, warnings, the test suite, generated files.
 - `ag-verify-live`: native window tests in a headless nested KWin, and the expected skips there.
+- `ag-debug`: a crash or a hang in a test or a program, with gdb, `coredumpctl` and an agent pane.
 - `ag-shader-pack`: pack layout, contract changes and their C++ mirrors, previews with `afterglow_renderpng`.
 - `ag-add-setting`: the files that a new setting touches, and the reference regeneration.
 - `ag-script-api`: a new script effect, event or helper, from the prelude to the docs.
