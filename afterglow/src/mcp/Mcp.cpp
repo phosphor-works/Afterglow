@@ -357,11 +357,13 @@ int runMcp(int argc, char** argv)
                   });
     };
     PhosphorMcp::McpServer server;
-    server.setServerInfo(QStringLiteral("afterglow"), QStringLiteral(AFTERGLOW_VERSION));
     server.setInstructions(instructions());
-    // The tool list and the instructions never change, and are the same for
-    // every client.
-    server.setCache(qint64(60) * 60 * 1000, PhosphorMcp::McpServer::CacheScope::Public);
+    // The tool list and the instructions are the same for every client, and
+    // change only with a new build. A client may keep them for a minute, as
+    // the reference server of MCP does its tool list: a client that keys its
+    // cache on something else than the version (serverVersion()) sees a new
+    // build that soon.
+    server.setCache(qint64(60) * 1000, PhosphorMcp::McpServer::CacheScope::Public);
     server.setMaxLineBytes(McpTools::MaxRequestLineBytes);
     // Each run of a script command takes a connection of its own, which the
     // daemon relays to the window that shows the session. A Unix socket
@@ -397,6 +399,8 @@ int runMcp(int argc, char** argv)
         endAndExit(1);
         return app.exec();
     }
+    server.setServerInfo(QStringLiteral("afterglow"),
+                         McpParts::serverVersion(QStringLiteral(AFTERGLOW_VERSION), server.tools(), instructions()));
     server.handleTerminationSignals();
     QObject::connect(&server, &PhosphorMcp::McpServer::finished, &app, [](PhosphorMcp::McpServer::FinishReason reason) {
         qCDebug(lcMcp) << "the server ended:" << reason;

@@ -23,6 +23,7 @@
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
@@ -545,6 +546,22 @@ TEST(McpParts, ARunningCommandIsTheNewestOutput)
     EXPECT_EQ(runningSince({region(3, "prompt"), region(7, "output"), region(8, "prompt")}), 6);
     EXPECT_EQ(runningSince({region(3, "prompt")}), 3);
     EXPECT_EQ(runningSince({}), 0);
+}
+
+// The version of serverInfo changes when a tool or the instructions change,
+// and only then: a client that keys its cache on it reads the new list.
+TEST(McpParts, TheServerVersionFollowsTheToolsAndTheInstructions)
+{
+    const QList<PhosphorMcp::McpTool> tools = McpTools::definitions();
+    const QString version = serverVersion(QStringLiteral("0.1.0"), tools, QStringLiteral("text"));
+    EXPECT_TRUE(QRegularExpression(QStringLiteral("^0\\.1\\.0\\+[0-9a-f]{8}$")).match(version).hasMatch())
+        << version.toStdString();
+    EXPECT_EQ(serverVersion(QStringLiteral("0.1.0"), McpTools::definitions(), QStringLiteral("text")), version);
+    EXPECT_NE(serverVersion(QStringLiteral("0.1.0"), tools, QStringLiteral("other text")), version);
+    QList<PhosphorMcp::McpTool> changed = tools;
+    changed.first().setDescription(changed.first().description() + QStringLiteral(" More."));
+    EXPECT_NE(serverVersion(QStringLiteral("0.1.0"), changed, QStringLiteral("text")), version);
+    EXPECT_NE(serverVersion(QStringLiteral("0.1.0"), tools.mid(1), QStringLiteral("text")), version);
 }
 
 TEST(McpParts, SessionNamesKeepTheCharactersOfANameAndTheirLimit)
