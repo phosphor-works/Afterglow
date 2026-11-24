@@ -241,6 +241,10 @@ struct MuxSettings
     /// AfterglowMux::CallTimeoutMs, with ssh in BatchMode, which asks for
     /// nothing.
     int signInTimeout = 120;
+    /// Seconds that a client that started the daemon of this computer waits
+    /// for its answer. The default equals AfterglowMux::DefaultStartWait,
+    /// which ConfigTest checks.
+    int startTimeout = 15;
     /// The most notifications that each pane of a session keeps while no
     /// window shows the session, for the next window. The default equals
     /// AfterglowMux::DefaultKeptNotifications, which ConfigTest checks.

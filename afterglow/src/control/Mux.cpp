@@ -389,7 +389,9 @@ int newSession(int argc, char** argv, const std::string& command = "new")
                                       QString::fromStdString(o.name.value_or(std::string())));
         session.agent = o.agent;
         QString why;
-        const QString made = newLocalSession({route->sockets, AfterglowMux::currentEnvironment()}, session, &why);
+        const QString made = newLocalSession(
+            {route->sockets, AfterglowMux::currentEnvironment(), std::chrono::seconds(settings.mux.startTimeout)},
+            session, &why);
         if (made.isEmpty())
             return fail(command, why.toStdString());
         name = made.toStdString();

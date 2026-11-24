@@ -34,9 +34,7 @@ namespace {
 
 using AfterglowProto::printable;
 
-// The daemon of a client that just started it listens within this time.
-constexpr auto StartWait = std::chrono::seconds(5);
-// How long a look at the unit after StartWait may take, for the message.
+// How long a look at the unit after the start wait may take, for the message.
 constexpr auto LookWait = std::chrono::seconds(1);
 // The unit of a daemon that the systemd user manager runs.
 constexpr const char* Unit = "aglow-mux";
@@ -482,9 +480,9 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::str
 }
 
 Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::string& daemon,
-                       const Environment& environment, std::string* error)
+                       const Environment& environment, std::string* error, std::chrono::milliseconds wait)
 {
-    return connectOrStart(sockets, daemon, environment, userManagerOf(environment), error);
+    return connectOrStart(sockets, daemon, environment, userManagerOf(environment), error, wait);
 }
 
 UserManager userManagerOf(const Environment& environment)
@@ -499,11 +497,12 @@ UserManager userManagerOf(const Environment& environment)
 }
 
 Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::string& daemon,
-                       const Environment& environment, const UserManager& manager, std::string* error)
+                       const Environment& environment, const UserManager& manager, std::string* error,
+                       std::chrono::milliseconds wait)
 {
     if (Reached reached = connectAny(sockets, error); reached.connection || !error->empty())
         return reached;
-    const auto deadline = std::chrono::steady_clock::now() + StartWait;
+    const auto deadline = std::chrono::steady_clock::now() + wait;
     if (manager.runs && manager.run) {
         // Before the message that the manager does not answer, one more look
         // at the sockets, which ends by @p look: the daemon that another

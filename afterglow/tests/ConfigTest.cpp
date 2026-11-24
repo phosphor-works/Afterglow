@@ -9,6 +9,7 @@
 #include "scripting/ScriptHost.h"
 
 #include "MuxProtocol.h"
+#include "MuxStart.h"
 
 #include <AfterglowRender/Snapshot.h>
 
@@ -961,6 +962,19 @@ TEST_F(ConfigTest, ReadsTheKeptNotificationsOfASessionWithinTheDaemonsBounds)
         SettingsStore store(write(QStringLiteral("kept.json"),
                                   QStringLiteral(R"({"Mux": {"keptNotifications": %1}})").arg(given).toUtf8()));
         EXPECT_EQ(store.settings().mux.keptNotifications, expected) << given;
+    }
+}
+
+// How long a start of the daemon waits for its answer: the daemon's default
+// in seconds, and the clamp of the store.
+TEST_F(ConfigTest, ReadsTheStartWaitOfTheDaemonWithinItsBounds)
+{
+    EXPECT_EQ(std::chrono::milliseconds(std::chrono::seconds(MuxSettings{}.startTimeout)),
+              AfterglowMux::DefaultStartWait);
+    for (const auto& [given, expected] : std::vector<std::pair<int, int>>{{30, 30}, {0, 1}, {-5, 1}, {500, 120}}) {
+        SettingsStore store(write(QStringLiteral("start.json"),
+                                  QStringLiteral(R"({"Mux": {"startTimeout": %1}})").arg(given).toUtf8()));
+        EXPECT_EQ(store.settings().mux.startTimeout, expected) << given;
     }
 }
 

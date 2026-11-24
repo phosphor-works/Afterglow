@@ -194,7 +194,7 @@ void Control::openProjectSession(const QString& name, const QJsonObject& documen
     const std::size_t history = settings.terminal.maxScrollback;
     // What the calls read from the process: the GUI thread changes its
     // environment (an activation token).
-    const LocalDaemon daemon = localDaemon();
+    const LocalDaemon daemon = localDaemon(settings);
     struct Started
     {
         bool runs = false;

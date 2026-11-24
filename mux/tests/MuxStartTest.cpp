@@ -159,6 +159,34 @@ TEST(MuxStart, TheUnitGetsTheStateDirectoryOfTheClientWithoutXdgStateHome)
     EXPECT_TRUE(contains(calls.front(), "--setenv=HOME=" + daemon.dir() + "/home"));
 }
 
+// The wait for a daemon whose unit runs and that does not answer is the
+// caller's (Mux.startTimeout): a busy computer can take seconds to start
+// it, and an idle one ends the wait at the answer.
+TEST(MuxStart, TheWaitForTheAnswerIsTheCallers)
+{
+    TestDaemon daemon;
+    std::vector<std::vector<std::string>> calls;
+    // The unit starts and runs on, and its daemon never answers.
+    const UserManager manager = fakeManager(calls, [](const std::vector<std::string>& argv, std::string* output) {
+        if (output && argv.front() == "systemctl")
+            *output = propertyOf(argv) == "LoadState" ? "loaded\n" : "active\n";
+        return 0;
+    });
+    for (const auto wait : {300ms, 1200ms}) {
+        std::string error;
+        const auto start = std::chrono::steady_clock::now();
+        const Reached reached =
+            connectOrStart(daemon.sockets(), missingDaemon(daemon), environmentOf(daemon), manager, &error, wait);
+        const auto took = std::chrono::steady_clock::now() - start;
+        EXPECT_FALSE(reached.connection);
+        EXPECT_EQ(error, "aglow-mux did not start: see journalctl --user -u aglow-mux");
+        EXPECT_GE(took, wait);
+        // The last look at the unit and at the sockets takes at most a second more.
+        EXPECT_LT(took, wait + 3s) << std::chrono::duration_cast<std::chrono::milliseconds>(took).count();
+    }
+    EXPECT_EQ(DefaultStartWait, 15s);
+}
+
 TEST(MuxStart, AUnitFileThatDoesNotRunStartsNoDaemon)
 {
     TestDaemon daemon;

@@ -162,7 +162,9 @@ FontSet::FontSet(const FontSpec& spec, double devicePixelRatio)
             if (idx < 0) {
                 throw std::runtime_error("failed to load font " + m.path);
             }
-            qCInfo(lcFont) << "slot" << slot << s->family.c_str() << "->" << m.path.c_str();
+            // Each font load: a detail for a debug log, also on the standard error
+            // of `afterglow mcp`, which an MCP client logs.
+            qCDebug(lcFont) << "slot" << slot << s->family.c_str() << "->" << m.path.c_str();
         }
 
         std::set<std::string> warned; // each missing family once, not once per slot
