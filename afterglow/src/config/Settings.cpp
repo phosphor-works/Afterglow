@@ -993,6 +993,12 @@ PhosphorConfig::Schema buildSchema()
                    "host. In that time, ssh can ask for a password or a passphrase. The window of a session of "
                    "another host waits %1 seconds, and ssh asks for nothing there.")
                    .arg(AfterglowMux::CallTimeoutMs / 1000)),
+        intKey(QStringLiteral("startTimeout"), d.mux.startTimeout, 1, 120,
+               QStringLiteral(
+                   "Seconds that Afterglow waits for the mux daemon of this computer to answer after it started the "
+                   "daemon: for afterglow mux new, a project with a session, and afterglow mcp. The wait ends when the "
+                   "daemon answers, so a longer value only delays the message about a daemon that does not start. "
+                   "On a busy computer, the start can take some seconds.")),
         intKey(QStringLiteral("keptNotifications"), d.mux.keptNotifications, 0, int(AfterglowMux::MaxKeptNotifications),
                QStringLiteral(
                    "The largest number of notifications that each pane of a mux session keeps while no window "
@@ -2494,6 +2500,7 @@ Settings SettingsStore::read()
         s.mux.remoteCommand = command;
     }
     s.mux.signInTimeout = st.read<int>(MuxGroup, QStringLiteral("signInTimeout"));
+    s.mux.startTimeout = st.read<int>(MuxGroup, QStringLiteral("startTimeout"));
     s.mux.keptNotifications = st.read<int>(MuxGroup, QStringLiteral("keptNotifications"));
     // One line in the tab bar and the title: a program can name it in -o,
     // and a long one would push the tabs away.

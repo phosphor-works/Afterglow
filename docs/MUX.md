@@ -53,8 +53,11 @@ Without lingering, the user manager stops its units at your last logout.
 For this reason, an SSH login without lingering starts the daemon with `setsid`.
 A daemon that starts with `setsid` stays after your last logout, unless logind sets `KillUserProcesses=yes`.
 
-`afterglow mux new` waits up to 5 seconds for a socket of the daemon to answer.
-When the user manager does not answer, the command stops waiting after these 5 seconds.
+`afterglow mux new` waits up to `Mux.startTimeout` seconds (15 by default) for a socket of the daemon to answer.
+A project with a session and `afterglow mcp` wait the same time.
+The wait ends when the daemon answers, so a longer value only delays the message about a daemon that does not start.
+On a busy computer, the start can take some seconds.
+When the user manager does not answer, the command stops waiting at the end of this wait.
 A last look at the unit and at the sockets can take 1 second more.
 When the daemon does not start, the command stops with exit status 1.
 It writes `afterglow mux new: ` and a message on standard error.
@@ -63,15 +66,15 @@ When `afterglow mux attach` creates the session, the message starts with `afterg
 | Start | Result | Message |
 | --- | --- | --- |
 | `setsid` | The daemon reports an error before it exits, for example when it can use none of its sockets (see [sockets](#sockets)) | The error of the daemon, such as `no socket to listen on: ` and the reason for each socket. The command stops at once. |
-| `setsid` | The daemon finds a socket that another daemon holds, and that daemon does not answer in 5 seconds | `aglow-mux: another aglow-mux listens on PATH, which does not answer` |
+| `setsid` | The daemon finds a socket that another daemon holds, and that daemon does not answer within `Mux.startTimeout` | `aglow-mux: another aglow-mux listens on PATH, which does not answer` |
 | `setsid` | The command cannot run `aglow-mux` | `aglow-mux: cannot run PATH: REASON`, where `REASON` is the error text of the system. The command stops at once. |
-| `setsid` | The daemon exits before it listens and reports no error | `aglow-mux ended before it listened`. The command stops at once, without the wait of 5 seconds. |
-| `setsid` | No socket of the daemon answers in 5 seconds | `aglow-mux did not start: no daemon answers on PATH`, with the path of each socket |
-| systemd user unit | The unit is in the state `deactivating`, and no socket answers in 5 seconds | `aglow-mux did not start: the daemon of aglow-mux.service is ending. Try again when it has ended` |
-| systemd user unit | No socket of the daemon answers in 5 seconds. Or the unit that the command started ends before its daemon answers, and no other daemon holds the lock of a socket. | `aglow-mux did not start: see journalctl --user -u aglow-mux`. The journal shows the error of the daemon. |
-| systemd user unit | Another daemon holds the lock of a socket and does not answer in 5 seconds. A lock file that a killed daemon left holds no lock. | `aglow-mux did not start: another aglow-mux holds a socket and does not answer` |
+| `setsid` | The daemon exits before it listens and reports no error | `aglow-mux ended before it listened`. The command stops at once, without the wait. |
+| `setsid` | No socket of the daemon answers within `Mux.startTimeout` | `aglow-mux did not start: no daemon answers on PATH`, with the path of each socket |
+| systemd user unit | The unit is in the state `deactivating`, and no socket answers within `Mux.startTimeout` | `aglow-mux did not start: the daemon of aglow-mux.service is ending. Try again when it has ended` |
+| systemd user unit | No socket of the daemon answers within `Mux.startTimeout`. Or the unit that the command started ends before its daemon answers, and no other daemon holds the lock of a socket. | `aglow-mux did not start: see journalctl --user -u aglow-mux`. The journal shows the error of the daemon. |
+| systemd user unit | Another daemon holds the lock of a socket and does not answer within `Mux.startTimeout`. A lock file that a killed daemon left holds no lock. | `aglow-mux did not start: another aglow-mux holds a socket and does not answer` |
 | `systemd-run` fails, and a unit file `aglow-mux.service` exists that does not run | No daemon starts. | `aglow-mux did not start: the user unit aglow-mux.service exists and does not run. Start it with systemctl --user start aglow-mux.service, or remove it` |
-| `systemd-run` or `systemctl` does not end in 5 seconds, or the last look at the unit does not end in 1 second more | No daemon answers at the last look at the sockets. | `aglow-mux did not start: the systemd user manager does not answer` |
+| `systemd-run` or `systemctl` does not end within `Mux.startTimeout`, or the last look at the unit does not end in 1 second more | No daemon answers at the last look at the sockets. | `aglow-mux did not start: the systemd user manager does not answer` |
 
 Two commands can start a daemon at the same time. Then the second daemon finds the socket of the first daemon and exits.
 Its command waits for the first daemon, because the first daemon can take some time before it answers.

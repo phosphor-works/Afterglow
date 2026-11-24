@@ -195,9 +195,9 @@ int runMcp(int argc, char** argv)
     if (!settings.control.enabled && !o.session)
         return fail(controlOff);
 
-    const LocalDaemon daemon = localDaemon();
+    const LocalDaemon daemon = localDaemon(settings);
     std::string reason;
-    AfterglowMux::Reached reached = connectOrStartDaemon(daemon.sockets, &reason, daemon.environment);
+    AfterglowMux::Reached reached = connectOrStartDaemon(daemon.sockets, &reason, daemon.environment, daemon.startWait);
     if (!reached.connection)
         return fail(reason.empty() ? QStringLiteral("aglow-mux did not start")
                                    : QString::fromStdString(printable(reason)));

@@ -18,11 +18,17 @@
 
 namespace AfterglowMux {
 
+/// How long a client that started the daemon waits for its answer by
+/// default: the default of the Afterglow setting Mux.startTimeout, which
+/// ConfigTest checks. The wait ends at the answer: a daemon that starts in
+/// milliseconds on an idle computer can take seconds on a busy one.
+inline constexpr std::chrono::milliseconds DefaultStartWait{15000};
+
 /// A connection to the daemon of @p sockets, which this starts from
 /// @p daemon (the path of aglow-mux) when none answers: in its own
 /// systemd user unit when the user manager outlives the logins, else in a
-/// session of its own. Waits up to 5 seconds for it to answer, and a last
-/// look at the unit and at the sockets after that up to 1 second more.
+/// session of its own. Waits up to DefaultStartWait for it to answer, and a
+/// last look at the unit and at the sockets after that up to 1 second more.
 /// Nothing, with @p error, when it does not. SIGCHLD must have its default
 /// action: the start waits for its children. The daemon gets the default
 /// action of each signal and an empty signal mask, not those of the calling
@@ -31,9 +37,10 @@ Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::str
 
 /// connectOrStart() with @p environment in place of this process's, which
 /// the start reads and passes on, its PATH included: for a thread other
-/// than the one that changes the environment.
+/// than the one that changes the environment. Waits up to @p wait.
 Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::string& daemon,
-                       const Environment& environment, std::string* error);
+                       const Environment& environment, std::string* error,
+                       std::chrono::milliseconds wait = DefaultStartWait);
 
 /// The systemd user manager as connectOrStart() uses it. A test gives its
 /// own, to run the start through a unit without the user's manager.
@@ -57,6 +64,7 @@ struct UserManager
 UserManager userManagerOf(const Environment& environment);
 /// connectOrStart() with @p manager in place of userManagerOf(@p environment).
 Reached connectOrStart(const AfterglowProto::MuxSockets& sockets, const std::string& daemon,
-                       const Environment& environment, const UserManager& manager, std::string* error);
+                       const Environment& environment, const UserManager& manager, std::string* error,
+                       std::chrono::milliseconds wait = DefaultStartWait);
 
 } // namespace AfterglowMux

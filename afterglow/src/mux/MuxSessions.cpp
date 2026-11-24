@@ -101,7 +101,8 @@ void followSettings(AfterglowMux::SessionOptions& session, const Settings& setti
 /// A connection to the daemon, which this starts when none answers: the
 /// aglow-mux next to afterglow.
 AfterglowMux::Reached connectOrStartDaemon(const AfterglowProto::MuxSockets& sockets, std::string* error,
-                                           const AfterglowMux::Environment& environment)
+                                           const AfterglowMux::Environment& environment,
+                                           std::chrono::milliseconds startWait)
 {
     // No socket path can be used: no daemon could be reached, nor one that
     // starts.
@@ -118,7 +119,7 @@ AfterglowMux::Reached connectOrStartDaemon(const AfterglowProto::MuxSockets& soc
         *error = "cannot find aglow-mux next to afterglow: " + daemon;
         return {};
     }
-    return AfterglowMux::connectOrStart(sockets, daemon, environment, error);
+    return AfterglowMux::connectOrStart(sockets, daemon, environment, error, startWait);
 }
 
 std::string callFailure(const IpcConnection::Error& error, std::string_view fn)
@@ -282,16 +283,17 @@ std::optional<std::vector<std::uint32_t>> startLocalPanes(const LocalDaemon& dae
     return ids;
 }
 
-LocalDaemon localDaemon()
+LocalDaemon localDaemon(const Settings& settings)
 {
-    return {AfterglowProto::muxSockets(), AfterglowMux::currentEnvironment()};
+    return {AfterglowProto::muxSockets(), AfterglowMux::currentEnvironment(),
+            std::chrono::seconds(settings.mux.startTimeout)};
 }
 
 QString newLocalSession(const LocalDaemon& daemon, const AfterglowMux::SessionOptions& options, QString* error,
                         std::uint32_t* firstPane)
 {
     std::string reason;
-    AfterglowMux::Reached reached = connectOrStartDaemon(daemon.sockets, &reason, daemon.environment);
+    AfterglowMux::Reached reached = connectOrStartDaemon(daemon.sockets, &reason, daemon.environment, daemon.startWait);
     if (!reached.connection) {
         *error = QString::fromStdString(reason.empty() ? std::string("aglow-mux did not start") : printable(reason));
         return {};

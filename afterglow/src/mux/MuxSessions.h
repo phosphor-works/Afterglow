@@ -17,6 +17,7 @@
 #include <QVariantMap>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -42,7 +43,8 @@ std::string muxDaemonPath(std::string* error);
 /// @p sockets' error, when no socket path can be used.
 AfterglowMux::Reached
 connectOrStartDaemon(const AfterglowProto::MuxSockets& sockets, std::string* error,
-                     const AfterglowMux::Environment& environment = AfterglowMux::currentEnvironment());
+                     const AfterglowMux::Environment& environment = AfterglowMux::currentEnvironment(),
+                     std::chrono::milliseconds startWait = AfterglowMux::DefaultStartWait);
 /// Why the daemon's call @p fn failed, for the user: its message, made
 /// printable, or a text that names the call when it gave none. Never empty:
 /// callers read an empty error as success.
@@ -87,8 +89,10 @@ struct LocalDaemon
 {
     AfterglowProto::MuxSockets sockets;
     AfterglowMux::Environment environment;
+    /// How long a start of the daemon waits for its answer (Mux.startTimeout).
+    std::chrono::milliseconds startWait = AfterglowMux::DefaultStartWait;
 };
-LocalDaemon localDaemon();
+LocalDaemon localDaemon(const Settings& settings);
 
 /// Starts the session @p options in the daemon of this computer, which it
 /// starts when none runs. Its name, with the daemon's ID of its first pane
