@@ -4,6 +4,7 @@
 #pragma once
 
 #include "config/Settings.h"
+#include "control/PaneRuns.h"
 #include "mcp/DaemonLink.h"
 #include "shell/ShellIntegration.h"
 
@@ -11,7 +12,6 @@
 #include <PhosphorMcp/McpResult.h>
 #include <PhosphorMcp/McpTool.h>
 
-#include <QElapsedTimer>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -43,11 +43,8 @@ struct ProjectStep;
 /// never the focused pane, which a click in a window that shows the session
 /// moves.
 ///
-/// A run and a wait answer later: the handler keeps the call and ends it at
-/// the events of the session (shellChanged, textChanged, paneClosed), at its
-/// timeout, or at a cancel. Each check of a wait is one chain of calls at a
-/// time: an event that comes meanwhile makes the chain check again when it
-/// ends, so no event is lost and no checks pile up.
+/// run, wait and send hand their calls to PaneRuns, which answers them
+/// later, at the events of the session.
 class McpTools : public QObject
 {
     Q_OBJECT
@@ -63,8 +60,6 @@ public:
     static constexpr qint64 MaxRequestLineBytes = qint64(MaxTextLength) * 12 + (qint64(1) << 20);
     /// The longest pattern of wait until text, in characters.
     static constexpr int MaxPatternLength = 1024;
-    /// The longest message of a progress notification, in characters.
-    static constexpr int ProgressMessageLength = 200;
 
     /// The tools in the order of tools/list. The same at each call: they
     /// depend on no setting.
@@ -111,41 +106,15 @@ public:
     bool addTo(PhosphorMcp::McpServer& server, QString* error);
 
 private:
-    struct Wait;
     struct ProjectOpen;
     struct ScriptRun;
-    /// A run of this server: where its output starts, and the newest shell
-    /// region before it.
-    struct RunRecord
-    {
-        QJsonObject mark;
-        qint64 after = 0;
-        QElapsedTimer started;
-        bool severalLines = false;
-    };
     using CallPtr = std::shared_ptr<PhosphorMcp::McpCall>;
-    /// The calls of one send: a function and its arguments.
-    using SendCalls = QList<std::pair<QString, QJsonArray>>;
 
     void listPanes(PhosphorMcp::McpCall call);
     void openPane(PhosphorMcp::McpCall call);
     void run(PhosphorMcp::McpCall call);
-    /// The checks of a run before its command goes, from the pane list on.
-    void prepareRun(quint64 serial);
-    /// The mark and the regions before the command of a run, and its paste.
-    void startRun(quint64 serial);
-    void pasteCommand(quint64 serial);
     void wait(PhosphorMcp::McpCall call);
-    /// The start of a wait from the pane list on.
-    void startWait(quint64 serial);
-    /// The mark where the text of a wait starts. TRY_AGAIN asks again a
-    /// moment later, and startWait waits for it.
-    void markWait(quint64 serial);
     void send(PhosphorMcp::McpCall call);
-    /// The mark of the pane before the input of a send, in m_sendMarks,
-    /// then the input.
-    void markSend(const CallPtr& call, const std::shared_ptr<const SendCalls>& calls);
-    void sendFrom(const CallPtr& call, const std::shared_ptr<const SendCalls>& calls, qsizetype index);
     void read(PhosphorMcp::McpCall call);
     void screenshot(PhosphorMcp::McpCall call);
     void closePane(PhosphorMcp::McpCall call);
@@ -185,51 +154,8 @@ private:
     /// Fails every run of a script command with @p text.
     void endScriptRuns(const QString& text);
 
-    /// The pane object of @p pane in the answer of listPanes, or an empty
-    /// one. Notes each pane of @p panes as seen.
-    QJsonObject paneIn(const QJsonValue& panes, quint32 pane);
     /// Fails @p call with why the session cannot be used any more, if it cannot.
     bool ended(PhosphorMcp::McpCall& call) const;
-    /// The wait before a call that a pane answered with TRY_AGAIN goes again.
-    int retryMs() const;
-    /// Runs @p step after retryMs(), while the wait @p serial waits.
-    void retryLater(quint64 serial, std::function<void()> step);
-    /// Reads the text of the wait @p serial since its mark, or the text of
-    /// the pane's @p fallback scope when a reflow or a clear made the mark
-    /// stale, and gives it to @p done. TRY_AGAIN reads again a moment later.
-    void readSince(quint64 serial, const QString& fallback,
-                   std::function<void(const QJsonObject& answer, const DaemonLink::Error* error, bool stale)> done);
-
-    /// A new wait for @p call, which it keeps. Its serial, or 0 when the
-    /// client cancelled the call already.
-    quint64 addWait(PhosphorMcp::McpCall call, quint32 pane, bool holds);
-    Wait* waitOf(quint64 serial);
-    void endWait(quint64 serial);
-    void finishWait(quint64 serial, const PhosphorMcp::McpResult& result);
-    void failWait(quint64 serial, const QString& text);
-    /// Starts the timeout of a wait with the time that is left of it.
-    void startTimeout(quint64 serial);
-    /// Starts the timeout of a wait, and its first check.
-    void startWaiting(quint64 serial);
-    /// Waits for the first prompt of a pane whose shell starts.
-    void awaitPrompt(quint64 serial);
-    void check(quint64 serial);
-    void checkFinished(quint64 serial);
-    void checkText(quint64 serial);
-    /// The end of a check that found nothing: another one when an event came meanwhile.
-    void checked(quint64 serial);
-    /// A check that the pane answered with TRY_AGAIN: another one a moment later.
-    void checkLater(quint64 serial);
-    /// Fails a run whose command the shell holds unfinished, with what the pane shows.
-    void failIncomplete(quint64 serial, const QString& why);
-    /// Reads the text since the wait's mark, and finishes it with @p status
-    /// and, when not empty, @p note.
-    void finishWithText(quint64 serial, const QString& status, const QJsonArray& regions,
-                        const QString& note = QString());
-    void timedOut(quint64 serial);
-    /// The end of a wait until finished at its timeout, from the regions since the command.
-    void finishAtTimeout(quint64 serial);
-    void progress(quint64 serial);
 
     void onEvent(const QString& name, const QJsonArray& args);
     /// The link to the daemon closed: lets the daemon end the session first
@@ -242,23 +168,8 @@ private:
     DaemonLink& m_link;
     const Settings m_settings;
     const Session m_session;
-    std::map<quint64, std::unique_ptr<Wait>> m_waits;
-    quint64 m_nextWait = 0;
-    /// The panes with a run, or a wait until finished, of this server.
-    QSet<quint32> m_held;
-    /// The last run of each pane, which wait until finished goes on with.
-    QHash<quint32, RunRecord> m_runs;
-    /// The cursor of each pane before the input of the last send, until a
-    /// wait until text reads from it.
-    QHash<quint32, QJsonObject> m_sendMarks;
-    /// The shell state of each pane, from listPanes and shellChanged.
-    QHash<quint32, QString> m_shells;
-    /// The panes whose shell marks its prompts and has not marked one yet:
-    /// those that this server started with shell integration.
-    QSet<quint32> m_starting;
-    /// The panes that the server heard of: wait until closed tells a pane
-    /// that closed from one that never was.
-    QSet<quint32> m_seen;
+    /// The runs, waits and sends of the tools run, wait and send.
+    PaneRuns m_paneRuns;
     /// The panes that closed, for the splits of an open project.
     QSet<quint32> m_closed;
     /// The runs of commands of scripts, each with a connection of its own.

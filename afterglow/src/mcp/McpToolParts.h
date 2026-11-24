@@ -274,6 +274,12 @@ inline qint64 epochOf(const QJsonObject& mark)
     return mark.value(L("epoch")).toInteger();
 }
 
+/// The options of getText for a text that keeps its end when it is cut.
+inline QJsonObject keptEnd()
+{
+    return {{L("keep_end"), true}};
+}
+
 /// The arguments of getText @p scope with the options @p options.
 inline QJsonArray textArgs(quint32 pane, const QString& scope, const QJsonObject& options = {})
 {
