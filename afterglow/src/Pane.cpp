@@ -299,6 +299,33 @@ bool Pane::sendInput(std::string_view bytes, bool reportFailure)
     return accepted;
 }
 
+std::optional<bool> Pane::sendInputAtPrompt(std::string_view bytes, AfterglowVt::ShellState& state)
+{
+    state = AfterglowVt::ShellState::None;
+    if (m_session || bytes.empty() || !hasProgram() || m_held.load())
+        return false;
+    // The reader thread feeds the terminal under this lock: the shell stays
+    // at its prompt until the bytes went, as MuxPane::inputAtPrompt does.
+    std::lock_guard lock(m_mutex);
+    state = m_terminal.shellState();
+    if (state != AfterglowVt::ShellState::Prompt || m_terminal.shellInput())
+        return std::nullopt;
+    if (!writeProgram(bytes))
+        return false;
+    m_inputFailureReported.store(false);
+    if (m_scrollOnInput && m_terminal.screen().viewportOffset() != 0) {
+        m_terminal.resetViewport();
+        QMetaObject::invokeMethod(
+            this,
+            [this] {
+                Q_EMIT contentChanged();
+            },
+            Qt::QueuedConnection);
+        queueShellCheck();
+    }
+    return true;
+}
+
 qint64 Pane::holdRemaining() const
 {
     std::lock_guard lock(m_mutex);

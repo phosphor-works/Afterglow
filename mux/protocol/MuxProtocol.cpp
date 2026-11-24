@@ -613,4 +613,20 @@ std::optional<SessionInfo> sessionInfo(const Json::Value& value)
     return info;
 }
 
+std::string notAtPrompt(std::uint32_t pane, AfterglowVt::ShellState state)
+{
+    const std::string id = std::to_string(pane);
+    switch (state) {
+    case AfterglowVt::ShellState::Prompt:
+        return "the command line of pane " + id + " holds typed text";
+    case AfterglowVt::ShellState::Continuation:
+        return "the shell of pane " + id + " waits for the rest of a command";
+    case AfterglowVt::ShellState::Running:
+        return "the shell of pane " + id + " runs a command";
+    case AfterglowVt::ShellState::None:
+        break;
+    }
+    return "pane " + id + " shows no prompt of shell integration";
+}
+
 } // namespace AfterglowMux

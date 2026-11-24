@@ -253,6 +253,13 @@ public:
     /// A refusal shows the input-rejected notice unless @p reportFailure is
     /// false (a caller that reports the failure itself).
     bool sendInput(std::string_view bytes, bool reportFailure = true);
+    /// sendInput() only while the shell waits at a primary prompt with an
+    /// empty command line: the check and the write hold the terminal's lock,
+    /// so no output moves the shell off its prompt between them. Nothing,
+    /// with the shell's @p state, when it does not wait there; else whether
+    /// the program took the bytes. A pane of a session has only a replica of
+    /// the terminal: false, and the caller asks the daemon.
+    std::optional<bool> sendInputAtPrompt(std::string_view bytes, AfterglowVt::ShellState& state);
     /// Writes a protocol reply (a clipboard, notification, focus, file
     /// transfer or drag and drop answer). It is not typing: the view stays
     /// where it is, and a refusal shows no notice. False when the pty refused it.

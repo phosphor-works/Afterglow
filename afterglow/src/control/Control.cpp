@@ -12,6 +12,7 @@
 #include "../config/Keybinds.h"
 #include "../config/Settings.h"
 #include "../mux/MuxClient.h"
+#include "MuxProtocol.h"
 
 #include <AfterglowPty/Pty.h>
 #include <AfterglowVt/Input.h>
@@ -538,16 +539,25 @@ QString Control::sendText(quint32 id, const QString& text)
     return p->sendInput(text.toStdString(), false) ? QString() : QStringLiteral("program closed or input queue full");
 }
 
-QString Control::paste(quint32 id, const QString& text, QString* code)
+QString Control::paste(quint32 id, const QString& text, QString* code, bool atPrompt, bool enter)
 {
     Pane* p = find(id);
     if (!p) {
         return noPane(id);
     }
     // No paste at all: an empty bracketed paste would still reach the
-    // program, as two markers with nothing between them.
-    if (text.isEmpty())
+    // program, as two markers with nothing between them. An Enter that the
+    // caller asked for still goes: an empty line at a prompt runs nothing.
+    if (text.isEmpty() && !enter)
         return {};
+    // A window has only a replica of a session pane's terminal: the daemon
+    // checks the prompt and writes in one step.
+    if (atPrompt && p->isSessionPane()) {
+        return QStringLiteral(
+                   "pane %1 shows a pane of a mux session: paste at its prompt through the session, "
+                   "with afterglow ctl --session")
+            .arg(id);
+    }
     // A blank replica's modes are none of the program's: no bracketed paste.
     if (QString error; notSynced(*p, error, code))
         return error;
@@ -559,10 +569,23 @@ QString Control::paste(quint32 id, const QString& text, QString* code)
         return t.modes();
     });
     const QByteArray utf8 = text.toUtf8();
-    const std::string bytes =
-        AfterglowVt::encodePaste(std::string_view(utf8.constData(), std::size_t(utf8.size())), modes);
+    std::string bytes = text.isEmpty()
+        ? std::string()
+        : AfterglowVt::encodePaste(std::string_view(utf8.constData(), std::size_t(utf8.size())), modes);
+    if (enter)
+        bytes += AfterglowVt::encodeNamedKey(*AfterglowVt::parseKeyName("enter"), modes);
     if (bytes.empty())
         return {};
+    if (atPrompt) {
+        AfterglowVt::ShellState state = AfterglowVt::ShellState::None;
+        const std::optional<bool> written = p->sendInputAtPrompt(bytes, state);
+        if (!written) {
+            if (code)
+                *code = QLatin1String(AfterglowMux::Error::NotAtPrompt);
+            return QString::fromStdString(AfterglowMux::notAtPrompt(id, state));
+        }
+        return *written ? QString() : QStringLiteral("program closed or input queue full");
+    }
     return p->sendInput(bytes, false) ? QString() : QStringLiteral("program closed or input queue full");
 }
 

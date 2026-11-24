@@ -270,7 +270,12 @@ public:
     /// The control call paste: @p text as a paste of the pane's program,
     /// encoded for its modes. Nothing goes for an empty text. @p code, with
     /// an error: TRY_AGAIN for a session pane whose modes did not come yet.
-    QString paste(quint32 pane, const QString& text, QString* code = nullptr);
+    /// @p atPrompt: only at a primary prompt with an empty command line,
+    /// else NOT_AT_PROMPT and nothing goes. @p enter: the Enter key after
+    /// the text, in the same write, also after an empty text. The daemon
+    /// takes the same options.
+    QString paste(quint32 pane, const QString& text, QString* code = nullptr, bool atPrompt = false,
+                  bool enter = false);
     /// Honours Control.allowReadText, except with @p agentSession: a pane of
     /// an agent session that the daemon passed on, whose read access the
     /// daemon keeps whatever the window's settings say.
