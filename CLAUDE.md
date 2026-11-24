@@ -199,29 +199,7 @@ Afterglow's notes for their domain (`afterglow:review-notes`): `phosphor-works:s
 
 ## Lessons that cost a session
 
-- CI runs the suite as root in an Arch container and in the Nix build sandbox, where only `/bin/sh` (BusyBox ash)
-  has a fixed path and `/usr` does not exist. 59 tests failed there on `/bin/cat`, `PATH=/usr/bin:/bin`, a `$`
-  prompt that no PS1 set, and `/usr` as a directory. A test finds a program through `PATH`
-  (`MuxTest::programInPath`, `MuxTest::testPath`, `QStandardPaths::findExecutable`), and sets the PS1 that it waits
-  for. A copy of a Phosphor header in `/usr/include` also hid a library that a target did not link: only CI saw it.
-- A persistent shader buffer over the 256 MiB budget was transparent with no message, so Orrery drew nothing. Now
-  it renders smaller and logs a warning. When a pack draws nothing, check the budget log first.
-- An effect that animates only while visible must still stop scheduling frames when it has nothing to move. Pane
-  effects kept the window at full frame rate while a pane was remote, until `active` and `moving` became separate.
-- A motion that loops (the overview ring) needs a continuous position. Wrapping the target made the highlight jump
-  back, and two cards flickered at the seam.
-- `newTab` did not start the tab transition, because the code read `m_splits` before the tab had one. Check a new
-  path through every entry point (keys, menu, script, `afterglow ctl`), not only the one you tested.
-- Package shader packs are keyed by a UUID derived from their id. A lookup by id must go through `packagedRef`.
-- Per-pixel loops over every card cost 10 ms at 4K with 27 panes. Find the nearest candidates first, then shade
-  only those. Measure with `afterglow_renderpng --timings --pixels 3840x2160`.
-- The native suite segfaulted in 3 of 8 runs, in Qt, while a window built its chrome. A component from
-  `loadFromModule(..., Asynchronous)` that was ready before `create(QQmlIncubator&)` took Qt 6.12's C++-type path
-  and made no object. A window freed while its own load ran got a late completion into freed memory. Now the
-  chrome loads by URL, once for each Application. For a crash in some runs only, read the core with
-  `coredumpctl` and write a test that makes it happen every time.
-- A session runs in the cgroup of the user's Afterglow. When builds and tests filled memory and swap, systemd-oomd
-  killed that whole unit four times, and every Afterglow window of the user closed. Run heavy builds and tests in
-  `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0`, with no more than one build at a time. A failed
-  `EXPECT_EQ` on two large strings makes gtest build a line diff that fills the memory: compare them with
-  `EXPECT_TRUE(a == b)`.
+The traps that cost a session are in the workspace lesson index (`workspace/plugins/phosphor-works/lessons/`), not
+here. A prompt hook adds the ones that fit each prompt, `phosphor-works:lessons` searches them, and
+`phosphor-works:record-lesson` adds one.
+
