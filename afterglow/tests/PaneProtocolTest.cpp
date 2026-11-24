@@ -1347,6 +1347,60 @@ TEST_F(PaneProtocol, APaneWhoseForegroundJobIsARemoteClientHasNoLocalPaths)
 
 } // namespace
 
+// A paste with the option prompt (Control::paste, as the daemon's): the
+// shell's state and its typed text decide under the terminal's lock, so the
+// bytes go only to an empty command line at a primary prompt.
+TEST(PaneEvents, AWriteAtThePromptGoesOnlyToAnEmptyCommandLine)
+{
+    struct Case
+    {
+        // After stty, in one write: an x that the test waits for, then what
+        // the shell printed. The x comes first: after the mark B it would be
+        // typed text.
+        const char* marks;
+        std::optional<AfterglowVt::ShellState> refused;
+    };
+    const Case cases[] = {
+        {R"(printf 'x\r\n\033]133;A\033\\$ \033]133;B\033\\')", std::nullopt},
+        {R"(printf 'x\r\n\033]133;A\033\\$ \033]133;B\033\\typed')", AfterglowVt::ShellState::Prompt},
+        {R"(printf 'x\r\n\033]133;A\033\\$ \033]133;B\033\\\r\n\033]133;C\033\\')", AfterglowVt::ShellState::Running},
+        {R"(printf 'x no marks ')", AfterglowVt::ShellState::None},
+    };
+    for (const Case& c : cases) {
+        Pane pane{AfterglowVt::TerminalOptions{}};
+        QTemporaryDir dir;
+        ASSERT_TRUE(dir.isValid());
+        const QString out = dir.filePath(QStringLiteral("input"));
+        AfterglowPty::SpawnOptions options;
+        options.argv = {"/bin/sh", "-c", std::string("stty raw -echo && ") + c.marks + R"( && exec cat > "$0")",
+                        QFile::encodeName(out).toStdString()};
+        QString error;
+        ASSERT_TRUE(pane.start(options, QStringLiteral("xterm-256color"), 40, 5, 10, 20, &error))
+            << error.toStdString();
+        ASSERT_TRUE(waitFor([&] {
+            return pane.text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('x'));
+        }));
+        AfterglowVt::ShellState state = AfterglowVt::ShellState::None;
+        const std::optional<bool> written = pane.sendInputAtPrompt("ls\r", state);
+        if (!c.refused) {
+            ASSERT_TRUE(written.has_value()) << c.marks;
+            EXPECT_TRUE(*written);
+            QByteArray input;
+            EXPECT_TRUE(waitFor([&] {
+                QFile file(out);
+                input = file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+                return input.contains("ls\r");
+            })) << input.toStdString();
+        } else {
+            EXPECT_FALSE(written.has_value()) << c.marks;
+            EXPECT_EQ(state, *c.refused) << c.marks;
+            // Nothing went: the program read no input.
+            QFile file(out);
+            EXPECT_TRUE(!file.open(QIODevice::ReadOnly) || file.readAll().isEmpty()) << c.marks;
+        }
+    }
+}
+
 int main(int argc, char** argv)
 {
     // Test discovery runs this binary too: it must never reach the user's

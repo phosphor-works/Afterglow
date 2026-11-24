@@ -49,6 +49,8 @@ public:
     Q_INVOKABLE void sendText(double pane, const QString& text);
     /// @p text as a paste: bracketed when the program asked for it.
     Q_INVOKABLE void paste(double pane, const QString& text);
+    /// paste() with @p options: prompt and enter, booleans (Control::paste).
+    Q_INVOKABLE void paste(double pane, const QString& text, const QVariantMap& options);
     /// @p scope: screen, scrollback, selection, last-output,
     /// first-output-on-screen, last-visited-output or since. Answers
     /// {text, truncated}, and for since also trimmed.

@@ -221,6 +221,10 @@ inline constexpr const char* LastPane = "LAST_PANE";
 inline constexpr const char* NoRoom = "NO_ROOM";
 } // namespace Error
 
+/// The message of Error::NotAtPrompt for pane @p pane, by what its shell
+/// does: the daemon's and a window's, which refuse the same paste.
+std::string notAtPrompt(std::uint32_t pane, AfterglowVt::ShellState state);
+
 /// The environment variable with the descriptor of a pipe that a client
 /// (connectOrStart: `afterglow mux`, the projects of afterglow from a worker
 /// thread, `aglow-mux proxy --start`) gives a daemon that it starts in a

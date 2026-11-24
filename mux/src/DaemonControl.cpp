@@ -289,24 +289,6 @@ Json::Value paneMap(const Session& session, const MuxPane& pane, bool readText, 
     return map;
 }
 
-/// The refusal of a paste with the option prompt, by what the shell of pane
-/// @p pane does.
-std::string notAtPrompt(std::uint32_t pane, AfterglowVt::ShellState state)
-{
-    const std::string id = std::to_string(pane);
-    switch (state) {
-    case AfterglowVt::ShellState::Prompt:
-        return "the command line of pane " + id + " holds typed text";
-    case AfterglowVt::ShellState::Continuation:
-        return "the shell of pane " + id + " waits for the rest of a command";
-    case AfterglowVt::ShellState::Running:
-        return "the shell of pane " + id + " runs a command";
-    case AfterglowVt::ShellState::None:
-        break;
-    }
-    return "pane " + id + " shows no prompt of shell integration";
-}
-
 } // namespace
 
 std::string Daemon::select(const IpcRequest& request, IpcServerConnection& connection)
