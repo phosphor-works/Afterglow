@@ -10,6 +10,11 @@ packs that react to the terminal, shell integration and Luau scripts. It is not 
 contracts for pack and script authors: change them with the code. This file holds the rules that sessions get
 wrong, and points to the skills that hold the procedures.
 
+The rules every phosphor-works repository follows come from the workspace repository, imported below. This file adds
+Afterglow's own.
+
+@../workspace/claude/conventions.md
+
 ## Rules
 
 - **Land work through a pull request.** Start each change on a branch from `main`. Never push to `main`. Finished
@@ -30,7 +35,7 @@ wrong, and points to the skills that hold the procedures.
   test, with `AFTERGLOW_PANE_ID` and `AFTERGLOW_SESSION` cleared: the `XDG_RUNTIME_DIR` and `AFTERGLOW_SOCKET` of a
   test (`RunBinaryTest` in `CommandSocketTest.cpp`, `RemoteCommandsTest.cpp`), or a nested KWin with its own
   `WAYLAND_DISPLAY` (`nested_desktop.py`). With `AFTERGLOW_SESSION` set, `afterglow ctl` takes any
-  `AFTERGLOW_SOCKET` as the mux daemon's. Test in a nested KWin with its own display (`ag-verify-live`). Never run
+  `AFTERGLOW_SOCKET` as the mux daemon's. Test in a nested KWin with its own display (`afterglow:verify-live`). Never run
   `pkill afterglow`: it closes the user's windows too.
   `afterglow mux` (every command but `--help`), `afterglow ctl --session`, `aglow-mux`, `afterglow mcp` (every run
   but `--help`) and `afterglow --mux-attach NAME` (the hidden option that `afterglow mux new` and `attach` run) reach
@@ -68,7 +73,7 @@ wrong, and points to the skills that hold the procedures.
 - **Find the mechanism.** A fix explains why the bug happens. Do not tune a delay, add a retry or special-case one
   input until the symptom goes away.
 - **Make it configurable.** A value that a user could want to change (a duration, a curve, a color, a limit, a
-  pack) is a setting with a default, not a constant in the code (`ag-add-setting`).
+  pack) is a setting with a default, not a constant in the code (`afterglow:add-setting`).
 - **Unreleased: no migrations.** Rename a key or change a format directly. Write no compatibility code for old
   configs or old script APIs. `CHANGELOG.md` describes what the first release supports. It is not a log of changes
   and has no migration notes.
@@ -112,16 +117,15 @@ wrong, and points to the skills that hold the procedures.
 - User-facing strings (setting descriptions, pack metadata, UI text, `CHANGELOG.md`) are plain prose: no em dash
   between clauses, no semicolon between sentences, no spaced hyphen as a dash, no rule-of-three flourishes. Code
   comments are exempt.
-- Commit subject: an imperative sentence in sentence case, with no prefix and no full stop ("Animate tab switches
-  with a shader pack"). The body says what changed for the user, why, and how you verified it. Check each claim in
-  the message against the staged diff. End with the `Co-Authored-By` line that the session instructions give.
+- Commits follow Conventional Commits, as the conventions file says ("feat(chrome): animate tab switches with a
+  shader pack"). The body says what changed for the user, why, and how you verified it. Check each claim in the
+  message against the staged diff. End with the `Co-Authored-By` line that the session instructions give.
 
 ## Environment
 
 - The Bash tool runs zsh. Quote globs that may match nothing (`'*.md'`), and never start a word with `=`
   (`echo ====` fails).
 - Put temporary files in the session scratchpad, never in the repository.
-- `.Codex/` is another tool's local workspace. Never stage it, and never cite its paths in tracked files.
 - Never use `pkill`, `killall` or `kill $(pgrep -f ...)`. List with `pgrep -a NAME`, then `kill PID` for a process
   that you started from `build/`.
 - The context is small. Read logs with `grep` and `tail`, never in full.
@@ -142,12 +146,12 @@ wrong, and points to the skills that hold the procedures.
 | --- | --- |
 | Build | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build -j6` (zero warnings is the bar) |
 | Unit and renderer tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 ctest --test-dir build --output-on-failure -j6` (about 2,000, all pass) |
-| Native window tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 python3 .claude/skills/ag-verify-live/headless_native.py` (about 15 minutes: run it in the background) |
+| Native window tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 python3 tools/headless_native.py` (about 15 minutes: run it in the background) |
 | Shader preview | `build/tools/render/afterglow_renderpng --shader PACK - out.png` |
 | Configuration reference | `python3 tools/generate-reference.py build/afterglow/afterglow` |
 
 The memory cap keeps systemd-oomd from killing the user's Afterglow (see the last lesson). Run one build at a time.
-The `ag-build` skill has the details: the build directories, the Phosphor checkout, the generated files.
+The `afterglow:build` skill has the details: the build directories, the Phosphor checkout, the generated files.
 
 ## Where things are
 
@@ -172,46 +176,30 @@ The `ag-build` skill has the details: the build directories, the Phosphor checko
 
 ## Skills and agents
 
-The skills in `.claude/skills/`:
+The skills and agents come from Claude Code plugins in the workspace repository: `afterglow` for Afterglow's own,
+`phosphor-works` for the shared ones and the guard. `.claude/settings.json` enables both, and `workspace/tools/setup`
+installs them. Change them in the `workspace` checkout.
 
-- `ag-build`: build directories, the Phosphor checkout, warnings, the test suite, generated files.
-- `ag-verify-live`: native window tests in a headless nested KWin, and the expected skips there.
-- `ag-debug`: a crash or a hang in a test or a program, with gdb, `coredumpctl` and an agent pane.
-- `ag-shader-pack`: pack layout, contract changes and their C++ mirrors, previews with `afterglow_renderpng`.
-- `ag-add-setting`: the files that a new setting touches, and the reference regeneration.
-- `ag-script-api`: a new script effect, event or helper, from the prelude to the docs.
-- `code-audit`: the audit and fix loop, with the `ag-*-reviewer` agents in `.claude/agents/review/`.
-- `record-lesson`: where a lesson goes, so that the next session finds it.
+- `phosphor-works:build`, then `afterglow:build` for Afterglow's extras: build directories, the Phosphor checkout,
+  warnings, the test suite, generated files.
+- `afterglow:verify-live`: native window tests in a headless nested KWin, and the expected skips there.
+- `phosphor-works:debug`, then `afterglow:debug` for Afterglow's cautions (never the user's terminal or mux, gdb in
+  an agent pane): a crash or a hang in a test or a program.
+- `afterglow:shader-pack`: pack layout, contract changes and their C++ mirrors, previews with `afterglow_renderpng`.
+- `afterglow:add-setting`: the files that a new setting touches, and the reference regeneration.
+- `afterglow:script-api`: a new script effect, event or helper, from the prelude to the docs.
+- `phosphor-works:code-audit`: the audit and fix loop, with the reviewers below.
+- `phosphor-works:record-lesson`: where a lesson goes, so that the next session finds it.
 
-The reviewers in `.claude/agents/review/` report findings for one area each. They never build or edit:
-`ag-vt-reviewer`, `ag-platform-reviewer`, `ag-render-reviewer`, `ag-shader-reviewer`, `ag-window-reviewer`,
-`ag-scripting-reviewer`, `ag-config-reviewer` and `ag-build-reviewer`.
+The reviewers report findings for one area each. They never build or edit. Afterglow's own: `afterglow:vt-reviewer`,
+`afterglow:platform-reviewer`, `afterglow:render-reviewer` and `afterglow:window-reviewer`. The shared ones read
+Afterglow's notes for their domain (`afterglow:review-notes`): `phosphor-works:shader-reviewer`,
+`phosphor-works:luau-reviewer`, `phosphor-works:config-reviewer`, `phosphor-works:build-reviewer` and
+`phosphor-works:cpp-qt-reviewer`. `phosphor-works:crash-triage` takes a core or a hang to its mechanism.
 
 ## Lessons that cost a session
 
-- CI runs the suite as root in an Arch container and in the Nix build sandbox, where only `/bin/sh` (BusyBox ash)
-  has a fixed path and `/usr` does not exist. 59 tests failed there on `/bin/cat`, `PATH=/usr/bin:/bin`, a `$`
-  prompt that no PS1 set, and `/usr` as a directory. A test finds a program through `PATH`
-  (`MuxTest::programInPath`, `MuxTest::testPath`, `QStandardPaths::findExecutable`), and sets the PS1 that it waits
-  for. A copy of a Phosphor header in `/usr/include` also hid a library that a target did not link: only CI saw it.
-- A persistent shader buffer over the 256 MiB budget was transparent with no message, so Orrery drew nothing. Now
-  it renders smaller and logs a warning. When a pack draws nothing, check the budget log first.
-- An effect that animates only while visible must still stop scheduling frames when it has nothing to move. Pane
-  effects kept the window at full frame rate while a pane was remote, until `active` and `moving` became separate.
-- A motion that loops (the overview ring) needs a continuous position. Wrapping the target made the highlight jump
-  back, and two cards flickered at the seam.
-- `newTab` did not start the tab transition, because the code read `m_splits` before the tab had one. Check a new
-  path through every entry point (keys, menu, script, `afterglow ctl`), not only the one you tested.
-- Package shader packs are keyed by a UUID derived from their id. A lookup by id must go through `packagedRef`.
-- Per-pixel loops over every card cost 10 ms at 4K with 27 panes. Find the nearest candidates first, then shade
-  only those. Measure with `afterglow_renderpng --timings --pixels 3840x2160`.
-- The native suite segfaulted in 3 of 8 runs, in Qt, while a window built its chrome. A component from
-  `loadFromModule(..., Asynchronous)` that was ready before `create(QQmlIncubator&)` took Qt 6.12's C++-type path
-  and made no object. A window freed while its own load ran got a late completion into freed memory. Now the
-  chrome loads by URL, once for each Application. For a crash in some runs only, read the core with
-  `coredumpctl` and write a test that makes it happen every time.
-- A session runs in the cgroup of the user's Afterglow. When builds and tests filled memory and swap, systemd-oomd
-  killed that whole unit four times, and every Afterglow window of the user closed. Run heavy builds and tests in
-  `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0`, with no more than one build at a time. A failed
-  `EXPECT_EQ` on two large strings makes gtest build a line diff that fills the memory: compare them with
-  `EXPECT_TRUE(a == b)`.
+The traps that cost a session are in the workspace lesson index (`workspace/plugins/phosphor-works/lessons/`), not
+here. A prompt hook adds the ones that fit each prompt, `phosphor-works:lessons` searches them, and
+`phosphor-works:record-lesson` adds one.
+
