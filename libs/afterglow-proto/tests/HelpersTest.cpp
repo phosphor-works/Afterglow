@@ -55,7 +55,7 @@ TEST(Sha256, UpdatesOfAnySizeGiveOneDigest)
     hash.update("abc");
     EXPECT_EQ(toHex(hash.finish()), hex("abc"));
     // An empty view holds a null pointer. It adds nothing, also into a partial block.
-    // A memcpy from the null pointer is caught only by UBSan (the debug preset),
+    // A memcpy from the null pointer is caught only by UBSan (the asan preset),
     // and that preset recovers: it prints a runtime error to the test log and
     // this test still passes. Read the log for the error.
     Sha256 partial;

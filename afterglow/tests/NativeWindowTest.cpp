@@ -1741,7 +1741,7 @@ TEST_F(NativeWindow, WindowsDeletedWhileTheirChromeLoadsLeaveTheNextChromeSound)
     // window incubates its scene from it. A window that goes before its
     // scene is made, or before the load ends, leaves the next window's
     // chrome sound, also across an engine that goes. A late completion into
-    // a freed window shows as a crash in some runs only: the debug preset's
+    // a freed window shows as a crash in some runs only: the asan preset's
     // AddressSanitizer build shows it in every run.
     WindowOptions options;
     options.command = {QStringLiteral("cat")};
@@ -2310,8 +2310,8 @@ TEST_F(NativeWindow, AWindowWhoseOnlyPaneClosesGoesAfterThePaneAndItsDock)
     // The window must not reach them through the tab, which still holds
     // their addresses: a pane dock's accessible area is what it would read.
     // Only a build with AddressSanitizer can show that read of freed memory:
-    // run this test from the debug preset (headless_native.py --binary
-    // build-debug/afterglow/afterglow_native_tests). In the default build it
+    // run this test from the asan preset (headless_native.py --binary
+    // build-asan/afterglow/afterglow_native_tests). In the default build it
     // mostly passes without the fix, and checks only what follows the close.
     const AccessibilityOn accessibility;
     QPointer<Pane> pane = window->focusedPane();
@@ -12654,8 +12654,8 @@ TEST_F(NativeWindow, AWindowDeletedWhileItShowsReachesNoSlotOfItsOwn)
     // ~QWindow hides a window that still shows, and its visibilityChanged
     // reached updateAudioCapture after the window's members were gone. Only
     // a build with AddressSanitizer can show that read of freed memory: run
-    // this test from the debug preset (headless_native.py --binary
-    // build-debug/afterglow/afterglow_native_tests). In the default build it
+    // this test from the asan preset (headless_native.py --binary
+    // build-asan/afterglow/afterglow_native_tests). In the default build it
     // mostly passes without the fix, and checks only that the hide came.
     WindowOptions options;
     options.command = {QStringLiteral("cat")};

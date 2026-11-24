@@ -3960,7 +3960,7 @@ return {
         ASSERT_TRUE(run("large.small", 7));
         // Each round converts three values up to Phosphor's limit of 2^18
         // values, an allocation each: 0.2 s here, about 4 s under the
-        // sanitizers (the build-debug preset), where allocation is slow.
+        // sanitizers (the asan preset), where allocation is slow.
         ASSERT_TRUE(await(
             [&] {
                 return std::count_if(rec.applied.cbegin(), rec.applied.cend(),

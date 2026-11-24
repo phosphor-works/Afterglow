@@ -65,7 +65,7 @@ ctest --test-dir build -L native --output-on-failure
 
 ## Sanitizer build
 
-The `debug` preset builds Afterglow and its tests with AddressSanitizer and UndefinedBehaviorSanitizer in `build-debug`.
+The `asan` preset builds Afterglow and its tests with AddressSanitizer and UndefinedBehaviorSanitizer in `build-asan`.
 It compiles at `-O1`, as the sanitizer documentation recommends. At `-O0` the tests are too slow for their waits.
 It turns off `-Wmaybe-uninitialized`, because GCC gives false warnings for instrumented code.
 Run the sanitizer build before a pull request that changes a parser, a protocol or the memory of a pane.
@@ -73,7 +73,7 @@ Run the sanitizer build before a pull request that changes a parser, a protocol 
 1. Configure the build directory. When `build` uses a phosphor-libs checkout (see `AFTERGLOW_PHOSPHOR_LIBS_DIR` in `build/CMakeCache.txt`), give the same one:
 
    ```sh
-   cmake --preset debug -DAFTERGLOW_PHOSPHOR_LIBS_DIR=/path/to/phosphor-libs
+   cmake --preset asan -DAFTERGLOW_PHOSPHOR_LIBS_DIR=/path/to/phosphor-libs
    ```
 
    Without the option, the build uses the pinned phosphor-libs commit.
@@ -81,28 +81,28 @@ Run the sanitizer build before a pull request that changes a parser, a protocol 
 2. Build it with two jobs. Each sanitizer compile needs more memory than a normal compile:
 
    ```sh
-   systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build-debug -j2
+   systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build-asan -j2
    ```
 
 3. Run the suite for memory errors and undefined behavior:
 
    ```sh
    ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
-       ctest --test-dir build-debug --output-on-failure -j4
+       ctest --test-dir build-asan --output-on-failure -j4
    ```
 
 4. Run the suite for leaks, without the tests that have the label `gpu`:
 
    ```sh
    ASAN_OPTIONS=detect_leaks=1 LSAN_OPTIONS=suppressions=$PWD/tools/sanitizers/lsan.supp \
-       ctest --test-dir build-debug -LE gpu --output-on-failure -j4
+       ctest --test-dir build-asan -LE gpu --output-on-failure -j4
    ```
 
 5. Run the native window tests on the sanitizer build:
 
    ```sh
    ASAN_OPTIONS=detect_leaks=0 python3 tools/headless_native.py \
-       --binary build-debug/afterglow/afterglow_native_tests --timeout 3600
+       --binary build-asan/afterglow/afterglow_native_tests --timeout 3600
    ```
 
 `UBSAN_OPTIONS=halt_on_error=1` makes a test fail at the first finding. Without it, the test prints the finding and passes.
@@ -506,15 +506,15 @@ Run the fuzzer on the [sanitizer build](#sanitizer-build) before a pull request 
 1. Turn on the tools in the sanitizer build, and build the fuzzer with two jobs:
 
    ```sh
-   cmake -B build-debug -DAFTERGLOW_BUILD_TOOLS=ON
-   systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build-debug -j2 --target afterglow_tuifuzz
+   cmake -B build-asan -DAFTERGLOW_BUILD_TOOLS=ON
+   systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build-asan -j2 --target afterglow_tuifuzz
    ```
 
 2. Run the programs:
 
    ```sh
    ASAN_OPTIONS=detect_leaks=1 LSAN_OPTIONS=suppressions=$PWD/tools/sanitizers/lsan.supp \
-       UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 tools/conformance/tuifuzz.sh build-debug 2000
+       UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 tools/conformance/tuifuzz.sh build-asan 2000
    ```
 
 ### Unicode tables
@@ -758,7 +758,7 @@ When the test binary dies first, the kernel stops the `sshd`.
 
 `RemoteCommandsTest.ARunWhoseHandlerTurnsTheSettingOffEndsWithItsSocket` turns the setting off inside the call of a run.
 A socket that went away inside its own call is a use of freed memory, which a normal build does not always show.
-Run the test in the `debug` preset, which has the sanitizers, to see it every time.
+Run the test in the `asan` preset, which has the sanitizers, to see it every time.
 
 ## MCP server tests
 
