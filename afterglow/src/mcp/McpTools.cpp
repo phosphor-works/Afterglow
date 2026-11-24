@@ -185,7 +185,8 @@ McpTool waitTool()
             "pane closes. "
             "matched is true when it happened, and status says what: finished, matched, quiet or closed, or "
             "running at the timeout. output is the text since the wait began, since the run began for until "
-            "finished, and the text that the matching check read for a match."))
+            "finished, and the text that the matching check read for a match, or after a send all the text since "
+            "the input went."))
         .setInputSchema(
             schema({{L("pane"), paneArgument()},
                     {L("until"), choice(Untils, QStringLiteral("What to wait for."))},
@@ -382,7 +383,7 @@ QList<McpTool> McpTools::definitions()
 
 QStringList McpTools::events()
 {
-    return {QStringLiteral("shellChanged"), QStringLiteral("textChanged"), QStringLiteral("paneClosed")};
+    return PaneRuns::events();
 }
 
 McpTools::McpTools(DaemonLink& link, const Settings& settings, Session session, QObject* parent)

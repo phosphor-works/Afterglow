@@ -4,6 +4,7 @@
 #include "Ctl.h"
 
 #include "ControlSocket.h"
+#include "CtlRuns.h"
 #include "IpcClient.h"
 #include "SessionLaunch.h"
 #include "../Pane.h"
@@ -26,6 +27,7 @@
 #include <PhosphorIpc/IpcProtocol.h>
 
 #include <QCoreApplication>
+#include <QRegularExpression>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -64,8 +66,9 @@ of the active window or of the window that was active last.
 With --session NAME, the commands act on mux session NAME (afterglow mux),
 and pane IDs are those of the mux daemon. In a pane of a session, they act
 on that session. While no window shows the session, only ls, send-text,
-paste, get-text, send-key, colors, set-colors, set-user-var, signal-program,
-split, new-tab, move-pane, detach-tab, close, focus and watch work. get-text
+paste, get-text, send-key, run, wait, colors, set-colors, set-user-var,
+signal-program, split, new-tab, move-pane, detach-tab, close, focus and watch
+work. get-text
 then reads no --selection or --last-visited-output: the window has them.
 For a session, split and new-tab prepare the program with the settings of
 the default config file, not the --config or -o of a running Afterglow.
@@ -101,6 +104,19 @@ the default config file, not the --config or -o of a running Afterglow.
   resize --direction DIR [--cells N]    move an edge of the pane N cells (2) left, right, up
                                         or down, as tmux resize-pane does
   send-key KEY...                       type keys by name: ctrl+c, Return, alt+x, F5, page_up
+  run [--timeout MS] [--tail N] [--json] COMMAND...
+                                        run COMMAND at the empty prompt of the pane's shell
+                                        (shell integration), print its output, and exit with
+                                        its status: 124 at the timeout, while it goes on, and
+                                        125 when it did not run
+  wait --until finished|text|quiet|closed [--pattern REGEX] [--quiet-ms MS]
+       [--timeout MS] [--tail N] [--json]
+                                        wait for the command to end (its status), new text
+                                        that matches REGEX, no new text for MS, or the end of
+                                        the pane, and print the text that came
+  send-text, paste, send-key ... --wait-text REGEX [--timeout MS] [--tail N] [--json]
+                                        then wait for new text that matches REGEX, as wait
+                                        --until text does, from where the input went
   scroll LINES | --pages N | --prompt N | --top | --bottom
                                         scroll the pane down LINES (up when negative), N pages,
                                         to the Nth prompt below (above when negative), or to an end
@@ -279,6 +295,28 @@ public:
         if (!connected())
             return std::nullopt;
         return m_pane;
+    }
+
+    /// The connection, for afterglow ctl run and wait, which read it in an
+    /// event loop with its events (CtlRuns): -1 after it reported why.
+    int takeConnection()
+    {
+        if (!connected())
+            return -1;
+        IpcClient::Error error;
+        const int fd = m_client.release(&error);
+        if (fd < 0)
+            failed(QStringLiteral("cannot take the connection for the wait: %1").arg(error.message));
+        return fd;
+    }
+    /// Where the panes of the calls are, for messages: the session, or the
+    /// Afterglow.
+    QString where() const
+    {
+        if (!m_daemon)
+            return QStringLiteral("this Afterglow");
+        return m_sessionName.isEmpty() ? QStringLiteral("this session")
+                                       : QStringLiteral("session %1").arg(m_sessionName);
     }
 
     /// The next event, or nothing after it reported why the stream ended.
@@ -694,6 +732,8 @@ const QString NoCurrentDirectory = QStringLiteral("the current directory was rem
 
 const QStringList Commands = {
     QStringLiteral("ls"),
+    QStringLiteral("run"),
+    QStringLiteral("wait"),
     QStringLiteral("send-text"),
     QStringLiteral("paste"),
     QStringLiteral("get-text"),
@@ -792,10 +832,11 @@ int runCtl(int argc, char** argv)
         args = args.mid(0, dash);
     }
     // Only these read words after "--": elsewhere they would be dropped unseen.
-    static const QStringList TakesTrailing = {
-        QStringLiteral("new-window"), QStringLiteral("split"),   QStringLiteral("new-tab"),
-        QStringLiteral("send-text"),  QStringLiteral("paste"),   QStringLiteral("set-title"),
-        QStringLiteral("notify"),     QStringLiteral("overlay"), QStringLiteral("set-tab-title")};
+    static const QStringList TakesTrailing = {QStringLiteral("new-window"),    QStringLiteral("split"),
+                                              QStringLiteral("new-tab"),       QStringLiteral("send-text"),
+                                              QStringLiteral("paste"),         QStringLiteral("set-title"),
+                                              QStringLiteral("notify"),        QStringLiteral("overlay"),
+                                              QStringLiteral("set-tab-title"), QStringLiteral("run")};
     if (!trailing.isEmpty() && !TakesTrailing.contains(command)) {
         return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
     }
@@ -825,6 +866,15 @@ int runCtl(int argc, char** argv)
         valueOptions += {QStringLiteral("--pages"), QStringLiteral("--prompt")};
     } else if (command == QLatin1String("window")) {
         valueOptions += QStringLiteral("--size");
+    } else if (command == QLatin1String("run")) {
+        valueOptions += {QStringLiteral("--timeout"), QStringLiteral("--tail")};
+    } else if (command == QLatin1String("wait")) {
+        valueOptions += {QStringLiteral("--until"), QStringLiteral("--pattern"), QStringLiteral("--quiet-ms"),
+                         QStringLiteral("--timeout"), QStringLiteral("--tail")};
+    }
+    if (command == QLatin1String("send-text") || command == QLatin1String("paste")
+        || command == QLatin1String("send-key")) {
+        valueOptions += {QStringLiteral("--wait-text"), QStringLiteral("--timeout"), QStringLiteral("--tail")};
     }
     auto indexOfOption = [&args, &valueOptions](const QString& flag) -> qsizetype {
         for (qsizetype i = 0; i < args.size(); ++i) {
@@ -1178,6 +1228,69 @@ int runCtl(int argc, char** argv)
         return 0;
     };
 
+    // The limits of a run or a wait, by the names of the arguments of
+    // PaneRuns: --timeout in milliseconds, --tail in lines. Each branch
+    // takes the two options itself, as the shell completions read them.
+    auto waitLimits = [](const std::optional<QString>& ms, const std::optional<QString>& lines,
+                         QJsonObject& into) -> std::optional<QString> {
+        if (ms) {
+            bool ok = false;
+            const int value = ms->toInt(&ok);
+            if (!ok || value < 1)
+                return QStringLiteral("--timeout takes milliseconds, from 1");
+            into.insert(QStringLiteral("timeout_ms"), value);
+        }
+        if (lines) {
+            bool ok = false;
+            const int value = lines->toInt(&ok);
+            if (!ok || value < 1)
+                return QStringLiteral("--tail takes a number of lines, from 1");
+            into.insert(QStringLiteral("tail_lines"), value);
+        }
+        return std::nullopt;
+    };
+    auto badPattern = [](const QString& option, const QString& pattern) -> std::optional<QString> {
+        const QRegularExpression expression(pattern);
+        if (expression.isValid())
+            return std::nullopt;
+        return QStringLiteral("%1 is not a valid regular expression: %2 at offset %3")
+            .arg(option, expression.errorString())
+            .arg(expression.patternErrorOffset());
+    };
+    // A run, a wait or a send with a wait, over the connection of the
+    // client, which goes to the event loop of PaneRuns.
+    auto paneCommand = [&client](CtlRun paneRun, qint64 pane) {
+        paneRun.where = client.where();
+        paneRun.arguments.insert(QStringLiteral("pane"), pane);
+        if (!paneRun.waitArguments.isEmpty())
+            paneRun.waitArguments.insert(QStringLiteral("pane"), pane);
+        const int fd = client.takeConnection();
+        if (fd < 0)
+            return CtlRunFailed;
+        const SettingsStore store;
+        return runPaneCommand(fd, paneRun, store.settings());
+    };
+    // send-text, paste and send-key with --wait-text: the input, then a wait
+    // until text from where it went. --timeout, --tail and --json go with it.
+    std::optional<CtlRun> sendWait;
+    if (command == QLatin1String("send-text") || command == QLatin1String("paste")
+        || command == QLatin1String("send-key")) {
+        const std::optional<QString> pattern = takeValue(QStringLiteral("--wait-text"));
+        const bool json = takeFlag(QStringLiteral("--json"));
+        QJsonObject wait{{QStringLiteral("until"), QStringLiteral("text")}};
+        if (const auto error =
+                waitLimits(takeValue(QStringLiteral("--timeout")), takeValue(QStringLiteral("--tail")), wait))
+            return usage(*error);
+        if (pattern) {
+            if (const auto error = badPattern(QStringLiteral("--wait-text"), *pattern))
+                return usage(*error);
+            wait.insert(QStringLiteral("pattern"), *pattern);
+            sendWait = CtlRun{CtlRun::Kind::SendWait, {}, wait, json, {}};
+        } else if (json || wait.size() > 1) {
+            return usage(QStringLiteral("--timeout, --tail and --json go with --wait-text"));
+        }
+    }
+
     // The commands on a pane check their arguments before the pane is
     // looked up, and send-text, paste and overlay read their standard
     // input then: a usage error
@@ -1195,6 +1308,56 @@ int runCtl(int argc, char** argv)
             return usage(QStringLiteral("save-project takes NAME [--overwrite]"));
         act = [&, name = args.first(), overwrite](qint64 pane) {
             return printObject(QStringLiteral("saveProject"), {pane, name, overwrite});
+        };
+    } else if (command == QLatin1String("run")) {
+        CtlRun paneRun{CtlRun::Kind::Run, {}, {}, takeFlag(QStringLiteral("--json")), {}};
+        if (const auto error = waitLimits(takeValue(QStringLiteral("--timeout")), takeValue(QStringLiteral("--tail")),
+                                          paneRun.arguments))
+            return usage(*error);
+        if (const auto error = extra(-1))
+            return usage(*error);
+        const QString line = (args + trailing).join(QLatin1Char(' '));
+        if (line.trimmed().isEmpty())
+            return usage(QStringLiteral("run needs a command"));
+        paneRun.arguments.insert(QStringLiteral("command"), line);
+        act = [&paneCommand, paneRun](qint64 pane) {
+            return paneCommand(paneRun, pane);
+        };
+    } else if (command == QLatin1String("wait")) {
+        CtlRun paneRun{CtlRun::Kind::Wait, {}, {}, takeFlag(QStringLiteral("--json")), {}};
+        const std::optional<QString> until = takeValue(QStringLiteral("--until"));
+        const std::optional<QString> pattern = takeValue(QStringLiteral("--pattern"));
+        const std::optional<QString> quiet = takeValue(QStringLiteral("--quiet-ms"));
+        if (const auto error = waitLimits(takeValue(QStringLiteral("--timeout")), takeValue(QStringLiteral("--tail")),
+                                          paneRun.arguments))
+            return usage(*error);
+        if (const auto error = extra(0))
+            return usage(*error);
+        static const QStringList Untils{QStringLiteral("finished"), QStringLiteral("text"), QStringLiteral("quiet"),
+                                        QStringLiteral("closed")};
+        if (!until || !Untils.contains(*until))
+            return usage(QStringLiteral("wait needs --until finished, text, quiet or closed"));
+        paneRun.arguments.insert(QStringLiteral("until"), *until);
+        if (*until == QLatin1String("text")) {
+            if (!pattern)
+                return usage(QStringLiteral("wait --until text needs --pattern REGEX"));
+            if (const auto error = badPattern(QStringLiteral("--pattern"), *pattern))
+                return usage(*error);
+            paneRun.arguments.insert(QStringLiteral("pattern"), *pattern);
+        } else if (pattern) {
+            return usage(QStringLiteral("--pattern goes with --until text"));
+        }
+        if (*until == QLatin1String("quiet")) {
+            bool ok = false;
+            const int ms = quiet ? quiet->toInt(&ok) : 0;
+            if (!ok || ms < 1)
+                return usage(QStringLiteral("wait --until quiet needs --quiet-ms MS, from 1"));
+            paneRun.arguments.insert(QStringLiteral("quiet_ms"), ms);
+        } else if (quiet) {
+            return usage(QStringLiteral("--quiet-ms goes with --until quiet"));
+        }
+        act = [&paneCommand, paneRun](qint64 pane) {
+            return paneCommand(paneRun, pane);
         };
     } else if (command == QLatin1String("send-text") || command == QLatin1String("paste")) {
         const bool paste = command == QLatin1String("paste");
@@ -1241,6 +1404,13 @@ int runCtl(int argc, char** argv)
         } else {
             act = [&sendText, text](qint64 pane) {
                 return sendText(pane, text);
+            };
+        }
+        if (sendWait) {
+            CtlRun paneRun = *sendWait;
+            paneRun.arguments.insert(paste ? QStringLiteral("paste") : QStringLiteral("text"), text);
+            act = [&paneCommand, paneRun](qint64 pane) {
+                return paneCommand(paneRun, pane);
             };
         }
     } else if (command == QLatin1String("screenshot")) {
@@ -1434,6 +1604,13 @@ int runCtl(int argc, char** argv)
         act = [&, keys = args](qint64 pane) {
             return run(QStringLiteral("sendKeys"), {pane, QJsonArray::fromStringList(keys)});
         };
+        if (sendWait) {
+            CtlRun paneRun = *sendWait;
+            paneRun.arguments.insert(QStringLiteral("keys"), QJsonArray::fromStringList(args));
+            act = [&paneCommand, paneRun](qint64 pane) {
+                return paneCommand(paneRun, pane);
+            };
+        }
     } else if (command == QLatin1String("scroll")) {
         const auto pages = takeValue(QStringLiteral("--pages"));
         const auto prompts = takeValue(QStringLiteral("--prompt"));

@@ -258,7 +258,7 @@ Thus `quiet` waits at least two times that interval. The server reads the interv
 | `status` | `finished`, `matched`, `quiet` or `closed` when it happened. `running` when the timeout came first. |
 | `matched` | True when it happened |
 | `match` | For `text`: the text that matched, at most `Mcp.outputLimit` bytes. A cut removes its start. |
-| `output` | The text since the wait began. For `finished` after a `run` of this server, since the run began. For a match of `text`, the text that the check that matched read. |
+| `output` | The text since the wait began. For `finished` after a `run` of this server, since the run began. For a match of `text`, the text that the check that matched read, and after a `send` all the text since the input went. |
 | `notes` | As for `run` |
 
 A `run` and a `wait` that the client gave a progress token send progress notifications.

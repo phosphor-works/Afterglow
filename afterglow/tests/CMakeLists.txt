@@ -181,6 +181,17 @@ if(Python3_Interpreter_FOUND)
                 script_command_through_a_window)
     set_tests_properties(afterglow_mcp_session_window PROPERTIES TIMEOUT 300 RESOURCE_LOCK gpu LABELS gpu
         SKIP_RETURN_CODE 77)
+    # afterglow ctl run, wait and --wait-text, one command for each call as a shell agent runs them, against
+    # sessions of a daemon of its own in directories under /tmp. Bash is required.
+    add_test(NAME afterglow_ctl_run
+        COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/ctl_run.py $<TARGET_FILE:afterglow>)
+    set_tests_properties(afterglow_ctl_run PROPERTIES TIMEOUT 300)
+    # The case that runs a command in a pane of a window, in a headless KWin: it draws on the GPU
+    # (77: no kwin_wayland, dbus-run-session or Vulkan device).
+    add_test(NAME afterglow_ctl_run_window
+        COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/ctl_run.py $<TARGET_FILE:afterglow> run_in_a_window)
+    set_tests_properties(afterglow_ctl_run_window PROPERTIES TIMEOUT 300 RESOURCE_LOCK gpu LABELS gpu
+        SKIP_RETURN_CODE 77)
     # Fails when docs/CONFIGURATION.md is not what the schema generates.
     add_test(NAME afterglow_configuration_reference
         COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tools/generate-reference.py --check $<TARGET_FILE:afterglow>)

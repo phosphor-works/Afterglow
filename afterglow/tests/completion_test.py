@@ -760,9 +760,14 @@ def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mu
     yield 'afterglow ctl new-window -', ctl('new-window')
     yield 'afterglow ctl overlay --stdin-text ', scopes
     yield 'afterglow ctl send-text -', ctl('send-text')
-    yield 'afterglow ctl send-text --stdin -', {'--pane'}
-    yield 'afterglow ctl send-text --raw -', {'--pane'}
-    yield 'afterglow ctl send-text hello -', {'--pane', '--raw'}
+    # Each send can wait for the answer after it.
+    waits = {'--wait-text', '--timeout', '--tail', '--json'}
+    yield 'afterglow ctl send-text --stdin -', {'--pane'} | waits
+    yield 'afterglow ctl send-text --raw -', {'--pane'} | waits
+    yield 'afterglow ctl send-text hello -', {'--pane', '--raw'} | waits
+    yield 'afterglow ctl send-key enter -', {'--pane'} | waits
+    yield 'afterglow ctl wait --until ', {'finished', 'text', 'quiet', 'closed'}
+    yield 'afterglow ctl run --timeout ', set()
     yield 'afterglow ctl send-text -- -', set()
     yield 'afterglow ctl move-pane 2 ', {'left', 'right', 'up', 'down', 'new-tab', 'new-window'}
     yield 'afterglow ctl new-window --cwd ', {'adir'}

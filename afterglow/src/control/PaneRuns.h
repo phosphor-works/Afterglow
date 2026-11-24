@@ -137,6 +137,9 @@ public:
     void wait(std::unique_ptr<PaneRequest> request);
     void send(std::unique_ptr<PaneRequest> request);
 
+    /// The events of the control target that onEvent() needs: a front end
+    /// subscribes to them before its first call.
+    static QStringList events();
     /// An event of the control target.
     void onEvent(const QString& name, const QJsonArray& args);
     /// Fails every run and wait with @p text: the session is gone.

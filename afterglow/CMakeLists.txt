@@ -91,6 +91,8 @@ qt_add_library(afterglow_app STATIC
     src/control/OverlayInputs.cpp
     src/control/OverlayInputs.h
     src/control/PaneRuns.cpp
+    src/control/CtlRuns.cpp
+    src/control/CtlRuns.h
     src/control/PaneRuns.h
     src/control/RemoteSockets.cpp
     src/control/RemoteSockets.h

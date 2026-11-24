@@ -432,16 +432,42 @@ void PaneRuns::checkText(quint64 serial)
                     const QString text = answer.value(L("text")).toString();
                     const QRegularExpressionMatch match = wait->pattern.match(text);
                     if (match.hasMatch()) {
-                        const Output output =
-                            shape(text, wait->tailLines, m_limits.outputLimit, answer.value(L("truncated")).toBool());
-                        const Output matched = shape(match.captured(0), 0, m_limits.outputLimit, false);
-                        QJsonObject result{
-                            {L("status"), L("matched")},     {L("matched"), true},
-                            {L("match"), matched.text},      {L("exit_code"), QJsonValue()},
-                            {L("exit_codes"), QJsonArray()}, {L("duration_ms"), QJsonValue()},
-                            {L("output"), output.text},      {L("truncated"), output.truncated || matched.truncated},
-                            {L("notes"), QJsonArray()}};
-                        return finishWait(serial, result, {QStringLiteral("Pane %1 matched.").arg(wait->pane)});
+                        const QString found = match.captured(0);
+                        const auto matched = [this, serial, found](const QString& text, bool cut) {
+                            Wait* wait = waitOf(serial);
+                            if (!wait)
+                                return;
+                            const Output output = shape(text, wait->tailLines, m_limits.outputLimit, cut);
+                            const Output match = shape(found, 0, m_limits.outputLimit, false);
+                            QJsonObject result{
+                                {L("status"), L("matched")},     {L("matched"), true},
+                                {L("match"), match.text},        {L("exit_code"), QJsonValue()},
+                                {L("exit_codes"), QJsonArray()}, {L("duration_ms"), QJsonValue()},
+                                {L("output"), output.text},      {L("truncated"), output.truncated || match.truncated},
+                                {L("notes"), QJsonArray()}};
+                            finishWait(serial, result, {QStringLiteral("Pane %1 matched.").arg(wait->pane)});
+                        };
+                        const bool cut = answer.value(L("truncated")).toBool();
+                        // After a send, the whole answer to the input: the text
+                        // since it went, not only what the check that matched
+                        // read. The wait ends here: no timeout takes it over.
+                        if (!wait->floor.isEmpty() && wait->searchMark != wait->floor) {
+                            wait->ready = false;
+                            wait->timeout.stop();
+                            m_link.call(QStringLiteral("getText"),
+                                        textArgs(wait->pane, QStringLiteral("since"), {{L("mark"), wait->floor}}),
+                                        [matched, text, cut](const QJsonValue& value, const DaemonLink::Error* error) {
+                                            // A clear or a reflow since the input: the text
+                                            // of the check.
+                                            if (error)
+                                                return matched(text, cut);
+                                            const QJsonObject since = value.toObject();
+                                            matched(since.value(L("text")).toString(),
+                                                    since.value(L("truncated")).toBool());
+                                        });
+                            return;
+                        }
+                        return matched(text, cut);
                     }
                     // The next check reads from the start of the cursor's
                     // line: the line in progress, and what comes after it.
@@ -1150,6 +1176,11 @@ void PaneRuns::sendFrom(const RequestPtr& request, const std::shared_ptr<const S
                             .arg(request->arguments().value(L("pane")).toInteger())
                             .arg(went.join(QStringLiteral(" and ")), sendPart(calls->at(index).first), error->message));
                 });
+}
+
+QStringList PaneRuns::events()
+{
+    return {QStringLiteral("shellChanged"), QStringLiteral("textChanged"), QStringLiteral("paneClosed")};
 }
 
 void PaneRuns::onEvent(const QString& name, const QJsonArray& args)

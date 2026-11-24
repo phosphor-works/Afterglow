@@ -59,6 +59,12 @@ public:
     /// The process at the other end (SO_PEERCRED), or 0 when it runs as
     /// another user.
     pid_t peerPid() const;
+    /// Gives the connection to the caller, with what the server keeps for
+    /// it (a selected session): a descriptor of the socket, which the
+    /// caller closes. This client is then not connected. -1, with
+    /// @p error, when it is not connected, or when it read bytes that no
+    /// call took, which the caller would miss.
+    int release(Error* error);
 
     /// The result of @p target.@p fn, or nothing with @p error set.
     /// @p timeoutMs bounds the whole call, whatever arrives meanwhile.
