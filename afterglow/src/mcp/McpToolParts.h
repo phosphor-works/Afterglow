@@ -10,10 +10,13 @@
 #include "MuxProtocol.h"
 
 #include <PhosphorMcp/McpCall.h>
+#include <PhosphorMcp/McpTool.h>
 
 #include <QByteArray>
+#include <QCryptographicHash>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QList>
 #include <QString>
@@ -379,6 +382,21 @@ inline QJsonObject nested(const std::vector<AfterglowMux::LayoutNode>& tree, std
             {L("ratio"), node.ratio},
             {L("first"), first},
             {L("second"), second}};
+}
+
+/// The version that serverInfo gives: @p base, and the first 8 hex digits of
+/// a hash of what a client caches, the tools and the instructions. A client
+/// that keys its cache on the server's name and version (the TypeScript SDK)
+/// reads them again when they change, also when the release stays the same.
+inline QString serverVersion(const QString& base, const QList<PhosphorMcp::McpTool>& tools, const QString& instructions)
+{
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    // Compact JSON sorts the keys of each object: the same tools give the
+    // same bytes.
+    for (const PhosphorMcp::McpTool& tool : tools)
+        hash.addData(QJsonDocument(tool.toJson()).toJson(QJsonDocument::Compact));
+    hash.addData(instructions.toUtf8());
+    return base + QLatin1Char('+') + QString::fromLatin1(hash.result().toHex().left(8));
 }
 
 } // namespace Afterglow::McpParts

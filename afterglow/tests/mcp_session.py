@@ -21,6 +21,7 @@ Usage: mcp_session.py AFTERGLOW [CASE...]
 """
 import json
 import os
+import re
 import select
 import shutil
 import signal
@@ -384,10 +385,14 @@ def discover_and_tools(home):
     reply = s.reply(s.request('server/discover'))
     discover = reply['result']
     check(discover['supportedVersions'] == [VERSION], discover)
-    # The same instructions for every session, which a client caches for an hour.
+    # The same instructions for every session, which a client caches for a minute.
     check(s.session not in discover['instructions'] and 'list_panes' in discover['instructions'], discover)
-    check(discover['_meta']['io.modelcontextprotocol/serverInfo']['name'] == 'afterglow', discover)
-    check(discover['cacheScope'] == 'public', discover)
+    info = discover['_meta']['io.modelcontextprotocol/serverInfo']
+    check(info['name'] == 'afterglow', discover)
+    # The release and a hash of the tools and the instructions: a client that keys its cache on the version reads
+    # them again after a build that changed them.
+    check(re.fullmatch(r'\d+\.\d+\.\d+\+[0-9a-f]{8}', info['version']), info)
+    check(discover['cacheScope'] == 'public' and discover['ttlMs'] == 60000, discover)
     bad = s.reply(s.request('tools/list', meta=dict(META, **{'io.modelcontextprotocol/protocolVersion': '2025-11-25'})))
     check(bad['error']['code'] == -32022 and bad['error']['data']['requested'] == '2025-11-25', bad)
     tools = s.reply(s.request('tools/list'))['result']['tools']
