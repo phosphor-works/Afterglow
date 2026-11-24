@@ -10,7 +10,7 @@
 # loads the completion of aglow when it is first needed. Without
 # bash-completion, source aglow.bash as well.
 
-_afterglow_ctl_commands="ls send-text paste get-text split move-pane detach-tab new-tab new-window focus close set-title
+_afterglow_ctl_commands="ls run wait send-text paste get-text split move-pane detach-tab new-tab new-window focus close set-title
 set-tab-title resize send-key scroll signal notify scripts open-directory projects save-project open-project action
 watch overlay screenshot colors set-colors set-font-size set-opacity set-user-var signal-program window"
 # Key names that ctl send-key takes, of many more.
@@ -129,7 +129,8 @@ _afterglow_ctl()
             # Text follows, or the command takes nothing after it.
             return
             ;;
-        --pane | --cwd | --layout | --direction | --cells | --pages | --prompt | --env | --var | --stdin-text | --size)
+        --pane | --cwd | --layout | --direction | --cells | --pages | --prompt | --env | --var | --stdin-text | --size | \
+            --timeout | --tail | --until | --pattern | --quiet-ms | --wait-text)
             ((i++))
             ;;
         --capture | --title | -w | --width | -h | --height | --position)
@@ -159,7 +160,12 @@ _afterglow_ctl()
         esac
     done
     case $prev in
-    --pane | --layout | --cells | --pages | --prompt | --env | --var | --size) return ;;
+    --pane | --layout | --cells | --pages | --prompt | --env | --var | --size | --timeout | --tail | --pattern | \
+        --quiet-ms | --wait-text) return ;;
+    --until)
+        _afterglow_matching finished text quiet closed
+        return
+        ;;
     --stdin-text)
         _afterglow_matching screen scrollback selection last-output first-output-on-screen last-visited-output
         return
@@ -243,16 +249,19 @@ _afterglow_ctl()
     fi
     case $command in
     ls) _afterglow_unused --json ;;
+    run) _afterglow_unused $pane --timeout --tail --json ;;
+    wait) _afterglow_unused $pane --until --pattern --quiet-ms --timeout --tail --json ;;
     send-text | paste)
         # --stdin takes no text, and the text takes no --stdin.
         if _afterglow_given --stdin; then
-            _afterglow_unused $pane
+            _afterglow_unused $pane --wait-text --timeout --tail --json
         elif [[ $text ]] || _afterglow_given --raw; then
-            _afterglow_unused $pane --raw
+            _afterglow_unused $pane --raw --wait-text --timeout --tail --json
         else
-            _afterglow_unused $pane --raw --stdin
+            _afterglow_unused $pane --raw --stdin --wait-text --timeout --tail --json
         fi
         ;;
+    send-key) _afterglow_unused $pane --wait-text --timeout --tail --json ;;
     get-text)
         _afterglow_unused $pane "--screen|--scrollback|--selection|--last-output|--first-output-on-screen|--last-visited-output" \
             --ansi --cursor --wrap-markers

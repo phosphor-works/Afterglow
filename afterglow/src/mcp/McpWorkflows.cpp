@@ -310,7 +310,7 @@ void McpTools::openNext(const std::shared_ptr<ProjectOpen>& open)
                                                                                     const DaemonLink::Error* error) {
                                             if (open->cancelled)
                                                 return;
-                                            if (!error && paneIn(panes, target).isEmpty()) {
+                                            if (!error && m_paneRuns.paneIn(panes, target).isEmpty()) {
                                                 m_closed.insert(target);
                                                 --open->at;
                                                 return openNext(open);
@@ -323,10 +323,8 @@ void McpTools::openNext(const std::shared_ptr<ProjectOpen>& open)
                             return failStep(open, step, *error);
                         const qint64 id = value.toInteger();
                         open->ids[step.leaf] = id;
-                        m_seen.insert(quint32(id));
                         // A shell with shell integration marks a prompt soon.
-                        if (open->marks.at(step.leaf))
-                            m_starting.insert(quint32(id));
+                        m_paneRuns.paneOpened(quint32(id), open->marks.at(step.leaf));
                         // The next tab goes after this one.
                         if (!split)
                             open->beside = id;

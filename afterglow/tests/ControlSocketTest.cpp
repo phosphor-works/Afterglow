@@ -997,6 +997,17 @@ TEST_F(ControlSocketTest, TextCallsCheckTheirArgumentsAsTheDaemonDoes)
     EXPECT_EQ(failure(QStringLiteral("mark"), {7}), std::make_pair(called.first, noPane));
     // An empty paste still names its pane.
     EXPECT_EQ(failure(QStringLiteral("paste"), {7, QString()}), std::make_pair(called.first, noPane));
+    // The options of a paste, as the daemon's: checked before the pane.
+    const auto badPasteOption = std::make_pair(
+        QStringLiteral("INVALID_ARG"), QStringLiteral("the options of paste are prompt and enter, true or false"));
+    EXPECT_EQ(failure(QStringLiteral("paste"), {7, QStringLiteral("ls"), QJsonObject{{QStringLiteral("nope"), true}}}),
+              badPasteOption);
+    EXPECT_EQ(failure(QStringLiteral("paste"), {7, QStringLiteral("ls"), QJsonObject{{QStringLiteral("prompt"), 1}}}),
+              badPasteOption);
+    EXPECT_EQ(failure(QStringLiteral("paste"),
+                      {7, QStringLiteral("ls"),
+                       QJsonObject{{QStringLiteral("prompt"), true}, {QStringLiteral("enter"), true}}}),
+              std::make_pair(called.first, noPane));
 }
 
 // textChanged merges as a title does: a burst of output is one event at the

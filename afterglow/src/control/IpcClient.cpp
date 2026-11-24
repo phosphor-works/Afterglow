@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <cstring>
 
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -76,6 +77,27 @@ bool IpcClient::connectTo(const QString& path, int timeoutMs, Error* error)
     }
     m_socket.abort();
     return false;
+}
+
+int IpcClient::release(Error* error)
+{
+    if (!connected()) {
+        error->message = QStringLiteral("not connected");
+        return -1;
+    }
+    if (!m_frames.isEmpty() || m_socket.bytesAvailable() > 0) {
+        error->message = QStringLiteral("the connection holds frames that no call read");
+        return -1;
+    }
+    // The same connection in a descriptor of its own: the abort closes only
+    // this client's, and the server sees no end.
+    const int fd = ::fcntl(int(m_socket.socketDescriptor()), F_DUPFD_CLOEXEC, 0);
+    if (fd < 0) {
+        error->message = QString::fromLocal8Bit(std::strerror(errno));
+        return -1;
+    }
+    disconnect();
+    return fd;
 }
 
 pid_t IpcClient::peerPid() const

@@ -1181,7 +1181,7 @@ TEST(McpToolsWait, TextAfterASendReadsFromWhereTheInputWent)
     EXPECT_EQ(structured(result).value(QLatin1String("status")).toString(), QStringLiteral("matched"))
         << textOf(result).toStdString();
     const auto texts = h.daemon.callsOf(QStringLiteral("getText"));
-    ASSERT_EQ(texts.size(), 4);
+    ASSERT_EQ(texts.size(), 5);
     const auto markOf = [&](qsizetype i) {
         return texts.at(i).args.at(2).toObject().value(QLatin1String("mark")).toObject();
     };
@@ -1191,6 +1191,8 @@ TEST(McpToolsWait, TextAfterASendReadsFromWhereTheInputWent)
     EXPECT_EQ(markOf(2), sent);
     // A later row: from its start.
     EXPECT_EQ(markOf(3), rowMark(12, 1));
+    // The match: the whole answer, the text since the input went.
+    EXPECT_EQ(markOf(4), sent);
 }
 
 // A send while a wait until text runs: that wait reads what the input makes,

@@ -148,6 +148,8 @@ _afterglow_ctl() {
     local -a commands help
     commands=(
         'ls:list panes'
+        'run:run a command at the shell prompt of the pane'
+        'wait:wait for the command, text, quiet or the end of the pane'
         'send-text:type text into the pane'
         'paste:paste text into the pane'
         'get-text:print pane text'
@@ -213,6 +215,10 @@ _afterglow_ctl() {
     # From here, words[1] is the ctl command.
     shift words; (( CURRENT-- ))
     local pane='--pane[the pane]:pane ID:'
+    # The limits of run and wait, and the wait after a send.
+    local -a limits=('--timeout[milliseconds to wait]:milliseconds:' '--tail[lines at the end of the output]:lines:')
+    local -a waitText=('--wait-text[then wait for new text that matches]:regular expression:' "${limits[@]}"
+        '--json[print every field as JSON]')
     # The options of a launch, as kitten @ launch has them; --no-focus last,
     # which new-window does not take.
     local -a launch=('*--env[a variable for the program]:NAME=VALUE:' '*--var[a user variable of the pane]:NAME=VALUE:'
@@ -236,9 +242,15 @@ _afterglow_ctl() {
     esac
     case $words[1] in
     ls) _arguments '--json[print JSON]' ;;
+    run) _arguments -S $pane "${limits[@]}" '--json[print every field as JSON]' '*:command:' ;;
+    wait)
+        _arguments $pane '--until[what to wait for]:until:(finished text quiet closed)' \
+            '--pattern[the regular expression of --until text]:regular expression:' \
+            '--quiet-ms[the milliseconds with no new text of --until quiet]:milliseconds:' \
+            "${limits[@]}" '--json[print every field as JSON]' ;;
     send-text | paste)
         _arguments -S $pane '(--stdin)--raw[send the text as it is]' '(--raw *)--stdin[send standard input]' \
-            '(--stdin)*:text:' ;;
+            "${waitText[@]}" '(--stdin)*:text:' ;;
     get-text)
         local scopes='(--screen --scrollback --selection --last-output --first-output-on-screen --last-visited-output)'
         _arguments $pane \
@@ -277,7 +289,7 @@ _afterglow_ctl() {
     focus) _arguments $pane '--direction[focus the pane on that side]:direction:(left right up down)' ;;
     resize) _arguments $pane '--direction[the edge that moves]:direction:(left right up down)' '--cells[cells to move it (2)]:cells:' ;;
     send-key)
-        _arguments -S $pane '*:key:(enter escape tab backspace space up down left right home end page_up page_down insert delete
+        _arguments -S $pane "${waitText[@]}" '*:key:(enter escape tab backspace space up down left right home end page_up page_down insert delete
             f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12 ctrl+c ctrl+d ctrl+l ctrl+z)' ;;
     scroll)
         _arguments $pane '(--prompt --top --bottom 1)--pages[pages down, up when negative]:pages:' \

@@ -136,7 +136,8 @@ function __afterglow_ctl
         if string match -q -- '-*' "$cur"
             __afterglow_print $options
         else
-            __afterglow_print ls\t'List panes' send-text\t'Type text into the pane' paste\t'Paste text into the pane' get-text\t'Print pane text' \
+            __afterglow_print ls\t'List panes' run\t'Run a command at the shell prompt of the pane' \
+                wait\t'Wait for the command, text, quiet or the end of the pane' send-text\t'Type text into the pane' paste\t'Paste text into the pane' get-text\t'Print pane text' \
                 split\t'Split the pane' move-pane\t'Move the pane beside another' \
                 detach-tab\t"Move the pane's tab to a new window" new-tab\t'Open a tab' new-window\t'Open a window' \
                 focus\t'Focus the pane' close\t'Close the pane' set-title\t"Set the pane's title" \
@@ -169,7 +170,7 @@ function __afterglow_ctl
                     complete -C (string join ' ' -- $rest "$cur")
                 end
                 return
-            case --pane --cwd --layout --direction --cells --pages --prompt --env --var --stdin-text --size --capture --title -w --width -h --height --position
+            case --pane --cwd --layout --direction --cells --pages --prompt --env --var --stdin-text --size --timeout --tail --until --pattern --quiet-ms --wait-text --capture --title -w --width -h --height --position
                 # The options after --layout are those of overlay. Elsewhere they are no option of ctl.
                 if test $command = overlay; or not contains -- $argv[$i] --capture --title -w --width -h --height --position
                     if test $i -eq $n
@@ -177,6 +178,7 @@ function __afterglow_ctl
                         test $argv[$i] = --cwd; and __fish_complete_directories "$cur"
                         test $argv[$i] = --capture; and __afterglow_print stdout file none
                         test $argv[$i] = --direction; and __afterglow_print left right up down
+                        test $argv[$i] = --until; and __afterglow_print finished text quiet closed
                         test $argv[$i] = --stdin-text; and __afterglow_print screen scrollback selection last-output first-output-on-screen last-visited-output
                         test $argv[$i] = --position
                         and __afterglow_print center top bottom left right top-left top-right bottom-left bottom-right
@@ -252,12 +254,24 @@ function __afterglow_ctl
             contains -- --json $argv; or set -a offer --json\t'Print JSON'
         case watch
             contains -- --text-changes $argv; or set -a offer --text-changes\t'Print textChanged too'
-        case send-text paste
+        case run
+            for flag in --timeout --tail --json
+                contains -- $flag $argv; or set -a offer $flag
+            end
+        case wait
+            for flag in --until --pattern --quiet-ms --timeout --tail --json
+                contains -- $flag $argv; or set -a offer $flag
+            end
+        case send-text paste send-key
             # --stdin takes no text, and the text takes no --stdin.
-            if not contains -- --stdin $argv
+            if test $command != send-key; and not contains -- --stdin $argv
                 contains -- --raw $argv; or set -a offer --raw\t'Send the text as it is'
                 test $positional -eq 0; and not contains -- --raw $argv
                 and set -a offer --stdin\t'Send standard input'
+            end
+            # Then a wait for the answer.
+            for flag in --wait-text --timeout --tail --json
+                contains -- $flag $argv; or set -a offer $flag
             end
         case get-text
             string match -q -r -- '^--(screen|scrollback|selection|last-output|first-output-on-screen|last-visited-output)$' $argv

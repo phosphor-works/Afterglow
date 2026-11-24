@@ -92,9 +92,28 @@ void ControlApi::sendText(double pane, const QString& text)
 
 void ControlApi::paste(double pane, const QString& text)
 {
+    paste(pane, text, {});
+}
+
+void ControlApi::paste(double pane, const QString& text, const QVariantMap& options)
+{
+    // As the daemon checks them, before the pane.
+    bool atPrompt = false;
+    bool enter = false;
+    for (auto it = options.cbegin(); it != options.cend(); ++it) {
+        bool* flag = it.key() == QLatin1String("prompt") ? &atPrompt
+            : it.key() == QLatin1String("enter")         ? &enter
+                                                         : nullptr;
+        if (!flag || it.value().typeId() != QMetaType::Bool) {
+            failWithCode(QStringLiteral("the options of paste are prompt and enter, true or false"),
+                         QLatin1String(AfterglowProto::IpcErrorCode::InvalidArg));
+            return;
+        }
+        *flag = it.value().toBool();
+    }
     if (const auto id = paneId(pane)) {
         QString code;
-        failWithCode(m_control.paste(*id, text, &code), code);
+        failWithCode(m_control.paste(*id, text, &code, atPrompt, enter), code);
     }
 }
 
