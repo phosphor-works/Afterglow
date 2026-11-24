@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# LeakSanitizer suppressions for the sanitizer build (the build-debug preset).
+# LeakSanitizer suppressions for the sanitizer build (the asan preset).
 # Each entry is memory that a library keeps for the life of the process, which
 # it never frees, so LeakSanitizer reports it when a test exits. The entries
 # match a function or library in the allocation's stack.

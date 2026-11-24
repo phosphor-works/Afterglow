@@ -24,7 +24,7 @@ function(aglow_write_file path content)
     file(WRITE "${path}" "${content}")
 endfunction()
 
-# A sanitizer build (the debug preset) cannot link statically: aglow is then
+# A sanitizer build (the asan preset) cannot link statically: aglow is then
 # a dynamic binary, and the test of a static one is left out.
 afterglow_sanitized(AGLOW_SANITIZED)
 if(NOT AGLOW_SANITIZED)
@@ -267,7 +267,7 @@ if(BUILD_TESTING AND TARGET afterglow)
     # compiles zlib-ng, the image codecs, Little CMS, afterglow-proto,
     # afterglow-vt, afterglow-pty, phosphor-channel and mux/ again, so it has
     # the label slow, and ctest -LE slow leaves it out. It takes the tools and
-    # the flags of this build: with the sanitizers of the debug preset, aglow
+    # the flags of this build: with the sanitizers of the asan preset, aglow
     # alone links dynamically too, and needs no static runtime libraries. It
     # also takes the places where this build found PCRE2 and its other packages:
     # CMAKE_PREFIX_PATH, pkg-config, the toolchain file and the sysroot.

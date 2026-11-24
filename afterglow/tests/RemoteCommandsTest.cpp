@@ -1303,7 +1303,7 @@ TEST_F(RemoteCommandsTest, ARunWhoseHandlerTurnsTheSettingOffEndsWithItsSocket)
     ASSERT_EQ(m_remote->forwarded(opened.token), QString());
     // The setting goes off while the session's router runs the call of the
     // run: the router and its target must outlive that call. Freed too
-    // early, they often still work in a normal build: the debug preset's
+    // early, they often still work in a normal build: the asan preset's
     // sanitizers show it every time (TESTING.md).
     bool turnedOff = false;
     QObject::connect(m_scripts.get(), &ScriptHost::effectApplied, m_scripts.get(), [&] {

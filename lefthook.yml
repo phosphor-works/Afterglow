@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-License-Identifier: CC0-1.0
+#
+# Git hooks (https://github.com/evilmartians/lefthook). The shared ones (clang-format,
+# qmlformat, the Conventional Commits check) come from the workspace repository.
+# `lefthook install` sets them up, and workspace/tools/setup runs it.
+remotes:
+  - git_url: https://github.com/phosphor-works/workspace
+    ref: main
+    configs:
+      - lefthook/common.yml

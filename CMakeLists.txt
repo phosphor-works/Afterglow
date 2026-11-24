@@ -35,7 +35,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # afterglow_sanitized(<variable>) sets <variable> ON when the build
-# instruments its code with a sanitizer (the debug preset), else OFF. The
+# instruments its code with a sanitizer (the asan preset), else OFF. The
 # flags of each build type count too, as the compiler and the linker get
 # them. aglow then links dynamically (tools/aglow), and the decoding
 # processes of aglow and aglow-mux keep standard error for the reports.
