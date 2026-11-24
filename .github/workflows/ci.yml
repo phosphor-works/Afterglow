@@ -30,7 +30,7 @@ concurrency:
 jobs:
   ci:
     name: CI
-    uses: phosphor-works/workspace/.github/workflows/cpp-ci.yml@ci/reusable-workflows
+    uses: phosphor-works/workspace/.github/workflows/cpp-ci.yml@main
     with:
       pin-file: cmake/AfterglowDependencies.cmake
       preset: release
