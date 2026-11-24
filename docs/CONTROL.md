@@ -389,6 +389,45 @@ A `*` after the pane ID marks the focused pane. `TAB` is the position of the tab
 `SHELL` is the [shell state](#shell-states). `TITLE` takes 30 cells: a longer title is cut, and a shorter one is padded.
 `afterglow ctl ls --json` prints the [pane objects](#pane-object) of `listPanes`.
 
+### Run a command and wait
+
+`afterglow ctl run` and `afterglow ctl wait` do one step each, for a script or an agent with a shell tool.
+They do what the `run` and `wait` tools of the [MCP server](MCP.md) do, with the same code.
+They work on a pane of a window, and with `--session NAME` or in a session pane on a pane of a mux session.
+They need [shell integration](INPUT.md) in the pane, and `Control.allowReadText` for the output.
+
+| Command | Function |
+| --- | --- |
+| `run [--timeout MS] [--tail N] [--json] COMMAND...` | Pastes `COMMAND` at the empty prompt of the pane's shell, presses Enter, and waits for the next prompt. It prints the output as the pane shows it: the command line, what the command wrote and the next prompt. It exits with the status of the command. The words join with spaces. Words after `--` are the command, also words that look like options. |
+| `wait --until finished [--timeout MS] [--tail N] [--json]` | Waits until the command that runs in the pane ends, and exits with its status. At a prompt, it answers at once with the last command. |
+| `wait --until text --pattern REGEX ...` | Waits until new text matches `REGEX`, a regular expression (PCRE) in which `^` and `$` match at line ends. |
+| `wait --until quiet --quiet-ms MS ...` | Waits until no new text comes for `MS` milliseconds. |
+| `wait --until closed ...` | Waits until the pane closes. |
+| `send-text`, `paste` or `send-key` with `--wait-text REGEX [--timeout MS] [--tail N] [--json]` | Sends the input, then waits until new text matches `REGEX`. The wait reads from where the input went, so the prompt that the input answers does not match. It prints all the text since the input. |
+
+`run` refuses a pane where a command runs, where someone typed at the prompt, or where the shell waits for the rest of a command.
+The window or the daemon checks the prompt and writes the command in one step, so that the command never reaches a program that runs.
+`--timeout` is in milliseconds, and the default is `Mcp.waitTimeout`.
+`--tail` keeps the last N lines of the output, and the default is `Mcp.tailLines`.
+`--json` prints all the fields of the result as one JSON object: those of the MCP tools, such as `exit_codes` and `notes`.
+Without `--json`, the notes go to standard error.
+
+| Exit status | Cause |
+| --- | --- |
+| The status of the command | `run`, and `wait --until finished`, when the command ended. A command that ran nothing, such as a comment, gives 0. |
+| 0 | `wait` matched, was quiet or saw the pane close. |
+| 124 | The timeout came first. The command goes on: `afterglow ctl wait --until finished` waits for it. |
+| 125 | The run or the wait failed, for example a pane that is not at its prompt. Standard error says why. |
+| 2 | A usage error, for example `--pattern` without `--until text`, or a regular expression that is not valid. |
+
+For example, an agent runs a build and then waits for a debugger:
+
+```sh
+afterglow ctl run --timeout 600000 --tail 40 -- cmake --build build
+afterglow ctl send-text 'gdb -q ./test\n' --wait-text '^\(gdb\) $'
+afterglow ctl send-text 'run\n' --wait-text '^\(gdb\) $' --timeout 60000
+```
+
 ## Text options
 
 The options of `getText` are an object, as `kitten @ get-text` has them.
@@ -1134,6 +1173,7 @@ A program that turned on the Kitty keyboard protocol gets that encoding, and a r
 | 0 | The command succeeded. `afterglow ctl --help` also exits with status 0. |
 | 1 | An error, for example no Afterglow, a call that failed or no reply in time. |
 | 2 | A usage error, for example an unknown command, a missing argument or an option that the command does not take. An option given two times is a usage error too. So is an `overlay` option or command that breaks a rule. `afterglow ctl` with no command also gives status 2. So does refused text for `send-text` and `paste`: over 32 MiB, or standard input that is not UTF-8 text. So does a `paste` text that does not fit in one request of 1 MiB. So does standard input for `overlay` over 4 MiB or not UTF-8 text. So does `screenshot` when its `FILE`, or `-`, is a terminal, or when `FILE` is a socket. `afterglow ctl` finds these errors before it connects. |
+| 0 to 255, 124 and 125 from `run` and `wait` | See [run a command and wait](#run-a-command-and-wait). |
 | 0 to 255 from `overlay` | `afterglow ctl overlay` exits with the exit status of its program. Thus a status of 1 or 2 can come from the program. A failed or canceled overlay gives 1. So does an exit status outside 0 to 255. |
 
 `afterglow ctl focus --direction` exits with status 1 at the edge of the tab.
