@@ -355,7 +355,7 @@ TEST(MuxDaemon, ASessionCanTakeTheEnvironmentOfItsCaller)
     const std::string path = "/caller/bin:" + testPath();
     ASSERT_TRUE(connection.call(Target, Fn::CallerEnvironment,
                                 Json::Array{ProtocolVersion, environmentJson({{"PATH", path}, {"FROM_CLIENT", "no"}})},
-                                5000, &error))
+                                TestWaitMs, &error))
         << error.message;
     SessionOptions o = daemon.options({}, "far");
     o.environment = {{"FROM_CLIENT", "yes"}, {"SHELL", shell}, {"HOME", home}};
@@ -379,7 +379,7 @@ TEST(MuxDaemon, ASessionOfTheCallersEnvironmentNeedsItOnItsConnection)
     IpcConnection::Error error;
     ASSERT_TRUE(other.connect(daemon.socket(), &error, 2000)) << error.message;
     ASSERT_TRUE(other.call(Target, Fn::CallerEnvironment,
-                           Json::Array{ProtocolVersion, environmentJson({{"PATH", "/bin"}})}, 5000, &error))
+                           Json::Array{ProtocolVersion, environmentJson({{"PATH", "/bin"}})}, TestWaitMs, &error))
         << error.message;
     SessionOptions o = daemon.options({"/bin/sh", "-c", "exec sleep 60"}, "far");
     o.callerEnvironment = true;
@@ -388,7 +388,7 @@ TEST(MuxDaemon, ASessionOfTheCallersEnvironmentNeedsItOnItsConnection)
     EXPECT_NE(error.message.find("sent no environment"), std::string::npos) << error.message;
     // A bad environment is refused, as in newSession.
     EXPECT_FALSE(other.call(Target, Fn::CallerEnvironment,
-                            Json::Array{ProtocolVersion, Json::Array{Json::Value(Json::Array{"A=B", "c"})}}, 5000,
+                            Json::Array{ProtocolVersion, Json::Array{Json::Value(Json::Array{"A=B", "c"})}}, TestWaitMs,
                             &error));
     EXPECT_EQ(error.code, IpcErrorCode::InvalidArg);
 }

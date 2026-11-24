@@ -74,8 +74,14 @@ inline std::string readFile(const std::string& path)
     return text.str();
 }
 
-/// Waits up to @p wait (five seconds by default) for @p done.
-inline bool waitFor(const std::function<bool()>& done, std::chrono::milliseconds wait = 5s)
+/// How long a test waits for the daemon, a shell or a pane before it fails. A
+/// wait returns as soon as its condition holds, so this only bounds a slow run.
+/// On the Nix aarch64 runner a shell loop through a pane took more than 5 s.
+inline constexpr std::chrono::milliseconds TestWait = 20s;
+inline constexpr int TestWaitMs = int(TestWait.count());
+
+/// Waits up to @p wait (TestWait by default) for @p done.
+inline bool waitFor(const std::function<bool()>& done, std::chrono::milliseconds wait = TestWait)
 {
     const auto deadline = std::chrono::steady_clock::now() + wait;
     while (std::chrono::steady_clock::now() < deadline) {
@@ -402,7 +408,7 @@ public:
 
     /// The exit status, 128 + the signal for one that ended it, once the
     /// daemon ended within @p timeout; else nullopt, and it still runs.
-    std::optional<int> waitExit(std::chrono::milliseconds timeout = 5s, bool other = false)
+    std::optional<int> waitExit(std::chrono::milliseconds timeout = TestWait, bool other = false)
     {
         pid_t& pid = other ? m_other : m_pid;
         // No daemon: waitpid(-1) would reap any child of the test.
@@ -430,7 +436,7 @@ public:
         e = {};
         std::optional<Json::Value> result;
         if (connection.connect(m_callSocket, &e, 2000))
-            result = connection.call(target, fn, std::move(args), 5000, &e);
+            result = connection.call(target, fn, std::move(args), TestWaitMs, &e);
         // lastError() describes this call, also when it got no connection.
         if (&e != &m_lastError)
             m_lastError = e;
@@ -557,7 +563,7 @@ public:
     /// The next line, without its '\n'. Empty when no byte comes in
     /// @p timeoutMs (each read starts the wait again), at the end of the
     /// connection (ended()), and when a poll or a read fails.
-    std::string line(int timeoutMs = 5000)
+    std::string line(int timeoutMs = TestWaitMs)
     {
         while (true) {
             if (const auto end = m_buffer.find('\n'); end != std::string::npos) {

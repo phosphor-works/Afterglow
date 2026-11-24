@@ -54,7 +54,7 @@ int listenAt(const std::string& path)
 int acceptOne(int listener)
 {
     pollfd ready{listener, POLLIN, 0};
-    if (::poll(&ready, 1, 5000) <= 0)
+    if (::poll(&ready, 1, TestWaitMs) <= 0)
         return -1;
     return ::accept4(listener, nullptr, nullptr, SOCK_CLOEXEC);
 }
@@ -66,7 +66,7 @@ std::string lineOf(int fd)
     std::string text;
     while (true) {
         pollfd ready{fd, POLLIN, 0};
-        if (::poll(&ready, 1, 5000) <= 0)
+        if (::poll(&ready, 1, TestWaitMs) <= 0)
             return {};
         char c = 0;
         if (::read(fd, &c, 1) != 1)
@@ -295,7 +295,7 @@ struct ProxyRun
     }
     /// The exit status, 128 + the signal for one that a signal ended, once
     /// the proxy ended within @p wait; else nothing, and it still runs.
-    std::optional<int> exitStatus(std::chrono::milliseconds wait = 5s)
+    std::optional<int> exitStatus(std::chrono::milliseconds wait = TestWait)
     {
         if (status || pid <= 0)
             return status;
