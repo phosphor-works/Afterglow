@@ -101,7 +101,7 @@ Run the sanitizer build before a pull request that changes a parser, a protocol 
 5. Run the native window tests on the sanitizer build:
 
    ```sh
-   ASAN_OPTIONS=detect_leaks=0 python3 .claude/skills/ag-verify-live/headless_native.py \
+   ASAN_OPTIONS=detect_leaks=0 python3 tools/headless_native.py \
        --binary build-debug/afterglow/afterglow_native_tests --timeout 3600
    ```
 

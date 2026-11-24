@@ -9,9 +9,8 @@ __pycache__/
 # QT_QML_GENERATE_QMLLS_INI is on. It names a local build directory.
 .qmlls.ini
 
-# Local state of coding agents. The checked-in Claude setup is .claude/settings.json,
-# .claude/hooks/, .claude/skills/ and .claude/agents/.
-/.Codex/
+# Local state of Claude Code. The checked-in setup is .claude/settings.json, which
+# enables the phosphor-works plugins from the workspace repo.
 /.claude/settings.local.json
 /.claude/audit-state.json
 /.claude/worktrees/

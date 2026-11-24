@@ -4,7 +4,7 @@
 """Run afterglow_native_tests in a headless nested KWin, with no window on the user's desktop.
 
 Usage:
-  python3 .claude/skills/ag-verify-live/headless_native.py [--filter 'NativeWindow.*:KeyMapping.*'] [--icd lvp.json]
+  python3 tools/headless_native.py [--filter 'NativeWindow.*:KeyMapping.*'] [--icd lvp.json]
 
 --icd selects a Vulkan driver manifest, such as a lavapipe build for software rendering. Without it the tests use
 the host driver. On a failure, the last KWin log lines are printed. The runner starts itself again under
@@ -20,7 +20,7 @@ import sys
 import tempfile
 import time
 
-REPO = Path(__file__).resolve().parents[3]
+REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / 'afterglow/tests'))
 from nested_desktop import KWINRC  # noqa: E402  (one KWin configuration for every runner)
 
