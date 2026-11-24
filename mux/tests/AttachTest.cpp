@@ -86,8 +86,8 @@ struct Window
         connection = std::make_unique<IpcConnection>();
         if (!connection->connect(daemon.socket(), &error, 2000))
             return "no connection: " + error.message;
-        const auto result =
-            connection->call(Target, Fn::Attach, Json::Array{ProtocolVersion, name, std::move(options)}, 5000, &error);
+        const auto result = connection->call(Target, Fn::Attach, Json::Array{ProtocolVersion, name, std::move(options)},
+                                             TestWaitMs, &error);
         if (!result)
             return error.code.empty() ? error.message : error.code;
         serial = (*result)["window"].toInteger().value_or(0);
@@ -116,7 +116,7 @@ struct Window
     }
 
     /// Runs the stream until @p done, up to @p wait.
-    bool until(const std::function<bool()>& done, std::chrono::milliseconds wait = 5s)
+    bool until(const std::function<bool()>& done, std::chrono::milliseconds wait = TestWait)
     {
         const auto deadline = std::chrono::steady_clock::now() + wait;
         while (std::chrono::steady_clock::now() < deadline) {
@@ -1098,7 +1098,7 @@ TEST(MuxAttach, AWindowThatDoesNotStartItsStreamLetsTheSessionGo)
     Window early;
     EXPECT_EQ(early.call(daemon, "sh", false), Error::Attached);
     const auto freed = [&] {
-        const auto deadline = made + std::chrono::milliseconds(Attach::StreamStartWaitMs + 5000);
+        const auto deadline = made + std::chrono::milliseconds(Attach::StreamStartWaitMs + TestWaitMs);
         while (std::chrono::steady_clock::now() < deadline) {
             Window w;
             if (w.call(daemon, "sh", false).empty())
@@ -2533,8 +2533,9 @@ TEST(MuxAttach, ANewPaneHasTheSessionsEnvironmentAndItsOwnChanges)
     IpcConnection connection;
     IpcConnection::Error error;
     ASSERT_TRUE(connection.connect(daemon.socket(), &error, 2000)) << error.message;
-    const auto answer = connection.call(
-        Target, Fn::NewPane, Json::Array{ProtocolVersion, "s", toJson(launch), toJson(NewPaneSize)}, 5000, &error);
+    const auto answer =
+        connection.call(Target, Fn::NewPane, Json::Array{ProtocolVersion, "s", toJson(launch), toJson(NewPaneSize)},
+                        TestWaitMs, &error);
     ASSERT_TRUE(answer) << error.code << ": " << error.message << " " << daemon.errors();
     std::vector<std::string> keys;
     for (const auto& [key, value] : answer->toObject())
@@ -2991,7 +2992,7 @@ struct ControlClient
     std::optional<Json::Value> call(const std::string& fn, Json::Array args, const std::string& target = "control")
     {
         error = {};
-        return connection.call(target, fn, std::move(args), 5000, &error);
+        return connection.call(target, fn, std::move(args), TestWaitMs, &error);
     }
     IpcConnection connection;
     IpcConnection::Error error;
@@ -3027,7 +3028,8 @@ std::uint32_t firstPane(ControlClient& ctl)
 
 /// Waits until the screen of pane @p pane, as getText reads it, holds
 /// @p part, up to @p wait.
-bool screenShows(ControlClient& ctl, std::int64_t pane, const std::string& part, std::chrono::milliseconds wait = 5s)
+bool screenShows(ControlClient& ctl, std::int64_t pane, const std::string& part,
+                 std::chrono::milliseconds wait = TestWait)
 {
     return waitFor(
         [&] {
@@ -5204,7 +5206,7 @@ struct Watcher
     }
     /// The next line: an event as "signal args", or an error as "error ID
     /// CODE MESSAGE". Empty when none comes in @p timeoutMs.
-    std::string next(int timeoutMs = 5000)
+    std::string next(int timeoutMs = TestWaitMs)
     {
         const auto line = Json::parse(client.line(timeoutMs));
         if (!line)
@@ -7107,7 +7109,7 @@ TEST(MuxAttach, AClientThatSelectedAnAgentSessionReachesTheCommandsOfItsWindow)
                                                  "\n"}));
     ASSERT_TRUE(w.stream->flush(2000));
     Json::Value frame;
-    ASSERT_EQ(agent.connection.next(frame, 5000), IpcConnection::Read::Frame);
+    ASSERT_EQ(agent.connection.next(frame, TestWaitMs), IpcConnection::Read::Frame);
     EXPECT_TRUE(IpcConnection::answers(frame, *id)) << Json::write(frame);
     EXPECT_TRUE(IpcConnection::answer(frame, &error)) << error.message;
 }
