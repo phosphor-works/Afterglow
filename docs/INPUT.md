@@ -171,6 +171,7 @@ In the Kitty keyboard protocol, a Meta key (`Meta_L` or `Meta_R`) reports the Me
 | `resize_up`, `resize_down` | Ctrl+Shift+Alt+Up/Down | Moves a horizontal divider by `Window.resizeStepCells` cells (default 2) |
 
 The command palette, `afterglow ctl action` and Luau can also run these actions.
+The command palette also has the prompt navigation, output, search and project actions.
 Zoom keeps the split ratios and pane IDs.
 Directional focus changes the pane that zoom mode shows.
 A split or resize action first restores the layout.
