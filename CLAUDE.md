@@ -19,7 +19,8 @@ Afterglow's own.
 
 - **Land work through a pull request.** Start each change on a branch from `main`. Never push to `main`. Finished
   work is built with no warnings, tested, and verified the way the change needs (see below). Then commit, push the
-  branch and open the PR without asking. The user merges pull requests. Stage files by name.
+  branch and open the PR without asking. Merge it when every check passes, as the conventions say. Stage files by
+  name.
 - **Never install and never use `sudo`.** No install target and no system packages. Tell the user what you need
   and why. The one exception: `cmake --install` into a temporary directory (`--prefix` or `DESTDIR` under `/tmp`,
   or a directory under the build tree, as the `aglow_only_build` test does), to check the install layout.
