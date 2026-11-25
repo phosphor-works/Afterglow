@@ -2,13 +2,13 @@
 <!-- SPDX-FileCopyrightText: 2026 Phosphor Works Team -->
 <!-- SPDX-License-Identifier: CC0-1.0 -->
 <component type="desktop-application">
-  <id>com.phosphorworks.Afterglow</id>
+  <id>org.phosphor_works.Afterglow</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <name>Afterglow</name>
   <summary>A GPU-accelerated terminal for Wayland</summary>
-  <developer id="com.phosphorworks">
-    <name>Phosphor Works</name>
+  <developer id="org.phosphor_works">
+    <name>Phosphor Works Team</name>
   </developer>
   <description>
     <p>
@@ -26,7 +26,7 @@
   <url type="homepage">https://github.com/phosphor-works/Afterglow</url>
   <url type="bugtracker">https://github.com/phosphor-works/Afterglow/issues</url>
   <url type="vcs-browser">https://github.com/phosphor-works/Afterglow</url>
-  <launchable type="desktop-id">com.phosphorworks.Afterglow.desktop</launchable>
+  <launchable type="desktop-id">org.phosphor_works.Afterglow.desktop</launchable>
   <provides>
     <binary>afterglow</binary>
     <binary>aglow</binary>

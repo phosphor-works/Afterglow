@@ -1782,7 +1782,7 @@ TEST_F(NativeWindow, ClosingStatusWindowRepublishesLauncherAggregate)
 {
     LauncherObserver observer;
     auto bus = QDBusConnection::sessionBus();
-    ASSERT_TRUE(bus.connect(QString(), QStringLiteral("/com/phosphorworks/Afterglow"),
+    ASSERT_TRUE(bus.connect(QString(), QStringLiteral("/org/phosphor_works/Afterglow"),
                             QStringLiteral("com.canonical.Unity.LauncherEntry"), QStringLiteral("Update"), &observer,
                             SLOT(update(QString, QVariantMap))));
     WindowOptions options;

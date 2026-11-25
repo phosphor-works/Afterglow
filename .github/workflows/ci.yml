@@ -40,4 +40,4 @@ jobs:
         for program in afterglow aglow aglow-mux; do
           test -x "result/bin/$program" || { echo "::error::the package installed no $program"; exit 1; }
         done
-        test -e result/share/applications/com.phosphorworks.Afterglow.desktop || { echo "::error::the package installed no .desktop file"; exit 1; }
+        test -e result/share/applications/org.phosphor_works.Afterglow.desktop || { echo "::error::the package installed no .desktop file"; exit 1; }
