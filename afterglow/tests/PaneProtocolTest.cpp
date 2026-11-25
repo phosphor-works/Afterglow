@@ -1354,17 +1354,21 @@ TEST(PaneEvents, AWriteAtThePromptGoesOnlyToAnEmptyCommandLine)
 {
     struct Case
     {
-        // After stty, in one write: an x that the test waits for, then what
-        // the shell printed. The x comes first: after the mark B it would be
-        // typed text.
+        // After stty, in one printf: what the shell printed, then a title
+        // that the test waits for. The reader can get the output in more
+        // than one read and feeds each to the terminal, so text on the
+        // screen does not say that the marks after it were read: the mark B
+        // changes no state and no text. The terminal reads in order, so the
+        // title says that all came before it. A title is no typed text.
         const char* marks;
         std::optional<AfterglowVt::ShellState> refused;
     };
     const Case cases[] = {
-        {R"(printf 'x\r\n\033]133;A\033\\$ \033]133;B\033\\')", std::nullopt},
-        {R"(printf 'x\r\n\033]133;A\033\\$ \033]133;B\033\\typed')", AfterglowVt::ShellState::Prompt},
-        {R"(printf 'x\r\n\033]133;A\033\\$ \033]133;B\033\\\r\n\033]133;C\033\\')", AfterglowVt::ShellState::Running},
-        {R"(printf 'x no marks ')", AfterglowVt::ShellState::None},
+        {R"(printf '\033]133;A\033\\$ \033]133;B\033\\\033]2;read\007')", std::nullopt},
+        {R"(printf '\033]133;A\033\\$ \033]133;B\033\\typed\033]2;read\007')", AfterglowVt::ShellState::Prompt},
+        {R"(printf '\033]133;A\033\\$ \033]133;B\033\\\r\n\033]133;C\033\\\033]2;read\007')",
+         AfterglowVt::ShellState::Running},
+        {R"(printf 'no marks \033]2;read\007')", AfterglowVt::ShellState::None},
     };
     for (const Case& c : cases) {
         Pane pane{AfterglowVt::TerminalOptions{}};
@@ -1378,8 +1382,8 @@ TEST(PaneEvents, AWriteAtThePromptGoesOnlyToAnEmptyCommandLine)
         ASSERT_TRUE(pane.start(options, QStringLiteral("xterm-256color"), 40, 5, 10, 20, &error))
             << error.toStdString();
         ASSERT_TRUE(waitFor([&] {
-            return pane.text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('x'));
-        }));
+            return pane.title() == QLatin1String("read");
+        })) << c.marks;
         AfterglowVt::ShellState state = AfterglowVt::ShellState::None;
         const std::optional<bool> written = pane.sendInputAtPrompt("ls\r", state);
         if (!c.refused) {
