@@ -1,4 +1,4 @@
--- SPDX-FileCopyrightText: 2026 fuddlesworth
+-- SPDX-FileCopyrightText: 2026 Phosphor Works Team
 -- SPDX-License-Identifier: GPL-3.0-or-later
 local flow
 -- This package's own overrides, by instance and tab (or window). The effective

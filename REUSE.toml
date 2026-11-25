@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-FileCopyrightText: 2026 Phosphor Works Team
 # SPDX-License-Identifier: CC0-1.0
 #
 # Licenses for files that cannot carry an SPDX header: data, and the notices
@@ -13,7 +13,7 @@ path = [
     "examples/shaders/**/metadata.json",
     "examples/packages/*/shaders/**/metadata.json",
 ]
-SPDX-FileCopyrightText = "2026 fuddlesworth"
+SPDX-FileCopyrightText = "2026 Phosphor Works Team"
 SPDX-License-Identifier = "LGPL-2.1-or-later"
 
 # These three packs are GPL-3.0-or-later like their GLSL. The last matching
@@ -24,7 +24,7 @@ path = [
     "examples/shaders/feedback-glow/metadata.json",
     "examples/shaders/mesh-reactor/metadata.json",
 ]
-SPDX-FileCopyrightText = "2026 fuddlesworth"
+SPDX-FileCopyrightText = "2026 Phosphor Works Team"
 SPDX-License-Identifier = "GPL-3.0-or-later"
 
 [[annotations]]
@@ -36,12 +36,12 @@ path = [
     "data/benchmarks/*.json",
     "data/benchmarks/*.json.gz",
 ]
-SPDX-FileCopyrightText = "2026 fuddlesworth"
+SPDX-FileCopyrightText = "2026 Phosphor Works Team"
 SPDX-License-Identifier = "CC0-1.0"
 
 [[annotations]]
 path = ["examples/glasshouse/**/*.json", "examples/glasshouse/preview.webp"]
-SPDX-FileCopyrightText = "2026 fuddlesworth"
+SPDX-FileCopyrightText = "2026 Phosphor Works Team"
 SPDX-License-Identifier = "GPL-3.0-or-later"
 # Glasshouse palettes after Dsaquel/dots.
 
@@ -55,7 +55,7 @@ path = [
     "data/themes/afterglow-dark.json",
     "data/themes/afterglow-light.json",
 ]
-SPDX-FileCopyrightText = "2026 fuddlesworth"
+SPDX-FileCopyrightText = "2026 Phosphor Works Team"
 SPDX-License-Identifier = "GPL-3.0-or-later"
 
 [[annotations]]
@@ -106,7 +106,7 @@ SPDX-License-Identifier = "MIT"
 # file there that no file uses. REUSE covers no COPYING.* file.
 [[annotations]]
 path = ["tools/aglow/notices/*.txt", "libs/afterglow-image/notices/*.txt"]
-SPDX-FileCopyrightText = "2026 fuddlesworth"
+SPDX-FileCopyrightText = "2026 Phosphor Works Team"
 SPDX-License-Identifier = "CC0-1.0"
 
 # The tables that tools/gen_unicode_tables.py generates from the Unicode

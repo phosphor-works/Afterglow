@@ -1,4 +1,4 @@
--- SPDX-FileCopyrightText: 2026 fuddlesworth
+-- SPDX-FileCopyrightText: 2026 Phosphor Works Team
 -- SPDX-License-Identifier: GPL-3.0-or-later
 -- A package that ships a script and the shader it drives. Copy this folder
 -- into ~/.config/phosphor-works/afterglow/scripts, and run "Use Package Shaders…" (or

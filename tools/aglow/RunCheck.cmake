@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-FileCopyrightText: 2026 Phosphor Works Team
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 # cmake -DRESULT=<status> -DREGEX=<regex> [-DCOPY_TO=<dir> [-DNOT_EXECUTABLE=ON]] -P RunCheck.cmake -- COMMAND [ARG...]

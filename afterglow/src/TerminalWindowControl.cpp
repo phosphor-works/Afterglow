@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 fuddlesworth
+// SPDX-FileCopyrightText: 2026 Phosphor Works Team
 // SPDX-License-Identifier: GPL-3.0-or-later
 // What afterglow ctl and scripts ask of a window: the neighbors and edges
 // of its panes, scrolls, its state and size, the font and the opacity, and

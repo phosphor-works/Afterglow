@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 fuddlesworth -->
+<!-- SPDX-FileCopyrightText: 2026 Phosphor Works Team -->
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 
 # Afterglow
@@ -77,7 +77,7 @@ Afterglow's own.
 - **Unreleased: no migrations.** Rename a key or change a format directly. Write no compatibility code for old
   configs or old script APIs. `CHANGELOG.md` describes what the first release supports. It is not a log of changes
   and has no migration notes.
-- **Licenses.** Every file that can hold a comment starts with `SPDX-FileCopyrightText: 2026 fuddlesworth` and an
+- **Licenses.** Every file that can hold a comment starts with `SPDX-FileCopyrightText: 2026 Phosphor Works Team` and an
   `SPDX-License-Identifier`. The application, its tests and tools are `GPL-3.0-or-later`, and so is `mux/` (the
   daemon, its protocol and its tests), and `tools/fuzz/muxfuzz.cpp`, which compiles `mux/`. Tools that use only
   `libs/afterglow-vt`, `libs/afterglow-proto` and `libs/afterglow-image` (the VT benchmark, `tools/conformance`, the

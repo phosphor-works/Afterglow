@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-FileCopyrightText: 2026 Phosphor Works Team
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 # cmake -DSOURCE=<dir> -DBINARY=<dir> -DGENERATOR=<name> -DPHOSPHOR_LIBS=<dir> -DMUX_LIBS=<library>,...

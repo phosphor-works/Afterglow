@@ -1,4 +1,4 @@
--- SPDX-FileCopyrightText: 2026 fuddlesworth
+-- SPDX-FileCopyrightText: 2026 Phosphor Works Team
 -- SPDX-License-Identifier: GPL-3.0-or-later
 -- Select and copy a retained shell prompt, input or output region.
 -- From a shell, `aglow run semantic-regions copy` also needs Control.allowReadText.

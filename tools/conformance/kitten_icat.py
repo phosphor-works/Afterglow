@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-FileCopyrightText: 2026 Phosphor Works Team
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """kitten icat, the image client of kitty, against the terminal core of Afterglow.
 Usage: kitten_icat.py AFTERGLOW_HEADLESS [AFTERGLOW_RENDERPNG]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-FileCopyrightText: 2026 Phosphor Works Team
 # SPDX-License-Identifier: GPL-3.0-or-later
 """iTerm2 images in afterglow_renderpng: they decode as in a pane, and animations move on with --frames.
 Usage: renderpng_images.py AFTERGLOW_RENDERPNG

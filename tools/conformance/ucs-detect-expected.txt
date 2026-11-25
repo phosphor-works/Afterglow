@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-FileCopyrightText: 2026 Phosphor Works Team
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
 # The errors that ucs-detect 2.3.9 (wcwidth 0.9.4, Unicode 18.0.0) finds in
