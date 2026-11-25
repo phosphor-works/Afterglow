@@ -770,6 +770,19 @@ void Attachment::catchUp(Session& session)
         readInput(session);
 }
 
+void Attachment::readAfterFailure(Session* session)
+{
+    if (!m_stream)
+        return;
+    (void)m_stream->readable();
+    if (!m_stream->ready())
+        return;
+    if (session && !m_finish)
+        readInput(*session);
+    else
+        readLate(session);
+}
+
 bool Attachment::handle(short revents, Session* session)
 {
     if (!m_stream) {
