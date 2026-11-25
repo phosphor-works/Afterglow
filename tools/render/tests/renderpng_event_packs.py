@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-FileCopyrightText: 2026 Phosphor Works Team
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The bundled event packs in afterglow_renderpng: they load, and they start and end on the window.
 Usage: renderpng_event_packs.py AFTERGLOW_RENDERPNG

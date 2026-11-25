@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-FileCopyrightText: 2026 Phosphor Works Team
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 # aglow, as one static binary: the Kitty file transfer, drag and drop,

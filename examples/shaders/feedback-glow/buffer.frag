@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 fuddlesworth
+// SPDX-FileCopyrightText: 2026 Phosphor Works Team
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Buffer data is linear premultiplied light. Terminal input is encoded sRGB.
 #include <terminal_multipass.glsl>

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-FileCopyrightText: 2026 Phosphor Works Team
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Once: a second source would reset the switches and add the hooks again,
 # also one from the user's .zshenv, which this file reads.

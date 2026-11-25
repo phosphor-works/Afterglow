@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-FileCopyrightText: 2026 Phosphor Works Team
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Where Afterglow installs and reads its files. Every Phosphor app keeps them

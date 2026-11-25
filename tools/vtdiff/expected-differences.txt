@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-FileCopyrightText: 2026 Phosphor Works Team
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
 # Differences between Afterglow and libghostty-vt 1.0.0 that afterglow_vtdiff

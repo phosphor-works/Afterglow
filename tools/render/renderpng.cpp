@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 fuddlesworth
+// SPDX-FileCopyrightText: 2026 Phosphor Works Team
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // Renders a terminal byte stream to a PNG through the real renderer: feeds the

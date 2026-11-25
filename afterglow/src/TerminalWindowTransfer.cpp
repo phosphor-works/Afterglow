@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 fuddlesworth
+// SPDX-FileCopyrightText: 2026 Phosphor Works Team
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Files between programs and the user: the questions of file transfers,
 // downloads and uploads, and the output of a command that goes to the

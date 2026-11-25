@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-FileCopyrightText: 2026 Phosphor Works Team
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Generate the settings reference from the executable's runtime schema.
 Usage: python3 tools/generate-reference.py [--check] build/afterglow/afterglow
@@ -33,7 +33,7 @@ def range_of(entry):
     if low is not None: return f'{low} or more'
     if high is not None: return f'{high} or less'
     return ', '.join(code(x) for x in entry.get('choices', []))
-lines = ['<!-- SPDX-FileCopyrightText: 2026 fuddlesworth -->', '<!-- SPDX-License-Identifier: GPL-3.0-or-later -->', '', '# Configuration reference', '',
+lines = ['<!-- SPDX-FileCopyrightText: 2026 Phosphor Works Team -->', '<!-- SPDX-License-Identifier: GPL-3.0-or-later -->', '', '# Configuration reference', '',
          '`tools/generate-reference.py` generates this document from the runtime Phosphor schema. Group and key names are case-sensitive. See [appearance](APPEARANCE.md) for configuration loading and examples.', '',
          'Afterglow clamps a number to the listed range. The description of Font.size gives 0 or less a meaning of its own. An integer key drops the fraction of a number, so 6.7 is 6. It uses its default for a value outside the 32-bit range and for text that is not a whole number. Invalid enum choices use the default. Where an empty string has a special meaning, the description says so. Omitted values use defaults.', '',
          'A color in `Colors` and in `Mux.agentColor` has one of the forms of [color values](APPEARANCE.md#color-values), such as `#1e1e2e`, `red` or `oklch(0.7 0.1 200)`.', '']

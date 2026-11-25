@@ -1,4 +1,4 @@
--- SPDX-FileCopyrightText: 2026 fuddlesworth
+-- SPDX-FileCopyrightText: 2026 Phosphor Works Team
 -- SPDX-License-Identifier: GPL-3.0-or-later
 -- Example: Shaders.pane = ["bloom"] in config.json.
 -- A failure goes to stderr. A run from the palette shows it as a notification.

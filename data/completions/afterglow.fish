@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-FileCopyrightText: 2026 Phosphor Works Team
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Fish completion for afterglow, for Fish 4 or later. Script IDs and their

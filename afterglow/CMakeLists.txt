@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-FileCopyrightText: 2026 Phosphor Works Team
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 find_package(Qt6 ${AFTERGLOW_QT_MIN} REQUIRED COMPONENTS Core Concurrent Gui Widgets Qml Quick QuickControls2 DBus Network)

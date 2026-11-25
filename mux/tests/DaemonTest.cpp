@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 fuddlesworth
+// SPDX-FileCopyrightText: 2026 Phosphor Works Team
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // Each test runs its own aglow-mux (TestDaemon.h), so no test reaches the

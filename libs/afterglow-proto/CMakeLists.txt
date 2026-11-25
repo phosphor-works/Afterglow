@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-FileCopyrightText: 2026 Phosphor Works Team
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 # zlib-ng and xxHash are built into the tree from the archives that

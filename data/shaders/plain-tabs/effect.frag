@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 fuddlesworth
+// SPDX-FileCopyrightText: 2026 Phosphor Works Team
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
 // Plain Tabs: the flat tab transition of flat_tabs.glsl as it is, with no
