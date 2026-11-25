@@ -115,9 +115,9 @@ Afterglow's own.
 - Documents follow `docs/WRITING.md`: controlled English after ASD-STE100, short sentences, one instruction in each
   step, tables for fields and limits. Keep the root README short. No audit reports, plans or session summaries in
   the repository.
-- User-facing strings (setting descriptions, pack metadata, UI text, `CHANGELOG.md`) are plain prose: no em dash
-  between clauses, no semicolon between sentences, no spaced hyphen as a dash, no rule-of-three flourishes. Code
-  comments are exempt.
+- All text follows these rules, as the conventions say: user-facing strings (setting descriptions, pack metadata, UI
+  text, `CHANGELOG.md`), documents, code comments, log messages and commit messages. No em dash between clauses, no
+  semicolon between sentences, no spaced hyphen as a dash, no rule-of-three flourishes.
 - Commits follow Conventional Commits, as the conventions file says ("feat(chrome): animate tab switches with a
   shader pack"). The body says what changed for the user, why, and how you verified it. Check each claim in the
   message against the staged diff. End with the `Co-Authored-By` line that the session instructions give.
