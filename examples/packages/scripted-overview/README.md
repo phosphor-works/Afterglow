@@ -3,7 +3,10 @@
 
 # Scripted overview
 
-This package ships a script and the shader that it drives.
+This package contains a script and the shader that the script drives.
+
+## Contents
+
 
 - `init.luau` opens the pane overview and takes the keyboard while it is open.
   Keys a and d, h and l, or the Left and Right arrow keys move the highlight.
@@ -20,7 +23,7 @@ This package ships a script and the shader that it drives.
 4. Bind `script:scripted-overview.open` to a key in `Keybinds.bindings`.
 
 `use-shaders` only opens the dialog. The dialog writes the setting when you select it.
-The command fails with exit status 1 when another dialog of the window is open.
+When another dialog of the window is open, the command fails with exit status 1.
 The commands take no arguments.
 
 The shader is available only while the package is loaded.

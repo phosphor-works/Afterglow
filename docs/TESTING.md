@@ -3,6 +3,7 @@
 
 # Testing
 
+This page tells developers how to run the tests of Afterglow and its developer tools, and what each test checks.
 Run commands from the repository root.
 See [build instructions](BUILD.md) for dependencies and configuration.
 
@@ -267,8 +268,9 @@ Extra arguments go to esctest. With a filter, the script reports only unexpected
 It reads the cursor position after each one, and compares it with the width that wcwidth gives.
 The ucs-detect project publishes the results of other terminals.
 
-The script runs ucs-detect in `afterglow_headless` two times: with grapheme clustering (mode 2027) on and off.
-ucs-detect turns the mode on by itself around its tables of characters, so the mode changes only the language results.
+The script runs ucs-detect in `afterglow_headless` two times, with grapheme clustering (mode 2027) on and off.
+ucs-detect turns the mode on by itself around its tables of characters.
+As a result, the mode changes only the language results.
 
 1. Make a Python virtual environment in a directory of your choice, and install ucs-detect and its dependencies into it:
 
@@ -445,7 +447,18 @@ The tool checks the screen after each step:
 | Wide characters | A wide character has no tail cell, or a tail cell has no wide character. |
 | Sized text (OSC 66) | A block of sized text lost a cell, or a cell of a block has no first cell. |
 
-A step is one of these actions: text, a key in the encoding that the program asked for (Kitty keyboard protocol included), Ctrl and a letter, mouse reports while the program tracks the mouse, a paste, a focus change, a resize, a scroll of the scrollback, or a selection and a search over it.
+A step is one of these actions:
+
+- Text.
+- A key in the encoding that the program asked for, Kitty keyboard protocol included.
+- Ctrl and a letter.
+- Mouse reports while the program tracks the mouse.
+- A paste.
+- A focus change.
+- A resize.
+- A scroll of the scrollback.
+- A selection and a search over it.
+
 After the action, the tool reads the output of the program.
 It stops when the program is quiet for 30 milliseconds, or after 400 milliseconds.
 When the program exits, the tool starts it again in the same terminal.
@@ -489,7 +502,7 @@ build/tools/conformance/afterglow_tuifuzz --seed 7 --steps 2000 --env LESSSECURE
 
 A failure prints the program, the seed, the step, the last action and the screen, and the tool exits with status 1.
 The tool exits with status 2 when the program does not start.
-A program that crashes is reported, and the run continues.
+The run reports a program that crashes, and continues.
 
 The recordings are input for the other tools:
 
@@ -724,7 +737,7 @@ ctest --test-dir build --output-on-failure -R '^(ControlSocketTest|ControlEvents
 | Tests | Binary | What they run |
 | --- | --- | --- |
 | `ControlSocketTest.*` | `afterglow_control_tests` | The `control` target: calls and errors, `overlay` and its `overlayInput` parts, and the refusals of `screenshot`. The socket lookup, stale sockets and merged events. |
-| `ControlEvents.AreTheSignalsOfTheControlTarget` | `afterglow_control_tests` | The events of a session of the mux daemon are the signals of the `control` target. Thus `afterglow ctl watch` can subscribe to each of them. |
+| `ControlEvents.AreTheSignalsOfTheControlTarget` | `afterglow_control_tests` | The events of a session of the mux daemon are the signals of the `control` target. As a result, `afterglow ctl watch` can subscribe to each of them. |
 | `AfterglowHelpTest.HelpAndVersionNeedNoDesktop` | `afterglow_command_tests` | `afterglow --help` and `--version` print without a display |
 | `CtlBinaryTest.*`, `CtlOverlayTest.*` and `CtlScreenshotTest.*` | `afterglow_command_tests` | `afterglow ctl` against a socket that the test makes: usage errors, `afterglow ctl overlay` with its options and standard input, and `afterglow ctl screenshot` with a `FILE`, `-`, a pipe, a FIFO that a program reads, a socket, a terminal and a directory that takes no new file |
 | `CommandSocketTest.*` | `afterglow_command_tests` | The `commands` target of the socket: the list, runs, standard input, flow control, cancel and the limits |
@@ -789,7 +802,7 @@ python3 -I afterglow/tests/mcp_session.py build/afterglow/afterglow exit_codes
 
 The runner gives each server a private `XDG_RUNTIME_DIR`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME` and `HOME` under `/tmp`.
 A server gets only the variables of an allow list.
-Thus no server reaches your mux daemon, your Afterglow, your session bus or your shell files.
+As a result, no server reaches your mux daemon, your Afterglow, your session bus or your shell files.
 The servers of a case share one daemon, which the first server of the case starts.
 The daemon ends with the last session of the case, so each case starts with no session.
 
@@ -877,7 +890,7 @@ The `StateSync.*` tests cover these cases:
 - A writer for a replica with less history sends no older rows
 - Images of both screens with their placements: a relative placement, a virtual placement, a Sixel, and a deleted image with its placements
 - An image larger than a frame comes in parts and shows only once all of it came. An image of a lower id waits for it. An image deleted before all of it came lets the next one come.
-- An animation runs on the replica's clock: output and a new frame keep its step. A command that stops it, jumps to a frame or plays it again reaches the replica, also when it changes no value of the writer's store.
+- An animation runs on the replica's clock: output and a new frame keep its step. A command that stops it, jumps to a frame or plays it again reaches the replica. This is also true when the command changes no value of the writer's store.
 - A deleted frame keeps the frame that shows, and a new image under an id starts its animation over
 - An image that a program sends again faster than its pixels go still shows, and the replica keeps only the frames of the last version
 - Many images, a command to each of them, and the frames that go when they go, all in state frames within the budget and one item more
@@ -942,7 +955,7 @@ The `Mux.MuxAttach.*` tests cover these cases:
 - A request that waits when its pane moves to a new session gets the answer of a session that no window shows
 - A session starts no more than 256 panes. A window whose stream takes fewer channels gets as many panes as it takes, and the others wait.
 - While no window shows a session, its panes keep a bell, a flash and their newest notifications, and the next window gets them, marked missed. The session keeps no clipboard write.
-- The calls that a window that goes did not get go to the next window in their order, and a close of an OSC 99 notification still takes it away
+- The next window gets, in their order, the calls that a closed window did not get. A close of an OSC 99 notification still takes the notification away
 - A pane joins another session with its program running, and the daemon refuses bad calls to move it there. A session of 256 panes takes no more.
 - A pane that left a window goes back into it only after that window let it go
 - A pane whose program reads nothing does not stop the input of the other panes
@@ -1024,7 +1037,7 @@ Not every test starts a daemon. A test that starts one gives it an `XDG_RUNTIME_
 The `Mux.*` tests, the `MuxClient.*` tests and the native tests above do this with `mux/tests/TestDaemon.h`.
 The `MuxCommandTest.*` tests do it in their `SetUp`.
 A native test that shows a session also gives the window the sockets of its daemon. A launch with `--mux-attach` uses the sockets of the environment, so a test of it must set these directories first.
-Thus a test daemon never reaches the mux daemon of the user, and never starts in a systemd user unit.
+As a result, a test daemon never reaches the mux daemon of the user, and never starts in a systemd user unit.
 The tests get the name of the state socket from `AfterglowProto::muxStateSocketName`, which the daemon uses too (see [sockets](MUX.md#sockets)).
 At its end, each `MuxCommandTest.*` test kills the processes that have its `XDG_RUNTIME_DIR`.
 Some `MuxCommandTest.*` tests put an `afterglow` with a script as its daemon in `build/afterglow/muxcommand-PID-*`.
@@ -1107,11 +1120,11 @@ Without a Wayland display or a Vulkan device, `aglow_icat_render` reports Skippe
 `aglow_clipboard_cases` reports Skipped when the kernel does not show a process that waits in `open()`. It runs its other cases first.
 `aglow_icat_decode` reports Skipped when its user can read a directory of mode 0, as root can. It runs its other cases first.
 `aglow_icat_decode`, `aglow_icat_external` and `aglow_icat_render` run `aglow` without `TMUX`, so the tests do not change the settings of a tmux that runs them.
-`aglow_icat_decode`, `aglow_icat_external` and `aglow_clipboard_cases` run `aglow` in a session of its own, with no controlling terminal, or in a pseudo-terminal that the test makes. Thus `aglow` never reaches the terminal that runs the tests.
+`aglow_icat_decode`, `aglow_icat_external` and `aglow_clipboard_cases` run `aglow` in a session of its own, with no controlling terminal, or in a pseudo-terminal that the test makes. As a result, `aglow` never reaches the terminal that runs the tests.
 `aglow_icat_render` also runs `afterglow_renderpng` without `TMUX`.
 It runs `afterglow_renderpng` with `QT_QPA_PLATFORMTHEME=generic`, so the theme plugin of the desktop does not load.
 `aglow_run_pty` and `aglow_tmux_pty` run `aglow` without `TMUX`, `TMUX_PANE`, `AFTERGLOW_SOCKET`, `AFTERGLOW_PANE_ID` and `WAYLAND_DISPLAY`, with an `XDG_RUNTIME_DIR` of their own.
-Thus they do not reach a tmux or an Afterglow that runs them. `aglow_tmux_pty` starts its own tmux server with `tmux -L` and its own `TMUX_TMPDIR`.
+As a result, they do not reach a tmux or an Afterglow that runs them. `aglow_tmux_pty` starts its own tmux server with `tmux -L` and its own `TMUX_TMPDIR`.
 
 `aglow_icat_render` checks a PNG image, a mirrored image, an image placed with `--place`, Unicode placeholders and each frame of an animated GIF.
 It also gives `aglow icat` a PNG header of 12,000 × 12,000 pixels.

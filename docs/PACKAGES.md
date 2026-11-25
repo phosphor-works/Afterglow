@@ -3,12 +3,26 @@
 
 # Luau packages and saved state
 
+This page tells script authors how to write a Luau package: its manifest, commands, configuration, assets, saved state and shaders.
+It also tells users how to install a package.
+
+## Package directories
+
 Afterglow supports single `.luau` files and local packages.
 A package is a directory in a scripts directory, usually `scripts/` beside the active configuration file.
 Afterglow reads packages from every scripts directory, with the priority of [single files](SCRIPTING.md#install-a-script).
 The directory contains a `package.json` manifest.
 The directory can be a symlink, for example to a Git checkout.
 Afterglow checks the package paths against the directory that the symlink points to.
+
+## Install a package
+
+The example packages do not activate themselves.
+
+1. Copy a complete package directory into `~/.config/phosphor-works/afterglow/scripts/`.
+2. Keep the directory name, the manifest ID and the module file names unchanged.
+3. Follow the instructions of the package for the settings that it needs.
+4. After the reload, open the command palette again to see the new commands.
 
 ## Manifest
 
@@ -69,7 +83,7 @@ A package over a limit does not load. `afterglow ctl scripts` shows the error.
 An error in a module names the module file and its line.
 Each module must be complete Luau code by itself.
 Afterglow parses each module alone before it loads the package.
-Thus a syntax error names the module that contains it, as for a single-file script.
+As a result, a syntax error names the module that contains it, as for a single-file script.
 
 ## Commands
 
@@ -155,7 +169,7 @@ Read the current state before you merge changes and try again.
 
 A `state_write` over a limit fails with `invalid_effect` and writes nothing.
 The top-level value must be a JSON-compatible object table.
-Nested lists are permitted.
+A list can contain other lists.
 Unsupported values, symlinks and corrupt files cause an error.
 Afterglow keeps corrupt data for manual recovery.
 Single-file scripts use schema version 1 and the same state effects.

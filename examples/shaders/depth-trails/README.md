@@ -19,7 +19,7 @@ Enable [scene-controls](../../packages/scene-controls/README.md) for the **Edit 
 Use it to change intensity or enter an image path.
 Paths can be pack-relative, absolute or begin with `~/`.
 An empty path restores a transparent image.
-Images change at transition completion and can be saved in presets.
+An image changes when its transition completes. You can save images in presets.
 Each image permits 16 MiB encoded data, 4096 pixels per side and four megapixels decoded.
 
 Two half-resolution RGBA16F passes with feedback and auxiliary depth use approximately 31.6 MiB at 1080p or 126.6 MiB at 4K.

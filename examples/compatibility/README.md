@@ -3,7 +3,8 @@
 
 # Compatibility examples
 
-Run these inside Afterglow. They do not modify your configuration.
+These demonstration clients show the image, multiple-cursor and download protocols that Afterglow supports.
+Run them inside Afterglow. They do not change your configuration.
 
 ```sh
 python3 examples/compatibility/relative-images.py
@@ -14,13 +15,13 @@ python3 examples/compatibility/download.py /path/to/file.txt
 `relative-images.py` moves a parent image while its child follows the declared offset.
 `multi-edit.py` edits three ASCII values with block, beam and underline cursors.
 Tab selects RGB, palette, reversed-cell or main-cursor colors. Escape exits.
-Colors apply to all extra cursors, as required by the protocol.
+Colors apply to all extra cursors, as the protocol requires.
 Both clients restore the normal screen on exit.
 `download.py` offers a file through OSC 1337, including across SSH.
 Afterglow asks where to save the file.
 
-Image and cursor clients demonstrate Kitty protocols.
-The download format is shared with iTerm2 `it2dl`.
+The image and cursor clients show Kitty protocols.
+iTerm2 `it2dl` uses the same download format.
 See [supported operations and limits](../../docs/COMPATIBILITY.md).
 
 For a minimal color example inside an application-owned screen:

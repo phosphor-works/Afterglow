@@ -3,6 +3,7 @@
 
 # Native terminal performance
 
+This page gives the performance measurements of Afterglow and their test conditions, for developers who change the terminal core or the renderer.
 The native benchmark measures the application in an isolated KWin desktop.
 See [testing](TESTING.md#native-performance-measurements) for commands.
 See [Phosphor scene performance](../examples/phosphor/PERFORMANCE.md) for separate shader measurements.
@@ -83,7 +84,7 @@ Zero submitted frames does not establish zero GPU utilization.
 | 100,000 | 236.04 / 148.94 | 243.34 / 156.11 | 86.19 | 89.57 |
 | 1,000,000 | 802.78 / 715.59 | 847.72 / 760.58 | 651.36 | 695.86 |
 
-Growth is measured from the same process before history population.
+The growth is the change from the same process before it fills the history.
 It includes parser storage, viewport content and font-cache changes.
 
 ### Input response
@@ -103,7 +104,7 @@ Compositor scheduling, other applications and power management can change tail l
 ### Script callback duration
 
 All 180,000 callbacks completed without handler errors.
-The maximum column covers both viewport sizes. Effect application is excluded.
+The maximum column covers both viewport sizes. The duration does not include effect application.
 
 | Synthetic panes | 1080p p50 / p95 (µs) | 4K p50 / p95 (µs) | Maximum (µs) |
 | ---: | ---: | ---: | ---: |
@@ -153,7 +154,7 @@ Each run fills a 200×50 terminal until it holds 100,000 history rows.
 The scrollback limit is 100,000 rows.
 The run then resizes to 180×45, 160×50, 140×45, 160×50, 180×45 and 200×50 four times.
 These are not the native benchmark's steps. Each resize changes the size by 20 columns and 5 rows.
-Each resize is timed in process CPU time, which is less sensitive to other load than elapsed time.
+The benchmark times each resize in process CPU time. Other load changes CPU time less than elapsed time.
 A run gives the median and 95th percentile of its 24 resizes.
 Tables show the medians of five runs.
 The before and after runs use the same benchmark binary with the old and new library.
@@ -188,8 +189,8 @@ It does not copy a line into a temporary buffer first.
 A line that fits on one row gets no temporary line record.
 It copies runs of narrow cells in one operation.
 Grapheme entries move between rows without new allocations.
-The old rows of a line are freed when the line is complete, which lowers peak memory.
-Only rows that can store blank cells after their content are compacted again.
+Reflow frees the old rows of a line when the line is complete. This lowers peak memory.
+Reflow compacts again only the rows that can store blank cells after their content.
 
 These numbers come from a shared 8-core machine with a load average between 11 and 23.
 Absolute values change with load. Compare the before and after columns of one table only.
@@ -218,7 +219,7 @@ A case that fails this check prints an error and the command exits with status 1
 | `cursors 80x24, distinct rects` | 80×24 | None | One extra-cursor sequence with 812 different overlapping rectangles |
 
 An 80×24 screen has 1,920 cells, fewer than the limit of 4,096 extra cursors.
-Thus no sequence stops at the limit.
+As a result, no sequence stops at the limit.
 
 Measurement: 1 November 2026, `RelWithDebInfo`, a shared 8-core machine with a load average of about 16.
 `fd1124a` examined every retained OSC 133 region on each scroll of a region on the main screen.
@@ -234,7 +235,7 @@ When every region is above the scroll region, the terminal does not examine them
 
 An extra-cursor sequence visits each cell of each different rectangle once.
 It also compares each existing cursor with each rectangle.
-Thus the cost increases with the number of rectangles multiplied by their area.
+As a result, the cost increases with the number of rectangles multiplied by their area.
 
 ## Output throughput
 
@@ -270,14 +271,14 @@ The changes between the two commits:
 - The terminal keeps the properties of 256 recently printed characters.
 - Narrow and wide characters go into plain cells without the general cell write.
 - A line that scrolls into the history gives its buffer to the new bottom line.
-- A history line that has only the default style is dropped without a read of its cells.
+- The terminal drops a history line that has only the default style, and does not read its cells.
 
 ### Comparison with other terminals
 
 [DOOM-fire-zig](https://github.com/const-void/DOOM-fire-zig) draws a full-screen fire with 256-color SGR sequences and the `▀` character.
 Each frame is one write of about 200 KiB to the terminal.
 The program counts the frames that it writes in each second.
-Thus the result shows how fast a terminal reads and parses output.
+As a result, the result shows how fast a terminal reads and parses output.
 It does not show how many frames the terminal shows on the display.
 
 Each terminal ran full screen in its own nested KWin at 1920×1080, with its default settings.
@@ -288,7 +289,7 @@ For Zig 0.17, a port uses C library calls for the terminal I/O. The port also st
 
 Measurement: 1 November 2026, Afterglow `ded14ad`, Intel Core i7-9700K and NVIDIA GeForce RTX 2080, load average below 3.
 The fonts and the window size give each terminal a different grid.
-Thus the cells per second column compares the terminals best.
+As a result, the cells per second column compares the terminals best.
 The three runs of each terminal are within 1% of each other.
 
 | Terminal | Grid | Frames per second (three runs) | Median | Cells per second |
@@ -351,13 +352,13 @@ See [Qt command-buffer timing](https://doc.qt.io/qt-6/qrhicommandbuffer.html#las
 The terminal GPU metric excludes separate Qt Quick chrome commands.
 
 An empty timing distribution has a count of zero and no percentile fields.
-This can mean no frames were submitted or the timing source was unavailable.
+This can mean that Afterglow submitted no frames, or that the timing source was not available.
 NVIDIA process utilization fields remain null when the driver does not supply them.
 GPU allocation samples describe the application process, not the complete desktop.
 CPU measurements exclude the child workload and nested compositor.
-Benchmark bookkeeping is included in application CPU time.
+Application CPU time includes the bookkeeping of the benchmark.
 
-## Measurement limits
+## Limits
 
 These workloads use no shaders, no audio, one visible terminal pane and scale 1.
 The scripts case changes only its synthetic state snapshot size.
