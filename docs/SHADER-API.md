@@ -3,6 +3,7 @@
 
 # Shader pass API
 
+This page gives the contract between Afterglow and a terminal shader pass, for shader pack authors.
 Afterglow uses Phosphor ShaderRegistry metadata, source containment, include resolution, parameter slots and presets.
 Terminal shaders are a Phosphor shader family, like Phosphor's animation, pointer and surface families and Phosphor's `overlay` shader family.
 In the rest of this document, an overlay is a program that runs over a pane. See [overlay transitions](#overlay-transitions).
@@ -140,7 +141,7 @@ A shader that reads `iMouse` or `uWindowMouse`, and nothing in the lists above, 
 Include `terminal_multipass.glsl` to read the buffers as `iChannel0` through `iChannel7`.
 Passes execute in metadata order.
 Earlier buffers contain the current frame's result. The current and later buffers contain the previous frame.
-Without feedback, previous values are cleared each frame.
+Without feedback, Afterglow clears previous values each frame.
 The final image pass receives all current-frame buffers.
 
 Input textures are local to the region, and every texture is top-down.
@@ -160,7 +161,7 @@ Buffer `iFrame` starts at zero after reset. Final-pass `iFrame` keeps the window
 
 Set `"windowBackground": true` on a background pack to share
 one set of buffers across the window. The buffer passes run once per frame.
-The image pass uses window coordinates and is clipped to visible panes.
+The image pass uses window coordinates. Afterglow clips it to visible panes.
 Split changes do not resize these buffers or reset their history.
 Window resize, shader reload, and changes to source colors, cell size or opacity still reset history.
 The focused pane supplies the palette, cursor, signals and parameter overrides.
@@ -446,7 +447,8 @@ Scripts play pulses with `afterglow.pulse`. `panePulse(i)` runs from 0 to 1, lin
 `panePulseEffect(i)` is 0 for none, 1 for a portal, 2 for a flash or 3 for a shake. A pack can define its own numbers from 4 to 255.
 `panePulseColor(i)` is the palette color the script chose.
 While any pane is away from here, the pack also runs on each frame Afterglow draws. Those frames come only from changes, so a static mark costs no extra frames.
-[The flat pane effects](../data/shaders/shared/flat_panes.glsl) of Phosphor Panes and Plain Panes fade panes in and out, and mark a pane that is away with a line at its edge.
+[The flat pane effects](../data/shaders/shared/flat_panes.glsl) of Phosphor Panes and Plain Panes fade panes in and out.
+They also mark a pane that is away with a line at its edge.
 The example pack [Pane Effects](../examples/shaders/pane-effects/effect.frag) shows a hinge and a picture tube, and a ring and a vortex for the context change.
 
 The arrow keys of the overview follow the layout that the pack draws. The pack names it with `overviewNavigation` in its metadata.
@@ -454,7 +456,8 @@ With `order`, the default, Left and Right step through the cards in order and wr
 This fits cards in a row or round a ring, where `highlightPosition()` moves over each card on its way.
 With `direction`, an arrow key goes to the pane in that direction, and stays when no pane is there.
 A pack with `direction` must draw each tab as a picture of its layout, with each pane at its `paneRect()` in the tab.
-It must draw the tabs in a grid in tab order, with as many columns as the smallest whole number whose square holds the tabs, and the last row centered.
+It must draw the tabs in a grid in tab order, with the last row centered.
+The number of columns is the smallest whole number whose square holds the tabs.
 `flat_overview.glsl` draws this layout.
 In a tab, the key goes where the `focus_left` action and its like go. At the edge of a tab, it goes on to the nearest pane of another tab in that direction.
 The highlight then can go to a card that is not next in the count. `highlightPosition()` still counts the short way through the cards between them.
@@ -579,7 +582,7 @@ A pack of your own can do the same to change only the colors.
 ## Ownership and reset
 
 Each effect occurrence, scope and pane owns two alternating textures per buffer.
-Depth adds two auxiliary textures. No texture is sampled while it is being written.
+Depth adds two auxiliary textures. A pass does not sample a texture while it writes that texture.
 
 These changes reset history:
 

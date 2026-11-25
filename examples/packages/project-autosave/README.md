@@ -3,11 +3,13 @@
 
 # Project autosave
 
-This package periodically saves enabled projects and provides a native restore picker.
+This package saves the projects that have autosave on at intervals, and gives a native restore picker.
 It uses ideas from [resurrect.wezterm](https://github.com/MLFlexer/resurrect.wezterm).
 It does not run WezTerm plugins.
 
-Install from the repository root:
+## Install
+
+From the repository root, run these commands:
 
 ```sh
 mkdir -p ~/.config/phosphor-works/afterglow/scripts
@@ -15,7 +17,7 @@ cp -r examples/packages/project-autosave ~/.config/phosphor-works/afterglow/scri
 ```
 
 When you use a custom configuration file, use the `scripts/` directory beside that file.
-The package loads immediately. Installation does not enable autosave.
+The package loads immediately. The installation does not turn on autosave.
 
 ## Use autosave
 
@@ -24,11 +26,11 @@ The package loads immediately. Installation does not enable autosave.
 3. Give the layout a name.
 4. Select **Enable autosave for this saved project**.
 
-This immediately saves the window and enables periodic saves for that name.
+The package saves the window immediately and turns on periodic saves for that name.
 **Autosave replaces the named layout with current tabs, split ratios, directories and explicit launch commands.**
 Use a separate name to preserve a template.
 
-Changes are saved every 60 seconds by default.
+By default, the package saves changes every 60 seconds.
 Select **Save project now** for an immediate save before exit.
 
 After restart, select **Restore an autosaved project**.
@@ -36,7 +38,7 @@ The picker lists enabled projects with saved layouts.
 An existing window with the same project name receives focus instead of a duplicate window.
 
 Select **Disable autosave for this saved project** to stop periodic saves for its name.
-The saved layout remains in the normal project switcher.
+The saved layout stays in the normal project switcher.
 
 ## Configuration and limits
 
@@ -46,17 +48,17 @@ Create `config.json` beside `package.json` to change the interval:
 {"interval_seconds": 60}
 ```
 
-The interval is clamped to 10–3600 seconds.
-Each interval saves up to eight windows sequentially. Larger sets rotate across intervals.
+The package clamps the interval to 10 to 3600 seconds.
+Each interval saves up to eight windows, one after the other. A larger set of windows rotates across intervals.
 An open restore picker does not stop the periodic saves.
-Duplicate live windows with the same project name are skipped to prevent conflicting saves.
-The package remembers enablement for up to 100 names.
-Failed saves are reported. The next interval can retry.
+The package skips duplicate live windows with the same project name, so that the saves do not conflict.
+The package keeps the autosave setting for up to 100 names.
+The package reports a failed save. The next interval can try again.
 Autosave does not run commands.
 
-Restore runs commands stored in the layout.
+A restore runs the commands that the layout stores.
 It does not preserve running processes, editor buffers, terminal scrollback or shell history.
-There is no guaranteed save on shutdown.
+The package does not guarantee a save at shutdown.
 Recovery uses the latest completed periodic or manual save.
 Separate Afterglow processes do not synchronize live layouts.
 Use one application instance for each autosaved project.
@@ -92,5 +94,5 @@ A command from the palette or a key shows its message as a notification on the p
 
 Remove `scripts/project-autosave/` to uninstall.
 Afterglow then stops the autosave timer and closes an open restore picker.
-Saved layouts remain in `projects/` beside the configuration.
-Enablement state remains in `state/scripts/project-autosave.json` for reinstallation.
+Saved layouts stay in `projects/` beside the configuration.
+The autosave settings stay in `state/scripts/project-autosave.json` for reinstallation.

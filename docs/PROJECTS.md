@@ -3,6 +3,9 @@
 
 # Panes and projects
 
+This page tells users how to move panes and tabs, how to use the pane overview, and how to save and open projects.
+A project is a saved window layout. Script authors find the project effects and their results here too.
+
 ## Move panes and tabs
 
 | Action | Function |
@@ -15,6 +18,14 @@
 | `detach_tab` | Moves the complete tab to a new window |
 
 Rotation keeps the layout shape and split ratios. Focus stays with the same pane.
+
+Use the command palette or a keybinding to run these actions.
+Drag a tab outside the tab bar and release it to open a new window.
+You can also right-click the tab and select **Detach Tab to New Window**.
+A horizontal drag inside the bar changes the tab order.
+A move keeps processes, history, graphics and pane IDs.
+A detached tab also keeps its tab ID and split ratios.
+An empty source window closes after its last pane moves.
 
 ### Pane overview
 
@@ -43,13 +54,8 @@ Keys do not reach the panes while the overview is open. Programs in the panes ke
 A zoomed tab shows all of its panes in the overview, and returns zoomed on the chosen pane.
 `Animation.overviewCurve` and `Animation.overviewDuration` set the motion.
 `Shaders.overview` chooses the pack that draws it. See [shaders](SHADERS.md#shader-chains).
-Use the command palette or a keybinding to run these actions.
-Drag a tab outside the tab bar and release it to open a new window.
-Alternatively, right-click the tab and select **Detach Tab to New Window**.
-A horizontal drag inside the bar changes tab order.
-Movement keeps processes, history, graphics and pane IDs.
-A detached tab also keeps its tab ID and split ratios.
-An empty source window closes after its last pane moves.
+
+### Move panes from a shell
 
 These commands move pane 12 beside pane 34, then detach its tab:
 
@@ -84,11 +90,11 @@ A pane that moves into the window of another session of the same daemon joins th
 3. Enter a project name.
 
 A project stores one window's tabs, split trees, ratios, focus, titles, directories and explicit launch arguments.
-Replacing an existing project requires confirmation.
+Afterglow asks you to confirm before a save replaces an existing project.
 You can also save the window of a mux session (see [projects and mux sessions](#projects-and-mux-sessions)).
 **Switch Project** searches saved names.
 It focuses an open instance or starts the saved layout in a new window.
-Other windows remain open.
+Other windows stay open.
 The keybinding action names are `save_project` and `switch_project`.
 
 | Command | Result |
@@ -105,8 +111,8 @@ The keybinding action names are `save_project` and `switch_project`.
 
 Layouts are in `projects/` beside the active configuration file.
 The usual path is `~/.config/phosphor-works/afterglow/projects/`.
-Names contain 1–64 letters, digits, underscores or hyphens.
-Saves replace files atomically. Symlink files are not permitted.
+A name has 1 to 64 letters, digits, underscores or hyphens.
+A save replaces the file atomically. Afterglow does not accept a project file that is a symlink.
 
 | Limit | Value |
 | --- | --- |
@@ -143,22 +149,22 @@ Saved IDs are labels. Each launch maps them to new runtime IDs.
 ## Commands and recovery
 
 `command` is an argument array. An empty array starts the configured shell.
-Only explicit pane launch commands are saved.
+A project saves only explicit pane launch commands.
 Afterglow does not infer commands from foreground processes or shell history.
 Commands do not use implicit shell expansion.
-Use an explicit shell with `-c` when expansion is necessary.
+If you need shell expansion, use an explicit shell with `-c`.
 
-Directories must be absolute or start with `~/`. A single `~` means the home directory.
+A directory must be absolute or start with `~/`. A single `~` means the home directory.
 A missing directory uses the home directory instead.
 An unavailable command starts a shell with a warning.
-Explicit commands remain visible after exit, with their exit status.
-A restored shell also remains visible after an unsuccessful exit.
+A pane with an explicit command stays visible after the command exits, with its exit status.
+A restored shell also stays visible after an unsuccessful exit.
 Press a key to close a held pane.
 
 A project file stores a launch layout, not running programs.
 It does not save scrollback, environment snapshots, remote sessions or process state.
 For a project with `"session": true`, the mux daemon keeps the programs of its session running (see [projects and mux sessions](#projects-and-mux-sessions)).
-Examine commands in imported layouts before you open them.
+Examine the commands in an imported layout before you open it.
 
 ## Projects and mux sessions
 
@@ -182,7 +188,7 @@ The global `--session NAME` of `afterglow ctl` is another option. It names the s
 A save writes the kind of the window that it saves.
 A save of a window that shows a session of this computer sets `session` to true.
 A save of any other window removes it, also for a project that you opened with `--no-session`.
-Thus a save of the window of a session of another host writes no `session`, and the project opens into a window of this computer.
+A save of the window of a session of another host writes no `session`, and the project opens into a window of this computer.
 The daemon keeps the command and the title of each pane, so a window that shows the session again saves them too.
 Afterglow starts the daemon, the session and the panes of the project in the background, and connects to the session there. The windows go on responding while the session starts.
 The `afterglow ctl open-project` call, and the result of the `open_project` effect, come when the window of the session opens.
@@ -226,5 +232,5 @@ afterglow ctl open-directory PATH --layout NAME
 
 ## Integration test
 
-The test checks pane transfers, save, restore and error recovery.
+The integration test checks pane transfers, save, restore and error recovery.
 To run it, see [Projects and the project navigator](TESTING.md#projects-and-the-project-navigator).

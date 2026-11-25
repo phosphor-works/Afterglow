@@ -42,7 +42,7 @@ Run one with `aglow run glasshouse strike`, or bind it with configuration such a
 
 `heat` warms the lamp until the next shell command in the pane completes.
 `aglow run` is a shell command too, and its end cools the lamp of its own pane.
-Thus name another pane: `aglow run --pane N glasshouse heat`.
+For this reason, name another pane: `aglow run --pane N glasshouse heat`.
 The options of `aglow run` come before the script ID.
 
 `afterglow ctl signal 0 1` triggers strike in the pane that runs `afterglow ctl`.

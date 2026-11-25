@@ -3,52 +3,29 @@
 
 # User documents
 
-Afterglow is a Linux terminal with GPU rendering, tabs, splits, shell integration and Luau scripts.
+This index lists the user documents of Afterglow, a Linux terminal with GPU rendering, tabs, splits, shell
+integration and Luau scripts. Users, script and shader pack authors, and developers read it to find the page for a
+task. The [release notes](../CHANGELOG.md) tell what Afterglow supports.
 
-| Task | Document |
+## Pages
+
+| Page | Description |
 | --- | --- |
-| Build or install | [Build instructions](BUILD.md) |
-| Set fonts, colors or themes | [Appearance](APPEARANCE.md) |
-| Find a setting or default binding | [Configuration reference](CONFIGURATION.md) |
-| Use keybindings, the mouse, touchpads, touchscreens, selection, search or hints | [Input](INPUT.md) |
-| Move panes or save layouts | [Projects](PROJECTS.md) |
-| Keep terminal sessions running, and show them in windows | [The mux daemon](MUX.md) |
-| Control a running instance | [Command line and control socket](CONTROL.md) |
-| Give an agent such as Claude Code a terminal session of its own | [The MCP server](MCP.md) |
-| Run the commands of scripts from a shell with `aglow run` | [Script commands](CONTROL.md#script-commands) |
-| Run script commands from a remote host in an `afterglow ssh` session | [Remote commands](CONTROL.md#remote-commands) |
-| Run a program such as fzf over a pane, or in a popup | [Overlays](SCRIPTING.md#overlays) and [`afterglow ctl overlay`](CONTROL.md#overlays) |
-| Save a picture of a pane as it shows on the screen | [Screenshots](CONTROL.md#screenshots) |
-| Write scripts | [Luau API](SCRIPTING.md) |
-| Install or write packages | [Packages and state](PACKAGES.md) |
-| Configure reactive effects | [Shaders](SHADERS.md) |
-| Write shader passes | [Shader API](SHADER-API.md) |
-| Use accessibility, input methods, file and text drops, Kitty file transfer and drag and drop, or the `aglow` client | [Desktop integration](DESKTOP.md) |
-| Use bidirectional text | [Bidirectional text](BIDI.md) |
-| Check protocol support | [Compatibility](COMPATIBILITY.md) |
-| Read what Afterglow supports | [Release notes](../CHANGELOG.md) |
-| Run tests | [Testing](TESTING.md) |
-| Measure performance | [Performance](PERFORMANCE.md) |
-| Write documentation | [Writing rules](WRITING.md) |
-
-## First configuration
-
-The usual configuration path is `~/.config/phosphor-works/afterglow/config.json`.
-See the [configuration file](APPEARANCE.md#configuration-file) for its format and an example.
-
-Afterglow reloads configuration changes automatically.
-Shell integration starts automatically for supported Bash, Zsh and Fish versions.
-The command palette contains prompt navigation, output, search and project actions.
-
-Example files do not activate themselves.
-Copy a complete package directory into `~/.config/phosphor-works/afterglow/scripts/` to install it.
-Keep the directory name, manifest ID and module filenames unchanged.
-Follow the package's instructions for required settings.
-Reopen the palette after reload to see new commands.
-
-`afterglow --help` lists launch options.
-`afterglow ctl --help` lists live control commands.
-`afterglow mux --help` lists the commands of `afterglow mux`, which create, list and end the sessions of the mux daemon.
-`afterglow mcp --help` lists the options of the MCP server for agents.
-`afterglow --config-reference` prints the runtime schema without a window or user configuration.
-Use the option alone.
+| [Appearance](APPEARANCE.md) | Sets fonts, colors and themes, and describes the [configuration file](APPEARANCE.md#configuration-file) `~/.config/phosphor-works/afterglow/config.json`, which Afterglow reloads when it changes. |
+| [Bidirectional text](BIDI.md) | Tells how Afterglow shows bidirectional text. |
+| [Build instructions](BUILD.md) | Tells how to build and install Afterglow. |
+| [Compatibility](COMPATIBILITY.md) | Lists the terminal protocols that Afterglow supports. |
+| [Configuration reference](CONFIGURATION.md) | Lists each setting and default binding, and `afterglow --config-reference` prints the same runtime schema with no window or user configuration when you give it as the only option. |
+| [Command line and control socket](CONTROL.md) | Tells how to control a running instance (`afterglow --help` and `afterglow ctl --help`), with [script commands](CONTROL.md#script-commands) through `aglow run`, [remote commands](CONTROL.md#remote-commands) from an `afterglow ssh` session, [`afterglow ctl overlay`](CONTROL.md#overlays) and [screenshots](CONTROL.md#screenshots). |
+| [Desktop integration](DESKTOP.md) | Covers accessibility, input methods, file and text drops, Kitty file transfer, drag and drop, and the `aglow` client. |
+| [Input](INPUT.md) | Covers keybindings, the mouse, touchpads, touchscreens, selection, search, hints and shell integration, which starts automatically for supported Bash, Zsh and Fish versions. |
+| [The MCP server](MCP.md) | Tells how to give an agent such as Claude Code a terminal session of its own, and `afterglow mcp --help` lists the options of the server. |
+| [The mux daemon](MUX.md) | Tells how to keep terminal sessions running and show them in windows, and `afterglow mux --help` lists the commands that create, list and end sessions. |
+| [Luau packages and saved state](PACKAGES.md) | Tells how to install and write packages. |
+| [Native terminal performance](PERFORMANCE.md) | Gives the performance measurements and their test conditions. |
+| [Panes and projects](PROJECTS.md) | Tells how to move panes, save layouts and open projects. |
+| [Luau scripting](SCRIPTING.md) | Gives the Luau API for scripts, with [overlays](SCRIPTING.md#overlays) that run a program such as fzf over a pane or in a popup. |
+| [Shader pass API](SHADER-API.md) | Gives the contract for authors who write shader passes. |
+| [Shaders](SHADERS.md) | Tells how to configure reactive shader effects. |
+| [Testing](TESTING.md) | Tells how to run the tests. |
+| [Documentation writing rules](WRITING.md) | Gives the rules for documentation text. |

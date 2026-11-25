@@ -34,8 +34,8 @@ Install `cava` for audio response.
 Add `--light` to start with the light palette.
 
 The launcher creates temporary configuration, shader packs and scripts, then starts a separate Afterglow process.
-Closing its last window removes the temporary configuration.
-Normal Afterglow settings remain unchanged.
+When you close its last window, the launcher removes the temporary configuration.
+The launcher does not change your normal Afterglow settings.
 Each split opens a clean Bash demo shell with OSC 133 integration.
 Programs inside it use your normal XDG configuration directory.
 The demo shell does not save history.
@@ -60,7 +60,7 @@ A shell command that succeeds after 1.5 seconds or longer recalls its pieces.
 Select **Edit scene parameters and presets** in the command palette.
 Select `background: phosphor-field` to apply Quiet, Balanced or Cinematic.
 The editor also changes parameters, saves current values and resets its overrides.
-Demo presets exist only until the temporary directory is removed.
+Demo presets exist only until the launcher removes the temporary directory.
 Install [scene-controls](../packages/scene-controls/README.md) in normal configuration for persistent presets.
 
 **Toggle contextual Phosphor exposure** enables one intensity decision each second from audio and history summaries.
@@ -151,7 +151,7 @@ In its panes, the command `afterglow` runs the program of the demo, also from a 
 So does `aglow` when it is in the same directory as that `afterglow`.
 For example, `aglow run phosphor strike` fractures the core.
 `aglow run` is a shell command too, and its end cools the core of its tab.
-Thus name a pane of another tab: `aglow run --pane N phosphor heat`.
+For this reason, name a pane of another tab: `aglow run --pane N phosphor heat`.
 The options of `aglow run` come before the script ID.
 Elsewhere, use the palette or the shortcuts.
 
@@ -169,7 +169,7 @@ The script reads `ev.terminal` snapshots and updates the event's tab with `after
 Each batch uses one timestamp across panes.
 It also works when loaded after panes exist.
 The script keeps the tab of each pane, from its load on.
-Thus a pane that moves to another tab updates the heat of the tab that it left.
+As a result, a pane that moves to another tab updates the heat of the tab that it left.
 One completed shell command does not cool the core while another pane in that tab runs a shell command.
 Background tabs and other windows retain separate state.
 Each signal stores a value and its shader update time.
@@ -187,7 +187,7 @@ Each signal stores a value and its shader update time.
 Text history uses one window-sized texture of the previous processed text layer.
 Decay uses elapsed frame time.
 Shader reload, layout, tab, size, default colors, font cell size and clock reset clear history.
-History is allocated and copied only when a shader includes `terminal_history.glsl`.
+Afterglow allocates and copies the history only when a shader includes `terminal_history.glsl`.
 The plain renderer does not require it.
 
 Field and lens request RGBA16F intermediate targets with `"highDynamicRange": true` in their metadata.

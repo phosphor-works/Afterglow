@@ -5,18 +5,22 @@
 
 This Luau package picks a saved project or a file in an overlay.
 An overlay runs a program over a pane and returns its result to the script.
-When [fzf](https://github.com/junegunn/fzf) is installed, fzf runs in a popup overlay.
+When you have [fzf](https://github.com/junegunn/fzf) installed, fzf runs in a popup overlay.
 By default, the popup is 80% of the width and 60% of the height of the pane, in the center.
 The pane stays visible around it.
 Without fzf, the package shows the select dialog.
 
-Install it in the `scripts/` directory beside the configuration file.
+## Install
+
+Install the package in the `scripts/` directory beside the configuration file.
 For the default configuration, run this from the repository root:
 
 ```bash
 mkdir -p ~/.config/phosphor-works/afterglow/scripts
 cp -r examples/packages/fzf-picker ~/.config/phosphor-works/afterglow/scripts/
 ```
+
+## Use
 
 Open the command palette and choose **Pick a project or file**.
 This is the command `pick`. Bind it as `script:fzf-picker.pick`.
@@ -46,6 +50,8 @@ For `aglow run`, this is the directory of the shell. For the palette or a key, i
 The file search does not go into `.git` directories.
 The list does not show a name with a control character, such as a line break.
 It also does not show a name that is not valid UTF-8, because the script cannot type that name correctly.
+
+## Configuration
 
 Create `config.json` beside `package.json` to override the defaults:
 

@@ -16,7 +16,7 @@ The scene contains curved armor panels, a plasma core, three moving rings,
 six orbiting emitters and a chamber floor. Hardware depth testing controls occlusion.
 The metal has bevels, reflection highlights, engraved lines and status lights.
 The final pass adds haze, particles, glow and display tone mapping.
-Terminal text is drawn above the scene.
+Afterglow draws terminal text above the scene.
 Cell backgrounds, selections and images below the text stay on top of the scene.
 The scene shows where the window background shows, at the window's background opacity.
 The camera spans the window. Each split pane shows its part of the same scene.
@@ -25,13 +25,13 @@ The mesh renders once per frame. Split animation does not resize the scene buffe
 System audio changes the core and lights. Current-tab scrollback increases
 the baseline energy. Silence does not stop the animation.
 The `exposure`, `speed`, `audio` and `commandHeat` parameters also accept Luau control.
-Set `linearOutput` to `true` only when a later lens pass will map HDR radiance to the display.
+Set `linearOutput` to `true` only when a later lens pass maps HDR radiance to the display.
 The Phosphor launcher sets this parameter automatically.
 Signal 0 fractures the armor. Signal 1 recalls it. The camera moves back during fracture.
 Signal 3 sends a shock ring across the floor.
 
-To use the complete Phosphor demo with its shell integration, text effects,
-shock fronts and Luau actions, run:
+This command runs the complete Phosphor demo with its shell integration, text effects,
+shock fronts and Luau actions:
 
 ```sh
 examples/phosphor/bin/phosphor-afterglow launch --mesh --show --binary ./build/afterglow/afterglow
