@@ -5866,8 +5866,8 @@ end }
     const char* const reasons[] = {
         "A selector needs at least one item", "max_bytes must be a whole number from 1 to",
         "max_bytes must be a whole number from 1 to",
-        "read_text scope must be screen, scrollback, selection, last-output, first-output-on-screen or "
-        "last-visited-output",
+        ("read_text scope must be screen, scrollback, selection, last-output, first-output-on-screen or "
+         "last-visited-output"),
         "overview_move needs a pane or a whole step", "overview_move needs a pane or a whole step",
         "pulse needs 50 to 10000 ms and a palette color",
         // The helper's default placement is right, which needs a target.

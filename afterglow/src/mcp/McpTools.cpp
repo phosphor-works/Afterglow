@@ -395,7 +395,7 @@ McpTools::McpTools(DaemonLink& link, const Settings& settings, Session session, 
 {
     if (m_session.startingPane != 0)
         m_paneRuns.paneOpened(m_session.startingPane, true);
-    connect(&m_link, &DaemonLink::event, this, &McpTools::onEvent);
+    connect(&m_link, &DaemonLink::controlEvent, this, &McpTools::onEvent);
     connect(
         &m_link, &DaemonLink::subscriptionEnded, this,
         [this](const QString&, const QString& code, const QString& message) {

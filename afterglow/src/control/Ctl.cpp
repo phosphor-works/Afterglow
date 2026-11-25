@@ -1878,7 +1878,10 @@ int runCtl(int argc, char** argv)
             return run(QStringLiteral("notify"), {pane, title, body});
         };
     } else if (command == QLatin1String("overlay")) {
-        const bool noInput = takeFlag(QStringLiteral("-n")) | takeFlag(QStringLiteral("--no-stdin"));
+        // Both spellings are taken, so neither is left over as an argument.
+        const bool shortNoInput = takeFlag(QStringLiteral("-n"));
+        const bool longNoInput = takeFlag(QStringLiteral("--no-stdin"));
+        const bool noInput = shortNoInput || longNoInput;
         const bool border = takeFlag(QStringLiteral("--border"));
         const bool noBorder = takeFlag(QStringLiteral("--no-border"));
         const QString capture = takeValue(QStringLiteral("--capture")).value_or(QStringLiteral("stdout"));

@@ -630,7 +630,7 @@ void TerminalWindow::bindPane(Pane* pane)
 {
     // The program's drag takes the keyboard, as a selection's drag does.
     connect(pane, &Pane::programDragStarting, this, &TerminalWindow::releaseSentKeys);
-    connect(pane, &Pane::inputRejected, this, [this, pane] {
+    connect(pane, &Pane::inputRejected, this, [pane] {
         NotificationCenter::instance().showNotice(pane, tr("Terminal input rejected"),
                                                   tr("The program closed or its input queue is full."));
     });

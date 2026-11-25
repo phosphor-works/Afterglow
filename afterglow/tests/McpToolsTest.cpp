@@ -764,7 +764,7 @@ TEST(DaemonLink, AnEventSlotThatEndsTheConnectionKeepsItsName)
     }));
     const qint64 id = sent[0].value(QLatin1String("id")).toInteger();
     std::optional<QString> heard;
-    QObject::connect(pair.link.get(), &DaemonLink::event, [&](const QString& name, const QJsonArray&) {
+    QObject::connect(pair.link.get(), &DaemonLink::controlEvent, [&](const QString& name, const QJsonArray&) {
         pair.link->call(QStringLiteral("mark"), {1}, [](const QJsonValue&, const DaemonLink::Error*) { });
         heard = name;
     });

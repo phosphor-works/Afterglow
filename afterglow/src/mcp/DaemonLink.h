@@ -96,11 +96,11 @@ public:
     /// acknowledgements of the output of a run.
     void notify(const QString& target, const QString& fn, const QJsonArray& args);
     /// Subscribes to the event @p event of the control target. @p answer
-    /// tells whether the daemon took it. Its events come as event().
+    /// tells whether the daemon took it. Its events come as controlEvent().
     void subscribe(const QString& event, Answer answer);
 
 Q_SIGNALS:
-    void event(const QString& name, const QJsonArray& args);
+    void controlEvent(const QString& name, const QJsonArray& args);
     /// An event of no subscription: the output of a run of the commands
     /// target, which comes to the connection of the run. @p bytes is the
     /// size of its line, the line end included, which the client
