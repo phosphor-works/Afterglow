@@ -106,8 +106,8 @@ Afterglow's own.
   callbacks are the exception: they let the lock go while the decoder runs (`Pane::decodeOutsideLock`).
 - Logging uses categories named `afterglow.<area>`.
 - Match the surrounding code: its comment density, naming and idiom. A comment says why, not what.
-- Format C++ with `clang-format -i` (the `.clang-format` of phosphor-libs) and QML with `qmlformat -i`. CI checks
-  the files that a change touches.
+- Format C++ with `clang-format -i` (the shared `.clang-format` from the workspace repository) and QML with
+  `qmlformat -i`. CI checks every tracked file.
 
 ## Text
 

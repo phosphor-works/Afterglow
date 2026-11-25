@@ -1,20 +1,16 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Pull request and main CI, the same shape as PlasmaZones' and the libraries':
+# Pull request and main CI. The jobs (Arch, Lint, Nix) are the shared C++ CI
+# of the workspace repository (.github/workflows/cpp-ci.yml), which says what
+# each one does. This file passes only what differs here.
 #
-#   * Arch: configure, build and test from the release preset, with a compiler
-#     cache. A compiler warning fails the build: zero warnings is the bar, and
-#     GCC finds some only at the optimisation of a release build. Then an
-#     install into a staging directory, which fails on a file that the build
-#     did not make.
-#   * Lint: clang-format and qmlformat over the files a change touches.
-#   * Nix: `nix flake check` (the package with its test suite in the sandbox),
-#     the package itself and the dev shell, on x86_64 and aarch64.
-#
-# phosphor-libs comes from the commit cmake/AfterglowDependencies.cmake pins.
-# Neither job has a Wayland display, so the tests that draw with Vulkan, and
-# the native window suite, do not run here (docs/TESTING.md).
+# Afterglow builds the release preset: GCC finds some warnings only at the
+# optimisation of a release build, and the tests that time CPU work have thin
+# margins at -O0. phosphor-libs comes from the commit
+# cmake/AfterglowDependencies.cmake pins. The jobs have no Wayland display, so
+# the tests that draw with Vulkan, and the native window suite, do not run
+# here (docs/TESTING.md).
 
 name: CI
 
@@ -31,208 +27,17 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  # The file that pins what CPM downloads at configure time. The archive cache
-  # is keyed on it.
-  PIN_FILE: cmake/AfterglowDependencies.cmake
-
 jobs:
-  arch:
-    name: Arch
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    container:
-      image: archlinux:latest
-    steps:
-      # The image has no git, and actions/checkout needs it for a real clone.
-      - name: Bootstrap git
-        run: pacman -Syu --noconfirm --needed git
-
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install packages
-        run: |
-          set -euo pipefail
-          mapfile -t packages < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' .github/ci/arch-packages.txt)
-          for try in 1 2 3; do
-            pacman -S --noconfirm --needed "${packages[@]}" && exit 0
-            [ "$try" = 3 ] && exit 1
-            sleep 10
-          done
-
-      - name: Restore the dependency archives
-        uses: actions/cache@v5
-        with:
-          path: .cache/cpm
-          key: cpm-${{ hashFiles(env.PIN_FILE) }}
-
-      # Saved on every run under a new key, restored from the newest one, so a
-      # pull request starts from main's cache and only recompiles what it
-      # changed.
-      - name: Set up the compiler cache
-        run: |
-          {
-            echo "CCACHE_DIR=$GITHUB_WORKSPACE/.ccache"
-            echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE"
-            echo "CCACHE_NOHASHDIR=true"
-            echo "CCACHE_COMPILERCHECK=content"
-            echo "CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime"
-            echo "CCACHE_MAXSIZE=2G"
-          } >> "$GITHUB_ENV"
-
-      - name: Restore the compiler cache
-        uses: actions/cache@v5
-        with:
-          path: .ccache
-          key: ccache-arch-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-arch-${{ github.ref_name }}-
-            ccache-arch-main-
-
-      - name: Configure
-        run: >-
-          cmake --preset release
-          -DCMAKE_C_COMPILER_LAUNCHER=ccache
-          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-
-      # ccache replays the warnings of a cached compile, so a warning fails
-      # every run until it is fixed, not only the first one.
-      - name: Build
-        run: |
-          set -euo pipefail
-          cmake --build --preset release 2>&1 | tee build.log
-          if grep -q 'warning:' build.log; then
-            echo "::error::The build has compiler warnings:"
-            grep -B2 -A2 'warning:' build.log
-            exit 1
-          fi
-
-      - name: Test
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: ctest --preset release
-
-      - name: Install into a staging directory
-        run: DESTDIR="$RUNNER_TEMP/stage" cmake --install build-release
-
-      - name: Compiler cache statistics
-        if: always()
-        run: ccache --show-stats || true
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    container:
-      image: archlinux:latest
-    steps:
-      - name: Bootstrap git
-        run: pacman -Syu --noconfirm --needed git
-
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      # clang ships clang-format, qt6-declarative ships qmlformat. From the same
-      # Arch packages contributors use, because their output differs between
-      # major versions. diffutils for the qmlformat step's diff, which the bare
-      # image lacks.
-      - name: Install the formatters
-        run: |
-          pacman -S --noconfirm --needed clang qt6-declarative diffutils
-          clang-format --version
-
-      # Only the files a change touches, so formatting drift elsewhere in the
-      # tree never blocks an unrelated pull request.
-      - name: Resolve changed files
-        run: |
-          set -euo pipefail
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-              BASE="${{ github.event.pull_request.base.sha }}"
-              git cat-file -e "$BASE^{commit}" 2>/dev/null || git fetch origin "$BASE"
-              RANGE="$BASE...HEAD"
-          else
-              RANGE="HEAD~1...HEAD"
-          fi
-          echo "Diff range: $RANGE"
-          git diff --name-only --diff-filter=ACMR "$RANGE" -- \
-              '*.cpp' '*.h' '*.hpp' '*.cc' '*.cxx' '*.qml' > changed.txt
-          echo "Changed files:"
-          cat changed.txt
-
-      - name: clang-format
-        run: |
-          set -euo pipefail
-          mapfile -t files < <(grep -E '\.(cpp|h|hpp|cc|cxx)$' changed.txt || true)
-          if [ "${#files[@]}" -gt 0 ]; then
-            clang-format --dry-run -Werror "${files[@]}"
-          else
-            echo "No C++ files changed, skipping clang-format"
-          fi
-
-      - name: qmlformat
-        run: |
-          set -euo pipefail
-          export PATH="/usr/lib/qt6/bin:$PATH"
-          mapfile -t files < <(grep -E '\.qml$' changed.txt || true)
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "No QML files changed, skipping qmlformat"
-            exit 0
-          fi
-          unformatted=0
-          for f in "${files[@]}"; do
-            if ! qmlformat "$f" | diff -u --label "$f" --label "$f (qmlformat -i)" "$f" -; then
-              unformatted=1
-            fi
-          done
-          if [ "$unformatted" -ne 0 ]; then
-            echo "::error::The QML files above are not formatted as qmlformat -i would leave them. Run qmlformat -i on them."
-            exit 1
-          fi
-
-  nix:
-    name: Nix (${{ matrix.system }})
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - system: x86_64-linux
-            runner: ubuntu-latest
-          - system: aarch64-linux
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24  # v31.11.1
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Show flake outputs
-        run: nix flake show
-
-      # --fallback: build from source if a binary substitute fails, so a
-      # transient cache.nixos.org fault does not turn a good build red.
-      - name: Flake check (build and test)
-        run: nix flake check -L --fallback
-
-      - name: Build the package
-        run: nix build -L --fallback .#default
-
-      - name: Verify the package
-        shell: bash
-        run: |
-          set -euo pipefail
-          ls result/bin result/share/applications
-          for program in afterglow aglow aglow-mux; do
-            test -x "result/bin/$program" || { echo "::error::the package installed no $program"; exit 1; }
-          done
-          test -e result/share/applications/com.phosphorworks.Afterglow.desktop || { echo "::error::the package installed no .desktop file"; exit 1; }
-
-      - name: Verify the dev shell
-        run: nix develop --fallback -c cmake --version
+  ci:
+    name: CI
+    uses: phosphor-works/workspace/.github/workflows/cpp-ci.yml@main
+    with:
+      pin-file: cmake/AfterglowDependencies.cmake
+      preset: release
+      build-timeout: 90
+      nix-timeout: 90
+      nix-verify: |
+        for program in afterglow aglow aglow-mux; do
+          test -x "result/bin/$program" || { echo "::error::the package installed no $program"; exit 1; }
+        done
+        test -e result/share/applications/com.phosphorworks.Afterglow.desktop || { echo "::error::the package installed no .desktop file"; exit 1; }
