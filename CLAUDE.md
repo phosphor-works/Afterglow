@@ -1,33 +1,79 @@
 <!-- SPDX-FileCopyrightText: 2026 Phosphor Works Team -->
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 
+<!-- BEGIN shared: tools/sync writes this block from workspace/sync/claude-header.md. Change it there. -->
 # Afterglow
+
+This file has two parts. The rules that every phosphor-works repository follows come first, from the conventions of
+the workspace repository, imported below. The sections after them belong to this repository only: what it is, its
+layout, how to build and test it, and its own rules, code, skills and agents, and links to the other repositories.
+A section here does not repeat a convention. When a section and the conventions disagree, change one of them so
+that they agree.
+
+The Claude Code tooling comes from the plugins that `.claude/settings.json` enables and `workspace/tools/setup`
+installs. The `phosphor-works` plugin has the command guard, the shared skills (`phosphor-works:build`, `debug`,
+`code-audit`, `record-lesson`, `new-repo`), the shared reviewers, and the lesson index, which adds the lessons that
+fit each prompt.
+
+@../workspace/claude/conventions.md
+<!-- END shared -->
+
+## Overview
 
 Afterglow is a Linux terminal for Wayland: Qt 6, C++20, a Vulkan renderer through QRhi, tabs and splits, shader
 packs that react to the terminal, shell integration and Luau scripts. It is not released yet.
+
+Afterglow is the terminal of the phosphor-works suite. Its application ID is `org.phosphor_works.Afterglow` (the
+`.desktop` file and the AppStream metadata in `data/`). Its user files are in `~/.config/phosphor-works/afterglow/`:
+`config.json`, `scripts/` and `projects/`.
 
 `docs/README.md` indexes the user documents. `docs/SHADER-API.md`, `docs/SCRIPTING.md` and `docs/PACKAGES.md` are
 contracts for pack and script authors: change them with the code. This file holds the rules that sessions get
 wrong, and points to the skills that hold the procedures.
 
-The rules every phosphor-works repository follows come from the workspace repository, imported below. This file adds
-Afterglow's own.
+## Layout
 
-@../workspace/claude/conventions.md
+| Folder | Contents |
+| --- | --- |
+| `afterglow/` | The application `afterglow`: `src/`, `qml/`, `tests/` |
+| `libs/` | `afterglow-vt`, `afterglow-proto`, `afterglow-pty`, `afterglow-image` and `afterglow-render` |
+| `mux/` | `aglow-mux`, the session daemon, and the protocol that `afterglow` shares with it |
+| `tools/` | `aglow`, and the developer tools: `render/`, `bench/`, `conformance/`, `fuzz/`, `vtdiff/`, `sanitizers/` |
+| `data/` | Shader packs, themes, shell integration, completions, terminfo, icons, the `.desktop` file and AppStream metadata |
+| `examples/` | Example shader packs, scripts and packages |
+| `cmake/` | `AfterglowDependencies.cmake`, which pins phosphor-libs and the compiled-in libraries |
+| `docs/` | The user documents and the contracts for pack and script authors |
+
+The main programs are `afterglow`, `aglow` and `aglow-mux`. Options in the root `CMakeLists.txt` add or remove
+targets:
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `AFTERGLOW_BUILD_AGLOW` | `ON` | Builds `aglow`. Without it, `afterglow` has no `run`, `transfer`, `dnd`, `icat` or `clipboard` command. |
+| `AFTERGLOW_AGLOW_ONLY` | `OFF` | Builds only `aglow` and `aglow-mux` with their libraries, with no Qt. |
+| `AFTERGLOW_BUILD_TOOLS` | `OFF` | Builds the benchmarks, `afterglow_renderpng` and the headless conformance host. |
+| `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets. |
+| `AFTERGLOW_BUILD_VTDIFF` | `OFF` | Builds `afterglow_vtdiff`, which compares the terminal core with libghostty-vt. |
+
+## Build and test
+
+| Task | Command |
+| --- | --- |
+| Build | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build -j3` (zero warnings is the bar) |
+| Unit and renderer tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 ctest --test-dir build --output-on-failure -j3` (about 2,000, all pass) |
+| Native window tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 python3 tools/headless_native.py` (about 15 minutes: run it in the background) |
+| Shader preview | `build/tools/render/afterglow_renderpng --shader PACK - out.png` |
+| Configuration reference | `python3 tools/generate-reference.py build/afterglow/afterglow` |
+
+The memory cap keeps systemd-oomd from killing the user's Afterglow. Keep the cap in a pane of the agent session
+too (see Environment under Rules). The `afterglow:build` skill has the details: the build directories, the
+Phosphor checkout, the generated files.
+
+CI calls the shared C++ CI with the `release` preset. Its jobs have no Wayland display, so the Vulkan tests and the
+native window suite do not run there (`docs/TESTING.md`).
 
 ## Rules
 
-- **Land work through a pull request.** Start each change on a branch from `main`. Never push to `main`. Finished
-  work is built with no warnings, tested, and verified the way the change needs (see below). Then commit, push the
-  branch and open the PR without asking. Merge it when every check passes, as the conventions say. Stage files by
-  name.
-- **Never install and never use `sudo`.** No install target and no system packages. Tell the user what you need
-  and why. The one exception: `cmake --install` into a temporary directory (`--prefix` or `DESTDIR` under `/tmp`,
-  or a directory under the build tree, as the `aglow_only_build` test does), to check the install layout.
-- **phosphor-libs changes only through its own pull request.** The build compiles the Phosphor libraries from the
-  phosphor-libs commit that `cmake/AfterglowDependencies.cmake` pins, or from the tree that
-  `AFTERGLOW_PHOSPHOR_LIBS_DIR` names. Never edit a phosphor-libs or PlasmaZones checkout from an Afterglow session.
-  When Afterglow needs a Phosphor change, say what and why, and let the user decide.
 - **Never touch the user's running Afterglow.** This session usually runs inside one of its panes
   (`AFTERGLOW_PANE_ID` is set). `afterglow ctl`, `aglow run` and `afterglow run` (also `run --complete`) use the
   pane's `AFTERGLOW_SOCKET`, else the socket of the user's Wayland display, so they act on the user's own terminal.
@@ -78,57 +124,22 @@ Afterglow's own.
 - **Unreleased: no migrations.** Rename a key or change a format directly. Write no compatibility code for old
   configs or old script APIs. `CHANGELOG.md` describes what the first release supports. It is not a log of changes
   and has no migration notes.
-- **Licenses.** Every file that can hold a comment starts with `SPDX-FileCopyrightText: 2026 Phosphor Works Team` and an
-  `SPDX-License-Identifier`. The application, its tests and tools are `GPL-3.0-or-later`, and so is `mux/` (the
-  daemon, its protocol and its tests), and `tools/fuzz/muxfuzz.cpp`, which compiles `mux/`. Tools that use only
-  `libs/afterglow-vt`, `libs/afterglow-proto` and `libs/afterglow-image` (the VT benchmark, `tools/conformance`, the
-  rest of `tools/fuzz`, `tools/aglow` with its tests, the `aglow` completions in `data/completions`,
+- **Licenses.** `mux/` (the daemon, its protocol and its tests) is `GPL-3.0-or-later` like the application, and so
+  is `tools/fuzz/muxfuzz.cpp`, which compiles `mux/`. Tools that use only `libs/afterglow-vt`,
+  `libs/afterglow-proto` and `libs/afterglow-image` (the VT benchmark, `tools/conformance`, the rest of
+  `tools/fuzz`, `tools/aglow` with its tests, the `aglow` completions in `data/completions`,
   `tools/gen_unicode_tables.py`) are `LGPL-2.1-or-later`. `libs/**` is `LGPL-2.1-or-later`, tests included. New
   shader packs are `LGPL-2.1-or-later`. Feedback Glow, Depth Trails and Mesh Reactor are `GPL-3.0-or-later`: keep
   the header that a file has, and do not relicense it. `REUSE.toml` licenses files that cannot hold a header (JSON,
   images).
-- **Ask only about real decisions.** When the next step is clear, do it.
+- **Installs.** To check the install layout, `cmake --install` can also go into a directory under the build tree,
+  as the `aglow_only_build` test does. There is no other install.
+- **Text.** Documents follow `docs/WRITING.md`.
+- **Commits.** An example subject: `feat(chrome): animate tab switches with a shader pack`. The body says what
+  changed for the user. End the message with the `Co-Authored-By` line that the session instructions give.
 
-## Code
+### Environment
 
-- Namespaces: `Afterglow` (the application), `AfterglowVt`, `AfterglowProto`, `AfterglowRender`, `AfterglowPty`,
-  `AfterglowImage`, `AfterglowMux` (`mux/`: the daemon and the protocol that the application shares with it), and
-  `Aglow` (`tools/aglow`, with `Aglow::Cli` and `Aglow::Mime`).
-- `libs/afterglow-vt`, `libs/afterglow-proto`, `libs/afterglow-pty`, `libs/afterglow-image` and `mux/` use no Qt.
-  Keep them plain C++20.
-- Libraries that the build compiles in (zlib-ng, xxHash, libpng, libjpeg-turbo, libwebp, Little CMS) come from
-  archives that `cmake/AfterglowDependencies.cmake` pins by URL and SHA-256, and link statically. `aglow` is one
-  static program. Do not link a system copy instead.
-- `QT_NO_KEYWORDS` is on everywhere: `Q_EMIT`, `Q_SIGNALS`, `Q_SLOTS`. `QT_NO_CAST_FROM_ASCII` is on for the
-  application and the renderer: `QStringLiteral` for constants, `QLatin1String` for comparisons and JSON keys.
-- Members are `m_camelCase`. Emit a signal only when the value changed.
-- Threads: the terminal callbacks (`ITerminalHost`) run on the PTY reader thread while `Pane::m_mutex` is held.
-  They reach the GUI thread only through queued calls. A new callback follows the same contract. The image decode
-  callbacks are the exception: they let the lock go while the decoder runs (`Pane::decodeOutsideLock`).
-- Logging uses categories named `afterglow.<area>`.
-- Match the surrounding code: its comment density, naming and idiom. A comment says why, not what.
-- Format C++ with `clang-format -i` (the shared `.clang-format` from the workspace repository) and QML with
-  `qmlformat -i`. CI checks every tracked file.
-
-## Text
-
-- Documents follow `docs/WRITING.md`: controlled English after ASD-STE100, short sentences, one instruction in each
-  step, tables for fields and limits. Keep the root README short. No audit reports, plans or session summaries in
-  the repository.
-- All text follows these rules, as the conventions say: user-facing strings (setting descriptions, pack metadata, UI
-  text, `CHANGELOG.md`), documents, code comments, log messages and commit messages. No em dash between clauses, no
-  semicolon between sentences, no spaced hyphen as a dash, no rule-of-three flourishes.
-- Commits follow Conventional Commits, as the conventions file says ("feat(chrome): animate tab switches with a
-  shader pack"). The body says what changed for the user, why, and how you verified it. Check each claim in the
-  message against the staged diff. End with the `Co-Authored-By` line that the session instructions give.
-
-## Environment
-
-- The Bash tool runs zsh. Quote globs that may match nothing (`'*.md'`), and never start a word with `=`
-  (`echo ====` fails).
-- Put temporary files in the session scratchpad, never in the repository.
-- Never use `pkill`, `killall` or `kill $(pgrep -f ...)`. List with `pgrep -a NAME`, then `kill PID` for a process
-  that you started from `build/`.
 - The context is small. Read logs with `grep` and `tail`, never in full.
 - `.mcp.json` starts `afterglow mcp` from `PATH`: the tools of the `afterglow` server act on an agent session of
   the user's mux daemon, with no window. Use Bash for builds, tests, `gdb -batch` and other commands that end
@@ -141,18 +152,50 @@ Afterglow's own.
   session, so `afterglow ctl` and `aglow` there act on that session. `afterglow mux`, `afterglow mcp` and a
   window of `afterglow` reach the user's daemon and display from a pane too.
 
-## Build and test
+## Code
 
-| Task | Command |
-| --- | --- |
-| Build | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build -j6` (zero warnings is the bar) |
-| Unit and renderer tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 ctest --test-dir build --output-on-failure -j6` (about 2,000, all pass) |
-| Native window tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 python3 tools/headless_native.py` (about 15 minutes: run it in the background) |
-| Shader preview | `build/tools/render/afterglow_renderpng --shader PACK - out.png` |
-| Configuration reference | `python3 tools/generate-reference.py build/afterglow/afterglow` |
+- Namespaces: `Afterglow` (the application), `AfterglowVt`, `AfterglowProto`, `AfterglowRender`, `AfterglowPty`,
+  `AfterglowImage`, `AfterglowMux` (`mux/`: the daemon and the protocol that the application shares with it), and
+  `Aglow` (`tools/aglow`, with `Aglow::Cli` and `Aglow::Mime`).
+- `libs/afterglow-vt`, `libs/afterglow-proto`, `libs/afterglow-pty`, `libs/afterglow-image` and `mux/` use no Qt.
+  Keep them plain C++20.
+- Libraries that the build compiles in (zlib-ng, xxHash, libpng, libjpeg-turbo, libwebp, Little CMS) come from
+  archives that `cmake/AfterglowDependencies.cmake` pins by URL and SHA-256, and link statically. `aglow` is one
+  static program. Do not link a system copy instead.
+- `QT_NO_KEYWORDS` is on everywhere. `QT_NO_CAST_FROM_ASCII` is on only for the application and the renderer.
+- Threads: the terminal callbacks (`ITerminalHost`) run on the PTY reader thread while `Pane::m_mutex` is held.
+  They reach the GUI thread only through queued calls. A new callback follows the same contract. The image decode
+  callbacks are the exception: they let the lock go while the decoder runs (`Pane::decodeOutsideLock`).
+- Logging uses categories named `afterglow.<area>`.
+- Match the surrounding code: its comment density, naming and idiom. A comment says why, not what.
 
-The memory cap keeps systemd-oomd from killing the user's Afterglow (see the last lesson). Run one build at a time.
-The `afterglow:build` skill has the details: the build directories, the Phosphor checkout, the generated files.
+## Skills and agents
+
+Afterglow's own skills and agents come from the `afterglow` plugin. The shared ones come from `phosphor-works`.
+
+- `phosphor-works:build`, then `afterglow:build` for Afterglow's extras: build directories, the Phosphor checkout,
+  warnings, the test suite, generated files.
+- `afterglow:verify-live`: native window tests in a headless nested KWin, and the expected skips there.
+- `phosphor-works:debug`, then `afterglow:debug` for Afterglow's cautions (never the user's terminal or mux, gdb in
+  an agent pane): a crash or a hang in a test or a program.
+- `afterglow:shader-pack`: pack layout, contract changes and their C++ mirrors, previews with `afterglow_renderpng`.
+- `afterglow:add-setting`: the files that a new setting touches, and the reference regeneration.
+- `afterglow:script-api`: a new script effect, event or helper, from the prelude to the docs.
+- `phosphor-works:code-audit`: the audit and fix loop, with the reviewers below.
+- `phosphor-works:lessons`: searches the lesson index.
+
+The reviewers report findings for one area each. They never build or edit. Afterglow's own: `afterglow:vt-reviewer`,
+`afterglow:platform-reviewer`, `afterglow:render-reviewer` and `afterglow:window-reviewer`. The shared ones read
+Afterglow's notes for their domain (`afterglow:review-notes`): `phosphor-works:shader-reviewer`,
+`phosphor-works:luau-reviewer`, `phosphor-works:config-reviewer`, `phosphor-works:build-reviewer` and
+`phosphor-works:cpp-qt-reviewer`. `phosphor-works:crash-triage` takes a core or a hang to its mechanism.
+
+## Other repositories
+
+- **phosphor-libs changes only through its own pull request.** The build compiles the Phosphor libraries from the
+  phosphor-libs commit that `cmake/AfterglowDependencies.cmake` pins, or from the tree that
+  `AFTERGLOW_PHOSPHOR_LIBS_DIR` names. Never edit a phosphor-libs or PlasmaZones checkout from an Afterglow session.
+  When Afterglow needs a Phosphor change, say what and why, and let the user decide.
 
 ## Where things are
 
@@ -174,33 +217,3 @@ The `afterglow:build` skill has the details: the build directories, the Phosphor
 | Shell and desktop | `afterglow/src/shell/` (shell integration, `afterglow ssh`, and `Aglow.cpp`, which runs `aglow` for `afterglow run`, `transfer`, `dnd`, `icat` and `clipboard`), `data/shell-integration/`, `data/completions/` (the Bash, Zsh and Fish completions of `afterglow` and `aglow`), `afterglow/src/desktop/` (accessibility, drag and drop, file transfer), `afterglow/src/audio/` |
 | Tests | `libs/*/tests/`, `afterglow/tests/` (GTest, and the Python acceptance runners), `mux/tests/` (`afterglow_mux_tests`), `tools/aglow/tests/` (`aglow_tests` and the Python tests of `aglow`), `tools/conformance/`, `tools/fuzz/` |
 | Tools | `tools/render/` (`afterglow_renderpng`), `tools/bench/`, `tools/generate-reference.py`, `tools/gen_unicode_tables.py`, `tools/vtdiff/`, `tools/sanitizers/`; `tools/aglow/` (`aglow`, the static client of the Kitty protocols and of script commands: no Qt, no Phosphor, only `libs/afterglow-proto` and `libs/afterglow-image`, with the inline `AfterglowPty/CloseFrom.h`) |
-
-## Skills and agents
-
-The skills and agents come from Claude Code plugins in the workspace repository: `afterglow` for Afterglow's own,
-`phosphor-works` for the shared ones and the guard. `.claude/settings.json` enables both, and `workspace/tools/setup`
-installs them. Change them in the `workspace` checkout.
-
-- `phosphor-works:build`, then `afterglow:build` for Afterglow's extras: build directories, the Phosphor checkout,
-  warnings, the test suite, generated files.
-- `afterglow:verify-live`: native window tests in a headless nested KWin, and the expected skips there.
-- `phosphor-works:debug`, then `afterglow:debug` for Afterglow's cautions (never the user's terminal or mux, gdb in
-  an agent pane): a crash or a hang in a test or a program.
-- `afterglow:shader-pack`: pack layout, contract changes and their C++ mirrors, previews with `afterglow_renderpng`.
-- `afterglow:add-setting`: the files that a new setting touches, and the reference regeneration.
-- `afterglow:script-api`: a new script effect, event or helper, from the prelude to the docs.
-- `phosphor-works:code-audit`: the audit and fix loop, with the reviewers below.
-- `phosphor-works:record-lesson`: where a lesson goes, so that the next session finds it.
-
-The reviewers report findings for one area each. They never build or edit. Afterglow's own: `afterglow:vt-reviewer`,
-`afterglow:platform-reviewer`, `afterglow:render-reviewer` and `afterglow:window-reviewer`. The shared ones read
-Afterglow's notes for their domain (`afterglow:review-notes`): `phosphor-works:shader-reviewer`,
-`phosphor-works:luau-reviewer`, `phosphor-works:config-reviewer`, `phosphor-works:build-reviewer` and
-`phosphor-works:cpp-qt-reviewer`. `phosphor-works:crash-triage` takes a core or a hang to its mechanism.
-
-## Lessons that cost a session
-
-The traps that cost a session are in the workspace lesson index (`workspace/plugins/phosphor-works/lessons/`), not
-here. A prompt hook adds the ones that fit each prompt, `phosphor-works:lessons` searches them, and
-`phosphor-works:record-lesson` adds one.
-
