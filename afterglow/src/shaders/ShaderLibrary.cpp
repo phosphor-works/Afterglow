@@ -648,8 +648,11 @@ bool ShaderLibrary::invalidate()
         if (!stale.contains(ref) && signature(m_dependencies.value(key)) == m_signatures.value(key)
             && m_index->find(ref).packDir == m_resolved.value(key))
             continue;
-        // Bitwise: each must be dropped, whichever held it.
-        dropped |= m_cache.remove(key) | m_failed.remove(key) | m_overBudget.remove(key);
+        // Each must be dropped, whichever held it: no short circuit.
+        const bool fromCache = m_cache.remove(key);
+        const bool fromFailed = m_failed.remove(key);
+        const bool fromBudget = m_overBudget.remove(key);
+        dropped = dropped || fromCache || fromFailed || fromBudget;
         m_valueProblems.remove(key);
         m_signatures.remove(key);
     }

@@ -180,7 +180,7 @@ int runPaneCommand(int fd, const CtlRun& run, const Settings& settings)
 {
     DaemonLink link(fd);
     PaneRuns runs(link, PaneRunLimits::of(settings), ctlWords(run.where));
-    QObject::connect(&link, &DaemonLink::event, &runs, &PaneRuns::onEvent);
+    QObject::connect(&link, &DaemonLink::controlEvent, &runs, &PaneRuns::onEvent);
     QObject::connect(&link, &DaemonLink::closed, &runs, [&runs](const QString& reason) {
         runs.failAll(QStringLiteral("lost the connection: %1").arg(reason));
     });

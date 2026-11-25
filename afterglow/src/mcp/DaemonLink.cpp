@@ -280,7 +280,7 @@ void DaemonLink::frame(const QByteArray& line)
         if (const auto it = m_subscriptions.constFind(subscription); it != m_subscriptions.constEnd()) {
             // A copy: a slot that fails the connection clears m_subscriptions.
             const QString name = *it;
-            Q_EMIT event(name, object.value(QLatin1String("args")).toArray());
+            Q_EMIT controlEvent(name, object.value(QLatin1String("args")).toArray());
         } else if (!object.contains(QLatin1String("subscriptionId"))) {
             Q_EMIT targetEvent(object.value(QLatin1String("target")).toString(),
                                object.value(QLatin1String("signal")).toString(),
