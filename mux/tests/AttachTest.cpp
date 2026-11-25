@@ -3028,6 +3028,13 @@ std::uint32_t firstPane(ControlClient& ctl)
 
 /// Waits until the screen of pane @p pane, as getText reads it, holds
 /// @p part, up to @p wait.
+/// The screen text of @p pane, or the error of the call, for a failure message.
+std::string screenText(ControlClient& ctl, std::int64_t pane)
+{
+    const auto text = ctl.call("getText", Json::Array{pane, "screen"});
+    return text ? "screen:\n" + (*text)["text"].toString() : "getText failed: " + ctl.error.message;
+}
+
 bool screenShows(ControlClient& ctl, std::int64_t pane, const std::string& part,
                  std::chrono::milliseconds wait = TestWait)
 {
@@ -8415,6 +8422,10 @@ TEST(MuxAttach, TheCallsThatAWindowDidNotGetGoToTheNextOneInTheirOrder)
         ASSERT_TRUE(w.until([&] {
             return w.pane != 0;
         }));
+        // The shell reads what the test types only once it is at its prompt,
+        // as every other test here waits for. getText trims the space after
+        // the "$".
+        ASSERT_TRUE(screenShows(ctl, std::int64_t(pane), "$")) << screenText(ctl, std::int64_t(pane));
         w.readEvents = false;
         // An OSC 99 notification first, its close last, and between them
         // notifications of 1 KiB. A call waits in the pane's queue until the
@@ -8427,7 +8438,7 @@ TEST(MuxAttach, TheCallsThatAWindowDidNotGetGoToTheNextOneInTheirOrder)
                                  "n=1; while [ $n -le 900 ]; do printf '\\033]9;%04d %s\\a' $n $pad; n=$((n+1)); done; "
                                  "printf '\\033]99;i=x:p=close;\\033\\\\'; echo do''ne\n"}))
             << ctl.error.message;
-        ASSERT_TRUE(screenShows(ctl, std::int64_t(pane), "\ndone", 20s));
+        ASSERT_TRUE(screenShows(ctl, std::int64_t(pane), "\ndone", 20s)) << screenText(ctl, std::int64_t(pane));
         ASSERT_TRUE(daemon.call(Fn::Detach, Json::Array{"order"})) << daemon.lastError();
     }
     ASSERT_TRUE(waitFor([&] {
