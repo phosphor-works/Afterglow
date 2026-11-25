@@ -4924,7 +4924,7 @@ void TerminalWindow::publishLauncherStatus()
     lastProgress = progress;
     lastUrgent = urgent;
     QDBusMessage signal =
-        QDBusMessage::createSignal(QStringLiteral("/com/phosphorworks/Afterglow"),
+        QDBusMessage::createSignal(QStringLiteral("/org/phosphor_works/Afterglow"),
                                    QStringLiteral("com.canonical.Unity.LauncherEntry"), QStringLiteral("Update"));
     // --class changes the desktop file name, and the launcher entry with it.
     const QString desktopFile = QGuiApplication::desktopFileName().isEmpty() ? QStringLiteral(AFTERGLOW_APP_ID)

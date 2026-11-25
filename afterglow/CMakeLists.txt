@@ -280,7 +280,7 @@ endif()
 
 # The app id matches QGuiApplication::desktopFileName, which Wayland uses to
 # find the icon and group windows, and names the desktop files below.
-set(AFTERGLOW_APP_ID com.phosphorworks.Afterglow)
+set(AFTERGLOW_APP_ID org.phosphor_works.Afterglow)
 target_compile_definitions(afterglow_app PUBLIC QT_NO_CAST_FROM_ASCII AFTERGLOW_VERSION="${PROJECT_VERSION}"
     AFTERGLOW_APP_ID="${AFTERGLOW_APP_ID}"
     AFTERGLOW_BUILD_DIR="${CMAKE_BINARY_DIR}"
