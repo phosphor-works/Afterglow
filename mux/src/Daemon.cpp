@@ -1156,6 +1156,20 @@ void Daemon::pumpAttachments()
             return true;
         });
     }
+    // A write fails when the window closed: what it sent before, which
+    // handle() did not read yet, still counts. Its answers to calls and the
+    // end of a run reach their clients, as for a window that left.
+    for (const auto& attachment : m_attachments) {
+        if (!attachment->failed())
+            continue;
+        const auto session = attachment->finishing() ? m_sessions.end() : find(attachment->session());
+        guarded(*attachment, [&] {
+            attachment->readAfterFailure(session == m_sessions.end() ? nullptr : session->get());
+            return true;
+        });
+        deliverRelayFrames(*attachment);
+        passReplies(*attachment);
+    }
     // A failed window is over: its stream closes, so the window hears it,
     // and the session no longer counts as shown. Nothing else would wake the
     // poll for it, nor for its calls and command clients, which the next

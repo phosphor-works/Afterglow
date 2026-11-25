@@ -145,6 +145,10 @@ public:
     /// finishes the attachment: its last layout and the panes that it
     /// closed count, and the new window gets them.
     void catchUp(Session& session);
+    /// Reads what a window whose output failed sent before it closed: its
+    /// answers to calls, the end of a run, its last input. A write fails when
+    /// the window closed, and these are still in the socket.
+    void readAfterFailure(Session* session);
     /// What the window of a finished attachment sent before it heard, which
     /// the daemon applies to the session of its name (Daemon::applyLate):
     /// the panes that it closed, and its last layout. Its input for the
