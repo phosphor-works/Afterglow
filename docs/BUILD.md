@@ -3,8 +3,8 @@
 
 # Build and install
 
+This page tells users and packagers how to build Afterglow from source and install it.
 Afterglow requires Linux, Wayland and a Vulkan driver.
-These instructions use the current source layout.
 To build `aglow` and `aglow-mux` alone, without Qt, see [build aglow and aglow-mux alone](#build-aglow-and-aglow-mux-alone).
 
 ## Required software
@@ -110,8 +110,8 @@ With this option, the configuration downloads nothing.
 
 ## Qt private APIs
 
-Afterglow uses Qt private APIs. CMake reports this dependency during configuration.
-These APIs are tied to the installed Qt build.
+Afterglow uses Qt private APIs. CMake reports this dependency when it configures the build.
+These APIs belong to the installed Qt build.
 Rebuild Afterglow after a Qt update.
 Do not run an existing binary against a different Qt private-module build.
 

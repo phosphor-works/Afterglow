@@ -3,6 +3,9 @@
 
 # Keyboard and terminal input
 
+This page tells users how to bind keys and how Afterglow handles input.
+It covers the keyboard, the mouse, touch input, selection, search, hints, links, paste, the clipboard and shell integration.
+
 ## Keybinds
 
 `Keybinds.bindings` maps an action to one key combination or a list of combinations.
@@ -25,7 +28,7 @@ Afterglow rejects a sequence with more keys and logs an error.
 `Keybinds.leader` has no default. Set it before you use `Leader`.
 `Leader` must be the first key of a sequence. It can also be a binding alone.
 Afterglow rejects a binding that uses `Leader` when no leader is set.
-Named key tables supply temporary input modes.
+Named key tables give temporary input modes.
 
 ```json
 {
@@ -51,12 +54,12 @@ Named key tables supply temporary input modes.
 ```
 
 The window shows the active sequence or table, and that Escape cancels it.
-Escape, timeout, focus changes and configuration reload cancel the mode.
+Escape, a timeout, a focus change and a configuration reload cancel the mode.
 A table can bind Escape. Escape then runs that action instead.
 Modifier keys, AltGr, Super, Caps Lock and Num Lock do not cancel the mode.
-A mismatched key exits the mode. Afterglow then processes that key normally.
+A key that does not match exits the mode. Afterglow then processes that key normally.
 A held key that matches nothing in a table does not exit the table.
-Afterglow does not send consumed prefix keys to the shell.
+Afterglow does not send the prefix keys that a sequence used to the shell.
 A matching action leaves a table active. An action can activate another table.
 `pop_key_table` leaves every active table. It works only inside a key table.
 
@@ -95,8 +98,8 @@ A held key also runs these actions once:
 - `notify_on_finish`
 
 `toggle_fullscreen` does nothing in a quick terminal. There, its key goes to the program, with the repeats of a held key.
-The other actions, such as focus, resize, scroll and font size, repeat while the key is held.
-A table or sequence that names a command no script has shows a notification.
+The other actions, such as focus, resize, scroll and font size, repeat while you hold the key.
+A table or sequence that names a command that no script has shows a notification.
 A single binding to such a command sends the key to the terminal.
 
 A binding can name a symbol that needs Shift, such as `%` or `+`.
@@ -116,14 +119,14 @@ This example swaps Ctrl and Super:
 | Item | Description |
 | --- | --- |
 | Rule | A source modifier, a colon and the destination, such as `ctrl:super`. Spaces separate the rules. |
-| Source | One modifier: `shift`, `ctrl`, `alt` or `super`. |
+| Source | One modifier, which is `shift`, `ctrl`, `alt` or `super`. |
 | Destination | One or more of the same modifiers, joined by `+`, such as `ctrl+shift` in `alt:ctrl+shift`. |
 | Names | Kitty's other names also work: `control`, `opt`, `option`, `cmd`, `command`, `⇧`, `⌃`, `⌥` and `⌘`. Letter case has no effect. |
 | Two rules for one source | The last rule applies. The rules apply together, so a swap does not chain. |
 | Error | A rule without a colon, a missing name such as `ctrl:`, an unknown name, two modifiers before the colon, or a rule that makes a modifier into itself. Afterglow shows the problem and remaps no modifier. |
 
 Afterglow remaps the modifiers of each key, mouse and wheel event before anything reads the event.
-A modifier that is latched or locked, for example with sticky keys, is remapped too.
+Afterglow also remaps a modifier that is latched or locked, for example with sticky keys.
 These use the modifier that a key becomes:
 
 - Key bindings, key tables and leader sequences.
@@ -169,7 +172,7 @@ In the Kitty keyboard protocol, a Meta key (`Meta_L` or `Meta_R`) reports the Me
 
 The command palette, `afterglow ctl action` and Luau can also run these actions.
 Zoom keeps the split ratios and pane IDs.
-Directional focus changes the pane shown in zoom mode.
+Directional focus changes the pane that zoom mode shows.
 A split or resize action first restores the layout.
 Hidden panes keep their previous terminal size and continue to run.
 
@@ -187,19 +190,21 @@ See [panes and projects](PROJECTS.md) to move panes between windows.
 3. Select a mode with v, Shift+V or Ctrl+V.
 4. Press y or Return to copy the selection and exit.
 
-The selection modes are characters, lines and rectangles, respectively.
+The keys v, Shift+V and Ctrl+V select characters, lines and rectangles.
 PageUp, PageDown, Home and End also move the cursor.
 Ctrl+Home and Ctrl+End move to history boundaries.
-Escape or q cancels selection. The / key opens search.
-Wide characters and combining sequences remain complete.
+Escape or q cancels the selection. The / key opens search.
+Wide characters and combining sequences stay complete.
 A resize cancels the selection because its coordinates can change.
 The focused pane has a history scrollbar.
-By default it appears while the view scrolls or the pointer is over it, then fades out.
-`Window.scrollbar` selects `auto`, `always` or `never`. `Window.scrollbarHideDelay` sets the fade delay in milliseconds. A value of 0 starts the fade at once. `Window.scrollbarWidth` sets the width of the bar in logical pixels.
+By default, it shows while the view scrolls or the pointer is over it, then fades out.
+`Window.scrollbar` selects `auto`, `always` or `never`.
+`Window.scrollbarHideDelay` sets the fade delay in milliseconds. A value of 0 starts the fade at once.
+`Window.scrollbarWidth` sets the width of the bar in logical pixels.
 
 ## Search
 
-The `.*` control enables PCRE2 regular expressions.
+The `.*` control turns on PCRE2 regular expressions.
 Search joins soft-wrapped lines and maps results to terminal cells.
 It includes wide characters and combining sequences.
 Lowercase queries ignore case. A query with uppercase letters uses case-sensitive matching.
@@ -215,7 +220,7 @@ Capture runs in small parts. Matching runs in a worker thread.
 | Matches | 10,000 | Search returns the first matches and shows a notice |
 | Search time | 500 ms | Search stops and shows a notice |
 
-Search results describe a captured state.
+Search results describe the state at the capture.
 Change the query or reopen search to include new output.
 A resize during capture cancels the search.
 
@@ -235,17 +240,17 @@ Press Ctrl+Shift and right-click a prompt, a command or its output to open the o
 `Mouse.commandOutputModifier` sets the modifiers of this click.
 Write one or more of `ctrl`, `shift`, `alt` and `super`, joined with `+`.
 The click needs these modifiers and no others.
-`Mouse.commandOutputClick` changes this click: `select` selects the output, and `none` makes it a plain right-click.
+`Mouse.commandOutputClick` changes this click. `select` selects the output, and `none` makes it a plain right-click.
 
 The actions use `Terminal.pager`, which defaults to `less -R`.
 `Terminal.pagerOutputLimit` sets the output limit in KiB, from 1 to 65536. The default is 1024 (1 MiB).
-A notice identifies truncation.
+A notice tells you when Afterglow cut the output.
 The pager reads a temporary file. Afterglow removes the file when the pane closes.
 In the window of a mux session, the pager runs in the session, and can keep running after the window closes.
-There, the pager gets the file already open, as `/dev/fd/4`, and the file is removed before the pager starts.
+There, the pager gets the file already open, as `/dev/fd/4`, and Afterglow removes the file before the pager starts.
 The pager command uses arguments without shell expansion.
-Missing shell markers cause a notification.
-If the pager is not installed, or the output cannot be shown, a notification gives the reason.
+When shell markers are missing, a notification tells you.
+If the pager is not installed, or Afterglow cannot show the output, a notification gives the reason.
 
 ## Text hints
 
@@ -388,7 +393,8 @@ Each argument can contain these placeholders:
 ```
 
 A directory always opens in the file manager.
-With an empty `Links.openFilesWith`, a file opens as a `file://` URL: with `Links.openWith`, or else with the desktop application for the file type.
+With an empty `Links.openFilesWith`, a file opens as a `file://` URL.
+It opens with `Links.openWith`, or else with the desktop application for the file type.
 When `file` is not in `Links.schemes`, Afterglow asks before it opens a path.
 In the context menu, Copy Link Address copies the absolute path, not a `file://` URL.
 
@@ -476,7 +482,7 @@ A touchscreen works with one finger, as in Kitty.
 | Touch and move more than 8 logical pixels before `Mouse.touchSelectHold` | A scroll that follows the finger, and goes on after the finger lifts |
 | Touch, hold still for `Mouse.touchSelectHold`, then move | A drag of the left button from where the finger touched, which selects |
 | Touch with two fingers or more together, or with a second finger before the first moves | No click, scroll or selection |
-| Touch with a second finger after the first moves | The second finger is ignored, and the first goes on |
+| Touch with a second finger after the first moves | Afterglow ignores the second finger, and the first goes on |
 | Touch the tab bar, the scrollbar, a dock or a divider | A press of the left button at once, so that a move drags |
 
 The pointer does not show when a finger touches. Shader packs that read the pointer follow the finger.
@@ -496,13 +502,13 @@ Its global shortcut shows and hides it. `afterglow --quick-terminal` does the sa
 
 | Setting | Default | Function |
 | --- | --- | --- |
-| `QuickTerminal.shortcut` | ``Meta+` `` | Global shortcut. Empty disables it. |
+| `QuickTerminal.shortcut` | ``Meta+` `` | Global shortcut. Empty turns it off. |
 | `QuickTerminal.height` | 0.4 | Height as a fraction of the screen |
 | `QuickTerminal.position` | `top` | Screen edge, `top` or `bottom` |
 | `QuickTerminal.screen` | empty | Output name, such as `DP-1`. Empty uses the primary screen. |
 | `QuickTerminal.animate` | `true` | Slides the window in and out |
 
-A shown quick terminal stays on its output.
+A quick terminal that shows stays on its output.
 A change to `QuickTerminal.screen` applies after the quick terminal hides and shows again.
 
 ## Paste
@@ -519,7 +525,7 @@ A paste into a program that does not use paste events (OSC 5522), and each drop 
 
 ## Clipboard requests
 
-Programs read the clipboard with OSC 52 and OSC 5522. `Terminal.clipboardRead` sets the policy: `ask`, `allow` or `deny`.
+Programs read the clipboard with OSC 52 and OSC 5522. `Terminal.clipboardRead` sets the policy, which is `ask`, `allow` or `deny`.
 `Terminal.clipboardWrite` sets the policy of writes in the same way.
 With `ask`, a prompt names the tab of the program. The window stays on the current tab.
 The prompt starts on Deny, so a Return typed for the shell denies the request.
@@ -539,8 +545,8 @@ Clipboard requests and notifications of a pane wait for the window in one queue.
 ## Keyboard protocols
 
 modifyOtherKeys follows xterm.
-At level 2, Shift with a letter sends the shifted letter, and Shift+Space is encoded.
-Return, Tab, Backspace and Escape with modifiers are encoded as xterm encodes them.
+At level 2, Shift with a letter sends the shifted letter, and Afterglow encodes Shift+Space.
+Afterglow encodes Return, Tab, Backspace and Escape with modifiers as xterm encodes them.
 
 In the Kitty keyboard protocol, Afterglow reports Caps Lock and Num Lock only in the "report all keys" mode.
 The Kitty specification also reports them in the disambiguate mode for keys without text.
@@ -562,7 +568,7 @@ Afterglow sends it when it is not the same as the key.
 The Kitty protocol reports AltGr and the fifth level key as ISO_Level3_Shift and ISO_Level5_Shift.
 They set no modifier bit.
 It also reports the media and volume keys, when the desktop does not take them first for its own shortcuts.
-When one of two keys of a modifier is released, the event keeps the bit of the modifier. An example is the left Ctrl key while the right one is down.
+When you release one of two keys of a modifier, the event keeps the bit of the modifier. An example is the left Ctrl key while the right one is down.
 
 ## Shell integration
 
@@ -579,16 +585,17 @@ It supports login and interactive flags.
 It does not inject integration into scripts, `-c` commands or explicit startup overrides.
 Examples of startup overrides are `--norc`, `-f` and `--no-config`.
 
-Set `Terminal.shellIntegration` to `"disabled"` to disable automatic injection into new panes.
-`disabled` with other words is reported as a problem of the configuration, and `disabled` applies.
-To turn off only some parts, give the switches of Kitty's `shell_integration`, with spaces between them, such as `"no-title no-sudo"`:
+Set `Terminal.shellIntegration` to `"disabled"` to turn off automatic injection into new panes.
+Afterglow reports `disabled` with other words as a problem of the configuration, and `disabled` applies.
+To turn off only some parts, give the switches of Kitty's `shell_integration`, with spaces between them.
+An example is `"no-title no-sudo"`.
 
 | Switch | Turns off |
 | --- | --- |
 | `no-prompt-mark` | The prompt, command and exit-status marks (OSC 133), and the mark of the secondary prompt (`PS2`) in Bash and Zsh. In Fish 4, it also turns off the marks of Fish (`--features=no-mark-prompt`). With `no-rc`, Afterglow does not change the Fish command line, and Fish 4 keeps its own marks. |
 | `no-cwd` | The working directory (OSC 7). Fish 4 sends its own. |
 | `no-cursor` | The bar cursor while you edit the command line, and the configured cursor for the command. The bar blinks when `Terminal.cursorBlink` is on when the shell starts. The vi key bindings of Bash, Zsh and Fish keep their own cursors. |
-| `no-title` | The title: the directory at the prompt, and the command while it runs, after the host name in an ssh login. Fish sets its own titles. |
+| `no-title` | The title. This is the directory at the prompt, and the command while it runs, after the host name in an ssh login. Fish sets its own titles. |
 | `no-sudo` | A `TERM` that every system knows for `sudo` and `run0`. With `Terminal.term` set to `afterglow`, `sudo` and `run0` drop the directory of Afterglow's terminfo entry. Thus the integration gives them `TERM=xterm-256color` in their environment, which `env_reset` of `sudo` keeps. This applies only when the system has no entry for `afterglow`. |
 | `no-rc` | Nothing loads the integration. Afterglow sets only its environment, and your own startup files can load the integration. See [load the integration by hand](#load-the-integration-by-hand). |
 | `no-complete` | Nothing. Afterglow accepts it, as Kitty does, and has no completions to turn off. |
@@ -597,8 +604,8 @@ A Fish older than 4 gets the prompt marks from Afterglow, with Kitty's special k
 
 Alternatively, set `AFTERGLOW_SHELL_INTEGRATION` to `0` in `Terminal.env`.
 The variable in the launch environment applies only when the launch starts a new process.
-This does not remove manually configured hooks or native Fish markers.
-Custom shell wrappers require their own integration.
+This does not remove hooks that you configured by hand, or native Fish markers.
+Custom shell wrappers need their own integration.
 Zsh integration does not load when `/etc/zsh/zshenv` sets `ZDOTDIR`.
 
 Bash gets the title of a running command from its history.
@@ -647,8 +654,8 @@ Set `Mouse.clickMovesCursor` to `false` to turn it off.
 | `click_events=2` | An SGR mouse click with y relative to the top line of the current prompt, from 0. The current prompt is the secondary prompt (`OSC 133 ; A ; k=s`) when it starts on or above the click. |
 
 A secondary prompt (`OSC 133 ; A ; k=s`, the prompt of a continuation line) is not a new prompt.
-The command typed before it stays.
-A command line in `OSC 133 ; C ; cmdline=` can have the shell quoting of `printf %q`: backslashes, quotes and `$'...'`.
+The command that you typed before it stays.
+A command line in `OSC 133 ; C ; cmdline=` can have the shell quoting of `printf %q`, with backslashes, quotes and `$'...'`.
 Afterglow removes the quoting.
 
 ### SSH
@@ -670,9 +677,9 @@ For this first connection, Afterglow's shared connection replaces a `ControlPath
 The reason is that `ssh -G` shows `none` and the default value in the same way.
 To keep `ControlPath none`, set `Terminal.sshTerminfo` to `fallback`.
 With `-M`, the session does not join a master that runs already, and the install does not become a master.
-Thus the session authenticates on its own. When no master runs, you authenticate two times: for the install and for the session.
+Thus the session authenticates on its own. When no master runs, you authenticate two times, once for the install and once for the session.
 Afterglow records the host in `$XDG_STATE_HOME/phosphor-works/afterglow/ssh-terminfo`, by default under `~/.local/state`.
-The file holds only hashes. A host without `tic` is recorded as a fallback host.
+The file holds only hashes. Afterglow records a host without `tic` as a fallback host.
 Afterglow does not install the entry on that host again until the entry changes.
 To install the entry again, delete the file.
 If the host has no `tic`, or the local `infocmp` cannot read the entry, the session uses `xterm-256color`.
@@ -690,5 +697,5 @@ See [remote commands](CONTROL.md#remote-commands).
 `ssh -G`, `ssh -V`, `ssh -Q` and `ssh -O` reach `ssh` unchanged.
 Runs with `-N`, `-W`, `-f` or `-s` do not install the entry, change the pane label or forward a socket for remote commands.
 The same applies when the SSH configuration sets `SessionType none`, `SessionType subsystem` or `ForkAfterAuthentication yes`.
-An existing `ssh` function or alias takes precedence over the integration.
+An existing `ssh` function or alias comes before the integration.
 Set `Terminal.sshIntegration=false` to run `ssh` directly.
