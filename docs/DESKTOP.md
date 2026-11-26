@@ -3,11 +3,13 @@
 
 # Desktop integration
 
+This page tells users how Afterglow works with the desktop. It covers accessibility, input methods, file and text drops, downloads and uploads, notifications, the `aglow` client, Kitty file transfer and Kitty drag and drop.
+
 ## Accessible terminal text
 
 Each visible pane in the current tab is a terminal text object under its window in Qt accessibility and Linux AT-SPI.
 Screen readers can query viewport text, UTF-16 cursor and selection offsets, character geometry and text changes.
-Text preserves grapheme clusters and soft wraps.
+The text keeps grapheme clusters and soft wraps.
 AT-SPI selection changes update the terminal selection.
 Tab changes, splits and zoom update the exposed pane list. Scrolling updates the text view.
 Afterglow does not expose background tabs or panes that zoom hides.
@@ -34,7 +36,7 @@ Its actions are the command palette actions that act on that pane or start from 
 | Layout | Split Right, Split Down, Split Left, Split Up, Resize Pane Left, Resize Pane Right, Resize Pane Up, Resize Pane Down, Swap Pane Left, Swap Pane Right, Swap Pane Above, Swap Pane Below, Focus Pane Left, Focus Pane Right, Focus Pane Above, Focus Pane Below, Close Pane, Toggle Pane Zoom |
 | Move and open | Move Pane to New Tab, Move Pane to New Window, New Tab, New Window |
 
-New Tab and New Window start in the directory of the pane, as the `Window.workingDirectory` setting permits.
+New Tab and New Window start in the directory of the pane, when the `Window.workingDirectory` setting allows it.
 In the window of a mux session, Move Pane to New Window moves the pane to a new session in a new window (see [MUX.md](MUX.md#move-panes-and-tabs)).
 New Window opens a window outside the session.
 
@@ -57,7 +59,7 @@ For example, Scroll Page Up does nothing in a full-screen program, and Toggle Pa
 
 Pane actions do nothing while a prompt, a menu, the palette, the search field or a keyboard mode has the keys.
 Keyboard modes are the overview, copy mode, URL hints, Unicode input and a script's key mode.
-Keys cannot run an action then, and an action from outside would replace the answer that the prompt waits for.
+Then keys cannot run an action, and an action from outside would replace the answer that the prompt waits for.
 
 ### Docked areas
 
@@ -92,8 +94,8 @@ The accessible document contains the viewport. Scroll to read older content.
 Afterglow reports a cursor outside the viewport as absent.
 Terminal output is read-only.
 Accessibility cannot rewrite output or move the shell's editing cursor through a document offset.
-Rectangular selections report their encompassing range.
-Behavior depends on the desktop's AT-SPI service and screen reader.
+A rectangular selection reports the range that contains it.
+The behavior depends on the AT-SPI service and the screen reader of the desktop.
 The acceptance test checks public AT-SPI interfaces. It does not certify every screen reader.
 
 When output scrolls the viewport, the text-change events remove the lines that left the top and insert only the new text.
@@ -106,21 +108,21 @@ The access settings of the control socket (`Control.enabled`, `Control.allowRead
 
 ## Input methods and directionality
 
-Preedit text preserves grapheme clusters.
+Preedit text keeps grapheme clusters.
 Committed text uses the normal terminal input path.
-Focused control editors receive their own composition events.
+Focused control editors get their own composition events.
 They report their own surrounding text and cursor geometry.
 
 Input methods can query the live cursor row, surrounding text, UTF-16 cursor offset and cursor rectangle.
-These queries work while the viewport is scrolled into history.
-Context is read-only. Afterglow rejects surrounding-text replacement requests.
-Delete or Backspace cannot safely represent arbitrary replacement ranges in an application-controlled terminal.
+These queries work while you scroll the viewport into the history.
+The context is read-only. Afterglow rejects requests to replace surrounding text.
+In a terminal that an application controls, Delete or Backspace cannot safely represent arbitrary replacement ranges.
 
 Afterglow does not request a Latin language preference.
-Predictive text and automatic capitalization remain disabled.
-Context contains only displayed cells. Afterglow does not synthesize password contents.
+Predictive text and automatic capitalization stay off.
+The context contains only displayed cells. Afterglow does not make up password contents.
 
-`Terminal.bidi` enables optional bidirectional layout on eligible main screens.
+`Terminal.bidi` turns on optional bidirectional layout on eligible main screens.
 Selection, pointer targeting and accessible geometry follow visual cell order.
 See [bidirectional text](BIDI.md) for choices and limits.
 
@@ -145,8 +147,8 @@ These items also reject the entire drop:
 - Relative paths.
 - Names with control characters (C0, DEL or C1) or format characters such as bidirectional overrides.
 
-Quotes and backslashes in a name are escaped outside the single quotes, so Bash, Zsh and Fish read the same path.
-A local path dropped into SSH remains a local path. The drop does not upload a file.
+Afterglow escapes quotes and backslashes in a name outside the single quotes, so Bash, Zsh and Fish read the same path.
+A local path dropped into SSH stays a local path. The drop does not upload a file.
 Use `aglow transfer`, `scp` or another transfer tool for uploads.
 
 Afterglow focuses the pane and pastes text that you drop on it, from another application or
@@ -169,20 +171,27 @@ The program waits until you answer.
 
 | Choice | Result |
 | --- | --- |
-| **Save to *folder*** | Afterglow saves the file in `Terminal.downloadDirectory`, the download folder of the desktop by default. A name that is taken gets a number: `name (1).txt`. When the names up to `name (999).txt` are all taken, Afterglow refuses the download and shows a notice. |
+| **Save to *folder*** | Afterglow saves the file in `Terminal.downloadDirectory`, the download folder of the desktop by default. A name that is taken gets a number, for example `name (1).txt`. When the names up to `name (999).txt` are all taken, Afterglow refuses the download and shows a notice. |
 | **Save As…** | You choose a file in a Save dialog. |
 | **Refuse** | The program goes on, and its data goes nowhere. |
 
 The question starts on **Refuse**, so a Return that you type for the shell refuses.
-`Terminal.downloads` sets the policy: `ask` (the default), `allow`, which saves in `Terminal.downloadDirectory` with no question, or `deny`.
+`Terminal.downloads` sets the policy:
+
+| Value | Policy |
+| --- | --- |
+| `ask` | Ask for each download. This is the default. |
+| `allow` | Save in `Terminal.downloadDirectory` with no question. |
+| `deny` | Refuse each download. |
+
 `Terminal.downloadDirectory` is an absolute path, `~`, or a path that starts with `~/`.
 Afterglow reports another value as a problem of the configuration, and uses the download folder of the desktop.
 
 The data goes into `name.part` next to the file while it comes. When `name.part` is taken, the data goes into `name.N.part`.
 When the whole file came, the part file becomes `name`.
 A refused, cut or invalid download leaves no file.
-A notification tells you where the file is, or why it was not saved.
-The interface supports SSH transports that pass OSC sequences through.
+A notification tells you where the file is, or why Afterglow did not save it.
+The interface works over SSH transports that pass OSC sequences through.
 
 From a source checkout, run the example client:
 
@@ -190,17 +199,19 @@ From a source checkout, run the example client:
 python3 examples/compatibility/download.py /path/to/report.txt
 ```
 
-A download has no size limit: its data goes to the file as it comes, not into memory.
-Up to 8 MiB of data can wait for the disk. When more waits, Afterglow reads no more output of the pane until half of it is written.
+A download has no size limit. Its data goes to the file as it comes, not into memory.
+Up to 8 MiB of data can wait for the disk. When more waits, Afterglow reads no more output of the pane until it has written half of it.
 More data than the declared `size`, or less, or invalid base64, stops the download, and the file goes.
 A download without a declared `size`, or with a `size` of 0, has no size check.
 
-In a mux session, the window that shows the session asks, and the data streams to it. While the window takes the data slowly, the program waits. Without a window, the session refuses the download (see [what the daemon answers](MUX.md#what-the-daemon-answers)).
-When the pane leaves the window before the whole file came, the download stops, and a notification tells you that the file was not saved.
+In a mux session, the window that shows the session asks, and the data streams to it. While the window takes the data slowly, the program waits.
+Without a window, the session refuses the download (see [what the daemon answers](MUX.md#what-the-daemon-answers)).
+When the pane leaves the window before the whole file came, the download stops.
+A notification then tells you that Afterglow did not save the file.
 
 The suggested name uses only the basename, without control or format characters and without dots at its start.
 The Save dialog asks before it replaces a file.
-Closing the source pane refuses the download and removes its `.part` file.
+When you close the source pane, Afterglow refuses the download and removes its `.part` file.
 The protocol has no success acknowledgment.
 Afterglow does not open or execute received files automatically.
 
@@ -217,15 +228,15 @@ Afterglow asks you first, then the program gets the files that you choose.
 
 The question starts on **Refuse**, so a Return that you type for the shell refuses.
 When you close the file dialog without a choice, the program also gets Ctrl+C.
-`Terminal.uploads` sets the policy: `ask` (the default), or `deny`, which refuses each request with no question.
+`Terminal.uploads` sets the policy. `ask` is the default. `deny` refuses each request with no question.
 
 Only a choice of yours sends Ctrl+C, because Ctrl+C is a signal to the job in the foreground.
 A request that Afterglow refuses without a question gets no answer, and the program waits until you stop it.
 These requests get no answer:
 
-- each request while `Terminal.uploads` is `deny`
-- a request for a format other than `tgz`
-- a second request while the question of the first is open
+- Each request while `Terminal.uploads` is `deny`.
+- A request for a format other than `tgz`.
+- A second request while the question of the first is open.
 
 The program gets the files as iTerm2 sends them:
 
@@ -237,20 +248,21 @@ The program gets the files as iTerm2 sends them:
 
 Each path in the archive starts with `./`, below the deepest folder that holds all the chosen files.
 A folder chosen alone is in the archive with its name.
-A link that you choose is followed: the archive holds the file or the folder that it points to.
+Afterglow follows a link that you choose. The archive holds the file or the folder that the link points to.
 A link in a chosen folder stays a link.
-A device, a socket or a named pipe in a chosen folder is left out.
+Afterglow leaves out a device, a socket or a named pipe in a chosen folder.
 When you choose one of them directly, Afterglow refuses the files with a notification, and the program gets Ctrl+C.
 
 The answer goes to the program as typed input, in one piece.
-Typed input holds 32 MiB, so `Terminal.uploadLimit` sets the largest archive after compression: 16 MiB by default, at most 23 MiB.
+Typed input holds 32 MiB, so `Terminal.uploadLimit` sets the largest archive after compression.
+The default is 16 MiB, and the maximum is 23 MiB.
 The question shows the limit. The limit of the question applies, also when the setting changes before you choose the files.
-Files that make a larger archive are refused with a notification, and the program gets Ctrl+C.
+Afterglow refuses files that make a larger archive, with a notification, and the program gets Ctrl+C.
 When the typed input of the pane has no room for the answer, the program gets Ctrl+C, and a notification tells you why.
 When the command that asked ends before the files go, nothing goes to the shell.
 The question and its file dialog close when the program of the pane exits, or when shell integration reports the end of the command.
 Otherwise, a notification tells you that the files did not go.
-Use [`aglow transfer`](#the-aglow-client) for larger files: it resumes, and it sends only the changed parts of a file.
+Use [`aglow transfer`](#the-aglow-client) for larger files. It resumes, and it sends only the changed parts of a file.
 
 In a mux session, the window that shows the session asks.
 Without a window, the request gets no answer, and the program waits until you stop it.
@@ -302,8 +314,8 @@ Afterglow also ignores a rule that does not parse, and reports it in the same wa
 
 ## The aglow client
 
-`aglow` is a client of four Kitty protocols: file transfer, drag and drop, graphics and the clipboard.
-This document describes each of them.
+`aglow` is a client of four Kitty protocols. These are file transfer, drag and drop, graphics and the clipboard.
+This page describes each of them.
 `aglow run` also runs the commands of scripts in the Afterglow on the same computer (see [script commands](CONTROL.md#script-commands)).
 On a remote host, `aglow run` runs the commands that a script marks `remote`, through `afterglow ssh` (see [remote commands](CONTROL.md#remote-commands)).
 It does the same in a pane of a mux session of another host (see [MUX.md](MUX.md#script-commands-in-a-session-pane)).
@@ -323,7 +335,7 @@ The differences are in [aglow interoperability](COMPATIBILITY.md#aglow-interoper
 | `aglow dnd` | Drags files and data out of a pane, and receives drops |
 | `aglow icat` | Shows images in the pane |
 | `aglow clipboard` | Reads and writes the clipboard. With OSC 5522, it can use any MIME type. With OSC 52, it uses plain text only. |
-| `aglow run` | Runs a command of a script in the Afterglow on the same computer. On a remote host, it runs it in the Afterglow that `afterglow ssh` came from, or in the Afterglow that shows the mux session of the pane. |
+| `aglow run` | Runs a command of a script in the Afterglow on the same computer. On a remote host, it runs the command in the Afterglow that `afterglow ssh` came from. It can also run it in the Afterglow that shows the mux session of the pane. |
 | `aglow remote-prune DIR` | Removes the sockets of ended ssh sessions from `DIR`. The probe of `afterglow ssh` runs it on the remote host (see [remote commands](CONTROL.md#remote-commands)). You do not need to run it yourself, and the command list and the completions do not show it. |
 
 `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` run the `aglow` next to `afterglow`.
@@ -351,7 +363,8 @@ Copy the static `aglow` of your build to a remote host whose kernel and processo
 You can also install `aglow` on the remote host from a package.
 You can also build it there with `AFTERGLOW_AGLOW_ONLY` (see [build aglow and aglow-mux alone](BUILD.md#build-aglow-and-aglow-mux-alone)).
 That build needs no Qt.
-With `AFTERGLOW_BUILD_MUX` on, the default, it also builds `aglow-mux` and needs PCRE2 and phosphor-channel from the pinned phosphor-libs archive, which the configuration downloads.
+With `AFTERGLOW_BUILD_MUX` on, the default, it also builds `aglow-mux`.
+Then it needs PCRE2, and phosphor-channel from the pinned phosphor-libs archive, which the configuration downloads.
 With `-DAFTERGLOW_BUILD_MUX=OFF`, it builds `aglow` alone and needs no Phosphor library.
 For file transfer, drag and drop, images and the clipboard, the remote host needs `aglow` or `kitten`, because these are Kitty protocols.
 For script commands, the remote host needs `aglow`, because `kitten` has no counterpart of `aglow run`.
@@ -367,7 +380,7 @@ It does not show these images:
 
 | Format | Images that it does not show |
 | --- | --- |
-| BMP | Without ImageMagick, or with `--engine builtin`, a BMP with JPEG or PNG data in it. Without ImageMagick, or with `--engine builtin`, a BMP with run-length encoding that does not fit its depth: RLE8 shows only at 8 bits, and RLE4 only at 4 bits. See [other formats and URLs](#other-formats-and-urls). A BMP with a depth other than 1, 4, 8, 16, 24 or 32 bits. A BMP with color masks (BITFIELDS) at a depth other than 16 or 32 bits, or with another compression. |
+| BMP | Without ImageMagick, or with `--engine builtin`, a BMP with JPEG or PNG data in it. Without ImageMagick, or with `--engine builtin`, a BMP with run-length encoding that does not fit its depth. RLE8 shows only at 8 bits, and RLE4 only at 4 bits. See [other formats and URLs](#other-formats-and-urls). A BMP with a depth other than 1, 4, 8, 16, 24 or 32 bits. A BMP with color masks (BITFIELDS) at a depth other than 16 or 32 bits, or with another compression. |
 | JPEG | A JPEG with a sample size other than 8 bits. A progressive JPEG with more than 1,000 scans. |
 | PNG | Apple's CgBI PNG. |
 | TIFF: compression | A compression other than none, LZW, Deflate (8 and 32946) and PackBits, for example JPEG. The LZW of before TIFF 6. |
@@ -412,11 +425,11 @@ It also shows two kinds of BMP images with ImageMagick.
 These are a BMP with JPEG or PNG data, and a BMP with run-length encoding that does not fit its depth.
 It needs the `magick` program of ImageMagick 7 on `PATH`.
 `--engine builtin` turns this off.
-`--engine auto` and `--engine magick` do the same in `aglow`: the formats that `aglow` reads itself never go to ImageMagick.
+`--engine auto` and `--engine magick` do the same in `aglow`. The formats that `aglow` reads itself never go to ImageMagick.
 
 `aglow icat` keeps ImageMagick away from the file name and from other files:
 
-1. It reads the file itself, and finds the format from the first bytes. A TGA has no such bytes: `aglow icat` takes a file with the `.tga` extension, or with the TGA footer.
+1. It reads the file itself, and finds the format from the first bytes. A TGA has no such bytes, so `aglow icat` takes a file with the `.tga` extension, or with the TGA footer.
 2. It gives `magick` the data on standard input, with the name of the format.
 3. It gives `magick` a policy that lets it read only that format and write only PNG. The policy also stops all delegate programs, such as Inkscape and Ghostscript, and sets limits on memory, disk, time and image size.
 4. `magick` runs in a child process with limits on its memory and CPU time.
@@ -436,8 +449,8 @@ A `file` URL names a file of this computer, and `aglow icat` reads it without `c
 For a directory, `aglow icat` shows the image files in it and in its subdirectories, in name order.
 It finds them by the file name extension.
 It finds the files of the formats of ImageMagick only when `magick` is on `PATH` and `--engine builtin` is not given.
-It shows only regular files: a named pipe or a device file is not an image file.
-A subdirectory that it cannot read is left out with a message.
+It shows only regular files. A named pipe or a device file is not an image file.
+It leaves out a subdirectory that it cannot read, with a message.
 `aglow icat` then shows the other images, and exits with status 1.
 
 When the terminal can read local files and standard output is the terminal, `aglow icat` sends an image through shared memory or a temporary file.
@@ -506,8 +519,9 @@ The dialog lists at most 100 paths. The question shows the first 10 of them and 
 **Yes** approves only the paths that the dialog lists. The dialog does not change while it is open.
 The dialog shows some characters of a path as `\uXXXX`, or as `\UXXXXXXXX` above U+FFFF.
 These are control characters, line separators, invisible format characters (such as a zero-width space) and backslashes.
-When a link above a path leads elsewhere, a second line under the path shows where it resolves to. When the path of your home directory goes through a link, your home directory and the paths under it get no such line.
-A requested directory ends with a slash: the program can read all the files in it.
+When a link above a path leads elsewhere, a second line under the path shows where it resolves to.
+When the path of your home directory goes through a link, your home directory and the paths under it get no such line.
+A requested directory ends with a slash. The program can read all the files in it.
 
 | Request | What the dialog lists | What happens to the other paths |
 | --- | --- | --- |
@@ -518,7 +532,7 @@ A send session starts at once, because the program names its destinations only a
 The dialog opens when Afterglow has handled every command that had reached the window when Afterglow held the first destination.
 A command that the program wrote at about the same time can come after the dialog opens, also from the same write.
 A program that names many files can get more than one dialog, if some of its files come after that.
-A file waits, with its data, until you approve its destination. Nothing is written before that. The approved files of the session continue meanwhile.
+A file waits, with its data, until you approve its destination. Afterglow writes nothing before that. The approved files of the session continue in the meantime.
 A finish waits until no file waits.
 If you deny the first dialog of a session, the session ends with `EPERM`.
 If you deny a later dialog, its files get `EPERM`. The files that you approved before continue.
@@ -529,7 +543,8 @@ The files that come while it is open also get `EPERM` when you answer it. The di
 If you deny that dialog, the cooldown of 10 seconds starts again.
 Except for that last dialog, no dialog opens in a cooldown. If the dialog of a file would open in a cooldown, the file gets `EPERM`.
 If you approved no file of its session before, the session ends with `EPERM`.
-A file that came in a cooldown can still get a dialog after the cooldown, for example when the dialog of another session was open until then.
+A file that came in a cooldown can still get a dialog after the cooldown.
+For example, this occurs when the dialog of another session was open until then.
 Afterglow writes an approved file only where the dialog showed:
 
 - A directory that existed when the dialog opened must still be at the path where links led it then.
@@ -540,7 +555,8 @@ Afterglow writes an approved file only where the dialog showed:
 If one of these checks fails, the file gets an error status (`EPERM`, `ELOOP` or `ENOTDIR`).
 Each pane shows one permission dialog at a time. A new session gets `EBUSY` while a dialog is open.
 A session that started before the dialog opened waits for its own dialog until the open one closes.
-After you deny a dialog, or after a program ends its session while its dialog is open, new sessions in that pane get `EPERM` for 10 seconds.
+After you deny a dialog, new sessions in that pane get `EPERM` for 10 seconds.
+The same occurs after a program ends its session while its dialog is open.
 A file of a session that you approved before also gets `EPERM` in that time, if that one more dialog does not list it.
 
 Run these commands on the computer where the terminal program runs:
@@ -561,15 +577,16 @@ The protocol also supports zlib compression, delta transfers, progress reports a
 Afterglow writes each incoming regular file to a temporary file in its destination directory.
 It opens the temporary file at the first data of the file, so a program can name all of its files at the start.
 After validation, Afterglow replaces the destination and reports success.
-A file without a mode gets the mode that a new file gets under the umask that Afterglow had when the pane started its first transfer.
-Cancellation removes incomplete temporary files. Completed files remain in place.
+A file without a mode gets the mode of a new file under the umask of Afterglow.
+That umask is the one that Afterglow had when the pane started its first transfer.
+Cancellation removes incomplete temporary files. Completed files stay in place.
 A directory that existed before the transfer keeps its mode and its modification time.
 When Afterglow sends a directory, it leaves out devices, sockets and pipes, and entries that it cannot read.
 Afterglow writes a failure after the program finished the session to the `afterglow.desktop` log.
 
 Set `Terminal.fileTransferPassword` only when a shared secret must replace the permission dialog.
 Give the same secret to `aglow transfer --permissions-bypass`.
-An empty setting always requires permission.
+With an empty setting, Afterglow always asks for permission.
 A session that gives a password gets no dialog. A wrong password, or a password when the setting is empty, gets `EPERM`.
 After a wrong password, no pane of Afterglow checks a password for 10 seconds, and the `afterglow.desktop` log has a warning.
 Other users can see a password on the command line in the list of processes.
@@ -589,9 +606,9 @@ Give the option one of these values instead:
 | Open files of the transfers of all panes | Half of the `RLIMIT_NOFILE` soft limit of Afterglow | The file gets `EBUSY`. A delta upload holds four: its temporary file, its directory, its old file and the stream of its signature. |
 | Outgoing file streams per pane | 128 | The file gets `EBUSY`. |
 | Decoded data per packet | 4,096 bytes | The file fails with an error status. |
-| Command size | 16,384 bytes | Every transfer in the pane is canceled with `ENOMEM`. |
-| Input queue, output queue | 16 MiB each | Every transfer in the pane is canceled with `ENOMEM`. |
-| Path length, name length | 4,096 bytes, 255 bytes | The request is refused. |
+| Command size | 16,384 bytes | Afterglow cancels every transfer in the pane with `ENOMEM`. |
+| Input queue, output queue | 16 MiB each | Afterglow cancels every transfer in the pane with `ENOMEM`. |
+| Path length, name length | 4,096 bytes, 255 bytes | Afterglow refuses the request. |
 | Receive listing depth | 128 directory levels | The deeper entry gets `EFBIG`. |
 | Receive listing size | 8 MiB encoded, less when other output is queued | The session gets `EFBIG`. |
 | Requested paths, and the commands of send files, waiting for permission per pane | 16 MiB | A receive session gets `ENOMEM`. A send file gets `ENOMEM`, and data for a waiting file ends its session with `ENOMEM`. |
@@ -600,14 +617,14 @@ Give the option one of these values instead:
 | Block size of a delta signature from the program | 1 MiB, as in Kitty | The file gets `EINVAL`. |
 | Bytes that a delta upload or a compressed upload writes when the program gives no file size | `Terminal.fileTransferDeltaLimit`, 64 GiB | The file gets `EFBIG`. |
 
-A limit never authorizes more filesystem access.
+A limit never gives more filesystem access.
 File I/O, compression and delta calculation run outside the GUI thread.
 Afterglow makes the delta data for a receive transfer in small steps while it sends the data.
 It writes no temporary copy of the delta.
 Uploads and other messages in the pane continue during a large delta.
 Afterglow sends its files one at a time, so the other files wait until the delta is complete.
 
-Kitty 0.49.2 can omit empty files when it receives a transfer.
+Kitty 0.49.2 can leave out empty files when it receives a transfer.
 Afterglow sends the required end-of-data packet, including for empty files.
 To receive empty files from Afterglow, use `aglow transfer`.
 
@@ -672,8 +689,8 @@ Afterglow cancels a drop after 30 seconds without a message, so the limit is bel
 | A signal N, such as SIGTERM | 128 + N |
 | An error, or the terminal closed | 1 |
 
-A program must enable the protocol before it receives drag events.
-A source offer requires a physical left-button drag gesture.
+A program must turn on the protocol before it receives drag events.
+A source offer needs a physical left-button drag gesture.
 The offer comes before the [drag of selected text](INPUT.md#drag-selected-text-out-of-a-pane) when the press is inside the selection.
 When a drag ends, Afterglow tells the source the action that the drop took (the `o` key of `t=e:x=4`).
 
@@ -683,10 +700,10 @@ When a drag ends, Afterglow tells the source the action that the drop took (the 
 | 1 | Copy |
 | 2 | Move |
 
-A move to another application is reported as a copy, both in `o` and in the action of `t=e:x=2`.
+Afterglow reports a move to another application as a copy, both in `o` and in the action of `t=e:x=2`.
 The source then keeps its files.
 The reason is that KWin reports a drop that the other application refused in the same way as a drop that it took.
-A move to a pane of Afterglow is reported as a move.
+Afterglow reports a move to a pane of Afterglow as a move.
 
 Kitty does not send the `o` key. Clients that follow Kitty ignore it.
 `aglow dnd` deletes the files of a remote move only when the drop ended as a move.
@@ -696,16 +713,16 @@ When `aglow dnd` receives files from another computer, it reads them through the
 
 | Item | Limit | At the limit |
 | --- | --- | --- |
-| Directories that `aglow dnd` keeps open in one drop from another computer | 192 | A directory past the limit comes without its entries. `aglow dnd` reports that some dropped entries could not be read. The drop is a copy, not a move. When the source permits only a move, `aglow dnd` reports no action, and the source keeps its files. The files that arrived stay in the drop directory. |
+| Directories that `aglow dnd` keeps open in one drop from another computer | 192 | A directory past the limit comes without its entries. `aglow dnd` reports that some dropped entries could not be read. The drop is a copy, not a move. When the source allows only a move, `aglow dnd` reports no action, and the source keeps its files. The files that arrived stay in the drop directory. |
 
-Afterglow rejects file reads before a drop occurs.
+Afterglow rejects file reads before a drop.
 It also rejects file reads for a drag that starts in any Afterglow window.
 A read of a file in the temporary directory of a remote drag is the exception.
 Afterglow sends a desktop MIME type name to the program only when the name obeys these rules:
 
 - It contains a `/`.
 - It has 255 bytes or fewer.
-- It contains only printable ASCII characters. A space is not permitted.
+- It contains only printable ASCII characters. A space is not allowed.
 
 Programs without protocol support get local file drops as quoted paths and text drops as a paste.
 
@@ -724,9 +741,9 @@ Drop targets often copy files after the drag ends.
 After a drop, the directory remains for `Terminal.dragTreeLifetime` minutes. The default is 10.
 A later drag and closing the pane do not remove it.
 Afterglow removes the directory at once when the drag is canceled or fails.
-Relative symbolic links must remain inside that directory.
+Relative symbolic links must stay inside that directory.
 Afterglow rejects absolute links and links that escape the temporary directory.
-A `..` component is accepted only after a real directory, not after a link.
+Afterglow accepts a `..` component only after a real directory, not after a link.
 A dropped directory that a program reads through the protocol leaves out names that are not UTF-8.
 
 | Resource | Limit |
@@ -758,9 +775,9 @@ These errors fail one read:
 | Error | Cause |
 | --- | --- |
 | `ENOENT` | The file or the entry does not exist. |
-| `EPERM` | Afterglow cannot open the file, or the read is not permitted. |
+| `EPERM` | Afterglow cannot open the file, or the read is not allowed. |
 | `EIO` | A read of the file or of its directory failed. |
-| `EINVAL` | The request names no MIME type, entry or directory handle of the drop, or the file is not a regular file, a directory or a link. |
+| `EINVAL` | The request names no MIME type, entry or directory handle of the drop. Or the file is not a regular file, a directory or a link. |
 | `EUNKNOWN` | The URI is not a local file. |
 | `EMFILE` | 64 read requests are already queued. |
 | `ENOMEM` | The data of a MIME type is larger than 64 MiB, or a directory exceeds a listing limit or the limit of open directory handles. |
@@ -773,10 +790,10 @@ These errors end the drop:
 - No message from the program for 30 seconds.
 
 A packet or a chunked message over its limit gets `EFBIG`. Afterglow drops the remaining chunks of that message.
-A command over 8,192 bytes also ends the protocol. The program must enable it again.
+A command over 8,192 bytes also ends the protocol. The program must turn it on again.
 An oversized packet or command gets no reply when the program accepts no drops, offers no drags and sends no chunked message.
 Thus Afterglow writes no errors to a program that prints a binary file.
-A stalled remote source preparation expires after 120 seconds.
+When the preparation of a remote source stops, it expires after 120 seconds.
 
 ## Native acceptance coverage
 
@@ -784,7 +801,7 @@ A stalled remote source preparation expires after 120 seconds.
 The runner sends pointer events to the nested compositor's X11 backend.
 The compositor produces Wayland pointer events and negotiates a real Qt `QDrag`.
 The test filename contains Unicode and an apostrophe.
-The test checks the quoted path received by the PTY.
+The test checks the quoted path that the PTY receives.
 
 The suite also checks these behaviors:
 
@@ -809,7 +826,8 @@ The suite also checks these behaviors:
 - Selected text that drags into another pane and not back into its own pane, with real compositor input.
 - Overlays: standard input that a control client sends in parts, and the OSC 24569 answer to the program of an overlay.
 - Screenshots: the images of a pane, its tab and its window, and the refusals `not_shown` and `denied`.
-- Pane and tab ends: the panes of the last tab close before their window, and the end of a pane alone in its tab is announced once. A window can be deleted while it shows.
+- Pane and tab ends. The panes of the last tab close before their window.
+  Afterglow announces the end of a pane alone in its tab once. A window can be deleted while it shows.
 - Terminal events that reach the GUI thread in their order, with a bound on the events that wait.
 - Focus and keys: the palette closes when the focus moves, and a held key that closes a pane does not repeat into the next pane.
 - A split whose shell does not start keeps the zoom, and the pointer row of a view that is scrolled by part of a row.

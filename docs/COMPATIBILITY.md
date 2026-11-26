@@ -3,6 +3,7 @@
 
 # Terminal compatibility
 
+This page tells program authors and users which terminal protocols Afterglow supports, how it differs from other terminals, and which limits apply.
 Afterglow targets Linux and Wayland with Vulkan.
 The terminal core in `libs/afterglow-vt` parses the protocols.
 The message formats of file transfer, drag and drop, graphics and clipboard are in `libs/afterglow-proto`.
@@ -23,26 +24,26 @@ The table below lists the protocols that Afterglow supports, each with the tests
 | Native terminal accessibility | Viewport text, cursor, selection and character geometry through Qt/AT-SPI; pane actions, the pane menu and docked-area buttons | `DesktopText.*`, `NativeWindow.Accessible*`, `desktop_acceptance.py`; [accessibility](DESKTOP.md#accessible-terminal-text) |
 | Local file drop | Local absolute paths quoted for Bash/Zsh/Fish, targeted pane, bracketed paste, no automatic Enter | `FileDrop.*`; [file-drop workflow](DESKTOP.md#drop-files-and-text-into-a-pane) |
 | Text drop and selection drag | Dropped text pasted with the size limit and the question of a paste, selected text dragged to another pane or application (`Mouse.dragSelection`) | `NativeWindow.Dropped*`, `NativeWindow.DropsThatAPaneRefusesPasteNothing`, `NativeWindow.ASelection*`, `NativeWindow.*InsideTheSelection*`; [text drops](DESKTOP.md#drop-files-and-text-into-a-pane), [selection drag](INPUT.md#drag-selected-text-out-of-a-pane) |
-| Kitty indexed images | `f=8` and `f=16`; the special indices 248 to 255; a new color of the pane draws the image again; no frames | `Graphics.Indexed*`, `Render.IndexedImages*`, `SnapshotImages.Indexed*`; [indexed images](#indexed-images) |
-| Kitty graphics | Transmission inline, from a file, a temporary file and shared memory; PNG, raw and zlib data; placements, z-order, animation and composition; Unicode placeholders; feature queries (`a=q`, `e`) | `Graphics.*`, `Render.*`; `afterglow_kitten_icat` with `kitten icat` |
-| Kitty keyboard protocol | Flags 1, 2, 4, 8 and 16; push, pop, set and query, with a stack for each screen that DECSTR clears; event types, alternate keys with the base layout key, and associated text; AltGr and the fifth level key (ISO_Level3_Shift, ISO_Level5_Shift), and the media and volume keys that reach the window | `Terminal.KittyKeyboardStack*`, `Input.*`, `KeyMapping.BaseLayoutKeysLevelKeysAndHeldModifiers`; [keyboard protocols](INPUT.md#keyboard-protocols) |
+| Kitty indexed images | `f=8` and `f=16`, the special indices 248 to 255, and no frames. A new color of the pane draws the image again. | `Graphics.Indexed*`, `Render.IndexedImages*`, `SnapshotImages.Indexed*`; [indexed images](#indexed-images) |
+| Kitty graphics | Transmission inline, from a file, a temporary file and shared memory. PNG, raw and zlib data. Placements, z-order, animation and composition. Unicode placeholders and feature queries (`a=q`, `e`). | `Graphics.*`, `Render.*`; `afterglow_kitten_icat` with `kitten icat` |
+| Kitty keyboard protocol | Flags 1, 2, 4, 8 and 16. Push, pop, set and query, with a stack for each screen that DECSTR clears. Event types, alternate keys with the base layout key, and associated text. AltGr and the fifth level key (ISO_Level3_Shift, ISO_Level5_Shift). The media and volume keys that reach the window. | `Terminal.KittyKeyboardStack*`, `Input.*`, `KeyMapping.BaseLayoutKeysLevelKeysAndHeldModifiers`; [keyboard protocols](INPUT.md#keyboard-protocols) |
 | Kitty text sizing (OSC 66) | Scale, width, fraction and alignment; the erase, scroll, overwrite and insert and delete rules of the specification | `TextSizing.*` |
 | Kitty color control (OSC 21), color stack (OSC 30001, 30101), pointer shapes (OSC 22) | See [color escape codes and pointer shapes](#color-escape-codes-and-pointer-shapes) | `Extensions.PointerShapeStacksQueriesAndReset`, `Extensions.OklchAndLabColorsInTheColorEscapeCodes`, `Conformance.ColorStack` |
-| Kitty notifications (OSC 99), with OSC 9 and OSC 777 | Chunks, icons with one icon cache (`g`) for the whole application that keeps the 32 icons used last, buttons, sounds, close and activation reports, the capability query; filter rules as Kitty's `filter_notification` (`Notifications.filters`) | `Notification.*`, `Extensions.LegacyNotificationsRejectControlsAndBadUtf8`, `ConfigTest.NotificationFilterRules`, `NativeWindow.NotificationReplacementAndApplicationImageCache`, `NativeWindow.NotificationFiltersDropWhatTheyMatch`; [hide notifications](DESKTOP.md#hide-notifications-of-programs) |
+| Kitty notifications (OSC 99), with OSC 9 and OSC 777 | Chunks, buttons, sounds, close and activation reports, and the capability query. Icons, with one icon cache (`g`) for the whole application that keeps the 32 icons used last. Filter rules as Kitty's `filter_notification` (`Notifications.filters`). | `Notification.*`, `Extensions.LegacyNotificationsRejectControlsAndBadUtf8`, `ConfigTest.NotificationFilterRules`, `NativeWindow.NotificationReplacementAndApplicationImageCache`, `NativeWindow.NotificationFiltersDropWhatTheyMatch`; [hide notifications](DESKTOP.md#hide-notifications-of-programs) |
 | Kitty clipboard (OSC 5522), OSC 52 and paste events (mode 5522) | Several MIME types, passwords for reads and writes, the primary selection | `Clipboard.*`, `Clipboard.PasteEventsModeIsReported`, `NativeWindow.KittenClipboard*`, `NativeWindow.AnAllowedClipboardPasswordAllowsLaterWrites` |
 | Kitty file transfer (OSC 5113), drag and drop (OSC 72) | See [Kitty file transfer](DESKTOP.md#kitty-file-transfer) and [Kitty drag and drop](DESKTOP.md#kitty-drag-and-drop) | `Transfer.*`, `Dnd.*`, `afterglow_transfer_kitten_relay`, `NativeWindow.Kitty*` |
 | Shell integration (OSC 133 and OSC 633), contexts (OSC 3008), the working directory (OSC 7) | Prompt, command and output marks, `click_events=1` and `click_events=2`, `special_key=1`, the secondary prompt (`k=s`, OSC 633 `F`), `redraw`, `cmdline` and `cmdline_url`; the context stack; `file://` directories | `Terminal.ShellIntegrationCommands`, `Extensions.VSCodeShellIntegration`, `ShellMarks.*`, `Extensions.SystemdContexts`, `Terminal.WorkingDirectoryReportsOnlyChanges` |
 | Program status (OSC 7501), ConEmu progress and directory (OSC 9;4, OSC 9;9) | Status, progress and the working directory | `ProgramStatus.*`, `Extensions.ConEmuCommands` |
 | iTerm2 (OSC 1337) | `File` with animated GIF, WebP and APNG images, `MultipartFile`, `FilePart`, `FileEnd`, `SetUserVar`, `CurrentDir`, `ClearScrollback`, `ReportCellSize`, `SetMark`, `RemoteHost`, `Copy`, `RequestAttention`, `CursorShape` | `Extensions.ITerm2Commands`, `Extensions.ITerm2AnimatedImagesPlayAndLoop`, `PaneAnimation.AnITerm2GifPlaysThroughThePanesDecoder`, `Extensions.ITerm2SetMarkMarksTheCursorRowOnTheMainScreen`, `Extensions.Downloads*`, `Terminal.BellsRingOnlyForBel` |
 | Hyperlinks (OSC 8) | Links with and without an id, across wrapped lines and reflow | `Reflow.StyleAndLinkRunAcrossWrapsKeepItsReferences`, `StateSync.TextStylesLinksAndText` |
-| Window operations (XTWINOPS) | 4 and 8 (resize), 11 and 13 (state and position), 14, 15, 16, 18 and 19 (sizes in pixels and cells), 22 and 23 (title stack), 24 or more (DECSLPP) | `Terminal.Reports`, `Terminal.TitleStackPushesAndPops`, `Extensions.PixelReportsAndImagePercentagesUseWideGeometry` |
+| Window operations (XTWINOPS) | 4 and 8 (resize), 11 and 13 (state and position), and 14, 15, 16, 18 and 19 (sizes in pixels and cells). 22 and 23 (title stack), and 24 or more (DECSLPP). | `Terminal.Reports`, `Terminal.TitleStackPushesAndPops`, `Extensions.PixelReportsAndImagePercentagesUseWideGeometry` |
 | Status reports | DA1, DA2, DA3, XTVERSION, DECRQM, DECRQSS, XTGETTCAP | `Terminal.Reports`, `Conformance.TertiaryAttributesAndTerminalParameters`, `Terminal.XtversionReportsTheProjectVersion`, `Conformance.ModeReports`, `Terminal.Decrqss`, `Terminal.Xtgettcap` |
-| Mouse modes | 9, 1000, 1002, 1003 and 1004 (focus); the formats 1005, 1006, 1015 and 1016 (SGR pixels), with Kitty's event when the pointer leaves a pane; 1007 (alternate scroll) | `Input.MouseLegacyFormats`, `Terminal.MouseFormatResetsOnlyItsOwn`, `Input.*`, `NativeWindow.APaneLearnsThatThePointerLeftIt` |
+| Mouse modes | 9, 1000, 1002, 1003 and 1004 (focus), and 1007 (alternate scroll). The formats 1005, 1006, 1015 and 1016 (SGR pixels), with Kitty's event when the pointer leaves a pane. | `Input.MouseLegacyFormats`, `Terminal.MouseFormatResetsOnlyItsOwn`, `Input.*`, `NativeWindow.APaneLearnsThatThePointerLeftIt` |
 | Synchronized output | Mode 2026, and `DCS = 1 s` and `DCS = 2 s` | `Conformance.EachSynchronizedBlockHasItsOwnSerial`, `Conformance.LegacySynchronizedUpdatesAndFlash` |
 | Grapheme clusters, color scheme, visibility and size reports | Modes 2027, 2031 with `CSI ? 996 n`, 2033 and 2048 | `Conformance.ThemeVisibilityAndSizeReports`, [character widths](#character-widths) |
 | Color and mode stacks | XTPUSHCOLORS, XTPOPCOLORS, XTREPORTCOLORS; XTSAVE and XTRESTORE, without modes for the modes that have no side effects, as in Kitty | `Conformance.ColorStack`, `Conformance.SaveAndRestoreModes`, `Terminal.XtsaveWithoutModesSavesTheQuietModes` |
 | Sixel | Transparent backgrounds (P2 = 1), XTSMGRAPHICS | `Sixel.*`, `Extensions.SixelThroughTheTerminal`, `Conformance.SixelGraphicsAttributesHonourTheAction` |
-| Text attributes | Curly, dotted and dashed underlines and underline colors (SGR 4:x, 58, 59); Kitty's SGR 221 and 222 (bold or faint off alone); ED 22; DECCARA with every SGR code, as Kitty extends it, and DECRARA | `Terminal.SgrColorsAndAttributes`, `Conformance.KittyBoldOffAndFaintOffAlone`, `Terminal.EraseDisplay22MovesTheScreenIntoTheHistory`, `Conformance.RectangleAttributes`, `Conformance.RectangleAttributesTakeEverySgrCode` |
+| Text attributes | Curly, dotted and dashed underlines and underline colors (SGR 4:x, 58, 59). Kitty's SGR 221 and 222 (bold or faint off alone). ED 22. DECCARA with every SGR code, as Kitty extends it, and DECRARA. | `Terminal.SgrColorsAndAttributes`, `Conformance.KittyBoldOffAndFaintOffAlone`, `Terminal.EraseDisplay22MovesTheScreenIntoTheHistory`, `Conformance.RectangleAttributes`, `Conformance.RectangleAttributesTakeEverySgrCode` |
 | Kitty unscroll (`CSI n + T`) | SD that fills the new lines from the scrollback | `Terminal.UnscrollFillsTheTopFromTheScrollback` |
 
 ## Relative images
@@ -65,8 +66,8 @@ Relative placements do not move the terminal cursor.
 | ED 2 (erase the screen) | Images that reach into the screen go, also when their top row is in the scrollback. |
 | ED 22 (move the screen into the scrollback, then erase it, as in Kitty) | The lines down to the last line with text go into the scrollback with their images. Then ED 2 erases the screen. On the alternate screen, or with a scrolling region, ED 22 is the same as ED 2. |
 | ED 3 (erase the scrollback) | Images whose top row is in the scrollback go. Images on the screen stay, like the text. |
-| EL, ED 0 and ED 1 (erase part of a line or of the screen) | Kitty images stay, as the Kitty specification says: a program deletes them with the delete commands. A program that draws over a Kitty image without the alternate screen, such as `top`, leaves it on the screen, as in Kitty. Sixel and iTerm2 images whose cells overlap the erased cells go, as xterm erases its graphics with their cells. Selective erases (DECSEL, and DECSED 0 and 1) leave all images. |
-| SU, SD, IL, DL, or a line feed or reverse index at a scroll-region margin | An image whose top-left cell is in the region moves with its rows. With a region smaller than the screen, only a Kitty image that lies entirely inside the region moves, as the Kitty specification says. One that reaches past a margin stays. Sixel and iTerm2 images in the region always move. An image that moves shows only its rows that are in the region after the scroll. It goes when none of its rows is in the region. Rows below the last row of the screen stay when the scroll is up: they come into view as the image moves. A relative child image moves with its parent, and the same rule cuts it. It goes when its parent goes. |
+| EL, ED 0 and ED 1 (erase part of a line or of the screen) | Kitty images stay, as the Kitty specification says. A program deletes them with the delete commands. A program that draws over a Kitty image without the alternate screen, such as `top`, leaves it on the screen, as in Kitty. Sixel and iTerm2 images whose cells overlap the erased cells go, as xterm erases its graphics with their cells. Selective erases (DECSEL, and DECSED 0 and 1) leave all images. |
+| SU, SD, IL, DL, or a line feed or reverse index at a scroll-region margin | An image whose top-left cell is in the region moves with its rows. With a region smaller than the screen, only a Kitty image that lies entirely inside the region moves, as the Kitty specification says. One that reaches past a margin stays. Sixel and iTerm2 images in the region always move. An image that moves shows only its rows that are in the region after the scroll. It goes when none of its rows is in the region. Rows below the last row of the screen stay when the scroll is up. They come into view as the image moves. A relative child image moves with its parent, and the same rule cuts it. It goes when its parent goes. |
 | Unscroll (`CSI n + T`, as in Kitty) | The rows that it pushes out at the bottom of the screen go with all their images. |
 
 The same scrolls move shell-integration marks (OSC 133) with their rows.
@@ -80,9 +81,9 @@ Afterglow stores an iTerm2 inline image at its own size, or at the requested siz
 The renderer enlarges it to the requested size, within the limits in [Sixel, iTerm2 and escape strings](#sixel-iterm2-and-escape-strings).
 An animated GIF, WebP or APNG plays and loops while it shows, as in iTerm2 and WezTerm.
 A frame of 10 ms or less shows for 100 ms, as browsers play old GIFs.
-An animation keeps at most 1,024 frames, and its frames together fit in `Graphics.quota`: it stops at the last frame that fits.
+An animation keeps at most 1,024 frames, and its frames together fit in `Graphics.quota`. It stops at the last frame that fits.
 
-A pane decodes the images that programs send in processes of their own: PNG data of Kitty graphics, and iTerm2 images.
+A pane decodes the images that programs send in processes of their own. These are the PNG data of Kitty graphics, and iTerm2 images.
 `aglow-mux --decode-images`, next to `afterglow`, starts these processes.
 Each process has limits on its memory, its time and the system calls that it can make (see [images that a pane decodes](#images-that-a-pane-decodes)).
 Without `aglow-mux`, these images do not show, and Afterglow writes a warning in its log once.
@@ -95,7 +96,8 @@ Inline transmissions (`t=d`) always work.
 
 Afterglow deletes a temporary file (`t=t`) only when it is below `/tmp`, `/dev/shm` or `$TMPDIR`, and its path below that directory holds `tty-graphics-protocol`.
 Afterglow keeps every other file that a command names.
-Afterglow deletes the shared memory object of a command (`t=s`) when it has read it or refused the command, whatever its name, as the Kitty specification says.
+Afterglow deletes the shared memory object of a command (`t=s`) when it has read it or refused the command.
+It does so whatever the name is, as the Kitty specification says.
 `kitten icat` names its objects `/icat-` and a random suffix.
 
 A read from a file or shared memory that fails gives the error `EBADF:failed to read image file`.
@@ -144,7 +146,7 @@ A feature query reports `f=8` and `f=16` for the transmit and query actions.
 
 ## Multiple cursors
 
-Color operations 30 (text), 40 (fill) and query 101 are supported.
+Afterglow supports the color operations 30 (text) and 40 (fill), and query 101.
 
 | Color space | Behavior |
 | --- | --- |
@@ -156,19 +158,19 @@ Color operations 30 (text), 40 (fill) and query 101 are supported.
 All extra cursors share color settings. Each cell resolves those settings, including palette changes.
 Reverse fill uses the cell foreground for fill and the cell background for text.
 It overrides the explicit text-color choice.
-Capability queries return `1;2;3;29;30;40;100;101`. Clients must inspect the response.
+Capability queries return `1;2;3;29;30;40;100;101`. A client must read the response.
 Query 100 gives the cursors as rectangles (type 4). A run of cursors on one row is one rectangle.
 Equal runs on the rows below join it. A cursor alone is a point (type 2).
 
-Full reset restores default colors. Clear and screen switches remove positions.
+A full reset restores the default colors. A clear and a screen switch remove the positions.
 Positions use screen coordinates and do not scroll with output.
-Cursors disappear while viewing scrollback. Resize clips positions to the screen.
+The cursors disappear while you look at the scrollback. A resize clips the positions to the screen.
 
 Separate layers keep block text readable and beams above glyphs.
-With layer shaders, mixed cursor order requires one additional RGBA8 frame texture.
+With layer shaders, a mixed cursor order needs one more RGBA8 frame texture.
 This costs approximately 7.9 MiB at 1080p or 31.6 MiB at 4K.
-A second cursor shader pass runs only when opposite drawing orders are required.
-Persistent cursor buffers retain separate history per layer within the shared allocation limit.
+A second cursor shader pass runs only when the cursors need opposite drawing orders.
+Persistent cursor buffers keep a separate history for each layer, in the shared allocation limit.
 
 ## Notifications, links and shell contexts
 
@@ -213,14 +215,15 @@ Without a window, the mux session refuses the download (see [what the daemon ans
 OSC 1337 downloads are not resumable.
 A program asks for files with OSC 1337 `RequestUpload` (see [send files to a terminal application](DESKTOP.md#send-files-to-a-terminal-application)).
 Afterglow supports the Kitty file-transfer protocol separately. See [Kitty file transfer](DESKTOP.md#kitty-file-transfer).
-IME context does not permit arbitrary surrounding-text edits.
+IME context does not allow arbitrary surrounding-text edits.
 Optional bidirectional layout of the main screen has application-grid exclusions and bounded paragraph processing.
 See [bidirectional text](BIDI.md).
 
 ## Character widths
 
 The widths come from Unicode 18.0.
-Afterglow joins characters into grapheme clusters as UAX #29 says, when grapheme clustering (mode 2027) is on, which is the default.
+When grapheme clustering (mode 2027) is on, Afterglow joins characters into grapheme clusters as UAX #29 says.
+Mode 2027 is on by default.
 A cluster takes the cells that glibc's `wcwidth` gives its characters, but no more than two.
 Shells and editors measure text with `wcwidth`, so the cursor stays where they expect it.
 
@@ -267,11 +270,11 @@ Kitty and Afterglow both ignore an alpha, such as `oklch(0.7 0.1 200 / 0.5)`.
 Cursor text, visual-bell color and eight transparent-background slots affect rendering.
 Transparent slots support an explicit opacity or the configured window opacity.
 The color stack saves and restores these settings.
-Unknown color keys produce the protocol's encoded `unknown` response.
+An unknown color key gets the protocol's encoded `unknown` response.
 
 OSC 22 supports the [Kitty mouse-pointer protocol](https://sw.kovidgoyal.net/kitty/pointer-shapes/).
 Programs can replace, push, pop and query shapes.
-All protocol shape names are supported, including zoom, cell and vertical-text pointers.
+Afterglow supports all shape names of the protocol, including the zoom, cell and vertical-text pointers.
 A terminal reset clears the stacks of both screens and restores the default text pointer.
 
 ## aglow interoperability
@@ -287,7 +290,7 @@ Its message formats come from `libs/afterglow-proto`, the same code that the ter
 | --- | --- | --- |
 | `aglow transfer` | File transfer (OSC 5113): directories, links, permissions, times, zlib, deltas and the SHA-256 password form | Against the Afterglow service in process (`Client.*`). Through a pseudo-terminal, also with `--confirm-paths`. Against Kitty 0.49.2 (`kitty_transfer_interop.py`). Against a hostile terminal (`Proto.Hostile.*`) |
 | `aglow dnd` | Drag and drop (OSC 72): MIME data, copy and move, remote directory trees in both directions | Against Afterglow in a nested KWin (`NativeWindow.Aglow*`). As the target or source of a remote drag (`AglowDrop.*`, `AglowDrag.*`). With the question that lists the files before a drop replaces them (`AglowOverwrite.*`) |
-| `aglow icat` | Graphics (APC G): PNG as it is, other formats as pixels, GIF, WebP and APNG animation frames, Unicode placeholders, tmux passthrough; an ICC profile or a cICP color space converted to sRGB | `aglow_icat_render` draws its output with the Afterglow renderer. `aglow_icat_decode` checks the pixels of crafted images, and the first frame of a GIF over the 320 MiB budget. `aglow_icat_external` checks the formats that go to ImageMagick and the downloads of URLs, with a fake `magick` and `curl`. `aglow_tmux_pty` runs it in a private tmux server, with `allow-passthrough` on and off. |
+| `aglow icat` | Graphics (APC G). PNG as it is, other formats as pixels, GIF, WebP and APNG animation frames, Unicode placeholders and tmux passthrough. An ICC profile or a cICP color space converted to sRGB. | `aglow_icat_render` draws its output with the Afterglow renderer. `aglow_icat_decode` checks the pixels of crafted images, and the first frame of a GIF over the 320 MiB budget. `aglow_icat_external` checks the formats that go to ImageMagick and the downloads of URLs, with a fake `magick` and `curl`. `aglow_tmux_pty` runs it in a private tmux server, with `allow-passthrough` on and off. |
 | `aglow run` | The socket query of a remote host (OSC 24569), with the DA1 guard and tmux passthrough | Against a terminal and a socket that a test plays (`aglow_run_pty`). Also in a private tmux server (`aglow_tmux_pty`). Through sshd run as the user (`RemoteCommandsTest.*`) |
 | `aglow clipboard` | Clipboard (OSC 5522), and OSC 52 for plain text in a terminal without OSC 5522 | Against a terminal that a test plays (`aglow_clipboard_pty`, `aglow_clipboard_cases`), and the message formats in `libs/afterglow-proto/tests` |
 
@@ -307,7 +310,7 @@ Its message formats come from `libs/afterglow-proto`, the same code that the ter
 
 Afterglow adds the `o` key to the end message of a drag (`t=e:x=4`). It names the action that the drop took.
 Kitty does not send it.
-A move to another application is reported as a copy, so that the source keeps its files. See [Kitty drag and drop](DESKTOP.md#kitty-drag-and-drop).
+Afterglow reports a move to another application as a copy, so that the source keeps its files. See [Kitty drag and drop](DESKTOP.md#kitty-drag-and-drop).
 
 Run the tests of `aglow`:
 
@@ -322,9 +325,9 @@ The tests below run `kitten` 0.50 against Afterglow. Each test skips when `kitte
 
 | Command | Interoperability checks |
 | --- | --- |
-| `kitten icat` | `afterglow_kitten_icat` runs it in `afterglow_headless`, which answers its queries, and reads the images and placements that reach the terminal. It checks the transfer modes `detect`, `stream`, `file` and `memory`, with a PNG that `kitten` sends as it is and with an image that it converts. Each temporary file and shared memory object must be deleted. It also checks `--place`, Unicode placeholders, the frames of an animated GIF, and `kitten` in a private tmux server. Then it draws the output with the Afterglow renderer. |
-| `kitten clipboard` | `NativeWindow.KittenClipboard*` run it in a pane of a window in a nested KWin: a write of text and of several MIME types, a read that the prompt allows or denies, and a read over the 8 MiB limit (`EFBIG`). |
-| `kitten dnd` | `NativeWindow.Kitty*` drag and drop tests, in a nested KWin with real compositor input: a drag between panes, remote directory trees, and a move or copy to a Wayland application. |
+| `kitten icat` | `afterglow_kitten_icat` runs it in `afterglow_headless`, which answers its queries. The test reads the images and placements that reach the terminal. It checks the transfer modes `detect`, `stream`, `file` and `memory`. It uses a PNG that `kitten` sends as it is and an image that `kitten` converts. The test also checks that each temporary file and shared memory object is deleted. It also checks `--place`, Unicode placeholders, the frames of an animated GIF, and `kitten` in a private tmux server. Then it draws the output with the Afterglow renderer. |
+| `kitten clipboard` | `NativeWindow.KittenClipboard*` run it in a pane of a window in a nested KWin. They check a write of text and of several MIME types, and a read that the prompt allows or denies. They also check a read over the 8 MiB limit (`EFBIG`). |
+| `kitten dnd` | `NativeWindow.Kitty*` drag and drop tests, in a nested KWin with real compositor input. They check a drag between panes, remote directory trees, and a move or copy to a Wayland application. |
 | `kitten transfer` | `afterglow_transfer_kitten_relay`, against the Afterglow file transfer service in process. |
 
 ## Remote commands (OSC 24569)
@@ -358,7 +361,8 @@ Inside tmux, `aglow run` sends the query in tmux passthrough (`DCS tmux; ... ST`
 tmux answers DA1 itself at once, and keeps the DA1 answer of the terminal.
 Thus inside tmux the guard is a status report (`CSI 5 n`) in the same passthrough. tmux passes its answer (`CSI 0 n`) to the pane.
 When `allow-passthrough` is off, tmux passes nothing, and `aglow run` asks tmux for that option first.
-tmux gets half of the wait for its answer, and the query gets the rest. When tmux answers later, `aglow run` sends no query. The query goes through the same tmux server, which is slow to answer, and a late reply would go to the shell.
+tmux gets half of the wait for its answer, and the query gets the rest. When tmux answers later, `aglow run` sends no query.
+The reason is that the query goes through the same slow tmux server, and a late reply would go to the shell.
 `aglow run` asks the terminal only when standard output is its terminal and its process group is in the foreground there.
 When its output goes into a pipeline, the program at the end of the pipeline can read the terminal and take the reply. Then `aglow run` asks nothing.
 A background job asks nothing, because a change of the terminal modes would stop it (`SIGTTOU`).
@@ -375,12 +379,12 @@ The permissions of the socket are the only boundary.
 | Area | Afterglow | Other terminals |
 | --- | --- | --- |
 | Character widths | A grapheme cluster takes the cells that glibc's `wcwidth` gives it, at most two. See [character widths](#character-widths). | Kitty gives a letter with a spacing mark one cell, and a prepended mark none. |
-| `#rgb` in a color escape code | Each digit gives the high bits of its channel, as in xterm: `#fff` is `#f0f0f0`. | Kitty reads `#fff` as white. |
+| `#rgb` in a color escape code | Each digit gives the high bits of its channel, as in xterm. `#fff` is `#f0f0f0`. | Kitty reads `#fff` as white. |
 | OKLCH and LAB colors | The code and the gamut mapping of CSS Color 4. See [color escape codes](#color-escape-codes-and-pointer-shapes). | Kitty clips colors outside sRGB, and gives other values for LAB. |
 | Caps Lock and Num Lock in the Kitty keyboard protocol | Reported only in the "report all keys" mode, so that a program reads Num Lock+Up as Up. | The Kitty specification also reports them in the disambiguate mode, for keys without text. |
 | F13 to F35 without the Kitty keyboard protocol | The sequences of xterm's terminfo entry, as the Kitty specification lets a terminal do. | Kitty sends its own CSI u codes. |
-| Ctrl with a key of a non-Latin layout | The key of the first Latin layout, as Qt's shortcuts do. Ctrl+С on a Russian layout is Ctrl+C, also in the Kitty keyboard protocol without alternate keys (`CSI 99;5u`). With alternate keys (flag 4) Afterglow sends the key of the layout and the base layout key, as Kitty does: `CSI 1089::99;5u`. | Without flag 4, Kitty sends the key of the layout, `CSI 1089;5u`, which a program that knows only Latin shortcuts does not read as Ctrl+C. |
-| Ctrl+Shift, Super or Ctrl+Alt+Shift with a letter, digit or punctuation key, without the Kitty keyboard protocol | xterm's bytes: Ctrl+Shift+I sends a tab (0x09), Super+A sends `a`. A program without the Kitty protocol reads these. | Kitty sends a CSI u code, such as `CSI 105;6u` for Ctrl+Shift+I. |
+| Ctrl with a key of a non-Latin layout | The key of the first Latin layout, as Qt's shortcuts do. Ctrl+С on a Russian layout is Ctrl+C, also in the Kitty keyboard protocol without alternate keys (`CSI 99;5u`). With alternate keys (flag 4), Afterglow sends the key of the layout and the base layout key, as Kitty does (`CSI 1089::99;5u`). | Without flag 4, Kitty sends the key of the layout, `CSI 1089;5u`, which a program that knows only Latin shortcuts does not read as Ctrl+C. |
+| Ctrl+Shift, Super or Ctrl+Alt+Shift with a letter, digit or punctuation key, without the Kitty keyboard protocol | xterm's bytes. Ctrl+Shift+I sends a tab (0x09), and Super+A sends `a`. A program without the Kitty protocol reads these. | Kitty sends a CSI u code, such as `CSI 105;6u` for Ctrl+Shift+I. |
 | A temporary image file (`t=t`) | Deleted only when `tty-graphics-protocol` is in its path below the temporary directory. | Kitty looks for the tag anywhere in the path. |
 | Sized text (OSC 66) at a resize that reflows | The text stays, at the normal size, because a block of several rows cannot wrap. | The Kitty specification does not say what a reflow does with sized text. |
 | Unscroll (`CSI n + T`) with a scrolling region smaller than the screen | Blank lines, as SD gives. Afterglow fills from the scrollback only when the region is the whole screen. | Kitty also fills a region that starts at the top line. |
@@ -401,11 +405,11 @@ Each store has these limits:
 
 | Item | Limit | At the limit |
 | --- | --- | --- |
-| Images | 4,096 | Afterglow deletes an image without a placement: first an image with the transient hint (`N=1`), then the oldest. When every image has a placement, a Kitty command gets an `ENOSPC` error. |
+| Images | 4,096 | Afterglow deletes an image without a placement. It first deletes an image with the transient hint (`N=1`), then the oldest. When every image has a placement, a Kitty command gets an `ENOSPC` error. |
 | Placements | 4,096 | A Kitty command gets an `ENOSPC` error. A new Sixel or iTerm2 image removes the oldest Sixel or iTerm2 placement. When there is none, Afterglow does not keep the new image. |
 | Frames per image | 1,024 | A Kitty command gets an `ENOSPC` error. |
 | Frames of all images | 16,384 | Afterglow deletes images as for image data. A frame of one pixel costs far more to keep than its 4 bytes. |
-| Image data | `Graphics.quota`, 320 MiB by default, at 4 bytes for each pixel | Afterglow deletes images without a placement: first those with the transient hint (`N=1`), then the oldest. When none is left, it deletes the oldest image with a placement. |
+| Image data | `Graphics.quota`, 320 MiB by default, at 4 bytes for each pixel | Afterglow deletes images without a placement. It first deletes those with the transient hint (`N=1`), then the oldest. When none is left, it deletes the oldest image with a placement. |
 | Pending transmissions | 320 MiB | The transmission fails with an `EFBIG` error. |
 
 The main screen and the alternate screen of a pane each have their own image work budget.
@@ -473,8 +477,8 @@ Elsewhere, the images that programs send do not show, and Afterglow writes why i
 
 ### Multiple cursors
 
-CSI parsing permits 4,096 numeric parameters per sequence.
-An overflow rejects the complete command. Divide larger point sets across sequences.
+The CSI parser accepts 4,096 numeric parameters in each sequence.
+When a sequence has more, Afterglow rejects the complete command. Divide larger point sets across sequences.
 The terminal keeps at most 4,096 extra cursors. It ignores new positions after this limit.
 At this limit, the terminal keeps the positions of the rectangles that start nearest the top, then nearest the left.
 The order of the rectangles in the sequence does not matter.
@@ -484,12 +488,12 @@ The order of the rectangles in the sequence does not matter.
 OSC 8 links of each screen have a 16 MiB limit. Above it, new text prints without a link.
 Each link counts its URI, its id and 160 bytes for its entry. A link with an id counts its URI and id two times.
 An OSC 8 sequence longer than 8,192 bytes ends the open link. The text after it has no link.
-OSC 133 marks have no length limit. A `cmdline` or `cmdline_url` value over 65,536 bytes is ignored, and the mark still counts.
+OSC 133 marks have no length limit. Afterglow ignores a `cmdline` or `cmdline_url` value over 65,536 bytes, and the mark still counts.
 The command line is then the text typed after the `B` mark.
 
 ### Downloads
 
-A download (OSC 1337 `File` or `MultipartFile` without `inline=1`) has no size limit: its data streams to the file.
+A download (OSC 1337 `File` or `MultipartFile` without `inline=1`) has no size limit. Its data streams to the file.
 The arguments of a `File` download must come in its first 4,096 bytes, before the `:`. Longer arguments refuse the file.
 An inline image in parts can have 96 MiB of base64 data.
 `MultipartFile` arguments have a 4,096-byte limit. Longer arguments refuse the file.
@@ -498,14 +502,7 @@ An inline image in parts can have 96 MiB of base64 data.
 
 Each screen has its own stack of pointer shapes.
 Each stack has 32 entries.
-A full stack discards its oldest entry when a new entry is pushed.
-
-## Protocol definitions
-
-- [Kitty relative graphics](https://sw.kovidgoyal.net/kitty/graphics-protocol/#relative-placements).
-- [Kitty indexed color data](https://sw.kovidgoyal.net/kitty/graphics-protocol/#indexed-color-data).
-- [Kitty multiple cursors](https://sw.kovidgoyal.net/kitty/multiple-cursors-protocol/).
-- [iTerm2 file transport](https://iterm2.com/documentation-images.html).
+When a program pushes a new entry on a full stack, the stack discards its oldest entry.
 
 ## Existing coverage
 
@@ -521,13 +518,20 @@ The suite also checks these features:
 - Shell markers.
 - Clipboard and notification extensions.
 
-See `libs/afterglow-vt/tests` for exact accepted sequences.
+See `libs/afterglow-vt/tests` for the exact sequences that Afterglow accepts.
 See `libs/afterglow-proto/tests` for the message formats.
 
-Run focused tests:
+Run the focused tests:
 
 ```sh
 ctest --test-dir build --output-on-failure -R 'Graphics.Relative|Graphics.TransmitAndPlaceReportsInvalidRelativeParent|Extensions.Multiple|Terminal.ExtraCursorsAreBounded|Terminal.ResizeClipsExtraCursors|Extensions.ResizeClipsExtraCursors|Extensions.ExtraCursor|Extensions.*Download|PaneDownload|UploadArchive|Terminal.AnUploadRequest|MuxAttach.*(Download|Upload)|DesktopText|FileDrop|Render.Multiple|SnapshotCursor|Bidi|Graphics.Indexed|Render.Indexed|SnapshotImages.Indexed'
 ```
 
 See [accessibility and downloads](TESTING.md#accessibility-and-downloads) for the native acceptance suite.
+
+## See also
+
+- [Kitty relative graphics](https://sw.kovidgoyal.net/kitty/graphics-protocol/#relative-placements).
+- [Kitty indexed color data](https://sw.kovidgoyal.net/kitty/graphics-protocol/#indexed-color-data).
+- [Kitty multiple cursors](https://sw.kovidgoyal.net/kitty/multiple-cursors-protocol/).
+- [iTerm2 file transport](https://iterm2.com/documentation-images.html).

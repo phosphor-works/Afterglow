@@ -3,6 +3,7 @@
 
 # Shaders
 
+This page tells users how to find, chain and configure shader packs, and how scripts control them.
 Afterglow shaders are Phosphor shader packs.
 A pack is a directory with `metadata.json` and GLSL stages.
 Each stage uses the terminal shader contract. Each fragment stage defines `vec4 pTerminal(vec2 uv)`.
@@ -22,7 +23,7 @@ A pack in a later row replaces a pack with the same ID in an earlier row.
 | `~/.config/phosphor-works/afterglow/shaders/` | Your own packs. Afterglow creates this directory. With `afterglow --config DIR/config.json`, this is `DIR/shaders/`. |
 
 A binary that runs from the build tree puts the checkout's `data/shaders/` after the XDG data directories in this table.
-Thus a pack in the checkout replaces an installed pack with the same ID, and you test the pack that you edit.
+As a result, a pack in the checkout replaces an installed pack with the same ID, and you test the pack that you edit.
 Your own packs in `~/.config/phosphor-works/afterglow/shaders/` still replace the packs of the checkout.
 
 Put each pack in its own subdirectory, such as `~/.config/phosphor-works/afterglow/shaders/my-pack/metadata.json`.
@@ -200,7 +201,7 @@ Use `afterglow -o Audio.enabled=false` to disable capture for one launch.
 | `iAudioSpectrumSize` | 64 for valid frames. Otherwise zero. |
 | `uAudioSpectrum` | A 64×1 R32F texture at binding 10. Use the helpers or `texelFetch`. |
 
-Bass uses bins 0–19. Mids use bins 20–47. Treble uses bins 48–63.
+Bass uses bins 0 to 19. Mids use bins 20 to 47. Treble uses bins 48 to 63.
 Automatic gain adjusts these visual levels. They are not calibrated sound-pressure measurements.
 Stopped, disabled, failed or stale capture produces zero values.
 Shaders without the audio include also receive zero.
@@ -237,7 +238,7 @@ Read them with `signalValue(channel)` and `signalAge(channel)`.
 A channel that was never set has an age of 1,000,000 seconds.
 Set a channel with `afterglow.signal`, `afterglow ctl signal` or the control socket.
 
-`afterglow.signals(pane, values, scope)` changes 1–8 distinct channels in one effect.
+`afterglow.signals(pane, values, scope)` changes 1 to 8 distinct channels in one effect.
 Channels must be integers from 0 to 7. Values must fit in a finite float.
 Scope is `pane`, `tab` or `window`. The default is `tab`.
 The host resolves the scope from the anchor pane when it applies the effect.
@@ -295,7 +296,7 @@ The host validates and decodes images before it applies any part of the update.
 An empty values table releases the script's overrides on the selected targets.
 The latest successful write wins for each parameter across scripts.
 Reset or unload exposes another script's value, then the configured value or default.
-An update replaces the owner's previous table. Omitted parameters are released.
+An update replaces the owner's previous table. Afterglow releases the parameters that the update omits.
 Shader or configuration rebuilds clear overrides and expire instance IDs.
 Query again after a stale-ID error.
 Moving a pane between windows removes its source-window overrides. Closing a pane releases its overrides.
@@ -310,10 +311,10 @@ return afterglow.shader_parameters(ev.pane, instance.instance,
     { strength = 0.8 }, "tab", { duration_ms = 650, curve = "ease-in-out" })
 ```
 
-Duration is 0–60000 ms. Zero applies the change immediately.
+The duration is 0 to 60000 ms. Zero applies the change immediately.
 Curves are `linear`, `ease-in-out` and the critically damped `spring`. The default curve is `ease-in-out`.
 Phosphor curve specs also work, such as `0.2,0,0,1` for a cubic Bézier or `spring:20,1` for a spring with angular frequency 20 and damping ratio 1.
-Curves that overshoot are rejected, such as elastic and bounce curves and springs with damping below 1.
+Afterglow rejects curves that overshoot, such as elastic and bounce curves and springs with damping below 1.
 Duration is also the maximum spring lifetime.
 A new target starts from the visible value with a new duration.
 Float parameters stay between their endpoints.

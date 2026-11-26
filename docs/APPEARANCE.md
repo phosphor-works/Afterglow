@@ -3,17 +3,20 @@
 
 # Settings and appearance
 
+This page tells users where Afterglow reads its settings, which launch options change them, and how to set fonts, colors, themes, transparency and motion.
+
 ## Configuration file
 
 Afterglow reads `$XDG_CONFIG_HOME/phosphor-works/afterglow/config.json`.
 The usual path is `~/.config/phosphor-works/afterglow/config.json`.
 Afterglow reloads this file when it changes.
 A file that cannot be read, does not parse or does not hold a JSON object keeps the current settings.
-At the start there are no current settings to keep. Afterglow then uses the defaults, but with `Scripts.enabled` and `Control.enabled` off, because the file can turn them off.
+At the start there are no current settings to keep. Afterglow then uses the defaults, with one difference.
+`Scripts.enabled` and `Control.enabled` stay off, because the file can turn them off.
 They come on when the file holds a JSON object that does not turn them off. A `-o` option that gives one of them a boolean value still applies.
 A file that becomes empty in the meantime keeps them off, because an editor that saves in place empties the file first.
 A configuration file that is a symbolic link to a file that does not exist counts as a file that cannot be read.
-A file that holds `Terminal.fileTransferPassword` and that other users can read gives a warning. Make it readable by you only (`chmod 600`).
+A file that holds `Terminal.fileTransferPassword` and that other users can read gives a warning. Let only your user read it (`chmod 600`).
 A deleted file gives every setting its default.
 An empty file gives the defaults too, when it held no settings before, for example after `touch`.
 A file that held settings and becomes empty keeps them, because an editor that saves in place empties the file first.
@@ -58,12 +61,12 @@ afterglow -o Font.size=14 -o Colors.theme=afterglow-light
 The first three options apply to the complete process.
 A launch with these options starts a separate process.
 Other launches can use an existing process that runs the same executable file.
-A development build or replacement executable starts a separate process.
+A development build or a replacement executable starts a separate process.
 
 ## Desktop controls
 
 Tabs, menus, prompts and search use the desktop Qt style, palette and font.
-On Plasma, this requires `qqc2-desktop-style` and platform theme integration.
+On Plasma, this needs `qqc2-desktop-style` and the platform theme integration.
 `QT_QUICK_CONTROLS_STYLE` can select another installed style.
 The variable applies only when the launch starts a new process.
 Terminal fonts and colors have separate settings.
@@ -114,7 +117,7 @@ afterglow -o Font.antialiasing=rgb -o Font.gamma=1.2
 ```
 
 Subpixel modes use separate filtered coverage for each color channel.
-Active shaders or window transparency cause an automatic change to grayscale text.
+When shaders are active or the window is transparent, Afterglow changes to grayscale text automatically.
 Pane effects are shaders. They run while a pane is remote (`afterglow ssh`) or in another context.
 Such a pane makes all text in its window grayscale.
 Overlay fades are also shaders. While an overlay fades in or out, all text in its window is grayscale.
@@ -179,7 +182,8 @@ Afterglow has no counterpart for the faint and intense text colors, the wallpape
 An Afterglow JSON theme is one object with color keys.
 The keys are `foreground`, `background`, `cursor`, `cursorText`, `selectionForeground`, `selectionBackground`, `divider` and `popupBorder`.
 `searchMatch`, `searchCurrentMatch`, `searchMatchText`, `visualBell`, `visualBellIntensity` and `palette` are also keys.
-A color key can have `-` or `_` between its words, in any mix of upper and lower case, such as `popup-border` in a Ghostty theme.
+A color key can have `-` or `_` between its words, in any mix of upper and lower case.
+An example is `popup-border` in a Ghostty theme.
 Afterglow logs other keys in a JSON theme.
 The colors in a theme have the forms of [color values](#color-values).
 
@@ -211,7 +215,7 @@ Use `plasma:NAME` to take colors from the desktop color scheme:
 `plasma` without a name takes the palette from `afterglow-dark` for a dark color scheme, and from `afterglow-light` for a light one.
 Afterglow reads `kdeglobals` in the XDG configuration directories, as Plasma does.
 On another desktop, or for a color that `kdeglobals` does not set, the colors come from the application palette.
-`afterglow mux new` has no application palette: such a color stays the color of the theme (see [the mux daemon](MUX.md#environment)).
+`afterglow mux new` has no application palette. There, such a color stays the color of the theme (see [the mux daemon](MUX.md#environment)).
 Afterglow applies a new color scheme while it runs.
 Each half of a `light:` and `dark:` value can also be a `plasma:` value.
 
@@ -256,7 +260,7 @@ Afterglow converts an OKLCH or LAB color to sRGB with 8 bits for each channel.
 A color outside sRGB gets the [gamut mapping of CSS Color 4](https://www.w3.org/TR/css-color-4/#css-gamut-mapping).
 This mapping decreases the chroma of the color, and it keeps almost the same lightness and hue.
 Kitty themes that use these forms work in Afterglow.
-Some of their colors are not the same as in Kitty: see [color escape codes](COMPATIBILITY.md#color-escape-codes-and-pointer-shapes).
+Some of their colors are not the same as in Kitty. See [color escape codes](COMPATIBILITY.md#color-escape-codes-and-pointer-shapes).
 
 A color in `Colors` or in a theme has no alpha. Afterglow does not accept an eight-digit value such as `#1e1e2eff`.
 It also does not accept `transparent`, in any spelling.
@@ -267,7 +271,7 @@ Afterglow ignores an alpha in an OKLCH or LAB color, written as `/ 0.5` or as a 
 | Setting | Default | Function |
 | --- | --- | --- |
 | `Window.backgroundOpacity` | 1.0 | Opacity of the default background, from 0.05 to 1.0. Text stays opaque. |
-| `Window.blur` | `false` | Blurs the content behind a translucent background. This requires KWin. |
+| `Window.blur` | `false` | Blurs the content behind a translucent background. This needs KWin. |
 
 ## Motion
 
@@ -294,5 +298,7 @@ A [popup overlay](SCRIPTING.md#popups) takes a part of the pane, and the pane st
 
 The title in the border uses the text color.
 
-See [shaders](SHADERS.md) for audio, history and visual effects.
-See [bidirectional text](BIDI.md) for text direction settings.
+## See also
+
+- [Shaders](SHADERS.md) for audio, history and visual effects.
+- [Bidirectional text](BIDI.md) for text direction settings.

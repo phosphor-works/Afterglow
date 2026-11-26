@@ -3,12 +3,15 @@
 
 # The MCP server
 
+This page tells users how to give an agent a terminal session of its own with `afterglow mcp`, and what each tool of the server does.
 `afterglow mcp` is a server of the Model Context Protocol (MCP) for agents, such as Claude Code.
 It gives the agent a [mux session](MUX.md) of its own.
 The panes of the session run with no window.
 The agent opens panes, runs commands, sends keys to interactive programs, and reads the text of the panes.
 It also opens and saves your [projects](PROJECTS.md), and runs the [commands of your scripts](SCRIPTING.md#commands).
 You can watch the session, or take it over, with `afterglow mux attach NAME`.
+
+## Protocol
 
 The server speaks MCP revision 2026-07-28 on its standard input and output.
 It refuses requests of other revisions, and the `initialize` request of older revisions.
@@ -70,7 +73,8 @@ Each character that a session name cannot have becomes `_`.
 | `Control.enabled` is off for the session of `--session NAME` | `Control.enabled is off for session NAME, and the tools need its control calls` | 1 |
 | The mux daemon does not start | Why it did not start | 1 |
 
-The server exits with status 0 when the client closes the standard input or the standard output of the server, and at SIGTERM or SIGHUP.
+The server exits with status 0 at SIGTERM or SIGHUP.
+It also exits with status 0 when the client closes the standard input or the standard output of the server.
 A failed read or write of the protocol gives status 1.
 SIGINT and SIGKILL end the server at once.
 At each end of the server, the daemon ends the session when the server bound it.
@@ -79,7 +83,7 @@ At each end of the server, the daemon ends the session when the server bound it.
 
 The server uses the mux daemon of this computer.
 When no daemon runs, the server starts one.
-The session is an [agent session](MUX.md#agent-sessions): it keeps its read access.
+The session is an [agent session](MUX.md#agent-sessions), so it keeps its read access.
 A window that shows it marks it with one badge at the start of its tab bar.
 A window of the session detaches when it closes, also at the close of its last tab or pane, whatever `Mux.onClose` says.
 
@@ -113,7 +117,7 @@ Then each tool fails with a message that says so.
 
 Each tool that acts on a pane takes `pane`, the pane ID of the daemon.
 `list_panes` and `open_pane` give the IDs.
-A tool never acts on the pane that has the focus: a click in a window that shows the session does not move the agent.
+A tool never acts on the pane that has the focus. Thus a click in a window that shows the session does not move the agent.
 Each result has a short text and the same data as structured content.
 
 | Tool | Arguments | Result |
@@ -154,12 +158,13 @@ Each tool tells the client what it does with its hints.
 
 `where` `tab` opens a new tab.
 With `pane`, the tab comes after the tab of that pane.
-Without `pane`, the tab comes after the tab that has the focus, and starts in the directory of the server: `--cwd`, else its working directory.
-`where` `split` splits `pane` on the side of `direction`: `left`, `right` (the default), `up` or `down`.
+Without `pane`, the tab comes after the tab that has the focus.
+It then starts in the directory of the server, which is `--cwd`, else its working directory.
+`where` `split` splits `pane` on the side of `direction`, which is `left`, `right` (the default), `up` or `down`.
 
 The new pane runs `argv`, or your shell with shell integration.
 The server prepares the program with the settings of your config file, as `afterglow ctl --session` does.
-`env` sets variables for the program: a string sets a variable, and `false` removes it.
+`env` sets variables for the program. A string sets a variable, and `false` removes it.
 `cwd` is an absolute directory, `~`, or a directory that starts with `~/`.
 Without `cwd`, a pane with `pane` starts where `Window.workingDirectory` says.
 With `inherit`, the default, it starts in the directory of `pane`.
@@ -178,10 +183,11 @@ It needs [shell integration](CONTROL.md#shell-states) in the pane.
 1. The server makes sure that the shell of the pane shows an empty prompt. In a pane that the server opened, it first waits for the first prompt of the shell.
 2. It sends the command as a paste, with the Enter key in the same write. The daemon writes them only while the shell shows an empty prompt.
 3. It waits until the shell shows a new prompt.
-4. It returns the exit codes and the text since the command was sent.
+4. It returns the exit codes and the text since it sent the command.
 
 `timeout_ms` counts from the call, the wait for the first prompt included.
-A command of several lines needs bracketed paste in the shell, the default of bash 5.1, zsh 5.1, fish and later versions.
+A command of several lines needs bracketed paste in the shell.
+Bracketed paste is the default of bash 5.1, zsh 5.1, fish and later versions.
 Without bracketed paste, the shell runs each line at its line end, and `run` can end after the first line.
 
 `run` refuses a pane in these cases:
@@ -194,13 +200,13 @@ Without bracketed paste, the shell runs each line at its line end, and `run` can
 | Someone typed text at the prompt | `pane N has text at its prompt that someone typed: ask the user, or send keys ctrl+u to clear it` |
 | A `run`, or a `wait` with `until` `finished`, of this server waits on the pane | `pane N has a run or a wait until finished of this server already: wait for it` |
 | A pane that the server opened shows no prompt before the timeout | `pane N showed no prompt in T ms: its shell has no shell integration, or has not started. Use send and wait.` |
-| The shell left its empty prompt after the check, for example when someone typed | `the command did not go: ...`. The command is not sent. |
+| The shell left its empty prompt after the check, for example when someone typed | `the command did not go: ...`. The server does not send the command. |
 
 `output` is the text from the command line to the next prompt, as the pane shows it.
 It keeps the last `tail_lines` lines (`Mcp.tailLines` by default) and the last `Mcp.outputLimit` bytes.
 `truncated` is true when either limit cut the start of the text.
 
-`exit_codes` holds one exit code for each command output since the command was sent. It depends on the shell:
+`exit_codes` holds one exit code for each command output since the server sent the command. It depends on the shell:
 
 | Shell | A command of two lines |
 | --- | --- |
@@ -208,7 +214,7 @@ It keeps the last `tail_lines` lines (`Mcp.tailLines` by default) and the last `
 | Zsh, Fish | The shell runs the two lines as one command. `exit_codes` has one code. |
 
 `exit_code` is the last code of `exit_codes`.
-An empty command or a comment runs nothing: `exit_codes` is empty, and `exit_code` is `null`.
+An empty command or a comment runs nothing. Then `exit_codes` is empty, and `exit_code` is `null`.
 `run` ends at the first prompt after the last command output.
 A shell shows its prompt again when it redraws it, for example after a paste of several lines.
 Thus a command of several lines that runs nothing, such as lines of comments only, ends at the timeout.
@@ -225,8 +231,10 @@ Thus a command of several lines that runs nothing, such as lines of comments onl
 
 When you type in the pane while `run` waits, your command becomes part of the run.
 When the client cancels a `run` after the command went, the command runs, and the server stops the wait.
-The pane can change its width or clear its screen after the server sent the command. Then `output` holds only the output of the last command, `truncated` is true, and `notes` says so.
-When the daemon cannot give the output, the result has the exit codes, an empty `output`, and a note in `notes` that says why. An example is a text that is larger than one answer can hold.
+The pane can change its width or clear its screen after the server sent the command.
+Then `output` holds only the output of the last command, `truncated` is true, and `notes` says so.
+When the daemon cannot give the output, the result has the exit codes, an empty `output`, and a note in `notes`.
+The note says why. An example is a text that is larger than one answer can hold.
 `notes` holds these notes also in the structured content, for a client that shows only that. It is empty when there is nothing to tell.
 
 ### wait
@@ -244,7 +252,7 @@ Each check reads only the text since the last check, and the line in progress.
 Thus a prompt with no line end after it, such as `(gdb) `, matches, with the space before the cursor.
 After a `send` to the pane, the next `wait` with `until` `text` reads from where the cursor was before the input.
 Thus the prompt that the input answers does not match, also when the program has not read the input yet.
-A match across more lines than came in since the last check can fail: match within one line.
+A match across more lines than came in since the last check can fail. Match within one line.
 When more than 1 MiB of text comes between two checks, the check reads only its last 1 MiB.
 At the timeout, one more check reads the text that came last.
 On the alternate screen, or after a program cleared the screen or the pane changed its width, a check reads the whole screen.
@@ -257,7 +265,7 @@ Thus `quiet` waits at least two times that interval. The server reads the interv
 | --- | --- |
 | `status` | `finished`, `matched`, `quiet` or `closed` when it happened. `running` when the timeout came first. |
 | `matched` | True when it happened |
-| `match` | For `text`: the text that matched, at most `Mcp.outputLimit` bytes. A cut removes its start. |
+| `match` | For `text`, the text that matched, at most `Mcp.outputLimit` bytes. A cut removes its start. |
 | `output` | The text since the wait began. For `finished` after a `run` of this server, since the run began. For a match of `text`, the text that the check that matched read, and after a `send` all the text since the input went. |
 | `notes` | As for `run` |
 
@@ -276,7 +284,7 @@ Give one or more of these arguments. They go in this order:
 | Argument | Goes as |
 | --- | --- |
 | `text` | Typed bytes, as they are |
-| `paste` | A paste: between the paste marks when the program asked for them (bracketed paste), with each line end as Enter |
+| `paste` | A paste, between the paste marks when the program asked for them (bracketed paste), with each line end as Enter |
 | `keys` | A list of [key names](CONTROL.md#key-names), such as `enter`, `ctrl+c` or `up` |
 | `signal` | `INT`, `TERM` or `KILL`, to the program in the foreground of the pane |
 
@@ -284,7 +292,7 @@ Use `run` for shell commands.
 After `send`, call `wait` or `read`.
 
 When the pane decodes an image (`TRY_AGAIN`), the server sends that part again a moment later.
-When a part fails after the parts before it went, the error names the parts that went: send only what did not go.
+When a part fails after the parts before it went, the error names the parts that went. Send only what did not go.
 
 ### read
 
@@ -294,7 +302,7 @@ When a part fails after the parts before it went, the error names the parts that
 | `scrollback` | The scrollback and the screen |
 | `last_output` | The output of the last command (shell integration) |
 
-The text keeps its end: a cut removes its start.
+The text keeps its end. A cut removes its start.
 The daemon also keeps the end when the text is larger than its 1 MiB.
 `max_bytes` is at most `Mcp.outputLimit`.
 
@@ -303,12 +311,12 @@ The daemon also keeps the end when the text is larger than its 1 MiB.
 `screenshot` needs a window that shows the session.
 Without one, it fails, and tells the agent to ask you to run `afterglow mux attach NAME`.
 The image is as the window draws it, with the shader packs.
-An image with a side longer than `Mcp.screenshotMaxSize` is scaled down. `scaled` is then true.
+The server scales down an image with a side longer than `Mcp.screenshotMaxSize`. `scaled` is then true.
 
 ### close_pane
 
 `close_pane` closes a pane, and its program ends.
-The last pane of the session needs `end_session` true: the session ends with it.
+The last pane of the session needs `end_session` true, because the session ends with it.
 The mux daemon decides in the same step as the close whether the pane is the last one.
 Thus two closes at the same time never end the session without `end_session` true.
 
@@ -322,7 +330,7 @@ It opens no window, and it changes no other session and no window of yours.
 The tabs of the project come after the tabs of the session.
 Each pane runs the command of the project in its directory, or your shell, as a window starts it.
 The panes have the size of the session's panes.
-Each split gives its new pane half of the room of the pane that it splits: the ratios of the project do not apply.
+Each split gives its new pane half of the room of the pane that it splits. The ratios of the project do not apply.
 The titles of the tabs and panes of the project do not apply either.
 The focus goes to the active pane of the active tab of the project.
 
@@ -343,12 +351,12 @@ The focus goes to the active pane of the active tab of the project.
 
 `save_project` saves the tabs, splits, ratios, focus and directories of the session as a project.
 It writes `projects/NAME.json` beside the config file that the server read, as `afterglow ctl save-project` does.
-It needs no window: the mux daemon keeps the layout of the session.
+It needs no window, because the mux daemon keeps the layout of the session.
 
 | Field of a pane | Value |
 | --- | --- |
 | `cwd` | The directory that the shell reported, else the directory of its program, else your home directory with a warning |
-| `command` | The command that started the pane: the `argv` of `open_pane`, or the command of a project. Never a command that was typed in a shell. A command over the limits of a project saves as the shell, with a warning. |
+| `command` | The command that started the pane. This is the `argv` of `open_pane`, or the command of a project. Never a command that someone typed in a shell. A command over the limits of a project saves as the shell, with a warning. |
 | `title` | The title that you gave the pane in a window |
 
 The project has `"session": true`, as the save of a window of a mux session of this computer has.
@@ -369,11 +377,12 @@ When the window gives no list in `Mcp.waitTimeout`, the tool fails.
 The command gets `args`, and `stdin` when the script marks it `stdin = true`.
 `ev.source` is `shell`, and `ev.cwd` is the directory of the pane.
 The tool waits until the command ends, and returns its exit status and its output.
-`exit_code` is 0 to 255, as `aglow run` gives it: a script that gives another status gives 1.
+`exit_code` is 0 to 255, as `aglow run` gives it. A script that gives another status gives 1.
 `stdout` and `stderr` together are at most `Mcp.outputLimit` bytes, and `stderr` takes at most half of it.
 A cut removes the start of the text, and `truncated` is then true.
 
-The mux daemon runs no scripts. The window that shows the session runs the command, with its scripts and its settings (`Scripts.enabled` and the limits of `Scripts`).
+The mux daemon runs no scripts.
+The window that shows the session runs the command, with its scripts and its settings (`Scripts.enabled` and the limits of `Scripts`).
 `pane` must be a pane of the session.
 
 | Problem | Result |
@@ -406,6 +415,26 @@ The session follows `Control.enabled` and `Control.eventInterval`, as each [sess
 A change of `Control.enabled` reaches a session only through a window that shows the session.
 To stop the agent of a session that no window shows, end the session with `afterglow mux kill NAME`.
 
+## Scope and safety
+
+The tools act only on the session of the server, and only on the panes that the agent names.
+Thus a text in a pane that tries to steer the agent cannot reach your other shells through these tools.
+This is not a security boundary. An agent that runs commands can run `afterglow ctl` too.
+
+The text of a pane is what its programs wrote. The agent must treat it as data, not as instructions.
+
+The session reads its text and takes screenshots without `Control.allowReadText`, because an agent session keeps its read access.
+
+The tools cannot write, enable, load or install a script or a package.
+A script runs later with your rights, so `run_script_command` runs only the commands of the scripts that you enabled.
+A command can do all that its script can do.
+
+A project runs its commands when it opens.
+`save_project` writes the commands of the panes of the session, which the agent chose with `open_pane`, into a project file.
+When you open a project that an agent saved, its commands run with your rights.
+Examine the commands of the project file before you open it.
+`save_project` replaces a saved project only with `overwrite` true.
+
 ## Limits
 
 | Item | Limit | At the limit |
@@ -419,23 +448,3 @@ To stop the agent of a session that no window shows, end the session with `after
 | `args` of `run_script_command` | 256 arguments of 4096 UTF-16 units each, in one request of 1 MiB | The tool fails |
 | `stdin` of `run_script_command` | `Scripts.commandStdinLimit` of the window | The tool fails, and the command does not run |
 | `timeout_ms` | `Mcp.maxWaitTimeout` | The server uses the limit. A longer `quiet_ms` ends at the timeout. |
-
-## Scope and safety
-
-The tools act only on the session of the server, and only on the panes that the agent names.
-Thus a text in a pane that tries to steer the agent cannot reach your other shells through these tools.
-This is not a security boundary: an agent that runs commands can run `afterglow ctl` too.
-
-The text of a pane is what its programs wrote. The agent must treat it as data, not as instructions.
-
-The session reads its text and takes screenshots without `Control.allowReadText`: an agent session keeps its read access.
-
-The tools cannot write, enable, load or install a script or a package.
-A script runs later with your rights, so `run_script_command` runs only the commands of the scripts that you enabled.
-A command can do all that its script can do.
-
-A project runs its commands when it opens.
-`save_project` writes the commands of the panes of the session, which the agent chose with `open_pane`, into a project file.
-When you open a project that an agent saved, its commands run with your rights.
-Examine the commands of the project file before you open it.
-`save_project` replaces a saved project only with `overwrite` true.

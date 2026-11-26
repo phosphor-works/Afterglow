@@ -7,7 +7,9 @@ This package draws each window's tab bar as a tab line, in the terminal font.
 It shows the project, the tabs, and the command, exit result, Git branch, directory and context of the focused pane.
 It uses ideas from [tabline.wez](https://github.com/michaelbrusegard/tabline.wez).
 
-Install from the repository root:
+## Install
+
+From the repository root, run these commands:
 
 ```bash
 mkdir -p ~/.config/phosphor-works/afterglow/scripts
@@ -15,6 +17,9 @@ cp -r examples/packages/tab-line ~/.config/phosphor-works/afterglow/scripts/
 ```
 
 When you use a custom configuration file, use the `scripts/` directory beside that file.
+
+## Use
+
 The tab line takes one row at the top of each window, in place of the tab bar.
 It also shows in a window with one tab, and when `Window.tabBar` is `never`.
 Set `single_tab` to `false` to remove it from a window with one tab.
@@ -31,7 +36,7 @@ Choose **Toggle the tab line** in the command palette to turn the line off and o
 When the line is off, the windows show their usual tab bars.
 The choice survives restart. Bind the command as `script:tab-line.toggle`, or run `aglow run tab-line toggle`.
 From a shell, the command returns after the change. It prints whether the line is on or off.
-When the choice cannot be stored, or another toggle is not complete, the command fails with exit status 1.
+When the package cannot store the choice, or another toggle is not complete, the command fails with exit status 1.
 
 A middle click that closes a tab and a click on `+` are structural effects.
 A script can open or close at most three tabs in ten seconds, together.

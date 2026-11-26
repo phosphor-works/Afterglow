@@ -3,6 +3,10 @@
 
 # Scene controls
 
+This Luau package adds the **Edit scene parameters and presets** command, which edits the parameters and presets of the shader packs in use.
+
+## Install
+
 Install the package:
 
 ```sh
@@ -35,7 +39,7 @@ The host validates all values. Edits animate for 350 ms.
 The editor supports numeric, boolean, color and image parameters.
 Images change at transition completion.
 See [image limits](../../../docs/SHADER-API.md#images).
-Presets with unknown or unsupported parameters are rejected.
+The package rejects presets with unknown or unsupported parameters.
 
 ## Commands from a shell
 
@@ -67,7 +71,7 @@ Another control character shows as `\xHH`, with the hexadecimal code of the char
 | 1 | The pane has no such parameter, or Afterglow refused the value. The message is on stderr. |
 | 2 | Wrong arguments, or a `VALUE` that does not fit the parameter type. |
 
-`set` and `open` fail while the editor or another `set` is open. Thus only one change runs at a time.
+`set` and `open` fail while the editor or another `set` is open. As a result, only one change runs at a time.
 When you stop `set` with Ctrl+C, the package keeps the value only when Afterglow took it.
 Until Afterglow tells that, `set` and `open` fail with a message to try again.
 

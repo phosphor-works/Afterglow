@@ -3,6 +3,7 @@
 
 # Luau scripting
 
+This page tells script authors how to write Luau scripts for Afterglow: effects, events, commands, overlays, docked areas and limits.
 Afterglow uses Luau API version 1.
 The [typed declarations](../afterglow/src/scripting/afterglow.d.luau) define helper signatures, events, snapshots and results.
 Installed declarations are in `share/phosphor-works/afterglow/api/afterglow.d.luau`.
@@ -208,8 +209,8 @@ The limits on values and text in a returned table are in [execution limits](#exe
 Replacement, removal or disable cancels outstanding results.
 An unchanged script keeps its VM and pending results during reload.
 Effect lists execute in order. They are not transactions.
-A `nil` entry in a returned list is skipped.
-An effect with a malformed request ID is refused and not applied. It receives no result.
+Afterglow skips a `nil` entry in a returned list.
+Afterglow refuses an effect with a malformed request ID and does not apply it. The effect receives no result.
 
 ## Execution limits
 
@@ -255,7 +256,7 @@ Requested `sleep`, `cancel`, `end_key_mode`, `undock`, `output`, `output_error` 
 The result of an `output` or `output_error` with text, to a run with a client, is not counted each second. `Scripts.commandOutputLimit` and `Scripts.commandTimeout` bound it.
 An `output` with empty text writes nothing, so its result counts. A run with no client drops its stdout at once, so the result of its output counts too.
 A run from the palette, a key, the menu or `afterglow ctl action` has no client.
-Thus such a run that waits for each of more than 128 lines in a second disables its script.
+As a result, such a run that waits for each of more than 128 lines in a second disables its script.
 Wait for each line only when `ev.source` is `shell` or `remote`.
 Do not wait for each line when `ev.source` is `control`, because `afterglow ctl action` also starts runs with that source.
 `on_load`, `on_key`, `on_dock_click`, `on_dock_hover` and `on_dock_layout` calls do not count toward a handler call limit.
@@ -340,7 +341,7 @@ It is `""` when it is not known.
 For a session pane of a mux session, `cwd` is only the directory that the shell reported.
 Afterglow does not ask the mux daemon for it, because scripts read every pane often (see [MUX.md](MUX.md#working-directory)).
 Afterglow ignores a reported directory that names another host, such as the directory of an `ssh` session.
-A reported path without a host is used when that path exists on this machine.
+Afterglow uses a reported path without a host when that path exists on this machine.
 
 A window's `cols` and `rows` are the cells of the terminal font that fit in the complete window.
 A `top` or `bottom` window area that shows is `cols` cells wide.
@@ -394,7 +395,7 @@ A pane of a [mux session](MUX.md) has two IDs.
 `aglow run --pane N`, `afterglow ctl --session` and `AFTERGLOW_PANE_ID` use the pane ID of the daemon.
 When the window of a session closes, the script gets `on_pane_closed` for its panes, also when the session keeps running.
 The next window that shows the session gives them new pane IDs, and the script gets `on_pane_created`.
-Thus state that a script keeps by pane ID does not follow the pane to the next window.
+As a result, state that a script keeps by pane ID does not follow the pane to the next window.
 A window that shows a session while a command runs in a pane gets the start of the command from the daemon.
 The script then gets `on_command_started` when the window shows the pane, and `on_command_finished` when the command ends.
 
@@ -402,9 +403,9 @@ The script then gets `on_command_started` when the window shows the pane, and `o
 A program sets a variable with iTerm2's `SetUserVar` (OSC 1337).
 `afterglow ctl set-user-var`, and the variables of a launch, set one too.
 Setting the same value again sends no event.
-A pane keeps its variables until it closes, at most 256 of them. A new variable after that is ignored.
+A pane keeps its variables until it closes, at most 256 of them. Afterglow ignores a new variable after that.
 A program can set a title or a variable faster than Afterglow delivers the events.
-`on_title` and `on_user_var` then get the newest value, and the values in between are skipped.
+`on_title` and `on_user_var` then get the newest value, and they skip the values in between.
 Do not use user variables to send a sequence of messages.
 
 `run_command(command, ev)` handles the script's [commands](#commands).
@@ -559,7 +560,8 @@ A line break runs the command line. fzf `--multi` writes one line for each choic
 A control character in a name, such as Ctrl+D, acts as a key.
 The [fzf picker package](../examples/packages/fzf-picker/README.md) does not list such names.
 
-`overlay(pane, command, options?)` takes the program and its arguments as `exec` does: a list of 1 to 64 strings of at most 4,096 characters each, or a string that names the program alone.
+`overlay(pane, command, options?)` takes the program and its arguments as `exec` does.
+The command is a list of 1 to 64 strings of at most 4,096 characters each, or a string that names the program alone.
 
 | Option | Behavior |
 | --- | --- |
@@ -824,7 +826,8 @@ An error in this part is not a handler failure. It ends the script's key mode, a
 
 A run also ends when its script stops: a change, a removal, `Scripts.enabled=false` or a disable.
 The run then ends with exit status 1, and stderr tells why.
-A script is disabled after 5 handler failures in a row, after too many results (see [execution limits](#execution-limits)), or when it keeps its CPU budget used (see [CPU time](#cpu-time)).
+Afterglow disables a script after 5 handler failures in a row, or after too many results (see [execution limits](#execution-limits)).
+It also disables a script that keeps its CPU budget used (see [CPU time](#cpu-time)).
 The handlers of a stopped script do not resume.
 
 ### Commands at runtime
@@ -891,7 +894,7 @@ Lines past the bottom of a `left` or `right` area do not show.
 
 Without `fg`, a run uses the theme's foreground color. Without `bg`, it uses the area's `fill`.
 A spacer cannot have `text`.
-A run that takes no cells, such as a run with empty text, cannot be clicked.
+You cannot click a run that takes no cells, such as a run with empty text.
 A field that is not in these tables refuses the effect with `invalid_effect`.
 A value of the wrong type or outside its range also refuses the effect with `invalid_effect`.
 
@@ -991,7 +994,7 @@ Without a position, the menu opens at the pointer. When the pointer is outside t
 While a prompt, a script dialog or the command palette is open in the window, the result is `busy`.
 A menu that is open closes, and the tab menu opens in its place.
 
-Areas on one edge stack inward from the window's edge, in the order that they were placed.
+Areas on one edge stack inward from the window's edge, in the order that the scripts placed them.
 `tab_bar` areas are the outermost areas on the top edge, where the tab bar is.
 A `top` area without `tab_bar` shows below the tab bar.
 `top` and `bottom` areas take the full width. `left` and `right` areas fit between them.
@@ -1004,7 +1007,7 @@ When that window has no area with this `id`, or the pane has closed, `undock` lo
 It removes an area whose most recent `dock` named that pane. When several did, the newest goes.
 An `id` that the script has no area for is not an error.
 If the pane has closed and no such area names it, the result is `no_pane`.
-The tab bar shows again when the last `tab_bar` area is removed.
+The tab bar shows again when the script removes the last `tab_bar` area.
 A `tab_bar` area that does not show leaves the tab bar in place.
 Successful replacement, removal and disable of the script remove all of its areas.
 Five handler failures in a row disable the script, so they also remove its areas.
@@ -1084,7 +1087,8 @@ The other limits of areas apply to pane areas too. Pane areas do not count towar
 The keys do not reach the shell. The window shows the label.
 A script needs an `on_key` handler to start a key mode.
 One script at a time holds a window's keyboard. Another script's request returns `busy`.
-A request also returns `busy` while an [overlay](#overlays) of another owner, such as another script or a control client, has the keyboard of the focused pane.
+A request also returns `busy` while an [overlay](#overlays) of another owner has the keyboard of the focused pane.
+Another script or a control client can be that owner.
 In a script's own key mode, the `cancel_overlay` key still cancels the overlay of the focused pane. `on_key` does not get that key.
 
 `on_key` receives `key`, `text`, `ctrl`, `shift`, `alt`, `meta` and `repeat`.
@@ -1231,7 +1235,7 @@ They wait at most 5 seconds for them (see [MUX.md](MUX.md#limits)).
 
 `semantic_regions` returns up to 1,024 retained shell regions in chronological order.
 Afterglow removes a region when a line deletion, a scroll in a scroll region or a resize destroys its start row.
-It also removes a completed region when its end row is destroyed.
+It also removes a completed region when the terminal destroys its end row.
 A start row that leaves the history does not remove the region (see `start_trimmed`).
 Each region has these fields:
 
@@ -1265,7 +1269,8 @@ While it is off, these queries fail with `operation_failed`.
 While it is off, only the handler of a `remote` run can write to the run with `afterglow.output` and `afterglow.output_error`.
 The output of another handler fails with `operation_failed`.
 These gates cover the queries and the direct output of other handlers. They do not cover other paths.
-A script can still give text to a run in other ways, for example in a module variable that another handler sets, or with `exec` and `copy`.
+A script can still give text to a run in other ways.
+For example, it can use a module variable that another handler sets, or `exec` and `copy`.
 The same is true for `Control.allowReadText` and a run with a local client.
 Install only scripts that you trust with the text of your panes.
 
@@ -1361,7 +1366,7 @@ The [typed declarations](../afterglow/src/scripting/afterglow.d.luau) give the s
 | `afterglow.signals` | `(pane: PaneRef, values: { SignalValue }, scope: ("pane" \| "tab" \| "window")?) -> Effect` |
 | `afterglow.log` | `(message: string) -> Effect` |
 
-## Related references
+## See also
 
 - [Packages and saved state](PACKAGES.md)
 - [Project operations](PROJECTS.md)

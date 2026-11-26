@@ -3,7 +3,9 @@
 
 # Configuration reference
 
-`tools/generate-reference.py` generates this document from the runtime Phosphor schema. Group and key names are case-sensitive. See [appearance](APPEARANCE.md) for configuration loading and examples.
+This reference lists each configuration key of Afterglow with its default, its range or choices and its meaning, for users who edit the configuration file. `tools/generate-reference.py` generates this document from the runtime Phosphor schema. Group and key names are case-sensitive. See [appearance](APPEARANCE.md) for configuration loading and examples.
+
+## Values
 
 Afterglow clamps a number to the listed range. The description of Font.size gives 0 or less a meaning of its own. An integer key drops the fraction of a number, so 6.7 is 6. It uses its default for a value outside the 32-bit range and for text that is not a whole number. Invalid enum choices use the default. Where an empty string has a special meaning, the description says so. Omitted values use defaults.
 
