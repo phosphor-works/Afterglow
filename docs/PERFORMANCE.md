@@ -5,31 +5,40 @@
 
 This page gives the performance measurements of Afterglow and their test conditions, for developers who change the terminal core or the renderer.
 The native benchmark measures the application in an isolated KWin desktop.
-See [testing](TESTING.md#native-performance-measurements) for commands.
-See [Phosphor scene performance](../examples/phosphor/PERFORMANCE.md) for separate shader measurements.
+The headless VT benchmark measures the terminal core without a window.
+See [testing](TESTING.md#native-performance-measurements) for the commands of the native benchmark.
+See the [Phosphor example](../examples/phosphor/README.md#performance) for the shader scene measurements.
 
-## Original baseline
+## Test conditions
 
-Measurement date: 30 October 2026.
-Source commit: `2aa71e7`. Build type: `RelWithDebInfo`.
-The recorded set contains 72 case runs: three repeats of each workload at each resolution.
-Timed cases request 15 seconds. CPU rates use actual elapsed time.
-Input cases use 100 acknowledgments per run. Script cases use 10,000 callbacks per run.
-Tables show medians of per-run statistics. Maximum columns contain the largest observed sample.
-Percentiles are not pooled across runs.
-See the [summary and ranges](../data/benchmarks/native-2026-10-30.summary.json) and [compressed raw samples](../data/benchmarks/native-2026-10-30.raw.json.gz).
+The native benchmark tables use this machine and these settings.
 
 | Condition | Value |
 | --- | --- |
 | CPU | Intel Core i7-9700K, 8 cores |
 | GPU | NVIDIA GeForce RTX 2080, driver 615.78.08 |
 | System | CachyOS 7.3.0-4, Qt 6.12.0, nested KWin 6.8.1 |
+| Build type | `RelWithDebInfo` |
 | Viewport | Exact 1920×1080 and 3840×2160 windows, scale 1 |
 | Font | Monaspace Neon Var, 11 points, grayscale antialiasing, light hinting |
 | Appearance | Basic controls, generic platform theme, opaque background, no shaders or audio |
 | Power | 225 W GPU limit, normal power management, shared desktop GPU, unlocked clocks |
 
-### CPU and frame service
+The native measurements come from two data sets.
+
+| Data set | Runs | Workloads | Files |
+| --- | --- | --- | --- |
+| Native | 72 case runs: three repeats of each workload at each resolution | All workloads except resize | [Summary and ranges](../data/benchmarks/native-2026-10-30.summary.json), [compressed raw samples](../data/benchmarks/native-2026-10-30.raw.json.gz) |
+| Resize | Three repeats of the resize workload at each resolution | Resize | [Summary and ranges](../data/benchmarks/resize-optimized-2026-10-30.summary.json), [compressed raw samples](../data/benchmarks/resize-optimized-2026-10-30.raw.json.gz) |
+
+Timed cases request 15 seconds. CPU rates use actual elapsed time.
+Input cases use 100 acknowledgments per run. Script cases use 10,000 callbacks per run.
+Tables show medians of per-run statistics. Maximum columns contain the largest observed sample.
+Percentiles are not pooled across runs.
+
+The headless VT benchmark tables give their own conditions.
+
+## CPU and frame service
 
 CPU percentages use 100% for one full core.
 
@@ -38,19 +47,13 @@ CPU percentages use 100% for one full core.
 | Idle | 0.09 | 0.08 | — | — |
 | Idle with blink | 0.31 | 0.52 | 0.96 | 1.98 |
 | Scroll, 100,000 rows | 6.79 | 12.79 | 1.29 | 2.71 |
-| Resize, 100,000 rows | 91.54 | 94.09 | 237.06 | 341.84 |
+| Resize, 100,000 rows | 40.32 | 46.09 | 22.85 | 24.58 |
 
 Static idle submitted no frames in all six runs.
 Scroll frame-interval p95 is 33.56 ms at 1080p and 33.60 ms at 4K.
-Resize frame-interval p95 is 237.07 ms at 1080p and 341.86 ms at 4K.
-After the resize workload, median RSS is 640.76 MiB at 1080p and 959.75 MiB at 4K.
-In the `2aa71e7` build, resizing was a visible performance limit.
-In that build, width changes ran [history reflow](../libs/afterglow-vt/src/Screen.cpp), which rebuilt stored rows.
-The high CPU use and shorter GPU times suggested that CPU-side resize work was the main cost.
-The next two sections measure the later resize and reflow work.
-The 50 ms request timer cannot maintain its requested rate during this workload.
+The resize rows come from the resize data set.
 
-### Terminal GPU timing and allocation
+## Terminal GPU timing and allocation
 
 GPU elapsed time is asynchronous. Allocation is the largest external process sample across all repeats.
 
@@ -61,7 +64,7 @@ GPU elapsed time is asynchronous. Allocation is the largest external process sam
 | Resize | 0.21 | 0.74 | 91.00 | 201.00 |
 
 The driver supplied process activity for only some external samples.
-The table pools available SM activity readings across three repeats.
+The table below pools available SM activity readings across three repeats.
 Coverage is the number of numerical readings divided by all external samples.
 These medians exclude missing readings. They are not time-weighted utilization.
 Vendor readings can repeat between polls.
@@ -75,8 +78,10 @@ Vendor readings can repeat between polls.
 
 Idle and idle with blink supplied no numerical SM activity readings.
 Zero submitted frames does not establish zero GPU utilization.
+The GPU values of the resize workload come from the native data set, not from the resize data set.
+In the build of the native data set, each width change reflowed all history rows.
 
-### History memory
+## History memory
 
 | Retained rows | 1080p RSS / PSS (MiB) | 4K RSS / PSS (MiB) | 1080p RSS growth (MiB) | 4K RSS growth (MiB) |
 | ---: | ---: | ---: | ---: | ---: |
@@ -87,7 +92,7 @@ Zero submitted frames does not establish zero GPU utilization.
 The growth is the change from the same process before it fills the history.
 It includes parser storage, viewport content and font-cache changes.
 
-### Input response
+## Input response
 
 All 1,200 acknowledgment requests completed. These times end at terminal frame submission.
 
@@ -101,7 +106,7 @@ All 1,200 acknowledgment requests completed. These times end at terminal frame s
 The observed maximum is not a worst-case latency bound.
 Compositor scheduling, other applications and power management can change tail latency.
 
-### Script callback duration
+## Script callback duration
 
 All 180,000 callbacks completed without handler errors.
 The maximum column covers both viewport sizes. The duration does not include effect application.
@@ -112,38 +117,28 @@ The maximum column covers both viewport sizes. The duration does not include eff
 | 8 | 9.31 / 14.25 | 9.27 / 14.14 | 146.91 |
 | 32 | 21.48 / 30.27 | 21.66 / 30.31 | 225.91 |
 
-## Resize after row reuse
+## Resize
 
-Source commit: `f1fcaee`. Measurement date: 30 October 2026.
-This set repeats the same resize workload three times at each resolution.
-The hardware, build type, font and appearance settings are the same as the original baseline.
-Each process contains 100,000 history rows. Each text line has 75 ASCII characters.
-Tables show medians of per-run statistics.
-See the [summary and ranges](../data/benchmarks/resize-optimized-2026-10-30.summary.json) and [compressed raw samples](../data/benchmarks/resize-optimized-2026-10-30.raw.json.gz).
+The resize data set uses 100,000 history rows in each process. Each text line has 75 ASCII characters.
 
-| Metric | 1080p before | 1080p after | 4K before | 4K after |
-| --- | ---: | ---: | ---: | ---: |
-| Frame service p95 (ms) | 237.06 | 22.85 | 341.84 | 24.58 |
-| CPU (% of one core) | 91.54 | 40.32 | 94.09 | 46.09 |
-| RSS after resize (MiB) | 640.76 | 268.43 | 959.75 | 276.30 |
-| Resize requests per second | 4.21 | 19.80 | 2.99 | 19.73 |
+| Metric | 1080p | 4K |
+| --- | ---: | ---: |
+| Frame service p95 (ms) | 22.85 | 24.58 |
+| CPU (% of one core) | 40.32 | 46.09 |
+| RSS after resize (MiB) | 268.43 | 276.30 |
+| Resize requests per second | 19.80 | 19.73 |
 
 The resize path moves compact history rows when a complete line still fits.
 It keeps their cell allocations, styles and graphemes.
 Rows that enter the active screen expand to the new screen width.
 Wrapped lines and lines wider than the new width still use full reflow.
-
-This keeps repeated cell reconstruction out of this workload.
-It does not remove the traversal of history rows.
-Long wrapped text can still cost more than these short lines.
-See [reflow of long wrapped lines](#reflow-of-long-wrapped-lines).
+The resize path still visits each history row.
+Long wrapped text can cost more than these short lines. See [reflow of long wrapped lines](#reflow-of-long-wrapped-lines).
 These results do not establish a frame-time bound for all history content.
-The nested-compositor and timing limits below still apply.
 
 ## Reflow of long wrapped lines
 
-Before: `3396c14`. After: `03e8bb9`. Measurement date: 31 October 2026. Build type: `RelWithDebInfo`.
-This set uses the headless VT benchmark, not the native benchmark.
+This measurement uses the headless VT benchmark.
 It measures the `Terminal::resize` call only. It does not measure rendering or frame time.
 Build with `-DAFTERGLOW_BUILD_TOOLS=ON`.
 Run `afterglow_vtbench --reflow [RUNS] [CASE]` from the build's `tools/bench` directory.
@@ -156,9 +151,6 @@ The run then resizes to 180×45, 160×50, 140×45, 160×50, 180×45 and 200×50 
 These are not the native benchmark's steps. Each resize changes the size by 20 columns and 5 rows.
 The benchmark times each resize in process CPU time. Other load changes CPU time less than elapsed time.
 A run gives the median and 95th percentile of its 24 resizes.
-Tables show the medians of five runs.
-The before and after runs use the same benchmark binary with the old and new library.
-The runs alternate between the two libraries.
 
 | Case | Case name | History lines |
 | --- | --- | --- |
@@ -172,19 +164,26 @@ The long cases fill 100,000 rows at 200 columns.
 Narrower widths need more rows, so the scrollback limit removes the oldest lines.
 After the first pass, the long cases hold about 71,000 rows at 200 columns.
 
-| Case | Median before (ms) | Median after (ms) | p95 before (ms) | p95 after (ms) |
-| --- | ---: | ---: | ---: | ---: |
-| Short ASCII | 18.70 | 9.69 | 22.73 | 12.03 |
-| Long ASCII | 171.92 | 59.94 | 220.29 | 65.66 |
-| Long rich | 348.29 | 140.12 | 461.94 | 168.89 |
-| Mixed rich | 326.42 | 134.24 | 397.84 | 150.98 |
+| Condition | Value |
+| --- | --- |
+| Machine | Shared 8-core machine, load average between 11 and 23 |
+| Build type | `RelWithDebInfo` |
+| Runs | Five. The tables show the medians of the five runs |
 
-| Process peak RSS, one run (MiB) | Before | After |
+| Case | Median (ms) | p95 (ms) |
 | --- | ---: | ---: |
-| Long ASCII | 555 | 185 |
-| Long rich | 763 | 305 |
+| Short ASCII | 9.69 | 12.03 |
+| Long ASCII | 59.94 | 65.66 |
+| Long rich | 140.12 | 168.89 |
+| Mixed rich | 134.24 | 150.98 |
 
-In the after build, reflow rewraps one logical line at a time, directly from the old rows into the new rows.
+| Case | Process peak RSS, one run (MiB) |
+| --- | ---: |
+| Long ASCII | 185 |
+| Long rich | 305 |
+
+Absolute values change with load.
+Reflow rewraps one logical line at a time, directly from the old rows into the new rows.
 It does not copy a line into a temporary buffer first.
 A line that fits on one row gets no temporary line record.
 It copies runs of narrow cells in one operation.
@@ -192,14 +191,12 @@ Grapheme entries move between rows without new allocations.
 Reflow frees the old rows of a line when the line is complete. This lowers peak memory.
 Reflow compacts again only the rows that can store blank cells after their content.
 
-These numbers come from a shared 8-core machine with a load average between 11 and 23.
-Absolute values change with load. Compare the before and after columns of one table only.
 Reflow rebuilds every row of a wrapped line. Each new row needs one allocation.
 Cost increases with the number of history cells.
 Grapheme clusters add cost, because reflow visits each stored cluster.
 Long rich history at this size takes more than 100 ms of CPU for each resize.
 This is longer than one frame interval.
-The native benchmark was not repeated, so these results do not give frame service times.
+No native benchmark data set uses long wrapped lines, so these results do not give frame service times.
 
 ## Worst-case terminal input
 
@@ -221,59 +218,36 @@ A case that fails this check prints an error and the command exits with status 1
 An 80×24 screen has 1,920 cells, fewer than the limit of 4,096 extra cursors.
 As a result, no sequence stops at the limit.
 
-Measurement: 1 November 2026, `RelWithDebInfo`, a shared 8-core machine with a load average of about 16.
-`fd1124a` examined every retained OSC 133 region on each scroll of a region on the main screen.
-`e564a2f` keeps an upper bound on the rows of the regions.
-When every region is above the scroll region, the terminal does not examine them.
+The measurement used a `RelWithDebInfo` build on a shared 8-core machine with a load average of about 16.
 
-| Case name | Unit | `fd1124a` (µs) | `e564a2f` (µs) | `e564a2f` throughput (MB/s) |
-| --- | --- | ---: | ---: | ---: |
-| `region lf, no regions` | Line feed | 0.40 | 0.40 | 128.5 |
-| `region lf, 1024 regions` | Line feed | 2.29 | 0.41 | 125.9 |
-| `cursors 80x24, one group repeated` | Sequence | 233 | 235 | 34.8 |
-| `cursors 80x24, distinct rects` | Sequence | 1,637 | 1,599 | 6.4 |
+| Case name | Unit | Time per unit (µs) | Throughput (MB/s) |
+| --- | --- | ---: | ---: |
+| `region lf, no regions` | Line feed | 0.40 | 128.5 |
+| `region lf, 1024 regions` | Line feed | 0.41 | 125.9 |
+| `cursors 80x24, one group repeated` | Sequence | 235 | 34.8 |
+| `cursors 80x24, distinct rects` | Sequence | 1,599 | 6.4 |
 
+The terminal keeps an upper bound on the rows of the retained OSC 133 regions.
+When every region is above the scroll region, a scroll of that region does not examine them.
 An extra-cursor sequence visits each cell of each different rectangle once.
 It also compares each existing cursor with each rectangle.
 As a result, the cost increases with the number of rectangles multiplied by their area.
 
 ## Output throughput
 
-### Terminal core
-
 Run `afterglow_vtbench` without arguments from the build's `tools/bench` directory.
 Each case feeds 64 MiB of generated output to a 200×60 terminal, in 64 KiB chunks.
 The scrollback cases keep 10,000 lines.
+The measurement used a `RelWithDebInfo` build on the Intel Core i7-9700K. The values are the best of three runs.
 
-| Case name | Output |
-| --- | --- |
-| `ascii` | Lines of 20 to 119 random printable ASCII characters |
-| `ascii, no scrollback` | The same lines, with no scrollback |
-| `sgr colours` | Words of six letters, each in a 256-color SGR color |
-| `unicode` | Japanese, Chinese and Korean words, emoji, a ZWJ family sequence and accented Latin words |
+| Case name | Output | Throughput (MB/s) |
+| --- | --- | ---: |
+| `ascii` | Lines of 20 to 119 random printable ASCII characters | 146 |
+| `ascii, no scrollback` | The same lines, with no scrollback | 219 |
+| `sgr colours` | Words of six letters, each in a 256-color SGR color | 156 |
+| `unicode` | Japanese, Chinese and Korean words, emoji, a ZWJ family sequence and accented Latin words | 63 |
 
-Measurement: 1 November 2026, `RelWithDebInfo`, Intel Core i7-9700K.
-`46c2cb7` is before the throughput work. Its values are the best of two runs.
-`ded14ad` is after the work. Its values are the best of three runs.
-
-| Case name | `46c2cb7` (MB/s) | `ded14ad` (MB/s) | Change |
-| --- | ---: | ---: | ---: |
-| `ascii` | 113 | 146 | +29% |
-| `ascii, no scrollback` | 215 | 219 | +2% |
-| `sgr colours` | 117 | 156 | +33% |
-| `unicode` | 45 | 63 | +40% |
-
-The changes between the two commits:
-
-- The parser reads a CSI sequence of parameters and a final byte in one loop.
-- An unused style stays interned for a time, so the next pen that uses it does not intern it again.
-- An open-addressing table finds interned styles without a heap allocation.
-- The terminal keeps the properties of 256 recently printed characters.
-- Narrow and wide characters go into plain cells without the general cell write.
-- A line that scrolls into the history gives its buffer to the new bottom line.
-- The terminal drops a history line that has only the default style, and does not read its cells.
-
-### Comparison with other terminals
+## Comparison with other terminals
 
 [DOOM-fire-zig](https://github.com/const-void/DOOM-fire-zig) draws a full-screen fire with 256-color SGR sequences and the `▀` character.
 Each frame is one write of about 200 KiB to the terminal.
@@ -281,13 +255,15 @@ The program counts the frames that it writes in each second.
 As a result, the result shows how fast a terminal reads and parses output.
 It does not show how many frames the terminal shows on the display.
 
-Each terminal ran full screen in its own nested KWin at 1920×1080, with its default settings.
-Every terminal used DejaVu Sans Mono at 11 points.
-Each run took 15 seconds. The terminals ran in turn, three rounds.
-The program was commit `eb0631b`, built with Zig 0.17 in `ReleaseFast` mode.
-For Zig 0.17, a port uses C library calls for the terminal I/O. The port also stops the program after 15 seconds.
+| Condition | Value |
+| --- | --- |
+| Machine | Intel Core i7-9700K and NVIDIA GeForce RTX 2080, load average below 3 |
+| Display | Each terminal full screen in its own nested KWin at 1920×1080, with its default settings |
+| Font | DejaVu Sans Mono, 11 points, in every terminal |
+| Runs | 15 seconds each. The terminals ran in turn, three rounds |
+| Program | Commit `eb0631b`, built with Zig 0.17 in `ReleaseFast` mode |
 
-Measurement: 1 November 2026, Afterglow `ded14ad`, Intel Core i7-9700K and NVIDIA GeForce RTX 2080, load average below 3.
+For Zig 0.17, a port uses C library calls for the terminal I/O. The port also stops the program after 15 seconds.
 The fonts and the window size give each terminal a different grid.
 As a result, the cells per second column compares the terminals best.
 The three runs of each terminal are within 1% of each other.
@@ -295,15 +271,15 @@ The three runs of each terminal are within 1% of each other.
 | Terminal | Grid | Frames per second (three runs) | Median | Cells per second |
 | --- | --- | --- | ---: | ---: |
 | Alacritty 0.17.0 | 212×112 | 626, 626, 628 | 626 | 14.9 M |
-| Afterglow `ded14ad` | 210×118 | 595, 596, 596 | 596 | 14.8 M |
+| Afterglow | 210×118 | 595, 596, 596 | 596 | 14.8 M |
 | foot 1.28.0 | 212×112 | 533, 536, 537 | 536 | 12.7 M |
 | kitty 0.49.2 | 212×112 | 510, 510, 512 | 510 | 12.1 M |
 | Ghostty 1.3.1 | 211×118 | 287, 288, 289 | 288 | 7.2 M |
 | Konsole 26.08.2 | 208×109 | 186, 187, 188 | 187 | 4.2 M |
 
-Before the throughput work, Afterglow `46c2cb7` gave 414 to 422 frames per second at the same size.
-
 ## Workloads
+
+These are the workloads of the native benchmark.
 
 | Case | `--cases` value | Work |
 | --- | --- | --- |
@@ -369,4 +345,5 @@ The input case does not represent every full-screen application or output patter
 The nested compositor shares the host GPU and normal power management.
 Its additional presentation stage can affect frame pacing.
 These timings do not establish latency with a direct connection to the host compositor.
+The headless VT benchmark ran on a shared, loaded machine. Its absolute values change with load.
 Short repeated measurements do not establish a cross-terminal performance comparison.
