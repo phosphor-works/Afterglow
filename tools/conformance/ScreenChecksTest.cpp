@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Phosphor Works Team
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // The checks of afterglow_tuifuzz: a screen that the terminal core made
 // passes, and a screen broken on purpose fails with the right message.

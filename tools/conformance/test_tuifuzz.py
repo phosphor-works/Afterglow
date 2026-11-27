@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Phosphor Works Team
-# SPDX-License-Identifier: LGPL-2.1-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Regression checks for afterglow_tuifuzz; pass its built executable.
 
 Exits with 77 (skipped) when bwrap is not installed, or cannot make the namespaces of

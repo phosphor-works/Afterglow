@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: 2026 Phosphor Works Team
-# SPDX-License-Identifier: LGPL-2.1-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # libFuzzer targets (clang only, for C and C++): afterglow_vtfuzz for the
 # terminal core and the reader of its state frames, afterglow_protofuzz for

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Phosphor Works Team
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // aglow icat: kitten icat's command line over the graphics command writer of
 // afterglow-proto. A PNG that needs no change goes as it is. Other formats,

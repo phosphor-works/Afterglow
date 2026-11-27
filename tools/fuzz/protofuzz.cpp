@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Phosphor Works Team
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // libFuzzer target for the protocol library: the readers of what a remote
 // program sends, called as the application calls them, outside a Terminal.

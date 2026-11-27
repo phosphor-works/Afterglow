@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Phosphor Works Team
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // aglow clipboard: kitten clipboard's command line. Reads and writes go
 // through OSC 5522 with MIME types. A terminal without it gets OSC 52, which

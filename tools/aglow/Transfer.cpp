@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Phosphor Works Team
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // aglow transfer: kitten transfer's command line over the client session of
 // afterglow-proto. This file only drives the terminal and shows progress.

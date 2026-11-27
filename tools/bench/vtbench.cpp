@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Phosphor Works Team
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Terminal throughput benchmark: feeds generated workloads through
 // AfterglowVt::Terminal and reports MB/s. Run a Release build.

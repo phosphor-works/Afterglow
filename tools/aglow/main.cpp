@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Phosphor Works Team
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // aglow: a small afterglow, as one static binary. From the command line it
 // speaks kitty's file transfer, drag and drop, graphics and clipboard

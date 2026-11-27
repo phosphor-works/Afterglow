@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-FileCopyrightText: 2026 Phosphor Works Team
-# SPDX-License-Identifier: LGPL-2.1-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Runs afterglow_tuifuzz on each full-screen program that is installed, with
 # the same seed and number of steps. Exits non-zero when a check failed for

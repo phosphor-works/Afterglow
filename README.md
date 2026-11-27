@@ -86,7 +86,8 @@ Every change follows the
 | --- | --- |
 | The application `afterglow` | GPL-3.0-or-later |
 | The mux daemon `aglow-mux` | GPL-3.0-or-later |
-| The libraries in `libs/` and the `aglow` client | LGPL-2.1-or-later |
+| The client `aglow` and the developer tools | GPL-3.0-or-later |
+| The libraries in `libs/` | LGPL-2.1-or-later |
 | Most bundled shader packs | LGPL-2.1-or-later |
 | Third-party themes | MIT |
 | The icon | CC-BY-SA-4.0 |

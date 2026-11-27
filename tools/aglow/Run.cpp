@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Phosphor Works Team
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // aglow run: a command of a script in a running Afterglow. The client is in
 // afterglow-proto. This front end names it, asks the terminal on /dev/tty
