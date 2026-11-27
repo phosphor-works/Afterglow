@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Phosphor Works Team
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // What afterglow_headless and afterglow_tuifuzz share: the host that sends
 // the terminal's replies to the program through the pseudo-terminal, and the

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Phosphor Works Team
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // afterglow_tuifuzz: runs a full-screen program in a pseudo-terminal against
 // the terminal core alone, sends it random input, and checks the screen after

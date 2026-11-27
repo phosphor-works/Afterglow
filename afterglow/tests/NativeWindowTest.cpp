@@ -142,6 +142,13 @@ void drainDeferredDeletes()
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
     drain();
 }
+// Frees @p window, a window that the test made, now: no parent owns a
+// window, and the application frees only the ones still open when it goes.
+// A null window, one that closed already, is nothing to free.
+void destroyWindow(TerminalWindow* window)
+{
+    const std::unique_ptr<TerminalWindow> owned(window);
+}
 // Waits until @p condition holds or @p ms pass, and returns the condition.
 // A PTY echo or a search has no fixed time.
 bool waitFor(const std::function<bool()>& condition, int ms = 3000)
@@ -1746,7 +1753,7 @@ TEST_F(NativeWindow, WindowsDeletedWhileTheirChromeLoadsLeaveTheNextChromeSound)
     WindowOptions options;
     options.command = {QStringLiteral("cat")};
     for (int i = 0; i < 20; ++i) {
-        delete application->newWindow(options);
+        destroyWindow(application->newWindow(options));
         if (i % 4 == 0)
             drain(5);
     }
@@ -1758,16 +1765,16 @@ TEST_F(NativeWindow, WindowsDeletedWhileTheirChromeLoadsLeaveTheNextChromeSound)
     EXPECT_TRUE(waitFor([&] {
         return layer->rootItem() != nullptr;
     }));
-    delete next;
+    destroyWindow(next);
     // The same while the engine goes too, as between two tests, and while a
     // new application's load still runs.
     for (int i = 0; i < 8; ++i)
-        delete application->newWindow(options);
+        destroyWindow(application->newWindow(options));
     application.reset();
     application = std::make_unique<Application>(testSocket(), directory.filePath(QStringLiteral("afterglow.conf")),
                                                 testSettings(), TestScripts);
     for (int i = 0; i < 8; ++i)
-        delete application->newWindow(options);
+        destroyWindow(application->newWindow(options));
     auto* fresh = application->newWindow(options);
     ASSERT_NE(fresh, nullptr);
     auto* freshLayer = fresh->findChild<ChromeLayer*>();
@@ -1799,7 +1806,7 @@ TEST_F(NativeWindow, ClosingStatusWindowRepublishesLauncherAggregate)
     };
     ASSERT_TRUE(waitFor(lastShowsProgress));
     observer.updates.clear();
-    delete contributor;
+    destroyWindow(contributor);
     EXPECT_TRUE(waitFor([&] {
         return !observer.updates.isEmpty() && !lastShowsProgress();
     }));
@@ -9336,7 +9343,7 @@ TEST_F(NativeWindow, ControlUndocksThroughAPaneThatMovedOrClosed)
     // An id that never docked is still not a pane.
     EXPECT_FALSE(control.scriptDock(QStringLiteral("a@1"), created + 1000, undock).isEmpty());
     // Its close would ask first, for the programs that still run.
-    delete destination;
+    destroyWindow(destination);
 }
 
 TEST_F(NativeWindow, ControlRefusesWhatItCannotDoInFull)
@@ -12671,7 +12678,7 @@ TEST_F(NativeWindow, AWindowDeletedWhileItShowsReachesNoSlotOfItsOwn)
     QObject::connect(shown, &QWindow::visibilityChanged, &listener, [&](QWindow::Visibility visibility) {
         hidden = hidden || visibility == QWindow::Hidden;
     });
-    delete shown;
+    destroyWindow(shown);
     // The signal that reached the window's slot came, to this one too.
     EXPECT_TRUE(hidden);
     drainDeferredDeletes();
@@ -13082,8 +13089,8 @@ TEST_F(NativeWindow, APanesDialogsFollowItToANewWindow)
         // A case that fails part way leaves no window, and no dialog, to the
         // next one.
         const auto close = qScopeGuard([&] {
-            delete moved.data();
-            delete source.data();
+            destroyWindow(moved.data());
+            destroyWindow(source.data());
             settleQueued();
         });
         source->show();
@@ -13182,7 +13189,7 @@ TEST_F(NativeWindow, APanesDialogsCloseWithTheWindowItIsIn)
         // A check that fails before the close leaves no window for the
         // next case.
         const auto cleanup = qScopeGuard([&closing] {
-            delete closing;
+            destroyWindow(closing);
         });
         closing->show();
         ASSERT_TRUE(waitFor([&] {
@@ -15269,7 +15276,7 @@ ShownSession waitForPrompt(const QPointer<TerminalWindow>& window, QString* erro
         else
             return shown;
     }
-    delete shown.window;
+    destroyWindow(shown.window);
     return {};
 }
 
@@ -15582,7 +15589,7 @@ TEST_F(NativeWindow, AMuxSessionShowsInAWindowAndEndsWithIt)
         const auto info = sessionNamed(daemon, "live");
         return info && info->attached;
     }));
-    delete shown;
+    destroyWindow(shown);
     // The daemon still answers, with only its own session.
     EXPECT_TRUE(waitFor(
         [&] {
@@ -15630,7 +15637,7 @@ TEST_F(NativeWindow, AMuxSessionsBellsUserVarsAndClipboardWritesReachTheWindow)
         },
         5000))
         << QGuiApplication::clipboard()->text().toStdString();
-    delete shown;
+    destroyWindow(shown);
 }
 
 // An image of a session's program shows in its window at its size: the
@@ -15713,7 +15720,7 @@ TEST_F(NativeWindow, AMuxSessionsImageShowsInTheWindow)
     // stretched or repeated across the pane.
     EXPECT_NEAR(drawn->box.width(), 60, 6);
     EXPECT_NEAR(drawn->box.height(), 60, 6);
-    delete shown;
+    destroyWindow(shown);
 }
 
 // An animated image of a session's program runs on the window's clock,
@@ -15813,7 +15820,7 @@ TEST_F(NativeWindow, AMuxSessionsAnimationRunsInTheWindow)
             return frame() != stopped;
         },
         300));
-    delete shown;
+    destroyWindow(shown);
 }
 
 // A session pane has what a pane of the window has, through the entry
@@ -15904,7 +15911,7 @@ TEST_F(NativeWindow, AMuxSessionsMarksStatusAndDirectoryReachTheWindow)
         },
         5000))
         << (pager ? screenOf(pager).toStdString() : std::string("the pager closed"));
-    delete shown;
+    destroyWindow(shown);
 }
 
 // The processes of a session pane are the daemon's: what its shell reports
@@ -16006,7 +16013,7 @@ TEST_F(NativeWindow, ASessionPaneHasPathLinksWhileItsShellRunsNoRemoteClient)
     EXPECT_TRUE(waitFor([&] {
         return shown->hoveredLink() == file;
     })) << shown->hoveredLink().toStdString();
-    delete shown;
+    destroyWindow(shown);
 }
 
 // The window tells the daemon whether the user can see a session pane, and
@@ -16068,7 +16075,7 @@ TEST_F(NativeWindow, ASessionPaneTellsItsProgramWhetherItCanBeSeen)
         },
         5000))
         << screenOf(pane).toStdString();
-    delete shown;
+    destroyWindow(shown);
 }
 
 // A window that attaches to a session shows what the session holds already:
@@ -16178,7 +16185,7 @@ TEST_F(NativeWindow, AnAttachShowsTheSessionsStateAndNotifiesNothingOld)
     ASSERT_NE(pane, nullptr);
     ASSERT_TRUE(shown->runAction(pane, Action::JumpPromptUp));
     EXPECT_GT(viewportOffset(pane), 0u);
-    delete shown;
+    destroyWindow(shown);
 }
 
 // A selection in a region that the session's program scrolls moves with its
@@ -16238,7 +16245,7 @@ TEST_F(NativeWindow, ASelectionInASessionPaneFollowsTheScrollsOfItsProgram)
         5000))
         << screenOf(pane).toStdString();
     EXPECT_FALSE(pane->hasSelection());
-    delete shown;
+    destroyWindow(shown);
 }
 
 // The requests of a session's programs reach the window, and its answers
@@ -16320,7 +16327,7 @@ TEST_F(NativeWindow, AMuxSessionsReadsAndCommandsReachTheWindowAndBack)
     QFile file(reply);
     ASSERT_TRUE(file.open(QIODevice::ReadOnly));
     EXPECT_EQ(file.readAll().toStdString(), expected);
-    delete shown;
+    destroyWindow(shown);
 }
 
 // `aglow run` in a session pane reaches the mux daemon, which passes its
@@ -16493,7 +16500,7 @@ return {
         << screenOf(local).toStdString();
     EXPECT_FALSE(notices.server.bodies.contains(QStringLiteral("held past its client")));
     EXPECT_FALSE(fileContent(out).contains("held\n"));
-    delete shown;
+    destroyWindow(shown);
 }
 
 // A drag waits for the program's answer on the GUI thread
@@ -16527,7 +16534,7 @@ TEST_F(NativeWindow, AProtocolWaitOfASessionPaneReadsItsStream)
     pane->deliverProtocolCommands(4000);
     EXPECT_EQ(commands, 1);
     EXPECT_LT(waited.elapsed(), 3000);
-    delete shown;
+    destroyWindow(shown);
 }
 
 // A clipboard read that waits for the user when the window closes, while the
@@ -16573,7 +16580,7 @@ TEST_F(NativeWindow, AReadOfASessionThatOutlivesItsWindowGetsTheDenial)
             return chrome->clipboardPromptOpen();
         },
         5000));
-    delete shown;
+    destroyWindow(shown);
     ASSERT_TRUE(waitFor(
         [&] {
             return QFileInfo(reply).size() == qint64(denial.size());
@@ -16641,7 +16648,7 @@ void loseSession(Application& application, MuxTest::TestDaemon& daemon, Register
     auto [shown, pane] = showSessionAtPrompt(application, daemon, session, &error);
     // A failed check leaves no window of this case beside the next.
     const auto closeLeft = qScopeGuard([&shown] {
-        delete shown;
+        destroyWindow(shown);
         drainDeferredDeletes();
     });
     ASSERT_NE(pane, nullptr) << error.toStdString();
@@ -16730,7 +16737,7 @@ TEST_F(NativeWindow, AnExitInASessionsWindowClosesOnlyThatPane)
         },
         5000));
     EXPECT_TRUE(echoes(split, QStringLiteral("still here")));
-    delete shown;
+    destroyWindow(shown);
     EXPECT_TRUE(waitFor(
         [&] {
             return !sessionNamed(daemon, "exits");
@@ -16760,7 +16767,7 @@ TEST_F(NativeWindow, ALaunchOfASessionPassesItsEventQueue)
     ASSERT_NE(pane, nullptr);
     ASSERT_NE(pane->session(), nullptr);
     EXPECT_EQ(pane->session()->eventQueue(), std::size_t(1) << 20);
-    delete shown;
+    destroyWindow(shown);
 }
 
 // A launch with --mux-attach (Application::openLaunch) finds the daemon in
@@ -16812,7 +16819,7 @@ TEST_F(NativeWindow, ALaunchOfASessionThatThisProcessShowsOpensNoOtherWindow)
     // A session that does not run: the launch fails, and says why.
     EXPECT_TRUE(launch(QStringLiteral("none"), true).contains(QStringLiteral("no session named 'none'")));
     EXPECT_EQ(int(TerminalWindow::windows().size()), before + 1);
-    delete shown;
+    destroyWindow(shown);
 }
 
 // Input larger than a frame of the attach stream goes in parts, all of them
@@ -16852,7 +16859,7 @@ TEST_F(NativeWindow, ALargeInputReachesTheProgramOfASessionWhole)
         << MuxTest::readFile(file).size();
     EXPECT_TRUE(MuxTest::readFile(file) == text);
     ASSERT_TRUE(pane->sendInput("\x04"));
-    delete shown;
+    destroyWindow(shown);
 }
 
 // With Mux.onClose detach, the session outlives its window.
@@ -16878,7 +16885,7 @@ TEST_F(NativeWindow, AMuxSessionCanOutliveItsWindow)
         },
         5000))
         << screenOf(pane).toStdString();
-    delete shown;
+    destroyWindow(shown);
     ASSERT_TRUE(waitFor(
         [&] {
             const auto info = sessionNamed(daemon, "kept");
@@ -16911,7 +16918,7 @@ TEST_F(NativeWindow, MuxOnCloseAppliesLiveToAnOpenSessionsWindow)
     config.close();
     // The reload applies before the action returns.
     ASSERT_TRUE(shown->runAction(pane, Action::ReloadConfig));
-    delete shown;
+    destroyWindow(shown);
     ASSERT_TRUE(waitFor(
         [&] {
             const auto info = sessionNamed(daemon, "live");
@@ -16949,7 +16956,7 @@ TerminalWindow* windowOfSession(const QString& name, const QString& host = {})
 void deleteWindows(const QList<QPointer<TerminalWindow>>& windows)
 {
     for (const QPointer<TerminalWindow>& window : windows)
-        delete window.data();
+        destroyWindow(window.data());
 }
 
 /// A top-level widget that refuses to close, as a window that asks a
@@ -17043,7 +17050,7 @@ TEST_F(NativeWindow, ASessionsTabsAndSplitsComeBackWithTheNextWindow)
     const std::uint32_t topId = top->sessionPaneId(), bottomId = bottom->sessionPaneId();
     const std::uint32_t leftId = left->sessionPaneId(), rightId = right->sessionPaneId();
     // Mux.onClose detach: the session runs on, with its tabs.
-    delete shown;
+    destroyWindow(shown);
     ASSERT_TRUE(waitFor(
         [&] {
             return sessionDetached(daemon, "tabs") && sessionPaneCount(daemon, "tabs") == 4;
@@ -17085,7 +17092,7 @@ TEST_F(NativeWindow, ASessionsTabsAndSplitsComeBackWithTheNextWindow)
     // The programs that ran, each in its own pane.
     for (const QPointer<Pane>& p : {topAgain, bottomAgain, leftAgain, rightAgain})
         EXPECT_TRUE(echoes(p, QStringLiteral("second window %1").arg(p ? p->sessionPaneId() : 0)));
-    delete again;
+    destroyWindow(again);
 }
 
 // The window sends its layout a while after a change (scheduleSessionLayout),
@@ -17146,7 +17153,7 @@ TEST_F(NativeWindow, ASessionKeepsTheTabOrderAndTheMovedPanesOfItsWindow)
         return again && again->isExposed() && again->submittedFrames() > 0;
     }));
     EXPECT_EQ(sessionTabs(*again), tabs);
-    delete again;
+    destroyWindow(again);
 }
 
 // The same calls for a session pane, in a tab that does not show: its mark
@@ -17161,7 +17168,7 @@ TEST_F(NativeWindow, AControlClientMarksAHiddenSessionPaneAtItsCursor)
     auto [shown, pane] = showSessionAtPrompt(*application, daemon, QStringLiteral("marks"), &error);
     ASSERT_NE(pane, nullptr) << error.toStdString();
     const auto cleanup = qScopeGuard([&shown] {
-        delete shown;
+        destroyWindow(shown);
     });
     ControlConnection ctl(directory.filePath(QStringLiteral("session-marks.sock")), shown,
                           {{QStringLiteral("allowReadText"), true}});
@@ -17458,10 +17465,10 @@ TEST_F(NativeWindow, ATabDetachedFromASessionsWindowBecomesANewSession)
               QStringLiteral("A pane of session drag can move only into the window of another session"));
     EXPECT_EQ(shown->panes().size(), 1);
     EXPECT_EQ(plain->panes().size(), 1);
-    delete plain;
-    delete movedAlone;
-    delete moved;
-    delete shown;
+    destroyWindow(plain);
+    destroyWindow(movedAlone);
+    destroyWindow(moved);
+    destroyWindow(shown);
     EXPECT_TRUE(waitFor(
         [&] {
             return MuxTest::names(daemon.sessions()) == std::vector<std::string>{"keep"};
@@ -17528,7 +17535,7 @@ TEST_F(NativeWindow, APaneJoinsTheSessionOfAnotherWindow)
     ASSERT_TRUE(out->has_value());
     EXPECT_EQ((*out)->first, QStringLiteral("A pane of session from can move only into the window of another session"));
     EXPECT_EQ(plain->panes().size(), 1);
-    delete plain;
+    destroyWindow(plain);
 
     // Below a pane of the other session's window.
     const auto joined = move(moving->id(), beside->id(), QStringLiteral("down"));
@@ -17584,7 +17591,7 @@ TEST_F(NativeWindow, APaneJoinsTheSessionOfAnotherWindow)
     EXPECT_NE(target->sessionPane(lastId), nullptr);
     EXPECT_EQ(sessionPaneCount(daemon, "to"), 3);
     EXPECT_EQ(::kill(pid, 0), 0);
-    delete target;
+    destroyWindow(target);
     EXPECT_TRUE(waitFor(
         [&] {
             return MuxTest::names(daemon.sessions()) == std::vector<std::string>{"keep"};
@@ -17703,8 +17710,8 @@ TEST_F(NativeWindow, APaneThatJoinsAnotherSessionComesStraightBack)
     // The same program answers here again.
     EXPECT_TRUE(echoes(returned, QStringLiteral("home")));
     EXPECT_EQ(::kill(pid, 0), 0);
-    delete target;
-    delete source;
+    destroyWindow(target);
+    destroyWindow(source);
 }
 
 namespace {
@@ -17834,7 +17841,7 @@ TEST_F(NativeWindow, AWindowShowsASessionOfAnotherHost)
     auto [shown, pane] = showSessionOfHost(*application, QStringLiteral("far"), QStringLiteral("box"), &error);
     // The window goes while the fake ssh is first on PATH.
     const auto closeFirst = qScopeGuard([&shown] {
-        delete shown;
+        destroyWindow(shown);
     });
     ASSERT_NE(pane, nullptr) << error.toStdString();
     EXPECT_TRUE(pane->showsSession(QStringLiteral("far"), QStringLiteral("box")));
@@ -17927,7 +17934,7 @@ TEST_F(NativeWindow, SessionLaunchOfAnotherHostKeepsTheGuiThreadFree)
     QPointer<TerminalWindow> shown = windowOfSession(QStringLiteral("slow"), QStringLiteral("far"));
     // The window goes while the fake ssh is first on PATH.
     const auto closeFirst = qScopeGuard([&shown] {
-        delete shown;
+        destroyWindow(shown);
     });
     ASSERT_NE(shown, nullptr);
     // The run of the proxy: BatchMode before any other option.
@@ -17960,7 +17967,7 @@ TEST_F(NativeWindow, ANewTabOfASessionWhoseWindowClosesFirstLeavesNoPane)
     QString error;
     auto [shown, pane] = showSessionOfHost(*application, QStringLiteral("far"), QStringLiteral("box"), &error);
     const auto closeFirst = qScopeGuard([&shown] {
-        delete shown;
+        destroyWindow(shown);
     });
     ASSERT_NE(pane, nullptr) << error.toStdString();
     ASSERT_EQ(sessionPaneCount(daemon, "far"), 1);
@@ -18094,7 +18101,7 @@ TEST_F(NativeWindow, ALaunchPastTheLimitOfWaitingCallsOpensNoWindow)
     const auto closeOpened = qScopeGuard([&before] {
         for (TerminalWindow* w : TerminalWindow::windows()) {
             if (!before.contains(w))
-                delete w;
+                destroyWindow(w);
         }
     });
     // A daemon that answers nothing: the attach of the session waits, and
@@ -18263,7 +18270,7 @@ return {
     auto [shown, pane] = showSessionOfHost(*application, QStringLiteral("far"), QStringLiteral("box"), &error);
     // The window goes while the fake ssh is first on PATH.
     const auto closeFirst = qScopeGuard([&shown] {
-        delete shown;
+        destroyWindow(shown);
     });
     ASSERT_NE(pane, nullptr) << error.toStdString();
     const QString run = QStringLiteral("'%1' run far ").arg(aglow);
@@ -18283,7 +18290,7 @@ return {
         5000))
         << screenOf(pane).toStdString();
     EXPECT_FALSE(screenOf(pane).contains(QStringLiteral("\nhere remote"))) << screenOf(pane).toStdString();
-    delete shown;
+    destroyWindow(shown);
 }
 
 // `afterglow ssh` in a session pane: the daemon keeps the socket that ssh
@@ -18373,7 +18380,7 @@ return {
     ASSERT_TRUE(logged.open(QIODevice::ReadOnly));
     const QByteArray runs = logged.readAll();
     EXPECT_TRUE(runs.contains("cancel")) << runs.toStdString();
-    delete shown;
+    destroyWindow(shown);
 }
 
 // A session follows the settings of the window that shows it: a change of
@@ -18436,7 +18443,7 @@ TEST_F(NativeWindow, ASessionFollowsTheSettingsOfItsWindow)
         << fileContent(reply).toStdString();
     EXPECT_EQ(fileContent(reply).toStdString(), answer);
     // Mux.onClose at its default: the session ends with its window.
-    delete shown;
+    destroyWindow(shown);
 }
 
 // A session takes the settings of the window that attaches to it, which
@@ -18463,7 +18470,7 @@ TEST_F(NativeWindow, ASessionTakesTheSettingsOfTheWindowThatAttaches)
             });
         },
         5000));
-    delete shown;
+    destroyWindow(shown);
 }
 
 // The daemon dies under a window that shows its session: the window lets the
@@ -18486,7 +18493,7 @@ TEST_F(NativeWindow, AWindowWhoseDaemonDiesLetsItsSessionGo)
     // The rest of the application still runs: its own window draws.
     ASSERT_NE(window, nullptr);
     EXPECT_TRUE(nextFrame(window));
-    delete shown;
+    destroyWindow(shown);
 }
 
 // `afterglow ctl --session NAME watch` hears what a window that shows the
@@ -18598,7 +18605,7 @@ TEST_F(NativeWindow, AWatchOfASessionHearsWhatItsWindowDoes)
         const auto refocused = std::find(events.begin(), events.end(), "focusChanged " + std::to_string(firstId));
         EXPECT_LT(created, refocused);
     }
-    delete shown;
+    destroyWindow(shown);
 }
 
 // A session of this computer takes the variables of Mux.updateEnvironment
@@ -18649,7 +18656,7 @@ TEST_F(NativeWindow, ASessionTakesTheVariablesOfTheAfterglowThatShowsIt)
         },
         5000))
         << (later ? screenOf(later).toStdString() : std::string("the pane closed"));
-    delete shown;
+    destroyWindow(shown);
 }
 
 // `afterglow ssh` gets a remote socket only for the pane that it runs in: the
@@ -18891,7 +18898,7 @@ TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne)
 
     // The window closes, and the session runs on, whatever Mux.onClose says:
     // the project shows it again, in a new window, which is no reuse.
-    delete projectWindow;
+    destroyWindow(projectWindow);
     ASSERT_TRUE(waitFor(
         [&] {
             const auto info = sessionNamed(daemon, "dev");
@@ -18934,7 +18941,7 @@ TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne)
     EXPECT_EQ(plain->panes().size(), 4);
     for (Pane* pane : plain->panes())
         EXPECT_FALSE(pane->isSessionPane());
-    delete plain;
+    destroyWindow(plain);
     // --new into a session: a session of its own, which the daemon names,
     // and which runs on when its window closes, as the project's does.
     QVariantMap instance;
@@ -18943,7 +18950,7 @@ TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne)
     EXPECT_NE(instanceSession, "dev");
     QPointer<TerminalWindow> instanceWindow = windowOf(instance);
     ASSERT_NE(instanceWindow, nullptr);
-    delete instanceWindow;
+    destroyWindow(instanceWindow);
     EXPECT_TRUE(waitFor(
         [&] {
             return sessionDetached(daemon, instanceSession);
@@ -18951,7 +18958,7 @@ TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne)
         5000));
     EXPECT_TRUE(daemon.call(AfterglowMux::Fn::KillSession, AfterglowProto::Json::Array{instanceSession}))
         << daemon.lastError();
-    delete reattached;
+    destroyWindow(reattached);
     EXPECT_TRUE(daemon.call(AfterglowMux::Fn::KillSession, AfterglowProto::Json::Array{"dev"})) << daemon.lastError();
 
     // A script's open (the open_project effect): its result comes once,
@@ -19004,7 +19011,7 @@ TEST_F(NativeWindow, AProjectOpensIntoASessionAndAgainIntoTheSameOne)
     // Neither of the two that answered at once completed again.
     ASSERT_TRUE(settleQueued());
     EXPECT_EQ(completions->count, 1);
-    delete opsWindow;
+    destroyWindow(opsWindow);
     EXPECT_TRUE(daemon.call(AfterglowMux::Fn::KillSession, AfterglowProto::Json::Array{"ops"})) << daemon.lastError();
 }
 
@@ -19089,7 +19096,7 @@ TEST_F(NativeWindow, ASessionsWindowRunsOverlaysAndTakesScreenshotsForCtl)
             return pane && pane->overlay() == nullptr;
         },
         5000));
-    delete shown;
+    destroyWindow(shown);
 }
 
 // A session of another host reaches only what its programs could reach over
@@ -19124,7 +19131,7 @@ TEST_F(NativeWindow, ASessionOfAnotherHostRunsNoProgramHere)
     auto [shown, pane] = showSessionOfHost(*application, QStringLiteral("far"), QStringLiteral("box"), &error);
     // The window goes while the fake ssh is first on PATH.
     const auto closeFirst = qScopeGuard([&shown] {
-        delete shown;
+        destroyWindow(shown);
     });
     ASSERT_NE(pane, nullptr) << error.toStdString();
     SessionCtl ctl(daemon, "far");
@@ -19206,12 +19213,12 @@ TEST_F(NativeWindow, AnAgentSessionsWindowMarksItAndTakesItsScreenshots)
     QPointer<TerminalWindow> agent = showSession(*application, daemon, QStringLiteral("agent-1"), &error);
     ASSERT_NE(agent, nullptr) << error.toStdString();
     const auto closeAgent = qScopeGuard([&agent] {
-        delete agent;
+        destroyWindow(agent);
     });
     QPointer<TerminalWindow> plain = showSession(*application, daemon, QStringLiteral("plain"), &error);
     ASSERT_NE(plain, nullptr) << error.toStdString();
     const auto closePlain = qScopeGuard([&plain] {
-        delete plain;
+        destroyWindow(plain);
     });
     // A screenshot needs a window that shows.
     for (const QPointer<TerminalWindow>& w : {agent, plain})
@@ -19368,7 +19375,7 @@ TEST_F(NativeWindow, AnAgentSessionsWindowDetachesWhenItCloses)
         auto [shown, pane] = showSessionAtPrompt(*application, daemon, QString::fromLatin1(name), &error);
         ASSERT_NE(pane, nullptr) << error.toStdString();
         const auto cleanup = qScopeGuard([&shown] {
-            delete shown;
+            destroyWindow(shown);
         });
         if (std::string_view(name) == "adopted") {
             MuxTest::IpcConnection::Error adoptError;
@@ -19422,7 +19429,7 @@ TEST_F(NativeWindow, ASessionPaneTellsTheSameShellStateInTheWindowAndTheDaemon)
     QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("same"), &error);
     ASSERT_NE(shown, nullptr) << error.toStdString();
     const auto closeFirst = qScopeGuard([&shown] {
-        delete shown;
+        destroyWindow(shown);
     });
     ASSERT_TRUE(waitFor([&] {
         return shown && shown->isExposed() && shown->submittedFrames() > 0;
@@ -19547,7 +19554,7 @@ TEST_F(NativeWindow, AWindowShowsTheNotificationsOfItsDetachedSession)
     // Its screen holds the commands above, not a lone prompt.
     QPointer<TerminalWindow> shown = showSession(*application, daemon, QStringLiteral("kept"), &error);
     const auto closeFirst = qScopeGuard([&shown] {
-        delete shown;
+        destroyWindow(shown);
     });
     ASSERT_NE(shown, nullptr) << error.toStdString();
     ASSERT_TRUE(waitFor([&] {
@@ -19594,7 +19601,7 @@ TEST_F(NativeWindow, CtlForASessionReachesItsWindow)
     const auto closeOpened = qScopeGuard([&before] {
         for (TerminalWindow* w : TerminalWindow::windows()) {
             if (!before.contains(w))
-                delete w;
+                destroyWindow(w);
         }
     });
     SessionCtl ctl(daemon, "ctl");
@@ -19720,7 +19727,7 @@ TEST_F(NativeWindow, CtlForASessionReachesItsWindow)
                                    QJsonArray{QJsonValue(qint64(first))});
     ASSERT_TRUE(unknown);
     EXPECT_EQ(unknown->error, QStringLiteral("the window takes no call 'x' for a session"));
-    delete shown;
+    destroyWindow(shown);
 }
 
 namespace {
@@ -19824,7 +19831,7 @@ TEST_F(NativeWindow, ASessionsWindowChecksItsOwnControlSettings)
     ASSERT_TRUE(settleQueued());
     EXPECT_EQ(pane->userTitle(), title);
     EXPECT_EQ(shown->tabs().size(), tabs);
-    delete shown;
+    destroyWindow(shown);
 }
 
 // The overlays and the inputs of a client of a session are its own, in the
@@ -19924,7 +19931,7 @@ TEST_F(NativeWindow, TheOverlaysAndInputsOfASessionsClientsAreTheirOwn)
     // session has none, for the same client.
     ASSERT_TRUE(own.set("Control", "enabled", true));
     EXPECT_EQ(outcomeOf(own.ask(*shown, QStringLiteral("overlayInput"), input, 1)), QStringLiteral("answered"));
-    delete shown;
+    destroyWindow(shown);
     ASSERT_TRUE(waitFor(
         [&] {
             return sessionDetached(daemon, "clients");
@@ -19937,7 +19944,7 @@ TEST_F(NativeWindow, TheOverlaysAndInputsOfASessionsClientsAreTheirOwn)
                                 {qint64(againPane->sessionPaneId()), takesInput.at(1), takesInput.at(2)}, 1)),
               noInput);
     EXPECT_EQ(againPane->overlay(), nullptr);
-    delete again;
+    destroyWindow(again);
 }
 
 // A split or a new tab that a script asks for in a session's window does
@@ -20039,7 +20046,7 @@ return {
             return sessionPaneCount(daemon, "later") == 4;
         },
         5000));
-    delete shown;
+    destroyWindow(shown);
 }
 
 // A tab that leaves a session's window waits for the daemon off the GUI
@@ -20106,8 +20113,8 @@ TEST_F(NativeWindow, ASecondBreakOutOfALeavingTabIsRefused)
     ASSERT_NE(moved, nullptr);
     ASSERT_NE(moved->sessionPane(leftId), nullptr);
     EXPECT_EQ(sessionPaneCount(daemon, "leaving"), 1);
-    delete moved;
-    delete shown;
+    destroyWindow(moved);
+    destroyWindow(shown);
 }
 
 // The script effects that change the panes of a session's window (split,
@@ -20247,8 +20254,8 @@ TEST_F(NativeWindow, TheScriptEffectsOfASessionWindowAnswerLater)
     EXPECT_EQ(stay->count, 0);
     EXPECT_EQ(gone->count, 0);
     EXPECT_EQ(sessionPaneCount(daemon, "effects"), 2);
-    delete brokenWindow;
-    delete shown;
+    destroyWindow(brokenWindow);
+    destroyWindow(shown);
 }
 
 // The calls of `afterglow ctl --session` that read pane text need
@@ -20279,7 +20286,7 @@ TEST_F(NativeWindow, ASessionsCallsThatReadTextNeedReadAccess)
     ASSERT_TRUE(ran) << ctl.failure().message;
     EXPECT_EQ((*ran)["exit_code"].toInteger(), 0);
     EXPECT_EQ(ran->find("stdout"), nullptr);
-    delete shown;
+    destroyWindow(shown);
 }
 
 // A pane that a session's window opens starts in the session's environment,
@@ -20335,7 +20342,7 @@ TEST_F(NativeWindow, APaneOfASessionsWindowStartsInTheSessionsEnvironment)
     EXPECT_TRUE(values[3].split(QLatin1Char(':')).contains(QStringLiteral("/session/terminfo")))
         << values[3].toStdString();
     EXPECT_FALSE(values[3].contains(QStringLiteral("/window/terminfo"))) << values[3].toStdString();
-    delete shown;
+    destroyWindow(shown);
 }
 
 // A session's window that a save names after a project is no window of a
@@ -20358,7 +20365,7 @@ TEST_F(NativeWindow, SessionWindowSavedAsProjectEndsWithOnCloseKill)
         QJsonDocument::fromJson(fileContent(directory.filePath(QStringLiteral("projects/dev.json")))).object();
     EXPECT_TRUE(saved.value(QStringLiteral("session")).toBool()) << QJsonDocument(saved).toJson().toStdString();
     EXPECT_EQ(saved.value(QStringLiteral("tabs")).toArray().size(), 1);
-    delete shown;
+    destroyWindow(shown);
     EXPECT_TRUE(waitFor(
         [&] {
             return !sessionNamed(daemon, "saved");
@@ -20514,7 +20521,7 @@ TEST_F(NativeWindow, SessionShowLastOutputLeavesNoFileBehind)
     ASSERT_TRUE(second.path.endsWith(deleted)) << second.path.toStdString();
     EXPECT_FALSE(QFileInfo::exists(second.path.chopped(deleted.size())));
     ASSERT_GT(second.pid, 0);
-    delete shown;
+    destroyWindow(shown);
     ASSERT_TRUE(waitFor(
         [&] {
             return sessionDetached(daemon, "pager");
@@ -20552,7 +20559,7 @@ TEST_F(NativeWindow, ShowLastOutputRefusedInRemoteSession)
     QString error;
     auto [shown, pane] = showSessionOfHost(*application, QStringLiteral("far"), QStringLiteral("box"), &error);
     const auto closeFirst = qScopeGuard([&shown] {
-        delete shown;
+        destroyWindow(shown);
     });
     ASSERT_NE(pane, nullptr) << error.toStdString();
     ASSERT_TRUE(pane->sendInput("printf '\\033]133;C\\aout1\\n\\033]133;D;0\\a'\n"));
@@ -20586,7 +20593,7 @@ TEST_F(NativeWindow, ClosingRemoteSessionWindowRefusesNewPanes)
     QString error;
     auto [shown, pane] = showSessionOfHost(*application, QStringLiteral("far"), QStringLiteral("box"), &error);
     const auto closeFirst = qScopeGuard([&shown] {
-        delete shown;
+        destroyWindow(shown);
     });
     ASSERT_NE(pane, nullptr) << error.toStdString();
     ASSERT_EQ(sessionPaneCount(daemon, "far"), 1);
@@ -20621,7 +20628,7 @@ TEST_F(NativeWindow, RemoteSessionNewPaneStartsWhereItsSourcePaneIs)
     QString error;
     auto [shown, pane] = showSessionOfHost(*application, QStringLiteral("far"), QStringLiteral("box"), &error);
     const auto closeFirst = qScopeGuard([&shown] {
-        delete shown;
+        destroyWindow(shown);
     });
     ASSERT_NE(pane, nullptr) << error.toStdString();
     const QString root = QString::fromStdString(daemon.dir());
@@ -20719,7 +20726,7 @@ TEST_F(NativeWindow, TabDragOutOfOnlySessionTabIsRefused)
               QStringList{QStringLiteral("This tab holds all the panes of session only, and they stay in its window")});
     EXPECT_TRUE(notices.server.titles.contains(QStringLiteral("Could not detach the tab")));
     EXPECT_EQ(sessionPaneCount(daemon, "only"), 1);
-    delete shown;
+    destroyWindow(shown);
 }
 
 // The titles of a session's layout come from any client of the session:
@@ -20752,7 +20759,7 @@ TEST_F(NativeWindow, SessionLayoutTitlesAreCleaned)
     chrome->answerTitle(disguised(QStringLiteral("tab")));
     ASSERT_EQ(shown->tabs()[0].title, disguised(QStringLiteral("tab")));
     const std::uint32_t id = pane->sessionPaneId();
-    delete shown;
+    destroyWindow(shown);
     ASSERT_TRUE(waitFor(
         [&] {
             return sessionDetached(daemon, "titles");
@@ -20765,7 +20772,7 @@ TEST_F(NativeWindow, SessionLayoutTitlesAreCleaned)
     }));
     EXPECT_EQ(again->tabs()[0].title, QStringLiteral("tabbc"));
     EXPECT_EQ(again->sessionPane(id)->userTitle(), QStringLiteral("panebc"));
-    delete again;
+    destroyWindow(again);
 }
 
 // A window that attaches under a theme of its own re-bases the session's
@@ -20830,7 +20837,7 @@ TEST_F(NativeWindow, AttachUnderAnotherThemeKeepsProgramColors)
         5000));
     ASSERT_TRUE(echoes(pane, QStringLiteral("echo changed")));
     EXPECT_TRUE(background(pane) == program);
-    delete shown;
+    destroyWindow(shown);
 }
 
 // `afterglow ctl --session split -- aglow run ...`: the client of `aglow
@@ -20889,7 +20896,7 @@ return {
         },
         10000))
         << (placed ? screenOf(placed).toStdString() : std::string("the pane is gone"));
-    delete shown;
+    destroyWindow(shown);
 }
 
 // textChanged comes with output that writes cells, and with a reflow that
@@ -21687,7 +21694,7 @@ TEST_F(NativeWindow, CtlRefusesWhatTheDaemonOfASessionPaneKeeps)
     ASSERT_TRUE(shown);
     EXPECT_EQ(shown->panes().size(), 1);
     EXPECT_EQ(shown->tabs().size(), 1);
-    delete shown;
+    destroyWindow(shown);
 }
 
 // A quit (a signal, the end of the desktop session) is not the user closing
@@ -21711,7 +21718,7 @@ TEST_F(NativeWindow, AQuitLeavesTheSessionsOfItsWindowsRunning)
         ASSERT_TRUE(shellSession(daemon, name)) << daemon.lastError();
     // The fixture's window runs a program that a close asks about: only the
     // windows of this test take part in its quits.
-    delete window;
+    destroyWindow(window);
     window = nullptr;
     const auto loops = qScopeGuard(startEventLoopsAgain);
     QString error;
@@ -21729,7 +21736,7 @@ TEST_F(NativeWindow, AQuitLeavesTheSessionsOfItsWindowsRunning)
         EXPECT_FALSE(quit.isAccepted());
         ASSERT_NE(shown, nullptr);
         stubborn.reset();
-        delete shown;
+        destroyWindow(shown);
         EXPECT_TRUE(waitFor(
             [&] {
                 return !sessionNamed(daemon, "interrupted");

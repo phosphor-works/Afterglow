@@ -229,7 +229,7 @@ TEST_F(Transfer, PermissionDenialCannotCreateFiles)
     ASSERT_TRUE(status("EPERM"));
     send("ac=file;fid=g;n=" + path("denied"));
     ASSERT_TRUE(status("ENOENT"));
-    EXPECT_FALSE(QFile::exists(dir.filePath("denied")));
+    EXPECT_FALSE(QFile::exists(dir.filePath(QStringLiteral("denied"))));
 }
 TEST_F(Transfer, ASendPromptListsTheDestinationsBeforeAnyIsWritten)
 {
@@ -543,7 +543,7 @@ TEST_F(Transfer, ModesKeepOnlyThePermissionBits)
 }
 TEST_F(Transfer, CancellationPreservesExistingFileAndRemovesTemporaryFiles)
 {
-    QFile original(dir.filePath("file"));
+    QFile original(dir.filePath(QStringLiteral("file")));
     ASSERT_TRUE(original.open(QIODevice::WriteOnly));
     original.write("original");
     original.close();
@@ -558,7 +558,7 @@ TEST_F(Transfer, CancellationPreservesExistingFileAndRemovesTemporaryFiles)
 }
 TEST_F(Transfer, ReadRequiresApprovalAndStreamsContent)
 {
-    QFile source(dir.filePath("file"));
+    QFile source(dir.filePath(QStringLiteral("file")));
     ASSERT_TRUE(source.open(QIODevice::WriteOnly));
     source.write("source data");
     source.close();
@@ -703,12 +703,12 @@ TEST_F(Transfer, EmptyFileIsCommittedBeforeSuccessWithoutFinish)
     ASSERT_TRUE(status("STARTED"));
     send("ac=end_data;fid=empty");
     ASSERT_TRUE(status("OK"));
-    ASSERT_TRUE(QFile::exists(dir.filePath("empty")));
+    ASSERT_TRUE(QFile::exists(dir.filePath(QStringLiteral("empty"))));
     EXPECT_TRUE(contents("empty").isEmpty());
 }
 TEST_F(Transfer, InvalidCompressedDataNeverReplacesDestination)
 {
-    QFile file(dir.filePath("file"));
+    QFile file(dir.filePath(QStringLiteral("file")));
     ASSERT_TRUE(file.open(QIODevice::WriteOnly));
     file.write("original");
     file.close();
@@ -732,7 +732,7 @@ TEST_F(Transfer, CancelRemovesNewParentDirectories)
     send("ac=data;fid=f;d=" + b64("partial"));
     send("ac=cancel");
     ASSERT_TRUE(status("CANCELED"));
-    EXPECT_FALSE(QFile::exists(dir.filePath("new")));
+    EXPECT_FALSE(QFile::exists(dir.filePath(QStringLiteral("new"))));
 }
 
 TEST_F(Transfer, ResourceAbortReportsFailureAndClosesSession)
@@ -799,7 +799,7 @@ TEST_F(Transfer, CompletedUploadsCloseDescriptorsBeforeSessionFinish)
 {
     ASSERT_TRUE(start());
     const auto descriptors = [] {
-        return QDir("/proc/self/fd").entryList(QDir::AllEntries | QDir::NoDotAndDotDot).size();
+        return QDir(QStringLiteral("/proc/self/fd")).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).size();
     };
     const auto before = descriptors();
     for (int i = 0; i < 160; ++i) {
@@ -814,7 +814,7 @@ TEST_F(Transfer, CompletedUploadsCloseDescriptorsBeforeSessionFinish)
 }
 TEST_F(Transfer, PendingRsyncReadsAreBoundedAndReleaseCapacity)
 {
-    QFile source(dir.filePath("empty"));
+    QFile source(dir.filePath(QStringLiteral("empty")));
     ASSERT_TRUE(source.open(QIODevice::WriteOnly));
     source.close();
     send("ac=receive;sz=1");
@@ -855,8 +855,8 @@ TEST_F(Transfer, ResetClosesPendingPrompt)
     service.approve(token, true);
     send("ac=file;fid=f;n=" + path("file"));
     ASSERT_TRUE(status("ENOENT"));
-    EXPECT_FALSE(QFile::exists(dir.filePath("file")));
-    EXPECT_FALSE(QFile::exists(dir.filePath("waiting")));
+    EXPECT_FALSE(QFile::exists(dir.filePath(QStringLiteral("file"))));
+    EXPECT_FALSE(QFile::exists(dir.filePath(QStringLiteral("waiting"))));
 }
 TEST_F(Transfer, CancelRemovesNewParentsOfEveryFile)
 {
@@ -867,7 +867,7 @@ TEST_F(Transfer, CancelRemovesNewParentsOfEveryFile)
     ASSERT_TRUE(fileStatus("b", "STARTED"));
     send("ac=cancel");
     ASSERT_TRUE(status("CANCELED"));
-    EXPECT_FALSE(QFile::exists(dir.filePath("new")));
+    EXPECT_FALSE(QFile::exists(dir.filePath(QStringLiteral("new"))));
 }
 TEST_F(Transfer, RejectedFileCreatesNoDirectories)
 {
@@ -878,7 +878,7 @@ TEST_F(Transfer, RejectedFileCreatesNoDirectories)
     ASSERT_TRUE(waitFor([&] {
         return closed == 1;
     }));
-    EXPECT_FALSE(QFile::exists(dir.filePath("new")));
+    EXPECT_FALSE(QFile::exists(dir.filePath(QStringLiteral("new"))));
 }
 TEST_F(Transfer, FileWithoutModeFollowsTheUmask)
 {
@@ -890,14 +890,14 @@ TEST_F(Transfer, FileWithoutModeFollowsTheUmask)
     send("ac=end_data;fid=f;d=" + b64("x"));
     ASSERT_TRUE(fileStatus("f", "OK"));
     struct stat st{};
-    ASSERT_EQ(::stat(QFile::encodeName(dir.filePath("plain")).constData(), &st), 0);
+    ASSERT_EQ(::stat(QFile::encodeName(dir.filePath(QStringLiteral("plain"))).constData(), &st), 0);
     EXPECT_EQ(st.st_mode & 0777, 0666 & ~mask);
     // prm=-1 means "not given" too.
     send("ac=file;fid=g;prm=-1;n=" + path("unset"));
     ASSERT_TRUE(fileStatus("g", "STARTED"));
     send("ac=end_data;fid=g;d=" + b64("x"));
     ASSERT_TRUE(fileStatus("g", "OK"));
-    ASSERT_EQ(::stat(QFile::encodeName(dir.filePath("unset")).constData(), &st), 0);
+    ASSERT_EQ(::stat(QFile::encodeName(dir.filePath(QStringLiteral("unset"))).constData(), &st), 0);
     EXPECT_EQ(st.st_mode & 0777, 0666 & ~mask);
 }
 TEST_F(Transfer, ModificationTimeBefore1970IsKept)
@@ -908,7 +908,7 @@ TEST_F(Transfer, ModificationTimeBefore1970IsKept)
     send("ac=end_data;fid=f");
     ASSERT_TRUE(fileStatus("f", "OK"));
     struct stat st{};
-    ASSERT_EQ(::stat(QFile::encodeName(dir.filePath("old")).constData(), &st), 0);
+    ASSERT_EQ(::stat(QFile::encodeName(dir.filePath(QStringLiteral("old"))).constData(), &st), 0);
     EXPECT_EQ(st.st_mtim.tv_sec, -2);
     EXPECT_EQ(st.st_mtim.tv_nsec, 500000000);
 }
@@ -1373,7 +1373,7 @@ TEST_F(Transfer, ChildrenLeftOutOfAListingAreLoggedInOneLine)
 }
 TEST_F(Transfer, RsyncCopyCannotWritePastTheDeclaredSize)
 {
-    QFile basis(dir.filePath("basis"));
+    QFile basis(dir.filePath(QStringLiteral("basis")));
     ASSERT_TRUE(basis.open(QIODevice::WriteOnly));
     basis.write(QByteArray(5000, 'a'));
     basis.close();
@@ -1389,7 +1389,7 @@ TEST_F(Transfer, RsyncCopyCannotWritePastTheDeclaredSize)
 }
 TEST_F(Transfer, SmallFileWithLargeBlockSizeDeltaFinishes)
 {
-    QFile source(dir.filePath("source"));
+    QFile source(dir.filePath(QStringLiteral("source")));
     ASSERT_TRUE(source.open(QIODevice::WriteOnly));
     source.write(QByteArray(200000, 'x'));
     source.close();
@@ -1435,7 +1435,7 @@ TEST_F(Transfer, LargeDeltaRebuildsTheFileFromBlocksAndLiterals)
     QByteArray changed = basis.left(200000) + "inserted" + basis.mid(200000);
     changed.replace(300000, 5000, QByteArray(5000, 'z'));
     changed += tail;
-    QFile source(dir.filePath("source"));
+    QFile source(dir.filePath(QStringLiteral("source")));
     ASSERT_TRUE(source.open(QIODevice::WriteOnly));
     source.write(changed);
     source.close();
@@ -1528,7 +1528,7 @@ TEST_F(Transfer, PacketQueuedBeforeAResetIsDropped)
     ASSERT_TRUE(waitFor([&] {
         return closed == 2;
     }));
-    EXPECT_FALSE(QFile::exists(dir.filePath("late")));
+    EXPECT_FALSE(QFile::exists(dir.filePath(QStringLiteral("late"))));
     EXPECT_TRUE(QDir(dir.path()).entryList({QStringLiteral(".afterglow-*")}, QDir::Files | QDir::Hidden).isEmpty());
 }
 // handle() stops the session's work as soon as it reads a cancel's id. A
@@ -1584,7 +1584,7 @@ TEST_F(Transfer, DeltaReadOfFileWithSizeZeroSendsItsContents)
 // operations stop at the configured limit.
 TEST_F(Transfer, DeltaUploadWithoutSizeStopsAtTheLimit)
 {
-    QFile basis(dir.filePath("basis"));
+    QFile basis(dir.filePath(QStringLiteral("basis")));
     ASSERT_TRUE(basis.open(QIODevice::WriteOnly));
     basis.write(QByteArray(5000, 'a'));
     basis.close();
@@ -1630,7 +1630,7 @@ TEST_F(Transfer, CompressedUploadWithoutSizeStopsAtTheLimit)
 // secret, and a delta of it gains nothing: it is replaced whole.
 TEST_F(Transfer, ASmallOldFileGetsNoDelta)
 {
-    QFile basis(dir.filePath("small"));
+    QFile basis(dir.filePath(QStringLiteral("small")));
     ASSERT_TRUE(basis.open(QIODevice::WriteOnly));
     basis.write("1234");
     basis.close();

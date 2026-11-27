@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Phosphor Works Team
-# SPDX-License-Identifier: LGPL-2.1-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 """aglow clipboard at its edges, against the terminal that clipboard_pty.py plays.
 
 Usage: clipboard_cases.py AGLOW

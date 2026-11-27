@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Phosphor Works Team
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // Runs a command in a pseudo-terminal driven by the terminal core alone: the
 // command's output is fed to a Terminal and its replies (device reports,

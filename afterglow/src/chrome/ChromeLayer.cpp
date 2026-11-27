@@ -98,7 +98,7 @@ public:
         // phase its bindings are live: delete it now, before the controller.
         const QPointer<QObject> partial = m_partial;
         clear();
-        delete partial.data();
+        const std::unique_ptr<QObject> made(partial.data());
     }
 
 protected:
@@ -180,8 +180,7 @@ ChromeLayer::~ChromeLayer()
     if (m_incubator)
         m_incubator->abandon();
     m_incubator.reset();
-    delete m_root;
-    m_root = nullptr;
+    m_root.reset();
     // QQuickRenderControl detaches itself from the window on destruction.
     m_control.reset();
     m_window.reset();
@@ -212,8 +211,9 @@ void ChromeLayer::componentStatusChanged()
 
 void ChromeLayer::sceneCreated(bool ready)
 {
-    QObject* obj = ready ? m_incubator->object() : nullptr;
-    m_root = qobject_cast<QQuickItem*>(obj);
+    std::unique_ptr<QObject> obj(ready ? m_incubator->object() : nullptr);
+    if (qobject_cast<QQuickItem*>(obj.get()))
+        m_root.reset(static_cast<QQuickItem*>(obj.release()));
     if (!m_root) {
         QStringList errors;
         for (const auto& error : m_incubator->errors())
@@ -221,7 +221,7 @@ void ChromeLayer::sceneCreated(bool ready)
         if (obj)
             errors << QStringLiteral("the root object is not an Item");
         qCWarning(lcChrome).noquote() << "chrome QML failed to load:" << errors.join(QLatin1Char('\n'));
-        delete obj;
+        obj.reset();
         m_failed = true;
         return;
     }
@@ -233,7 +233,7 @@ void ChromeLayer::sceneCreated(bool ready)
     // the first frame; renderIfNeeded follows later changes.
     m_window->setGeometry(QRect(QPoint(), m_host->size()));
     m_root->setSize(m_host->size());
-    installChromeAccessibility(m_root, m_host);
+    installChromeAccessibility(m_root.get(), m_host);
 
     auto markDirty = [this] {
         m_dirty = true;
@@ -296,8 +296,7 @@ bool ChromeLayer::initialize()
         qCWarning(lcChrome) << "Qt Quick could not initialise on the shared device; running without chrome";
         // Nothing will draw the scene: drop it, so that the pointer and clicks
         // over where the chrome would be go to the panes.
-        delete m_root;
-        m_root = nullptr;
+        m_root.reset();
         m_failed = true;
         return false;
     }
@@ -373,7 +372,7 @@ bool ChromeLayer::wantsPointer(const QPointF& pos, const QEvent* event) const
     // Chrome.qml declares wantsPointer(x: real, y: real, wheel: bool): bool; the types must match.
     const bool wheel = event && event->type() == QEvent::Wheel;
     bool result = false;
-    QMetaObject::invokeMethod(m_root, "wantsPointer", Q_RETURN_ARG(bool, result), Q_ARG(double, pos.x()),
+    QMetaObject::invokeMethod(m_root.get(), "wantsPointer", Q_RETURN_ARG(bool, result), Q_ARG(double, pos.x()),
                               Q_ARG(double, pos.y()), Q_ARG(bool, wheel));
     return result;
 }
@@ -425,7 +424,7 @@ QCursor ChromeLayer::cursorAt(const QPointF& pos) const
 {
     QCursor cursor(Qt::ArrowCursor);
     if (m_root) {
-        cursorUnder(m_root, pos, cursor);
+        cursorUnder(m_root.get(), pos, cursor);
     }
     return cursor;
 }

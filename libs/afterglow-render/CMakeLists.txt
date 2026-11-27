@@ -37,7 +37,6 @@ generate_export_header(AfterglowRender
 target_include_directories(AfterglowRender PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>)
-target_compile_definitions(AfterglowRender PRIVATE QT_NO_CAST_FROM_ASCII)
 target_link_libraries(AfterglowRender
     # Public headers include the QRhi headers (rhi/qrhi.h).
     PUBLIC Afterglow::Vt PhosphorShaders::PhosphorShaders Qt6::Core Qt6::Gui Qt6::GuiPrivate

@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: 2026 Phosphor Works Team
-# SPDX-License-Identifier: LGPL-2.1-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Differences between Afterglow and libghostty-vt 1.0.0 that afterglow_vtdiff
 # expects, one a line: an input name, or /REGEX/ for the minimized input of a

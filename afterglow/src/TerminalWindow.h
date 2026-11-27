@@ -1308,7 +1308,7 @@ private:
     bool m_readsMouse = false; ///< a chain reads the pointer: it moving is a frame
     QStringList m_paletteCommands; ///< the token of the command that palette id ScriptCommandBase + i runs
     ChromeController* m_controller = nullptr;
-    ChromeLayer* m_chrome = nullptr;
+    std::unique_ptr<ChromeLayer> m_chrome;
     bool m_chromeGrab = false;
     std::unique_ptr<AfterglowRender::WindowRenderer> m_renderer;
     struct Tab

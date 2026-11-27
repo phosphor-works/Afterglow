@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Phosphor Works Team
-# SPDX-License-Identifier: LGPL-2.1-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 """aglow icat through afterglow_renderpng: what aglow writes is what a terminal shows.
 
 Usage: icat_render.py AGLOW AFTERGLOW_RENDERPNG

@@ -36,7 +36,7 @@ from pathlib import Path
 # One KWin configuration for every runner: the user's KWin plugins must not
 # load into the test compositor.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from nested_desktop import KWINRC, exit_on_sigterm  # noqa: E402
+from nested_desktop import KWINRC, exit_on_sigterm, stop_group  # noqa: E402
 
 VERSION = '2026-07-28'
 META = {'io.modelcontextprotocol/protocolVersion': VERSION, 'io.modelcontextprotocol/clientCapabilities': {}}
@@ -1077,13 +1077,8 @@ def script_command_through_a_window(home):
         check('shows in its window' in text, text)
     finally:
         for process in (window, kwin):
-            if process and process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
-                try:
-                    process.wait(10)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait()
+            if process:
+                stop_group(process, 10)
 
 
 def main():

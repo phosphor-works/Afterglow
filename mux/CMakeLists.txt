@@ -76,6 +76,8 @@ target_compile_definitions(aglow-mux PRIVATE AFTERGLOW_VERSION="${PROJECT_VERSIO
 target_link_libraries(aglow-mux PRIVATE afterglow_mux_daemon afterglow_mux_image_server)
 set_target_properties(aglow-mux PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 install(TARGETS aglow-mux RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+# The embedded Phosphor libraries that it links are installed with it.
+phosphor_install_embedded(FOR aglow-mux)
 if(AFTERGLOW_AGLOW_ONLY)
     # Alone, aglow-mux installs the private libraries that it links, which
     # afterglow installs in a whole build (afterglow/CMakeLists.txt), and the
@@ -83,9 +85,8 @@ if(AFTERGLOW_AGLOW_ONLY)
     # data built into it (afterglow_install_bundled_notices). They go in a
     # directory named for aglow-mux, as a package of its own has. PCRE2 and
     # the C and C++ runtime libraries are the system's, with their own
-    # notices. PhosphorChannel comes from a directory added EXCLUDE_FROM_ALL
-    # (cmake/AfterglowPhosphor.cmake): aglow-mux links it, so the build makes
-    # it before the installation, as CMake asks of such a target.
+    # notices. PhosphorChannel installs itself beside them, embedded
+    # (cmake/AfterglowPhosphor.cmake).
     set_target_properties(${AFTERGLOW_MUX_PRIVATE_LIBS} PROPERTIES INSTALL_RPATH "$ORIGIN")
     install(TARGETS ${AFTERGLOW_MUX_PRIVATE_LIBS} LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR} NAMELINK_SKIP)
     set(AFTERGLOW_MUX_LICENSE_DIR "${CMAKE_INSTALL_DATADIR}/licenses/aglow-mux")

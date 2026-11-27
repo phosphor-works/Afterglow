@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: 2026 Phosphor Works Team
-# SPDX-License-Identifier: LGPL-2.1-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 # aglow, as one static binary: the Kitty file transfer, drag and drop,
 # graphics and clipboard protocols from the command line, and the client of
@@ -113,15 +113,15 @@ if(AGLOW_STATIC AND AGLOW_RUNTIME_LIBSTDCXX)
 endif()
 if(AFTERGLOW_AGLOW_ONLY)
     # Alone, aglow installs the notices that the application installs in a
-    # whole build: its own license, those of the code and data built into the
-    # programs (afterglow_install_bundled_notices), and the GPL text that the
+    # whole build: its own license (GPL-3.0-or-later), the LGPL of the
+    # libraries it links (libs/afterglow-proto, libs/afterglow-image), and
+    # those of the code and data built into the programs
+    # (afterglow_install_bundled_notices). The GPL text is also the one the
     # libstdc++ notice names. They go in a directory named for aglow, as a
     # package of its own has.
     set(AGLOW_LICENSE_DIR "${CMAKE_INSTALL_DATADIR}/licenses/aglow")
-    install(FILES "${PROJECT_SOURCE_DIR}/LICENSES/LGPL-2.1-or-later.txt" DESTINATION ${AGLOW_LICENSE_DIR})
-    if(AGLOW_STATIC AND AGLOW_RUNTIME_LIBSTDCXX)
-        install(FILES "${PROJECT_SOURCE_DIR}/LICENSES/GPL-3.0-or-later.txt" DESTINATION ${AGLOW_LICENSE_DIR})
-    endif()
+    install(FILES "${PROJECT_SOURCE_DIR}/LICENSES/GPL-3.0-or-later.txt" "${PROJECT_SOURCE_DIR}/LICENSES/LGPL-2.1-or-later.txt"
+            DESTINATION ${AGLOW_LICENSE_DIR})
     afterglow_install_bundled_notices(${AGLOW_LICENSE_DIR})
 else()
     set(AGLOW_LICENSE_DIR "${CMAKE_INSTALL_DATADIR}/licenses/afterglow")
@@ -280,7 +280,13 @@ if(BUILD_TESTING AND TARGET afterglow)
     # directories, as in the environment variable CMAKE_PREFIX_PATH.
     string(JOIN ":" AGLOW_ONLY_PREFIX_PATH ${CMAKE_PREFIX_PATH})
     string(JOIN ":" AGLOW_ONLY_STATIC_RUNTIME_DIRS ${AFTERGLOW_STATIC_RUNTIME_DIRS})
-    string(JOIN "," AGLOW_ONLY_MUX_LIBS ${AFTERGLOW_MUX_PRIVATE_LIBS})
+    string(JOIN "," AGLOW_ONLY_MUX_LIBS ${AFTERGLOW_MUX_PRIVATE_LIBS} PhosphorChannel)
+    # The private directory under the library directory, which the build alone
+    # has too (phosphor-works/afterglow).
+    file(RELATIVE_PATH AGLOW_ONLY_PRIVATE_SUBDIR "${CMAKE_INSTALL_FULL_LIBDIR}" "${AFTERGLOW_PRIVATE_LIBDIR_FULL}")
+    # The phosphor-libs tree in use, the pinned one or a local checkout: its
+    # cmake/ directory is the one this build has.
+    get_filename_component(AGLOW_ONLY_PHOSPHOR_LIBS "${PHOSPHOR_LIBS_CMAKE_DIR}" DIRECTORY)
     # The flags of each build type too, as the check of a static link at the
     # top of this file reads them: CONFIGS names the types, and each has its
     # three flags. CONFIG is the type that ctest runs, for a generator with
@@ -301,17 +307,17 @@ if(BUILD_TESTING AND TARGET afterglow)
     add_test(NAME aglow_only_build
              COMMAND ${CMAKE_COMMAND} "-DSOURCE=${PROJECT_SOURCE_DIR}" "-DBINARY=${CMAKE_CURRENT_BINARY_DIR}/aglow-only"
                      "-DGENERATOR=${CMAKE_GENERATOR}" "-DMAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
-                     "-DPHOSPHOR_LIBS=${AFTERGLOW_PHOSPHOR_LIBS_DIR}"
+                     "-DPHOSPHOR_LIBS=${AGLOW_ONLY_PHOSPHOR_LIBS}"
                      "-DBUILD_TYPE=${CMAKE_BUILD_TYPE}"
                      "-DC_COMPILER=${CMAKE_C_COMPILER}" "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
                      "-DC_FLAGS=${CMAKE_C_FLAGS}" "-DCXX_FLAGS=${CMAKE_CXX_FLAGS}"
                      "-DLINKER_FLAGS=${CMAKE_EXE_LINKER_FLAGS}"
                      "-DCONFIGS=${AGLOW_ONLY_CONFIGS}" ${AGLOW_ONLY_CONFIG_FLAGS}
-                     "-DCPM_CACHE=${CPM_SOURCE_CACHE}" "-DDEPS_ARCHIVES=${AFTERGLOW_DEPS_ARCHIVES}"
+                     "-DCPM_CACHE=${CPM_SOURCE_CACHE}" "-DDEPS_ARCHIVES=${PHOSPHOR_DEPS_ARCHIVES}"
                      "-DSTATIC_RUNTIME_DIRS=${AGLOW_ONLY_STATIC_RUNTIME_DIRS}"
                      "-DPREFIX_PATH=${AGLOW_ONLY_PREFIX_PATH}" "-DPKG_CONFIG=${PKG_CONFIG_EXECUTABLE}"
                      "-DTOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}" "-DSYSROOT=${CMAKE_SYSROOT}"
-                     "-DMUX_LIBS=${AGLOW_ONLY_MUX_LIBS}" "-DPRIVATE_SUBDIR=${AFTERGLOW_DATA_SUBDIR}"
+                     "-DMUX_LIBS=${AGLOW_ONLY_MUX_LIBS}" "-DPRIVATE_SUBDIR=${AGLOW_ONLY_PRIVATE_SUBDIR}"
                      "-DCONFIG=$<CONFIG>" "-DJOBS=${AGLOW_ONLY_JOBS}" -P "${CMAKE_CURRENT_SOURCE_DIR}/AglowOnlyCheck.cmake")
     set_tests_properties(aglow_only_build PROPERTIES LABELS slow TIMEOUT 1800 PROCESSORS ${AGLOW_ONLY_JOBS})
 endif()

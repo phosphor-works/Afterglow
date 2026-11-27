@@ -71,10 +71,10 @@ It compiles at `-O1`, as the sanitizer documentation recommends. At `-O0` the te
 It turns off `-Wmaybe-uninitialized`, because GCC gives false warnings for instrumented code.
 Run the sanitizer build before a pull request that changes a parser, a protocol or the memory of a pane.
 
-1. Configure the build directory. When `build` uses a phosphor-libs checkout (see `AFTERGLOW_PHOSPHOR_LIBS_DIR` in `build/CMakeCache.txt`), give the same one:
+1. Configure the build directory. When `build` uses a phosphor-libs checkout (see `CPM_phosphor-libs_SOURCE` in `build/CMakeCache.txt`), give the same one:
 
    ```sh
-   cmake --preset asan -DAFTERGLOW_PHOSPHOR_LIBS_DIR=/path/to/phosphor-libs
+   cmake --preset asan -DCPM_phosphor-libs_SOURCE=/path/to/phosphor-libs
    ```
 
    Without the option, the build uses the pinned phosphor-libs commit.
@@ -562,7 +562,7 @@ It prints the directory for its log, screenshots and results.
 | `--artifacts DIR` | A new temporary directory | The directory for the log, the screenshots and the results |
 | `--timeout` | 300 seconds, and 600 seconds for `scene_acceptance.py` | The time for the whole run. At the limit, the runner stops the test and exits with status 124. |
 
-See [Phosphor performance](../examples/phosphor/PERFORMANCE.md) for benchmark commands and measurement limits.
+See [Phosphor performance](../examples/phosphor/README.md#performance) for benchmark commands and measurement limits.
 
 ## Projects and the project navigator
 

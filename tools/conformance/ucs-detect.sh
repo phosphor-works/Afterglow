@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-FileCopyrightText: 2026 Phosphor Works Team
-# SPDX-License-Identifier: LGPL-2.1-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Runs ucs-detect (https://github.com/jquast/ucs-detect) against afterglow's
 # terminal core through afterglow_headless, once with grapheme clustering

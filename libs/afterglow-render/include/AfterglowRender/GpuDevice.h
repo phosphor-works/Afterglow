@@ -30,9 +30,12 @@ namespace AfterglowRender {
 /// Fonts, glyph cache and atlas textures for one device pixel ratio.
 struct FontResources
 {
+    FontResources();
+    ~FontResources();
+
     std::unique_ptr<FontSet> fonts;
     GlyphCache glyphs;
-    std::vector<QRhiTexture*> grayTextures, colorTextures;
+    std::vector<std::unique_ptr<QRhiTexture>> grayTextures, colorTextures;
     /// Changes whenever a texture object is replaced; bindings must be rebuilt.
     /// Unique across all FontResources, so a reused address never aliases.
     std::uint64_t textureGeneration = 0;
@@ -72,7 +75,7 @@ public:
     }
     QRhiSampler* atlasSampler() const noexcept
     {
-        return m_sampler;
+        return m_sampler.get();
     }
 
     /// The resources for @p devicePixelRatio, made on first use. A set no
@@ -93,7 +96,7 @@ public:
                               std::uint64_t& serial);
     QRhiSampler* imageSampler() const noexcept
     {
-        return m_imageSampler;
+        return m_imageSampler.get();
     }
     /// Releases textures of frames nobody references any more, and font
     /// resources no window uses. Call once per frame.
@@ -120,7 +123,7 @@ public:
     void prepareAudio(QRhiResourceUpdateBatch* updates);
     QRhiTexture* audioTexture() const noexcept
     {
-        return m_audioTexture;
+        return m_audioTexture.get();
     }
     const std::array<float, 4>& audioLevels() const noexcept
     {
@@ -136,23 +139,21 @@ Q_SIGNALS:
     void fontsChanged();
 
 private:
-    void releaseFontResources();
-
     std::array<float, AudioBars> m_audioSpectrum{};
     std::array<float, 4> m_audioLevels{};
     int m_audioSize = 0;
     bool m_audioDirty = true;
-    QRhiTexture* m_audioTexture = nullptr;
+    std::unique_ptr<QRhiTexture> m_audioTexture;
     FontSpec m_fontSpec;
     QVulkanInstance m_vulkan;
     std::unique_ptr<QRhi> m_rhi;
-    QRhiSampler* m_sampler = nullptr;
-    QRhiSampler* m_imageSampler = nullptr;
+    std::unique_ptr<QRhiSampler> m_sampler;
+    std::unique_ptr<QRhiSampler> m_imageSampler;
 
     struct ImageTexture
     {
         std::weak_ptr<const AfterglowVt::ImageFrame> frame;
-        QRhiTexture* texture = nullptr;
+        std::unique_ptr<QRhiTexture> texture;
         std::uint64_t serial = 0;
     };
     std::unordered_map<const AfterglowVt::ImageFrame*, ImageTexture> m_imageTextures;

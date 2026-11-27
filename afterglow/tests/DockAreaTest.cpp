@@ -88,7 +88,7 @@ TEST(DockArea, WideTextCountsTwoCellsAndLongTextIsCutAtTheEdge)
 {
     auto area =
         dock(QVariantList{run(QStringLiteral("日本"), QStringLiteral("jp")), spacer(), run(QStringLiteral("x"))}, 10);
-    EXPECT_EQ(rowText(area).remove(QChar(' ')), QStringLiteral("日本x"));
+    EXPECT_EQ(rowText(area).remove(QLatin1Char(' ')), QStringLiteral("日本x"));
     EXPECT_EQ(itemAtColumn(area, 3), QStringLiteral("jp"));
     EXPECT_EQ(itemAtColumn(area, 4), QString());
     auto cut = dock(QVariantList{run(QString(30, QLatin1Char('y')), QStringLiteral("long"))}, 10);

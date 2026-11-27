@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Phosphor Works Team
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // libFuzzer target for the image decoders of aglow and aglow-mux
 // (libs/afterglow-image), called in this process as their decoder children

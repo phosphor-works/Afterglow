@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: 2026 Phosphor Works Team
-# SPDX-License-Identifier: LGPL-2.1-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # afterglow_vtdiff compares the terminal core with libghostty-vt
 # (docs/TESTING.md, "Differences with libghostty-vt"). libghostty-vt is not a

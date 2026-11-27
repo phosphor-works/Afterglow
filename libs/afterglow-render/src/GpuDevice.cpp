@@ -23,6 +23,9 @@ namespace {
 const QVersionNumber VulkanApi(1, 2);
 }
 
+FontResources::FontResources() = default;
+FontResources::~FontResources() = default;
+
 bool GpuDevice::vulkanAvailable()
 {
     QVulkanInstance instance;
@@ -52,14 +55,12 @@ GpuDevice::GpuDevice(const FontSpec& fontSpec, QObject* parent)
 
 GpuDevice::~GpuDevice()
 {
-    releaseFontResources();
-    for (auto& [frame, entry] : m_imageTextures) {
-        delete entry.texture;
-    }
+    // Every resource goes before the QRhi that made it.
+    m_fonts.clear();
     m_imageTextures.clear();
-    delete m_audioTexture;
-    delete m_imageSampler;
-    delete m_sampler;
+    m_audioTexture.reset();
+    m_imageSampler.reset();
+    m_sampler.reset();
     m_rhi.reset();
 }
 
@@ -91,7 +92,7 @@ void GpuDevice::setAudioSpectrum(std::span<const float> spectrum)
 void GpuDevice::prepareAudio(QRhiResourceUpdateBatch* updates)
 {
     if (!m_audioTexture) {
-        m_audioTexture = m_rhi->newTexture(QRhiTexture::R32F, QSize(AudioBars, 1));
+        m_audioTexture.reset(m_rhi->newTexture(QRhiTexture::R32F, QSize(AudioBars, 1)));
         if (!m_audioTexture->create()) {
             throw std::runtime_error("failed to create the audio spectrum texture");
         }
@@ -99,7 +100,7 @@ void GpuDevice::prepareAudio(QRhiResourceUpdateBatch* updates)
     }
     if (m_audioDirty) {
         const QByteArray bytes(reinterpret_cast<const char*>(m_audioSpectrum.data()), sizeof(m_audioSpectrum));
-        updates->uploadTexture(m_audioTexture,
+        updates->uploadTexture(m_audioTexture.get(),
                                QRhiTextureUploadDescription(
                                    {QRhiTextureUploadEntry(0, 0, QRhiTextureSubresourceUploadDescription(bytes))}));
         m_audioDirty = false;
@@ -120,12 +121,12 @@ QRhi* GpuDevice::rhi(QWindow* window)
     }
     qCInfo(lcGpu) << "Vulkan device:" << m_rhi->driverInfo().deviceName;
 
-    m_sampler = m_rhi->newSampler(QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None,
-                                  QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge);
+    m_sampler.reset(m_rhi->newSampler(QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None,
+                                      QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge));
     if (!m_sampler->create())
         throw std::runtime_error("failed to create the atlas sampler");
-    m_imageSampler = m_rhi->newSampler(QRhiSampler::Linear, QRhiSampler::Linear, QRhiSampler::None,
-                                       QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge);
+    m_imageSampler.reset(m_rhi->newSampler(QRhiSampler::Linear, QRhiSampler::Linear, QRhiSampler::None,
+                                           QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge));
     if (!m_imageSampler->create())
         throw std::runtime_error("failed to create the image sampler");
     return m_rhi.get();
@@ -138,10 +139,9 @@ QRhiTexture* GpuDevice::imageTexture(const AfterglowVt::FramePtr& frame, QRhiRes
     // The address alone could belong to a freed frame: check it is the same one.
     if (it != m_imageTextures.end() && it->second.frame.lock() == frame) {
         serial = it->second.serial;
-        return it->second.texture;
+        return it->second.texture.get();
     }
     if (it != m_imageTextures.end()) {
-        delete it->second.texture;
         m_imageTextures.erase(it);
     }
     // Only whole RGBA frames reach the GPU: the snapshot colours indexed ones.
@@ -166,10 +166,10 @@ QRhiTexture* GpuDevice::imageTexture(const AfterglowVt::FramePtr& frame, QRhiRes
                              << "pixels); it is not drawn";
         return nullptr;
     }
-    QRhiTexture* tex = created.release();
+    QRhiTexture* tex = created.get();
     const QImage img(frame->rgba.data(), size.width(), size.height(), size.width() * 4, QImage::Format_RGBA8888);
     updates->uploadTexture(tex, img);
-    ImageTexture entry{frame, tex, ++m_textureSerial};
+    ImageTexture entry{frame, std::move(created), ++m_textureSerial};
     serial = entry.serial;
     m_imageTextures.emplace(frame.get(), std::move(entry));
     return tex;
@@ -182,10 +182,6 @@ void GpuDevice::pruneUnused()
     const auto now = std::chrono::steady_clock::now();
     for (auto it = m_fonts.begin(); it != m_fonts.end();) {
         if (now - it->second->lastUsed > FontResourcesUnusedFor) {
-            for (auto* texture : it->second->grayTextures)
-                delete texture;
-            for (auto* texture : it->second->colorTextures)
-                delete texture;
             it = m_fonts.erase(it);
         } else {
             ++it;
@@ -194,7 +190,6 @@ void GpuDevice::pruneUnused()
     // QRhi defers the native release until in-flight frames are done with it.
     for (auto it = m_imageTextures.begin(); it != m_imageTextures.end();) {
         if (it->second.frame.expired()) {
-            delete it->second.texture;
             it = m_imageTextures.erase(it);
         } else {
             ++it;
@@ -222,18 +217,16 @@ void GpuDevice::prepareAtlases(FontResources& res, QRhiResourceUpdateBatch* upda
         auto& textures = color ? res.colorTextures : res.grayTextures;
         const auto count = color ? res.glyphs.colorPageCount() : res.glyphs.grayPageCount();
         while (textures.size() > count) {
-            delete textures.back();
             textures.pop_back();
             res.textureGeneration = ++m_textureSerial;
         }
-        textures.resize(count, nullptr);
+        textures.resize(count);
         for (std::size_t i = 0; i < count; ++i) {
             auto& page = color ? res.glyphs.colorPage(i) : res.glyphs.grayPage(i);
-            auto*& texture = textures[i];
+            auto& texture = textures[i];
             const QSize size = page.image().size();
             if (!texture || texture->pixelSize() != size) {
-                delete texture;
-                texture = m_rhi->newTexture(color ? QRhiTexture::BGRA8 : QRhiTexture::R8, size);
+                texture.reset(m_rhi->newTexture(color ? QRhiTexture::BGRA8 : QRhiTexture::R8, size));
                 if (!texture->create())
                     throw std::runtime_error("glyph atlas GPU allocation failed");
                 res.textureGeneration = ++m_textureSerial;
@@ -256,22 +249,11 @@ void GpuDevice::prepareAtlases(FontResources& res, QRhiResourceUpdateBatch* upda
             }
             QRhiTextureUploadDescription description;
             description.setEntries(entries.begin(), entries.end());
-            updates->uploadTexture(texture, description);
+            updates->uploadTexture(texture.get(), description);
         }
     };
     upload(false);
     upload(true);
-}
-
-void GpuDevice::releaseFontResources()
-{
-    for (auto& [key, res] : m_fonts) {
-        for (auto* texture : res->grayTextures)
-            delete texture;
-        for (auto* texture : res->colorTextures)
-            delete texture;
-    }
-    m_fonts.clear();
 }
 
 void GpuDevice::setFontSpec(const FontSpec& spec)
@@ -290,7 +272,7 @@ void GpuDevice::setFontSpec(const FontSpec& spec)
     m_fontSpec = spec;
     // Textures may still be referenced by in-flight frames; QRhi defers the
     // actual release until the GPU is done with them.
-    releaseFontResources();
+    m_fonts.clear();
     ++m_fontEpoch;
     Q_EMIT fontsChanged();
 }

@@ -32,6 +32,7 @@
 #include <climits>
 #include <cmath>
 #include <iterator>
+#include <memory>
 #include <numeric>
 #include <span>
 #include <stdexcept>
@@ -912,13 +913,14 @@ QImage WindowRenderer::readbackImage(QRhiReadbackResult& readback, bool yUp, boo
         return {};
     }
     // The image owns the bytes: a 4K frame is not copied once more.
-    auto* bytes = new QByteArray(std::move(readback.data));
+    auto bytes = std::make_unique<QByteArray>(std::move(readback.data));
+    auto* pixels = reinterpret_cast<uchar*>(bytes->data());
     QImage image(
-        reinterpret_cast<uchar*>(bytes->data()), size.width(), size.height(), stride, format,
+        pixels, size.width(), size.height(), stride, format,
         [](void* info) {
-            delete static_cast<QByteArray*>(info);
+            const std::unique_ptr<QByteArray> owned(static_cast<QByteArray*>(info));
         },
-        bytes);
+        bytes.release());
     if (bytesPerPixel != 4 || format == QImage::Format_A2BGR30_Premultiplied) {
         image = std::move(image).convertToFormat(QImage::Format_ARGB32_Premultiplied);
     } else if (readback.format == QRhiTexture::BGRA8 && format == QImage::Format_RGBA8888_Premultiplied) {
@@ -1071,10 +1073,10 @@ void WindowRenderer::ensureBindings(FontResources& res)
         binding->setBindings({
             QRhiShaderResourceBinding::uniformBuffer(0, stages, m_uniforms.get()),
             QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage,
-                                                      res.grayTextures[i < res.grayTextures.size() ? i : 0],
+                                                      res.grayTextures[i < res.grayTextures.size() ? i : 0].get(),
                                                       m_device.atlasSampler()),
             QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage,
-                                                      res.colorTextures[i < res.colorTextures.size() ? i : 0],
+                                                      res.colorTextures[i < res.colorTextures.size() ? i : 0].get(),
                                                       m_device.atlasSampler()),
         });
         if (!binding->create())
@@ -1571,16 +1573,16 @@ WindowRenderer::FrameResult WindowRenderer::render(const std::vector<Pane>& pane
     // endFrame fails. So finish() runs whenever the readback was queued,
     // whatever the frame gave, and the result is on the heap: after a finish()
     // that fails (a lost device), Qt can still write it, and it is not freed.
-    QRhiReadbackResult* readback = captures.empty() ? nullptr : new QRhiReadbackResult;
+    auto readback = captures.empty() ? nullptr : std::make_unique<QRhiReadbackResult>();
     bool queued = false;
-    const auto release = qScopeGuard([&readback, &queued] {
-        if (!queued)
-            delete readback;
+    const auto keep = qScopeGuard([&readback, &queued] {
+        if (queued)
+            static_cast<void>(readback.release());
     });
     if (readback) {
-        target.finalUpdates = [rhi, readback, &queued] {
+        target.finalUpdates = [rhi, pending = readback.get(), &queued] {
             QRhiResourceUpdateBatch* u = rhi->nextResourceUpdateBatch();
-            u->readBackTexture(QRhiReadbackDescription(), readback);
+            u->readBackTexture(QRhiReadbackDescription(), pending);
             queued = true;
             return u;
         };
@@ -1603,7 +1605,7 @@ WindowRenderer::FrameResult WindowRenderer::render(const std::vector<Pane>& pane
                     qCWarning(lcRender, "A screenshot cannot read the swapchain back on this GPU driver");
             }
         }
-        delete std::exchange(readback, nullptr);
+        readback.reset();
     }
     if (result == FrameResult::Retry) {
         // The frame is drawn again (a resize, a surface that went out of

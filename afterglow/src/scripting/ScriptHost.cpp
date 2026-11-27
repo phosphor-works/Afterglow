@@ -1454,7 +1454,9 @@ void ScriptHost::stopSleeps(Script& script, const QString& prefix)
 {
     for (auto it = script.sleeps.begin(); it != script.sleeps.end();) {
         if (it.value().startsWith(prefix)) {
-            delete it.key();
+            // A child of the host: stopped, it never times out.
+            it.key()->stop();
+            it.key()->deleteLater();
             it = script.sleeps.erase(it);
         } else {
             ++it;

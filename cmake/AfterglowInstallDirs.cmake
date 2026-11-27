@@ -22,18 +22,23 @@ set(AFTERGLOW_SHADER_TREE "shaders/terminal")
 set(AFTERGLOW_DATA_SUBDIR "${PHOSPHOR_SUITE_DIRECTORY_NAME}/${AFTERGLOW_APP_DIRECTORY_NAME}")
 set(AFTERGLOW_SHADER_SUBDIR "${PHOSPHOR_SUITE_DIRECTORY_NAME}/${AFTERGLOW_SHADER_TREE}")
 
-# Installed layout: the executables in bin/; afterglow's libraries, its own
-# copies of the phosphor libraries and their layer-shell plugin in a private
-# lib/<suite>/afterglow/, so a system install of phosphor is never touched.
-# afterglow and aglow-mux find that directory and no other run path (aglow is
-# static); the libraries in it and the plugin set their own run paths where
-# they are installed (afterglow/CMakeLists.txt, and mux/CMakeLists.txt for
-# aglow-mux alone).
-set(AFTERGLOW_PRIVATE_LIBDIR "${CMAKE_INSTALL_LIBDIR}/${AFTERGLOW_DATA_SUBDIR}")
+# Installed layout: the executables in bin/; afterglow's own libraries and the
+# phosphor libraries it embeds, with their layer-shell plugin below them, in
+# the private directory phosphor-libs names for the app (lib/<suite>/afterglow/,
+# phosphor_embedded_dirs), so no other package's files are touched. afterglow
+# and aglow-mux find that directory and no other run path (aglow is static);
+# the libraries in it and the plugin set their own run paths where they are
+# installed. The licence notices of the code the libraries compile in go to
+# share/licenses/afterglow, beside Afterglow's own.
+phosphor_embedded_dirs(LIBDIR AFTERGLOW_PRIVATE_LIBDIR LICENSEDIR AFTERGLOW_LICENSEDIR)
 # The path from the executables to it, also for an absolute LIBDIR or a
 # BINDIR deeper than bin/.
-file(RELATIVE_PATH AFTERGLOW_PRIVATE_LIBDIR_FROM_BIN "${CMAKE_INSTALL_FULL_BINDIR}"
-     "${CMAKE_INSTALL_FULL_LIBDIR}/${AFTERGLOW_DATA_SUBDIR}")
+if(IS_ABSOLUTE "${AFTERGLOW_PRIVATE_LIBDIR}")
+    set(AFTERGLOW_PRIVATE_LIBDIR_FULL "${AFTERGLOW_PRIVATE_LIBDIR}")
+else()
+    set(AFTERGLOW_PRIVATE_LIBDIR_FULL "${CMAKE_INSTALL_PREFIX}/${AFTERGLOW_PRIVATE_LIBDIR}")
+endif()
+file(RELATIVE_PATH AFTERGLOW_PRIVATE_LIBDIR_FROM_BIN "${CMAKE_INSTALL_FULL_BINDIR}" "${AFTERGLOW_PRIVATE_LIBDIR_FULL}")
 set(AFTERGLOW_INSTALL_RPATH "$ORIGIN/${AFTERGLOW_PRIVATE_LIBDIR_FROM_BIN}")
 # qt_standard_project_setup() appends $ORIGIN and $ORIGIN/../lib to the run
 # path: the executables would then load a library from bin/ or from the
