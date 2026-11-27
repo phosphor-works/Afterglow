@@ -56,15 +56,23 @@ def run_on_private_bus(argv, timeout):
         code = 124
     except KeyboardInterrupt:
         code = 128 + signal.SIGINT
-    deadline = time.monotonic() + 15
+    stop_group(process, 15)
+    return code
+
+
+def stop_group(process, grace):
+    """Stops PROCESS and every process in its group, which start_new_session made. SIGTERM goes to the whole group,
+    and SIGKILL to what is left GRACE seconds later. The group lives on after its leader ends: dbus-run-session exits
+    at SIGTERM and leaves the program it ran, such as a KWin, to systemd. So this waits for the group to be empty, not
+    for the leader."""
+    deadline = time.monotonic() + grace
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(process.pid, sig)
         except ProcessLookupError:
             break
-        # The group lives on in the harness's children after dbus-run-session ends.
         while time.monotonic() < deadline:
-            # A zombie is still in its group: reap dbus-run-session, or the group never empties.
+            # A zombie is still in its group: reap the leader, or the group never empties.
             process.poll()
             try:
                 os.killpg(process.pid, 0)
@@ -73,7 +81,6 @@ def run_on_private_bus(argv, timeout):
             time.sleep(0.1)
         deadline = time.monotonic() + 5
     process.wait()
-    return code
 
 
 def exit_on_sigterm():

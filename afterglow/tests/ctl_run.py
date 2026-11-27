@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp_session import Failure, Home, Skip, check, sweep_stale_runs, wait_for  # noqa: E402
-from nested_desktop import KWINRC, exit_on_sigterm  # noqa: E402
+from nested_desktop import KWINRC, exit_on_sigterm, stop_group  # noqa: E402
 
 TIMED_OUT = 124
 FAILED = 125
@@ -221,12 +221,8 @@ def run_in_a_window(home):
         check(result.returncode == 0, result)
     finally:
         for process in (window, kwin):
-            if process and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
+            if process:
+                stop_group(process, 10)
 
 
 def main():
