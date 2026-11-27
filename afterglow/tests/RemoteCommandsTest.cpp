@@ -2077,8 +2077,10 @@ TEST_F(RemoteCommandsTest, OpenSshForwardsAsTheDesignExpectsAndAglowRunWorksThro
     EXPECT_TRUE(pumpUntil([&] {
         return local.hasPendingConnections();
     }));
-    while (local.hasPendingConnections())
-        delete local.nextPendingConnection();
+    while (local.hasPendingConnections()) {
+        // Closed now, not with the server.
+        const std::unique_ptr<QLocalSocket> accepted(local.nextPendingConnection());
+    }
     // A cancel refuses connections, and leaves the file.
     ASSERT_EQ(sshd.ssh({QStringLiteral("-O"), QStringLiteral("cancel"), QStringLiteral("-R"),
                         forwarded + QLatin1Char(':') + target, QStringLiteral("allow")})

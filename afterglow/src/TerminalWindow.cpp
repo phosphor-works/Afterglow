@@ -297,8 +297,8 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         KeyModes::expire(m_keyMode, m_keyModeClock.elapsed());
         updateKeyMode();
     });
-    m_chrome = new ChromeLayer(device, this, services.chrome, m_controller);
-    connect(m_chrome, &ChromeLayer::updateRequested, this, &TerminalWindow::scheduleRender);
+    m_chrome = std::make_unique<ChromeLayer>(device, this, services.chrome, m_controller);
+    connect(m_chrome.get(), &ChromeLayer::updateRequested, this, &TerminalWindow::scheduleRender);
     connect(m_controller, &ChromeController::activateTabRequested, this, &TerminalWindow::switchTab);
     connect(m_controller, &ChromeController::closeTabRequested, this, [this](int index) {
         requestCloseTabs({index});
@@ -611,8 +611,7 @@ TerminalWindow::~TerminalWindow()
     // Their renderer goes below: a client hears why.
     abortCaptures(QStringLiteral("the window closed"));
     // The chrome renders on the device through this window; it goes first.
-    delete m_chrome;
-    m_chrome = nullptr;
+    m_chrome.reset();
     m_renderer.reset();
     // ~QWindow hides a window that still shows, and its visibilityChanged
     // would reach this window's slots after their members are gone.
@@ -923,7 +922,9 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     // menu, scripts and afterglow ctl all come here.
     if (m_session)
         return createSessionLaunchPane(workingDirectory, area, command, failure, environment);
-    auto* pane = new Pane(m_settings.settings().terminal, this);
+    // A child of the window, but freed here when its program cannot start.
+    auto made = std::make_unique<Pane>(m_settings.settings().terminal, this);
+    Pane* const pane = made.get();
     bindPane(pane);
     applySearchColors(pane);
     pane->setLaunch(workingDirectory, command);
@@ -954,12 +955,12 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
                              size.cellHeight, &error))
                 pane->holdStartFailure();
         } else {
-            delete pane;
             return nullptr;
         }
     }
     Q_EMIT paneCreated(pane);
-    return pane;
+    // From here the window, the pane's parent, owns it.
+    return made.release();
 }
 
 Pane* TerminalWindow::createSessionPane(const std::shared_ptr<MuxClient>& session, std::uint32_t id, bool launched)
@@ -3447,6 +3448,13 @@ bool TerminalWindow::event(QEvent* e)
         // The window is its own focus object; tell the input method about the terminal.
         auto* q = static_cast<QInputMethodQueryEvent*>(e);
         if (m_controller->wantsKeyboard()) {
+            // The window closes: its chrome went first, and the focus that
+            // leaves the chrome's scene as it goes asks here. No editor shows.
+            if (!m_chrome) {
+                q->setValue(Qt::ImEnabled, false);
+                q->accept();
+                return true;
+            }
             m_chrome->queryInputMethod(q);
             return true;
         }

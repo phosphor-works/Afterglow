@@ -346,11 +346,10 @@ void Application::bindShortcuts()
 
 TerminalWindow* Application::newWindow(const WindowOptions& options)
 {
-    auto* window = new TerminalWindow(m_services, options);
-    if (!options.empty && !window->focusedPane()) {
-        delete window;
+    auto made = std::make_unique<TerminalWindow>(m_services, options);
+    if (!options.empty && !made->focusedPane())
         return nullptr;
-    }
+    TerminalWindow* const window = made.release();
     m_control.attachWindow(window);
     // `afterglow ctl` for the session: the calls that only this window can
     // answer, which the daemon passes it.

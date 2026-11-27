@@ -11,6 +11,7 @@
 #include <QString>
 
 #include <functional>
+#include <memory>
 #include <optional>
 
 class QSocketNotifier;
@@ -125,8 +126,8 @@ private:
 
     int m_fd = -1;
     std::optional<Peer> m_peer;
-    QSocketNotifier* m_readNotifier = nullptr;
-    QSocketNotifier* m_writeNotifier = nullptr;
+    std::unique_ptr<QSocketNotifier> m_readNotifier;
+    std::unique_ptr<QSocketNotifier> m_writeNotifier;
     QByteArray m_in;
     QByteArray m_out;
     qint64 m_nextId = 0;

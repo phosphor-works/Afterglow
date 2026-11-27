@@ -261,23 +261,24 @@ std::shared_ptr<MuxClient> MuxClient::adopt(const QString& name, SessionLink lin
     if (client->m_ended)
         return fail(lossText(client->m_loss, name));
 
-    client->m_readNotifier = new QSocketNotifier(client->m_stream->readFd(), QSocketNotifier::Read, client.get());
-    connect(client->m_readNotifier, &QSocketNotifier::activated, client.get(), &MuxClient::readable);
-    client->m_writeNotifier = new QSocketNotifier(client->m_stream->writeFd(), QSocketNotifier::Write, client.get());
-    connect(client->m_writeNotifier, &QSocketNotifier::activated, client.get(), &MuxClient::writable);
+    client->m_readNotifier =
+        std::make_unique<QSocketNotifier>(client->m_stream->readFd(), QSocketNotifier::Read, client.get());
+    connect(client->m_readNotifier.get(), &QSocketNotifier::activated, client.get(), &MuxClient::readable);
+    client->m_writeNotifier =
+        std::make_unique<QSocketNotifier>(client->m_stream->writeFd(), QSocketNotifier::Write, client.get());
+    connect(client->m_writeNotifier.get(), &QSocketNotifier::activated, client.get(), &MuxClient::writable);
     client->m_stream->onWritable = [raw = client.get()](PhosphorChannel::StreamWriter&) {
         raw->sendWaitingInput();
     };
     if (client->m_proxy && client->m_proxy->errorFd() >= 0) {
         MuxClient* const raw = client.get();
-        raw->m_errorNotifier = new QSocketNotifier(raw->m_proxy->errorFd(), QSocketNotifier::Read, raw);
-        connect(raw->m_errorNotifier, &QSocketNotifier::activated, raw, [raw] {
+        raw->m_errorNotifier = std::make_unique<QSocketNotifier>(raw->m_proxy->errorFd(), QSocketNotifier::Read, raw);
+        connect(raw->m_errorNotifier.get(), &QSocketNotifier::activated, raw, [raw] {
             if (raw->m_proxy && raw->m_proxy->drainError())
                 return;
             // The pipe ended: nothing more comes, and it stays readable.
             raw->m_errorNotifier->setEnabled(false);
-            raw->m_errorNotifier->deleteLater();
-            raw->m_errorNotifier = nullptr;
+            raw->m_errorNotifier.release()->deleteLater();
         });
     }
     client->updateNotifiers();
@@ -307,8 +308,7 @@ MuxClient::~MuxClient()
     // stream, off the GUI thread, which watches its pipe no more.
     m_commands.reset();
     m_stream.reset();
-    delete m_errorNotifier;
-    m_errorNotifier = nullptr;
+    m_errorNotifier.reset();
     reapLater(std::move(m_proxy));
 }
 
@@ -593,17 +593,15 @@ void MuxClient::release(std::uint32_t id, MuxRelease release)
                          << "as Mux.onClose says: the kill did not reach the daemon"
                          << QString::fromStdString(m_stream->error());
     }
-    delete m_readNotifier;
-    delete m_writeNotifier;
-    m_readNotifier = m_writeNotifier = nullptr;
+    m_readNotifier.reset();
+    m_writeNotifier.reset();
     // Before the stream, which holds their channel: the clients' runs end,
     // and the daemon tells them why.
     if (m_commands)
         m_commands->closeAll();
     m_stream.reset();
     // Its stream's connection closed: the proxy ends by itself.
-    delete m_errorNotifier;
-    m_errorNotifier = nullptr;
+    m_errorNotifier.reset();
     reapLater(std::move(m_proxy));
     m_input = m_actions = nullptr;
     m_waitingInput.clear();

@@ -119,19 +119,19 @@ DaemonLink::DaemonLink(int fd, QObject* parent)
     }
     // Read now: fail() closes the descriptor before closed() asks.
     m_peer = peerOf(m_fd);
-    m_readNotifier = new QSocketNotifier(m_fd, QSocketNotifier::Read, this);
-    connect(m_readNotifier, &QSocketNotifier::activated, this, &DaemonLink::readable);
-    m_writeNotifier = new QSocketNotifier(m_fd, QSocketNotifier::Write, this);
+    m_readNotifier = std::make_unique<QSocketNotifier>(m_fd, QSocketNotifier::Read, this);
+    connect(m_readNotifier.get(), &QSocketNotifier::activated, this, &DaemonLink::readable);
+    m_writeNotifier = std::make_unique<QSocketNotifier>(m_fd, QSocketNotifier::Write, this);
     m_writeNotifier->setEnabled(false);
-    connect(m_writeNotifier, &QSocketNotifier::activated, this, &DaemonLink::writable);
+    connect(m_writeNotifier.get(), &QSocketNotifier::activated, this, &DaemonLink::writable);
 }
 
 DaemonLink::~DaemonLink()
 {
     // The notifiers go before their descriptor: one of a closed descriptor
     // that a later socket reuses would watch that socket.
-    delete m_readNotifier;
-    delete m_writeNotifier;
+    m_readNotifier.reset();
+    m_writeNotifier.reset();
     if (m_fd >= 0)
         ::close(m_fd);
 }
@@ -324,12 +324,10 @@ void DaemonLink::fail(const QString& reason)
     if (m_fd < 0)
         return;
     // This can run in a notifier's own slot: they go from the event loop.
-    for (QSocketNotifier* notifier : {m_readNotifier, m_writeNotifier}) {
-        notifier->setEnabled(false);
-        notifier->deleteLater();
+    for (std::unique_ptr<QSocketNotifier>* notifier : {&m_readNotifier, &m_writeNotifier}) {
+        (*notifier)->setEnabled(false);
+        notifier->release()->deleteLater();
     }
-    m_readNotifier = nullptr;
-    m_writeNotifier = nullptr;
     ::close(m_fd);
     m_fd = -1;
     m_out.clear();

@@ -86,8 +86,11 @@ Pane::Pane(const AfterglowVt::TerminalOptions& options, QObject* parent)
 Pane::~Pane()
 {
     // Its overlay answers "cancelled" while this pane is whole, and its
-    // program gets SIGHUP.
-    delete m_overlay;
+    // program gets SIGHUP. It is a child, which ~QObject would free only
+    // after the rest of the pane is gone.
+    if (m_overlay) {
+        const std::unique_ptr<PaneOverlay> overlay(m_overlay);
+    }
     if (m_searchJob)
         m_searchJob->cancelled = true;
     // A decode that runs ends at once, and so does each one after it.

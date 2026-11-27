@@ -591,7 +591,7 @@ private:
     std::shared_ptr<AfterglowMux::ProxyProcess> m_proxy;
     /// Reads the standard error of m_proxy while the stream lives: ssh that
     /// writes much would else block on a full pipe and stop the stream.
-    QSocketNotifier* m_errorNotifier = nullptr;
+    std::unique_ptr<QSocketNotifier> m_errorNotifier;
     /// The most bytes of answers to control calls that wait for the
     /// daemon, which stops reading them while the input of a pane waits
     /// (Attachment::MaxHeldInput): past it, an answer is an error.
@@ -608,8 +608,8 @@ private:
     PhosphorChannel::StreamWriter* m_actions = nullptr;
     /// The command clients of the session's panes, on Attach::CommandsChannel.
     std::unique_ptr<MuxCommands> m_commands;
-    QSocketNotifier* m_readNotifier = nullptr;
-    QSocketNotifier* m_writeNotifier = nullptr;
+    std::unique_ptr<QSocketNotifier> m_readNotifier;
+    std::unique_ptr<QSocketNotifier> m_writeNotifier;
     std::vector<std::pair<std::string, std::string>> m_environment; ///< environment()
     AfterglowMux::Layout m_layout;
     bool m_layoutCame = false;

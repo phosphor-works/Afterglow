@@ -80,7 +80,7 @@ public:
     void queryInputMethod(QInputMethodQueryEvent* event) const;
     QQuickItem* rootItem() const
     {
-        return m_root;
+        return m_root.get();
     }
     QQuickItem* focusedItem() const;
     /// The pointer the chrome asks for at @p pos (logical pixels): the
@@ -116,7 +116,7 @@ private:
     std::unique_ptr<ChromeIncubator> m_incubator;
     std::unique_ptr<ChromeRenderControl> m_control;
     std::unique_ptr<QQuickWindow> m_window;
-    QQuickItem* m_root = nullptr;
+    std::unique_ptr<QQuickItem> m_root;
     std::unique_ptr<QRhiTexture> m_texture;
     std::unique_ptr<QRhiRenderPassDescriptor> m_renderPass;
     std::unique_ptr<QRhiTextureRenderTarget> m_target;
