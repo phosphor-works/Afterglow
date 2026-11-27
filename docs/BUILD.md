@@ -88,7 +88,7 @@ To build on a computer without network access, prepare the source on a computer 
 2. In the Afterglow directory, download the archives into a directory:
 
 ```sh
-cmake -DAFTERGLOW_DEPS_FETCH=/path/to/archives -P cmake/AfterglowDependencies.cmake
+cmake -DPHOSPHOR_DEPS_FETCH=/path/to/archives -P cmake/AfterglowDependencies.cmake
 ```
 
 This command downloads the archives of both pin files.
@@ -101,7 +101,7 @@ The pin files also have the URL and the SHA-256 hash of each archive.
 4. On the build computer, configure the build as in step 2 of [Build](#build), with this option:
 
 ```sh
--DAFTERGLOW_DEPS_ARCHIVES=/path/to/archives
+-DPHOSPHOR_DEPS_ARCHIVES=/path/to/archives
 ```
 
 5. Do steps 3 and 4 of [Build](#build).
@@ -146,10 +146,11 @@ ctest --test-dir build --output-on-failure
 ```
 
 The build compiles the Phosphor libraries with Afterglow, from the phosphor-libs commit that `cmake/AfterglowDependencies.cmake` pins.
+They install in Afterglow's own directory, `lib/phosphor-works/afterglow`, with the layer-shell plugin below them.
 To use a phosphor-libs checkout instead, add this option to the configuration command:
 
 ```sh
--DAFTERGLOW_PHOSPHOR_LIBS_DIR=/path/to/phosphor-libs
+-DCPM_phosphor-libs_SOURCE=/path/to/phosphor-libs
 ```
 
 Use this option to build against a change to phosphor-libs before the pin moves to it.
@@ -197,7 +198,7 @@ By default, the CPM cache is `.cache/cpm` in the Afterglow directory.
 `-DCPM_SOURCE_CACHE` and the `CPM_SOURCE_CACHE` environment variable change it.
 To build on a computer without network access, download the archives as in step 2 of the procedure in [source archives](#source-archives).
 Copy the archive directory to the build computer.
-Then add `-DAFTERGLOW_DEPS_ARCHIVES=/path/to/archives` to the configuration command.
+Then add `-DPHOSPHOR_DEPS_ARCHIVES=/path/to/archives` to the configuration command.
 
 1. Get the Afterglow source:
 
@@ -212,7 +213,7 @@ cd Afterglow
 cmake -B build-aglow -DAFTERGLOW_AGLOW_ONLY=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
 ```
 
-To use a phosphor-libs checkout for `aglow-mux`, add `-DAFTERGLOW_PHOSPHOR_LIBS_DIR=/path/to/phosphor-libs` to the command.
+To use a phosphor-libs checkout for `aglow-mux`, add `-DCPM_phosphor-libs_SOURCE=/path/to/phosphor-libs` to the command.
 Without GTest, add `-DBUILD_TESTING=OFF` to the command, and skip step 4.
 
 3. Build `aglow` and `aglow-mux`:
@@ -237,13 +238,13 @@ The installation contains `bin/aglow`, its license notices in `share/licenses/ag
 The license notices are those of zlib-ng, xxHash, libpng, libjpeg-turbo (with `README.ijg` and `NOTICE.IJG`), libwebp, Little CMS and the Unicode Character Database (`LICENSE.Unicode`).
 The table in [install](#install) lists them.
 A static `aglow` also has the notices of glibc and libstdc++.
-The texts of the licenses that they name are also installed. These are `LGPL-2.1-or-later.txt`, and `GPL-3.0-or-later.txt` for a static `aglow`.
+The texts of `GPL-3.0-or-later.txt`, the license of `aglow`, and `LGPL-2.1-or-later.txt`, the license of the libraries it links and of glibc, are also installed.
 The completions go in the directories of the full build (see [install](#install)), and `AFTERGLOW_ZSH_COMPLETION_DIR` also applies.
 
 The installation also contains `bin/aglow-mux` and its license notices in `share/licenses/aglow-mux`.
 These are the notices of `aglow`, without those of glibc and libstdc++, and the texts of `GPL-3.0-or-later.txt` and `LGPL-2.1-or-later.txt`.
 `aglow-mux` is not static. It uses the C and C++ runtime libraries and PCRE2 of the system.
-Its private libraries `libAfterglowVt`, `libAfterglowPty` and `libPhosphorChannel` go in the `afterglow` directory of the library directory, as in the full build.
+Its private libraries `libAfterglowVt`, `libAfterglowPty` and `libPhosphorChannel` go in `phosphor-works/afterglow` in the library directory, as in the full build.
 The installation contains no other part of Afterglow.
 
 ## Install

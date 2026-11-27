@@ -28,4 +28,3 @@ task. The [release notes](../CHANGELOG.md) tell what Afterglow supports.
 | [Shader pass API](SHADER-API.md) | Gives the contract for authors who write shader passes. |
 | [Shaders](SHADERS.md) | Tells how to configure reactive shader effects. |
 | [Testing](TESTING.md) | Tells how to run the tests. |
-| [Documentation writing rules](WRITING.md) | Gives the rules for documentation text. |

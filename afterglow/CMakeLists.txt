@@ -134,8 +134,7 @@ endif()
 # PhosphorPaths. Every part of the application that reads a path links it.
 qt_add_library(afterglow_paths STATIC src/config/AppPaths.cpp src/config/AppPaths.h)
 target_include_directories(afterglow_paths PUBLIC src)
-target_compile_definitions(afterglow_paths PRIVATE QT_NO_CAST_FROM_ASCII
-    AFTERGLOW_APP_DIRECTORY_NAME="${AFTERGLOW_APP_DIRECTORY_NAME}"
+target_compile_definitions(afterglow_paths PRIVATE AFTERGLOW_APP_DIRECTORY_NAME="${AFTERGLOW_APP_DIRECTORY_NAME}"
     AFTERGLOW_SHADER_TREE="${AFTERGLOW_SHADER_TREE}")
 target_link_libraries(afterglow_paths PUBLIC PhosphorPaths::PhosphorPaths Qt6::Core)
 
@@ -145,8 +144,7 @@ target_link_libraries(afterglow_paths PUBLIC PhosphorPaths::PhosphorPaths Qt6::C
 qt_add_library(afterglow_shaders STATIC src/shaders/ShaderLibrary.cpp src/shaders/ShaderLibrary.h
     src/shaders/ShaderControls.cpp src/shaders/ShaderControls.h src/shaders/ShaderRefs.h)
 target_include_directories(afterglow_shaders PUBLIC src)
-target_compile_definitions(afterglow_shaders PRIVATE QT_NO_CAST_FROM_ASCII
-    AFTERGLOW_BUILD_DIR="${CMAKE_BINARY_DIR}"
+target_compile_definitions(afterglow_shaders PRIVATE AFTERGLOW_BUILD_DIR="${CMAKE_BINARY_DIR}"
     AFTERGLOW_SOURCE_SHADER_DIR="${PROJECT_SOURCE_DIR}/data/shaders"
     AFTERGLOW_INSTALLED_SHADER_DIR="${CMAKE_INSTALL_FULL_DATADIR}/${AFTERGLOW_SHADER_SUBDIR}")
 target_link_libraries(afterglow_shaders PUBLIC afterglow_paths Afterglow::Render PhosphorShaders::PhosphorShaders PhosphorAnimation::PhosphorAnimation
@@ -179,8 +177,7 @@ qt_add_library(afterglow_config STATIC
     src/XkbKeyboard.h)
 # Settings.h bounds Terminal.uploadLimit by the input queue of a PTY.
 target_include_directories(afterglow_config PUBLIC src $<TARGET_PROPERTY:AfterglowPty,INTERFACE_INCLUDE_DIRECTORIES>)
-target_compile_definitions(afterglow_config PRIVATE QT_NO_CAST_FROM_ASCII
-    AFTERGLOW_BUILD_DIR="${CMAKE_BINARY_DIR}"
+target_compile_definitions(afterglow_config PRIVATE AFTERGLOW_BUILD_DIR="${CMAKE_BINARY_DIR}"
     AFTERGLOW_SOURCE_THEME_DIR="${PROJECT_SOURCE_DIR}/data/themes"
     AFTERGLOW_INSTALLED_THEME_DIR="${CMAKE_INSTALL_FULL_DATADIR}/${AFTERGLOW_DATA_SUBDIR}/themes")
 target_link_libraries(afterglow_config PUBLIC afterglow_paths afterglow_shaders Afterglow::Render Afterglow::Vt
@@ -197,8 +194,7 @@ target_include_directories(afterglow_shell PUBLIC src)
 # The environment of a spawn off the GUI thread, and the PATH search in it,
 # are the mux client's (MuxConnect.h).
 target_link_libraries(afterglow_shell PUBLIC afterglow_paths Afterglow::Pty Qt6::Core PRIVATE Afterglow::Proto afterglow_mux_protocol)
-target_compile_definitions(afterglow_shell PRIVATE QT_NO_CAST_FROM_ASCII
-    AFTERGLOW_BUILD_DIR="${CMAKE_BINARY_DIR}"
+target_compile_definitions(afterglow_shell PRIVATE AFTERGLOW_BUILD_DIR="${CMAKE_BINARY_DIR}"
     AFTERGLOW_SOURCE_SHELL_DIR="${PROJECT_SOURCE_DIR}/data/shell-integration"
     AFTERGLOW_INSTALLED_SHELL_DIR="${CMAKE_INSTALL_FULL_DATADIR}/${AFTERGLOW_DATA_SUBDIR}/shell-integration")
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shell-integration/
@@ -208,14 +204,12 @@ install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shell-integration/
 qt_add_library(afterglow_audio STATIC
     src/audio/AudioController.cpp src/audio/AudioController.h src/audio/AudioSettings.h)
 target_include_directories(afterglow_audio PUBLIC src)
-target_compile_definitions(afterglow_audio PRIVATE QT_NO_CAST_FROM_ASCII)
 target_link_libraries(afterglow_audio PUBLIC PhosphorAudio::PhosphorAudio Qt6::Core)
 
 # An overlay's options and a popup's place: the script host and the control
 # socket read them, and afterglow_renderpng places its popups by them.
 qt_add_library(afterglow_overlayspec STATIC src/scripting/OverlaySpec.cpp src/scripting/OverlaySpec.h)
 target_include_directories(afterglow_overlayspec PUBLIC src)
-target_compile_definitions(afterglow_overlayspec PRIVATE QT_NO_CAST_FROM_ASCII)
 target_link_libraries(afterglow_overlayspec PUBLIC Qt6::Core)
 
 # The script host, shared with its tests. The Control binding lives in the app.
@@ -224,7 +218,6 @@ qt_add_library(afterglow_scripting STATIC src/scripting/ScriptHost.cpp src/scrip
     src/scripting/ScriptPackage.cpp src/scripting/ScriptPackage.h
     src/scripting/ScriptState.cpp src/scripting/ScriptState.h)
 target_include_directories(afterglow_scripting PUBLIC src)
-target_compile_definitions(afterglow_scripting PRIVATE QT_NO_CAST_FROM_ASCII)
 target_link_libraries(afterglow_scripting PUBLIC afterglow_paths afterglow_overlayspec PhosphorScripting::PhosphorScripting PhosphorFsLoader::PhosphorFsLoader
     Qt6::Core Qt6::Concurrent)
 qt_add_resources(afterglow_scripting afterglow_scripting_prelude
@@ -281,11 +274,9 @@ endif()
 # The app id matches QGuiApplication::desktopFileName, which Wayland uses to
 # find the icon and group windows, and names the desktop files below.
 set(AFTERGLOW_APP_ID org.phosphor_works.Afterglow)
-target_compile_definitions(afterglow_app PUBLIC QT_NO_CAST_FROM_ASCII AFTERGLOW_VERSION="${PROJECT_VERSION}"
+target_compile_definitions(afterglow_app PUBLIC AFTERGLOW_VERSION="${PROJECT_VERSION}"
     AFTERGLOW_APP_ID="${AFTERGLOW_APP_ID}"
     AFTERGLOW_BUILD_DIR="${CMAKE_BINARY_DIR}"
-    AFTERGLOW_BUILD_PLUGIN_DIR="${CMAKE_BINARY_DIR}/plugins"
-    AFTERGLOW_INSTALLED_PLUGIN_DIR="${CMAKE_INSTALL_FULL_LIBDIR}/${AFTERGLOW_DATA_SUBDIR}/plugins"
     AFTERGLOW_BUILD_TERMINFO_DIR="${CMAKE_BINARY_DIR}/share/terminfo"
     AFTERGLOW_INSTALLED_TERMINFO_DIR="${CMAKE_INSTALL_FULL_DATADIR}/terminfo")
 # The layer-shell QPA plugin is part of the phosphor build; make sure it
@@ -316,64 +307,28 @@ target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afte
 target_link_libraries(afterglow_app PRIVATE afterglow_mux_image)
 
 install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-# Private libraries: afterglow's own and the phosphor ones it was built with.
-# They find each other in their own directory, and the plugin finds them two
-# levels up.
-set(AFTERGLOW_PRIVATE_LIBS ${AFTERGLOW_MUX_PRIVATE_LIBS} AfterglowRender
-    PhosphorPaths PhosphorConfig PhosphorFsLoader PhosphorRegistry PhosphorShaders PhosphorRendering
-    PhosphorWayland PhosphorLayer PhosphorAnimation PhosphorShortcuts
-    PhosphorDBus PhosphorIpc PhosphorMcp PhosphorScripting PhosphorAudio)
+# The embedded Phosphor libraries that it links are installed with it.
+phosphor_install_embedded(FOR afterglow)
+# Afterglow's own private libraries, beside the phosphor libraries and the
+# layer-shell plugin that the phosphor-libs tree installs there itself
+# (cmake/AfterglowPhosphor.cmake). They find each other in their own
+# directory.
+set(AFTERGLOW_PRIVATE_LIBS ${AFTERGLOW_MUX_PRIVATE_LIBS} AfterglowRender)
 set_target_properties(${AFTERGLOW_PRIVATE_LIBS} PROPERTIES INSTALL_RPATH "$ORIGIN")
-set_target_properties(phosphorwayland-qpa PROPERTIES INSTALL_RPATH "$ORIGIN/../..")
 install(TARGETS ${AFTERGLOW_PRIVATE_LIBS} LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR} NAMELINK_SKIP)
-install(TARGETS phosphorwayland-qpa
-        LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR}/plugins/wayland-shell-integration)
 # License texts of what is installed: the code (GPL and LGPL), the themes
 # (MIT), the icon (CC-BY-SA-4.0) and the desktop files (CC0-1.0).
 set(AFTERGLOW_LICENSE_TEXTS GPL-3.0-or-later LGPL-2.1-or-later MIT CC-BY-SA-4.0 CC0-1.0)
 list(TRANSFORM AFTERGLOW_LICENSE_TEXTS PREPEND "${PROJECT_SOURCE_DIR}/LICENSES/")
 list(TRANSFORM AFTERGLOW_LICENSE_TEXTS APPEND ".txt")
-install(FILES ${AFTERGLOW_LICENSE_TEXTS} DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow)
+install(FILES ${AFTERGLOW_LICENSE_TEXTS} DESTINATION ${AFTERGLOW_LICENSEDIR})
 # The notices of the code and data built into the binaries go with them:
 # zlib-ng and xxHash, the image codecs and Little CMS of aglow-mux and aglow,
 # and the Unicode tables of the terminal core
-# (cmake/AfterglowDependencies.cmake). So do the notices of Luau, which is
-# statically linked into PhosphorScripting, and of jsoncons; the phosphor
-# rules that install them are skipped with the others
-# (cmake/AfterglowPhosphor.cmake).
-afterglow_install_bundled_notices(${CMAKE_INSTALL_DATADIR}/licenses/afterglow)
-# A system Luau (PHOSPHOR_SYSTEM_LUAU) is a separate package with its own
-# notices, and phosphor-scripting fetches no archive for it.
-if(NOT PHOSPHOR_SYSTEM_LUAU)
-    # phosphor_fetch_dependency(luau) sets luau_SOURCE_DIR in that library's scope.
-    get_directory_property(AFTERGLOW_LUAU_SOURCE_DIR DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/phosphor-scripting"
-        DEFINITION luau_SOURCE_DIR)
-    if(NOT EXISTS "${AFTERGLOW_LUAU_SOURCE_DIR}/LICENSE.txt" OR NOT EXISTS "${AFTERGLOW_LUAU_SOURCE_DIR}/lua_LICENSE.txt")
-        message(FATAL_ERROR "The Luau and Lua licenses were not found in '${AFTERGLOW_LUAU_SOURCE_DIR}', and they must install with the binaries.")
-    endif()
-    install(FILES "${AFTERGLOW_LUAU_SOURCE_DIR}/LICENSE.txt" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
-            RENAME LICENSE.Luau)
-    # Luau derives from Lua, whose MIT notice it carries beside its own.
-    install(FILES "${AFTERGLOW_LUAU_SOURCE_DIR}/lua_LICENSE.txt" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
-            RENAME LICENSE.Lua)
-endif()
-# jsoncons (BSL-1.0) is header-only, and its headers are compiled into
-# PhosphorFsLoader, so its notice goes with that library. Two of those headers
-# carry an MIT notice of their own, which goes too: grisu3, which writes
-# doubles, and a5hash, which every jsoncons header includes. phosphor-fsloader
-# writes LICENSE.jsoncons into its binary directory at configure, with the BSL
-# text and then both notices copied from the pinned headers. Its own rule that
-# installs the file is skipped with the others, so it installs here. System
-# headers (PHOSPHORFSLOADER_USE_SYSTEM_JSONCONS) are a separate package with
-# their own notice, and phosphor-fsloader writes no file for them.
-if(NOT PHOSPHORFSLOADER_USE_SYSTEM_JSONCONS)
-    get_directory_property(AFTERGLOW_FSLOADER_BINARY_DIR DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/phosphor-fsloader"
-        BINARY_DIR)
-    if(NOT EXISTS "${AFTERGLOW_FSLOADER_BINARY_DIR}/LICENSE.jsoncons")
-        message(FATAL_ERROR "phosphor-fsloader did not write '${AFTERGLOW_FSLOADER_BINARY_DIR}/LICENSE.jsoncons', and it must install with the binaries. A phosphor-libs tree older than the commit that cmake/AfterglowDependencies.cmake pins does not write it.")
-    endif()
-    install(FILES "${AFTERGLOW_FSLOADER_BINARY_DIR}/LICENSE.jsoncons" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow)
-endif()
+# (cmake/AfterglowDependencies.cmake). The phosphor-libs tree installs the
+# notices of what it compiles in (Luau and Lua, jsoncons, the Wayland
+# protocols) into the same directory.
+afterglow_install_bundled_notices(${AFTERGLOW_LICENSEDIR})
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shaders/ DESTINATION ${CMAKE_INSTALL_DATADIR}/${AFTERGLOW_SHADER_SUBDIR})
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/themes/ DESTINATION ${CMAKE_INSTALL_DATADIR}/${AFTERGLOW_DATA_SUBDIR}/themes)
 # Scripting: the types for editors. They do not load on their own.

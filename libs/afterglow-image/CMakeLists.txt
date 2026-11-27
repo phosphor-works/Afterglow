@@ -113,7 +113,7 @@ function(afterglow_add_libjpeg_turbo)
 
     # A build directory is for one source directory: CMake refuses another.
     # A new pin, a CPM cache in another place, or the change between CPM and
-    # AFTERGLOW_DEPS_ARCHIVES gives another, and the old build goes.
+    # PHOSPHOR_DEPS_ARCHIVES gives another, and the old build goes.
     if(EXISTS "${build}/CMakeCache.txt")
         file(STRINGS "${build}/CMakeCache.txt" home REGEX "^CMAKE_HOME_DIRECTORY:INTERNAL=")
         string(REPLACE "CMAKE_HOME_DIRECTORY:INTERNAL=" "" home "${home}")

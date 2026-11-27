@@ -46,7 +46,7 @@ let
   # jsoncons archives that the pinned phosphor-libs commit pins in its
   # cmake/PhosphorDependencies.cmake. The sandbox has no network, so they are
   # fetched here as fixed-output derivations and handed to CMake as one
-  # directory (AFTERGLOW_DEPS_ARCHIVES, which also sets PHOSPHOR_DEPS_ARCHIVES),
+  # directory (PHOSPHOR_DEPS_ARCHIVES, which the phosphor-libs tree reads too),
   # each under the FILE name of its pin. CMake checks each against the pin's
   # hash again before it unpacks it. fetchurl, not fetchFromGitHub: the pin
   # hashes the archive file itself. A pin that changes there changes here too.
@@ -173,7 +173,7 @@ stdenv.mkDerivation {
   cmakeFlags = [
     "-DCMAKE_BUILD_TYPE=Release"
     "-DBUILD_TESTING=${if withTests then "ON" else "OFF"}"
-    "-DAFTERGLOW_DEPS_ARCHIVES=${depsArchives}"
+    "-DPHOSPHOR_DEPS_ARCHIVES=${depsArchives}"
     # libc.a for the static aglow. Only its link searches here: in
     # buildInputs, every link would find this libc.a first, the shared
     # libraries' too.

@@ -3,13 +3,6 @@
 
 find_package(GTest REQUIRED)
 
-# Application sources compiled again into a test keep the definitions they
-# ship with. The tests themselves build strings from literals.
-set_source_files_properties(../src/ProjectStore.cpp ../src/SplitTree.cpp ../src/OverviewNavigation.cpp ../src/DockArea.cpp
-    ../src/animation/MomentumScroll.cpp
-    ../src/desktop/FileTransfer.cpp ../src/desktop/DragDrop.cpp ../src/desktop/UploadArchive.cpp ../src/desktop/Download.cpp
-    PROPERTIES COMPILE_DEFINITIONS QT_NO_CAST_FROM_ASCII)
-
 qt_add_executable(afterglow_app_tests
     ProjectStoreTest.cpp
     ../src/ProjectStore.cpp
@@ -255,7 +248,6 @@ gtest_discover_tests(afterglow_dnd_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM
 # afterglow does (AppDirectory.cpp): PhosphorPaths aborts on a path read before
 # the folder has a name, and the tests read their paths as the application does.
 add_library(afterglow_test_app_directory OBJECT AppDirectory.cpp)
-target_compile_definitions(afterglow_test_app_directory PRIVATE QT_NO_CAST_FROM_ASCII)
 target_link_libraries(afterglow_test_app_directory PUBLIC afterglow_paths)
 get_property(afterglow_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 foreach(test IN LISTS afterglow_test_targets)

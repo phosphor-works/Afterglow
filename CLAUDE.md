@@ -21,7 +21,7 @@ fit each prompt.
 ## Overview
 
 Afterglow is a Linux terminal for Wayland: Qt 6, C++20, a Vulkan renderer through QRhi, tabs and splits, shader
-packs that react to the terminal, shell integration and Luau scripts. It is not released yet.
+packs that react to the terminal, shell integration and Luau scripts.
 
 Afterglow is the terminal of the phosphor-works suite. Its application ID is `org.phosphor_works.Afterglow` (the
 `.desktop` file and the AppStream metadata in `data/`). Its user files are in `~/.config/phosphor-works/afterglow/`:
@@ -57,20 +57,19 @@ targets:
 
 ## Build and test
 
-| Task | Command |
-| --- | --- |
-| Build | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build -j3` (zero warnings is the bar) |
-| Unit and renderer tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 ctest --test-dir build --output-on-failure -j3` (about 2,000, all pass) |
-| Native window tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 python3 tools/headless_native.py` (about 15 minutes: run it in the background) |
-| Shader preview | `build/tools/render/afterglow_renderpng --shader PACK - out.png` |
-| Configuration reference | `python3 tools/generate-reference.py build/afterglow/afterglow` |
+```sh
+cmake --workflow --preset dev            # configure into build/, build, test
+ctest --test-dir build -R <name>         # one test
+```
 
-The memory cap keeps systemd-oomd from killing the user's Afterglow. Keep the cap in a pane of the agent session
-too (see Environment under Rules). The `afterglow:build` skill has the details: the build directories, the
-Phosphor checkout, the generated files.
-
-CI calls the shared C++ CI with the `release` preset. Its jobs have no Wayland display, so the Vulkan tests and the
-native window suite do not run there (`docs/TESTING.md`).
+- The suite has about 2,000 unit and renderer tests. CI's jobs have no Wayland display, so the Vulkan tests and the
+  native window suite run only locally (`docs/TESTING.md`).
+- `python3 tools/headless_native.py` runs the native window tests in a headless nested KWin, about 15 minutes, under
+  the memory cap. Run it in the background.
+- `build/tools/render/afterglow_renderpng --shader PACK - out.png` previews a shader pack.
+- `python3 tools/generate-reference.py build/afterglow/afterglow` regenerates the configuration reference.
+- The `afterglow:build` skill has the details: the build directories, a local phosphor-libs, the generated files.
+- CI calls the shared C++ CI with the `release` preset.
 
 ## Rules
 
@@ -124,19 +123,12 @@ native window suite do not run there (`docs/TESTING.md`).
 - **Unreleased: no migrations.** Rename a key or change a format directly. Write no compatibility code for old
   configs or old script APIs. `CHANGELOG.md` describes what the first release supports. It is not a log of changes
   and has no migration notes.
-- **Licenses.** `mux/` (the daemon, its protocol and its tests) is `GPL-3.0-or-later` like the application, and so
-  is `tools/fuzz/muxfuzz.cpp`, which compiles `mux/`. Tools that use only `libs/afterglow-vt`,
-  `libs/afterglow-proto` and `libs/afterglow-image` (the VT benchmark, `tools/conformance`, the rest of
-  `tools/fuzz`, `tools/aglow` with its tests, the `aglow` completions in `data/completions`,
-  `tools/gen_unicode_tables.py`) are `LGPL-2.1-or-later`. `libs/**` is `LGPL-2.1-or-later`, tests included. New
-  shader packs are `LGPL-2.1-or-later`. Feedback Glow, Depth Trails and Mesh Reactor are `GPL-3.0-or-later`: keep
-  the header that a file has, and do not relicense it. `REUSE.toml` licenses files that cannot hold a header (JSON,
-  images).
-- **Installs.** To check the install layout, `cmake --install` can also go into a directory under the build tree,
-  as the `aglow_only_build` test does. There is no other install.
-- **Text.** Documents follow `docs/WRITING.md`.
-- **Commits.** An example subject: `feat(chrome): animate tab switches with a shader pack`. The body says what
-  changed for the user. End the message with the `Co-Authored-By` line that the session instructions give.
+- **Licenses.** Beyond the conventions' split (`libs/**` LGPL, the rest GPL): new shader packs are
+  `LGPL-2.1-or-later`, so other terminals can build on them. Feedback Glow, Depth Trails and Mesh Reactor are
+  `GPL-3.0-or-later`: keep the header that a file has, and do not relicense it.
+- **Documents.** Check each procedure against the implementation, the local links and heading anchors, and each
+  configuration example for valid JSON. Keep recorded measurements with their test conditions. Regenerate the
+  configuration reference after a change to the schema or a description.
 
 ### Environment
 
@@ -162,7 +154,7 @@ native window suite do not run there (`docs/TESTING.md`).
 - Libraries that the build compiles in (zlib-ng, xxHash, libpng, libjpeg-turbo, libwebp, Little CMS) come from
   archives that `cmake/AfterglowDependencies.cmake` pins by URL and SHA-256, and link statically. `aglow` is one
   static program. Do not link a system copy instead.
-- `QT_NO_KEYWORDS` is on everywhere. `QT_NO_CAST_FROM_ASCII` is on only for the application and the renderer.
+- `QT_NO_KEYWORDS` is on everywhere. `QT_NO_CAST_FROM_ASCII` is on for every target that uses Qt.
 - Threads: the terminal callbacks (`ITerminalHost`) run on the PTY reader thread while `Pane::m_mutex` is held.
   They reach the GUI thread only through queued calls. A new callback follows the same contract. The image decode
   callbacks are the exception: they let the lock go while the decoder runs (`Pane::decodeOutsideLock`).
@@ -192,10 +184,14 @@ Afterglow's notes for their domain (`afterglow:review-notes`): `phosphor-works:s
 
 ## Other repositories
 
-- **phosphor-libs changes only through its own pull request.** The build compiles the Phosphor libraries from the
-  phosphor-libs commit that `cmake/AfterglowDependencies.cmake` pins, or from the tree that
-  `AFTERGLOW_PHOSPHOR_LIBS_DIR` names. Never edit a phosphor-libs or PlasmaZones checkout from an Afterglow session.
-  When Afterglow needs a Phosphor change, say what and why, and let the user decide.
+The Phosphor libraries are not in this repository. They are built from the phosphor-libs commit that
+`cmake/AfterglowDependencies.cmake` pins, added with CPM as a subproject and embedded in Afterglow
+(`PHOSPHOR_EMBED_APP`): they install only in Afterglow's own directories, `lib/phosphor-works/afterglow` and
+`share/licenses/afterglow`.
+
+- A change to a library is a pull request in phosphor-libs, then a pin move here: `cmake/AfterglowDependencies.cmake`
+  and `nix/package.nix`. Build against a local checkout with `-DCPM_phosphor-libs_SOURCE=<dir>`.
+- `${PHOSPHOR_LIBS_CMAKE_DIR}` holds the shared test helpers (`PhosphorTestIsolation`, `PhosphorTestPch`).
 
 ## Where things are
 

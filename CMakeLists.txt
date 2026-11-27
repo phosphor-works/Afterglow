@@ -100,12 +100,14 @@ if(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR STREQUAL "")
 endif()
 
 # The installed layout, the private library directory and the run path are in
-# cmake/AfterglowInstallDirs.cmake, which needs the suite folder's name from
-# the phosphor-libs tree: cmake/AfterglowPhosphor.cmake includes it.
-# The private libraries of aglow-mux, which it installs alone and afterglow
-# installs with its own in a whole build. AglowOnlyCheck.cmake checks for
-# them in the installation of aglow-mux alone.
-set(AFTERGLOW_MUX_PRIVATE_LIBS AfterglowVt AfterglowPty PhosphorChannel)
+# cmake/AfterglowInstallDirs.cmake, which takes the directories from the
+# phosphor-libs tree: cmake/AfterglowPhosphor.cmake includes it.
+# Afterglow's own private libraries of aglow-mux, which it installs alone and
+# afterglow installs with its own in a whole build. The phosphor library it
+# links, phosphor-channel, installs itself in the same directory.
+# AglowOnlyCheck.cmake checks for all of them in the installation of aglow-mux
+# alone.
+set(AFTERGLOW_MUX_PRIVATE_LIBS AfterglowVt AfterglowPty)
 
 # aglow and aglow-mux alone, for a computer that runs no Afterglow: a remote
 # host, where the --ssh option of afterglow mux runs aglow-mux proxy, or
@@ -167,6 +169,9 @@ qt_standard_project_setup()
 # Qt's signals/slots/emit keywords collide with ordinary identifiers (the
 # phosphor libraries name variables `slots`); use Q_SIGNALS / Q_EMIT instead.
 add_compile_definitions(QT_NO_KEYWORDS)
+# No implicit const char* to QString in any target: QStringLiteral for a
+# constant, QLatin1String for a comparison. Code with no Qt never sees it.
+add_compile_definitions(QT_NO_CAST_FROM_ASCII)
 
 # The pins of phosphor-libs, zlib-ng and xxHash (libs/afterglow-proto) and of
 # the image codecs and Little CMS (libs/afterglow-image), and CPM. Included at

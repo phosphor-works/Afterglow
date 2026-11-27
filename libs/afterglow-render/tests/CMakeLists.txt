@@ -13,7 +13,6 @@ add_executable(afterglow_render_tests RenderTest.cpp BidiTest.cpp GpuTestDevice.
 target_link_libraries(afterglow_render_tests PRIVATE Afterglow::Render Qt6::Gui GTest::gtest)
 set_target_properties(afterglow_render_tests PROPERTIES AUTOMOC OFF)
 # Strings as the renderer builds them: no QString from a bare const char*.
-target_compile_definitions(afterglow_render_tests PRIVATE QT_NO_CAST_FROM_ASCII)
 # The overlay transition pack, as it ships.
 target_compile_definitions(afterglow_render_tests PRIVATE
     AFTERGLOW_OVERLAY_FADE_PACK="${PROJECT_SOURCE_DIR}/data/shaders/overlay-fade/effect.frag")

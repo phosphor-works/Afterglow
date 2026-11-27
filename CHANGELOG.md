@@ -239,6 +239,8 @@ See [performance measurements](docs/PERFORMANCE.md) for workloads, conditions an
 - `--config FILE` reads another settings file. The `themes`, `shaders`, `shader-presets` and `scripts` directories beside it take the place of your own.
 - The desktop's fixed-width font and size by default, with the `calt` and `liga` features. `Font.sizeStep` sets the font size step.
 - A clean exit on `SIGTERM`, `SIGINT` and `SIGHUP` that closes the windows and the control socket. A signal that Afterglow inherited as ignored stays ignored.
+- Afterglow keeps the Phosphor libraries that it uses, and their Wayland plugin, in its own folder `lib/phosphor-works/afterglow`, beside its own libraries. The notices of the code they compile in are in `share/licenses/afterglow`. It installs nothing in the system library folder or in Qt's plugin folder, so it installs beside the other Phosphor apps, each with the library versions it was built with.
+- `aglow` and the developer tools are GPL-3.0-or-later, like the application. The libraries in `libs/` stay LGPL-2.1-or-later.
 
 ### Documentation
 

@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: 2026 Phosphor Works Team
-# SPDX-License-Identifier: LGPL-2.1-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 # cmake -DSOURCE=<dir> -DBINARY=<dir> -DGENERATOR=<name> -DPHOSPHOR_LIBS=<dir> -DMUX_LIBS=<library>,...
 #       -DPRIVATE_SUBDIR=<dir>
@@ -17,7 +17,7 @@
 # into BINARY/prefix. Fails unless:
 #
 #   - without aglow-mux (AFTERGLOW_BUILD_MUX off), the configuration succeeds
-#     with find_package(Qt6) disabled and with AFTERGLOW_PHOSPHOR_LIBS_DIR
+#     with find_package(Qt6) disabled and with CPM_phosphor-libs_SOURCE
 #     naming a directory that does not exist, and CMake reports both
 #     variables as unused: nothing looked for Qt or read the Phosphor
 #     checkout;
@@ -76,7 +76,7 @@ set(args -G "${GENERATOR}"
     -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF)
 foreach(pair "CMAKE_MAKE_PROGRAM;MAKE_PROGRAM" "CMAKE_BUILD_TYPE;BUILD_TYPE" "CMAKE_C_COMPILER;C_COMPILER"
              "CMAKE_CXX_COMPILER;CXX_COMPILER" "CMAKE_C_FLAGS;C_FLAGS" "CMAKE_CXX_FLAGS;CXX_FLAGS"
-             "CMAKE_EXE_LINKER_FLAGS;LINKER_FLAGS" "CPM_SOURCE_CACHE;CPM_CACHE" "AFTERGLOW_DEPS_ARCHIVES;DEPS_ARCHIVES"
+             "CMAKE_EXE_LINKER_FLAGS;LINKER_FLAGS" "CPM_SOURCE_CACHE;CPM_CACHE" "PHOSPHOR_DEPS_ARCHIVES;DEPS_ARCHIVES"
              "PKG_CONFIG_EXECUTABLE;PKG_CONFIG" "CMAKE_TOOLCHAIN_FILE;TOOLCHAIN_FILE" "CMAKE_SYSROOT;SYSROOT")
     list(GET pair 0 name)
     list(GET pair 1 given)
@@ -134,20 +134,20 @@ endfunction()
 # aglow without aglow-mux reads no Phosphor checkout. Only configured: the
 # build with aglow-mux compiles the same aglow.
 aglow_only_run("configuration without aglow-mux" ${CMAKE_COMMAND} -S "${SOURCE}" -B "${BINARY}/no-mux" ${args}
-               -DBUILD_TESTING=OFF -DAFTERGLOW_BUILD_MUX=OFF "-DAFTERGLOW_PHOSPHOR_LIBS_DIR=${BINARY}/no-phosphor-libs")
-aglow_only_unused("${output}" CMAKE_DISABLE_FIND_PACKAGE_Qt6 AFTERGLOW_PHOSPHOR_LIBS_DIR)
+               -DBUILD_TESTING=OFF -DAFTERGLOW_BUILD_MUX=OFF "-DCPM_phosphor-libs_SOURCE=${BINARY}/no-phosphor-libs")
+aglow_only_unused("${output}" CMAKE_DISABLE_FIND_PACKAGE_Qt6 CPM_phosphor-libs_SOURCE)
 file(REMOVE_RECURSE "${BINARY}/no-mux")
 
 # The tests of afterglow-proto, afterglow-image, aglow, the terminal core,
 # the PTY and aglow-mux, which docs/BUILD.md runs in this build: only
 # configured, because building them would take as long again.
 aglow_only_run("configuration with the tests" ${CMAKE_COMMAND} -S "${SOURCE}" -B "${BINARY}/tests" ${args}
-               -DBUILD_TESTING=ON -DAFTERGLOW_BUILD_MUX=ON "-DAFTERGLOW_PHOSPHOR_LIBS_DIR=${PHOSPHOR_LIBS}")
+               -DBUILD_TESTING=ON -DAFTERGLOW_BUILD_MUX=ON "-DCPM_phosphor-libs_SOURCE=${PHOSPHOR_LIBS}")
 aglow_only_unused("${output}" CMAKE_DISABLE_FIND_PACKAGE_Qt6)
 file(REMOVE_RECURSE "${BINARY}/tests")
 
 aglow_only_run(configuration ${CMAKE_COMMAND} -S "${SOURCE}" -B "${build}" ${args}
-               -DBUILD_TESTING=OFF -DAFTERGLOW_BUILD_MUX=ON "-DAFTERGLOW_PHOSPHOR_LIBS_DIR=${PHOSPHOR_LIBS}")
+               -DBUILD_TESTING=OFF -DAFTERGLOW_BUILD_MUX=ON "-DCPM_phosphor-libs_SOURCE=${PHOSPHOR_LIBS}")
 aglow_only_unused("${output}" CMAKE_DISABLE_FIND_PACKAGE_Qt6)
 
 set(config)
@@ -165,7 +165,8 @@ file(STRINGS "${build}/CMakeCache.txt" libstdcxx REGEX "^AGLOW_RUNTIME_LIBSTDCXX
 file(STRINGS "${build}/CMakeCache.txt" libdir REGEX "^CMAKE_INSTALL_LIBDIR:PATH=")
 string(REGEX REPLACE "^[^=]*=" "" libdir "${libdir}")
 set(expected bin/aglow share/bash-completion/completions/aglow share/fish/vendor_completions.d/aglow.fish
-    share/zsh/site-functions/_aglow share/licenses/aglow/LGPL-2.1-or-later.txt
+    share/zsh/site-functions/_aglow share/licenses/aglow/GPL-3.0-or-later.txt
+    share/licenses/aglow/LGPL-2.1-or-later.txt
     share/licenses/aglow/LICENSE.xxHash share/licenses/aglow/LICENSE.zlib-ng
     share/licenses/aglow/LICENSE.libpng share/licenses/aglow/LICENSE.libjpeg-turbo share/licenses/aglow/README.ijg
     share/licenses/aglow/NOTICE.IJG share/licenses/aglow/LICENSE.libwebp share/licenses/aglow/PATENTS.libwebp
@@ -179,7 +180,7 @@ if(static AND glibc)
     list(APPEND expected share/licenses/aglow/LICENSE.glibc)
 endif()
 if(static AND libstdcxx)
-    list(APPEND expected share/licenses/aglow/GPL-3.0-or-later.txt share/licenses/aglow/LICENSE.libstdc++)
+    list(APPEND expected share/licenses/aglow/LICENSE.libstdc++)
 endif()
 file(GLOB_RECURSE installed LIST_DIRECTORIES false RELATIVE "${prefix}" "${prefix}/*")
 # The private libraries of aglow-mux, by their names and sonames: their

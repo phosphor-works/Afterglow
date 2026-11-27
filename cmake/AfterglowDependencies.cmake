@@ -14,7 +14,7 @@
 #
 # How an archive is obtained, in order:
 #
-#   1. AFTERGLOW_DEPS_ARCHIVES names a directory that holds the archives under
+#   1. PHOSPHOR_DEPS_ARCHIVES names a directory that holds the archives under
 #      their FILE names below. Each is checked against its SHA-256 and
 #      extracted into the build tree. Nothing is downloaded and CPM is never
 #      loaded, so an offline packaging build takes this path.
@@ -27,13 +27,13 @@
 #
 # Script mode, for packagers:
 #
-#   cmake -DAFTERGLOW_DEPS_FETCH=<dir> -P cmake/AfterglowDependencies.cmake
+#   cmake -DPHOSPHOR_DEPS_FETCH=<dir> -P cmake/AfterglowDependencies.cmake
 #
 # downloads every archive into <dir> under its FILE name and checks it, so
-# <dir> can be given as AFTERGLOW_DEPS_ARCHIVES. It then downloads the archives
-# that the pinned phosphor-libs tree pins into the same <dir>, which can be
-# given as PHOSPHOR_DEPS_ARCHIVES too. Each download also leaves an
-# empty FILE.lock in <dir> (see _afterglow_download). AFTERGLOW_DEPS_ARCHIVES
+# <dir> can be given as PHOSPHOR_DEPS_ARCHIVES. It then downloads the archives
+# that the pinned phosphor-libs tree pins into the same <dir>, which that tree
+# reads from the same variable. Each download also leaves an
+# empty FILE.lock in <dir> (see _afterglow_download). PHOSPHOR_DEPS_ARCHIVES
 # reads only the archives, so the lock files need not be copied with them.
 #
 # Bumping a pin: change its VERSION, URL, FILE and SHA256 together, with the
@@ -152,10 +152,10 @@ endfunction()
 
 # ─── Script mode: download the archives ──────────────────────────────────────
 if(CMAKE_SCRIPT_MODE_FILE)
-    if(NOT AFTERGLOW_DEPS_FETCH)
-        message(FATAL_ERROR "usage: cmake -DAFTERGLOW_DEPS_FETCH=<dir> -P ${CMAKE_CURRENT_LIST_FILE}")
+    if(NOT PHOSPHOR_DEPS_FETCH)
+        message(FATAL_ERROR "usage: cmake -DPHOSPHOR_DEPS_FETCH=<dir> -P ${CMAKE_CURRENT_LIST_FILE}")
     endif()
-    get_filename_component(dir "${AFTERGLOW_DEPS_FETCH}" ABSOLUTE)
+    get_filename_component(dir "${PHOSPHOR_DEPS_FETCH}" ABSOLUTE)
     file(MAKE_DIRECTORY "${dir}")
     foreach(name IN LISTS AFTERGLOW_DEPS)
         set(file "${dir}/${AFTERGLOW_DEP_${name}_FILE}")
@@ -187,14 +187,14 @@ if(CMAKE_SCRIPT_MODE_FILE)
 endif()
 
 # ─── Configure mode ──────────────────────────────────────────────────────────
-set(AFTERGLOW_DEPS_ARCHIVES "" CACHE PATH
+set(PHOSPHOR_DEPS_ARCHIVES "" CACHE PATH
     "Directory with the archives that cmake/AfterglowDependencies.cmake pins, for an offline build. Empty: download them with CPM")
 
 # CPM keeps part of its state in ordinary variables of the scope that includes
 # it, so it is loaded here, at the including scope, and not in a function. The
 # phosphor-libs module, included after this one, uses it again. An offline
 # build never loads it, so it never reaches the network.
-if(NOT AFTERGLOW_DEPS_ARCHIVES AND NOT COMMAND CPMAddPackage)
+if(NOT PHOSPHOR_DEPS_ARCHIVES AND NOT COMMAND CPMAddPackage)
     if(NOT DEFINED CPM_SOURCE_CACHE AND NOT DEFINED ENV{CPM_SOURCE_CACHE})
         set(CPM_SOURCE_CACHE "${_AFTERGLOW_DEPS_ROOT}/.cache/cpm" CACHE PATH
             "Where CPM.cmake keeps downloaded packages, shared by every build directory")
@@ -231,13 +231,13 @@ function(afterglow_fetch_dependency name)
     set(version "${AFTERGLOW_DEP_${name}_VERSION}")
     set(sha "${AFTERGLOW_DEP_${name}_SHA256}")
 
-    if(AFTERGLOW_DEPS_ARCHIVES)
-        set(archive "${AFTERGLOW_DEPS_ARCHIVES}/${AFTERGLOW_DEP_${name}_FILE}")
+    if(PHOSPHOR_DEPS_ARCHIVES)
+        set(archive "${PHOSPHOR_DEPS_ARCHIVES}/${AFTERGLOW_DEP_${name}_FILE}")
         if(NOT EXISTS "${archive}")
             message(FATAL_ERROR
-                "AFTERGLOW_DEPS_ARCHIVES is ${AFTERGLOW_DEPS_ARCHIVES}, which has no ${AFTERGLOW_DEP_${name}_FILE}. "
+                "PHOSPHOR_DEPS_ARCHIVES is ${PHOSPHOR_DEPS_ARCHIVES}, which has no ${AFTERGLOW_DEP_${name}_FILE}. "
                 "Fetch it from ${AFTERGLOW_DEP_${name}_URL}, or fill the directory with "
-                "cmake -DAFTERGLOW_DEPS_FETCH=<dir> -P cmake/AfterglowDependencies.cmake")
+                "cmake -DPHOSPHOR_DEPS_FETCH=<dir> -P cmake/AfterglowDependencies.cmake")
         endif()
         file(SHA256 "${archive}" have)
         if(NOT have STREQUAL sha)
@@ -287,6 +287,41 @@ function(afterglow_fetch_dependency name)
     endif()
     set(${name}_SOURCE_DIR "${${name}_SOURCE_DIR}" PARENT_SCOPE)
 endfunction()
+
+# afterglow_add_phosphor_libs()
+#
+# Adds the phosphor-libs tree that the pin above names as a subproject, as
+# phosphor-libs' README says an app does ("Use from an app"). Afterglow embeds
+# the libraries: with PHOSPHOR_EMBED_APP set, the tree installs only the shared
+# libraries, the layer-shell plugin and the licence notices of the code it
+# compiles in, in Afterglow's own directories (lib/phosphor-works/afterglow and
+# share/licenses/afterglow). -DCPM_phosphor-libs_SOURCE=<dir> builds a local
+# checkout, and PHOSPHOR_LIBS_GIT_REF a branch or a commit. A build that holds
+# the tree already, the workspace superbuild, keeps the one it has. A macro, so
+# CPM leaves phosphor-libs_SOURCE_DIR in the caller's scope.
+macro(afterglow_add_phosphor_libs)
+    set(PHOSPHOR_EMBED_APP "afterglow")
+    if(TARGET PhosphorChannel)
+        message(STATUS "Afterglow: phosphor-libs is already in this build")
+    elseif(PHOSPHOR_DEPS_ARCHIVES)
+        afterglow_fetch_dependency(phosphor-libs)
+        add_subdirectory("${phosphor-libs_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/_deps/phosphor-libs-build")
+    elseif(PHOSPHOR_LIBS_GIT_REF)
+        CPMAddPackage(NAME phosphor-libs
+                      GIT_REPOSITORY "https://github.com/phosphor-works/phosphor-libs.git"
+                      GIT_TAG "${PHOSPHOR_LIBS_GIT_REF}"
+                      GIT_SHALLOW NO)
+    else()
+        CPMAddPackage(NAME phosphor-libs
+                      URL "${AFTERGLOW_DEP_phosphor-libs_URL}"
+                      URL_HASH SHA256=${AFTERGLOW_DEP_phosphor-libs_SHA256})
+    endif()
+    if(NOT COMMAND phosphor_embedded_dirs)
+        message(FATAL_ERROR
+            "The phosphor-libs tree in use has no phosphor_embedded_dirs(): it is older than the commit that "
+            "cmake/AfterglowDependencies.cmake pins.")
+    endif()
+endmacro()
 
 # afterglow_third_party_target(<target>...)
 #
