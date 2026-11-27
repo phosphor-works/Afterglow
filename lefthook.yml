@@ -6,6 +6,6 @@
 # `lefthook install` sets them up, and workspace/tools/setup runs it.
 remotes:
   - git_url: https://github.com/phosphor-works/workspace
-    ref: v3
+    ref: v4
     configs:
       - lefthook/common.yml
