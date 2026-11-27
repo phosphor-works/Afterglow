@@ -42,9 +42,10 @@
 }:
 
 let
-  # The archives that cmake/AfterglowDependencies.cmake pins, and the Luau and
-  # jsoncons archives that the pinned phosphor-libs commit pins in its
-  # cmake/PhosphorDependencies.cmake. The sandbox has no network, so they are
+  # The archives that cmake/AfterglowDependencies.cmake pins, and the Luau,
+  # jsoncons and (for the phosphor-libs tests in the suite)
+  # phosphor-surface-packs archives that the pinned phosphor-libs commit pins
+  # in its cmake/PhosphorDependencies.cmake. The sandbox has no network, so they are
   # fetched here as fixed-output derivations and handed to CMake as one
   # directory (PHOSPHOR_DEPS_ARCHIVES, which the phosphor-libs tree reads too),
   # each under the FILE name of its pin. CMake checks each against the pin's
@@ -121,6 +122,14 @@ let
         url = "https://github.com/danielaparker/jsoncons/archive/refs/tags/v1.10.0.tar.gz";
         # sha256 c829350a2eece662beb378143e2ab1c1cbb07d703687bf168626665a8a7d8bc1
         hash = "sha256-yCk1Ci7s5mK+s3gUPiqxwcuwfXA2h78WhiZmWop9i8E=";
+      };
+    }
+    {
+      name = "phosphor-surface-packs-572e2240ef306d48650ed45ba6672af5ab31e75f.tar.gz";
+      path = fetchurl {
+        url = "https://github.com/phosphor-works/phosphor-surface-packs/archive/572e2240ef306d48650ed45ba6672af5ab31e75f.tar.gz";
+        # sha256 2fb063f95503dcca9b23c2905213940f1f4aa8701623f1020c695335dd90475e
+        hash = "sha256-L7Bj+VUD3MqbI8KQUhOUDx9KqHAWI/ECDGlTNd2QR14=";
       };
     }
   ];
