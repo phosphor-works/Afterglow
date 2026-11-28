@@ -120,7 +120,9 @@ qt_add_library(afterglow_app STATIC
 qt_add_executable(afterglow src/main.cpp src/control/Ctl.cpp src/control/Ctl.h src/control/Mux.cpp src/control/Mux.h
     src/mcp/Mcp.cpp src/mcp/Mcp.h src/shell/Aglow.cpp src/shell/Aglow.h)
 # afterglow_app brings afterglow_mux_protocol, which Mux.cpp uses too.
-target_link_libraries(afterglow PRIVATE afterglow_app)
+# PhosphorIpcCli gives afterglow ctl the generic call, list, schema and
+# subscribe of the suite's clients.
+target_link_libraries(afterglow PRIVATE afterglow_app PhosphorIpc::PhosphorIpcCli)
 # afterglow mux runs the aglow-mux of its own directory, and so do the panes,
 # which decode the images that programs send with it (ProgramImages.cpp).
 add_dependencies(afterglow aglow-mux)

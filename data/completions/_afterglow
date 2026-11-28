@@ -184,6 +184,14 @@ _afterglow_ctl() {
         'overlay:run a command over the pane and print its result'
         'screenshot:save the pane, its tab or its window as PNG'
     )
+    # The generic commands of the suite's clients (PhosphorIpcCli). They take
+    # no --session.
+    local -a generic=(
+        'call:call a function of a target'
+        'list:list the targets of the socket'
+        'schema:print the JSON Schema of a target'
+        'subscribe:print the events of a signal'
+    )
     # --session NAME comes before the command. afterglow mux ls lists the
     # names, but a completion runs no program but aglow run --complete. With
     # the cursor on the word --session itself, that word is the one being
@@ -203,13 +211,26 @@ _afterglow_ctl() {
             [[ $PREFIX == -* ]] || _describe -t commands 'ctl command' commands
             return
         fi
+    elif [[ $words[2] == --socket ]] && (( CURRENT > 2 )); then
+        if (( CURRENT == 3 )); then
+            _files
+            return
+        fi
+        words[2,3]=()
+        (( CURRENT -= 2 ))
+        # The usage only comes first: a command follows.
+        if (( CURRENT == 2 )); then
+            [[ $PREFIX == -* ]] || _describe -t commands 'ctl command' commands -- generic
+            return
+        fi
     elif (( CURRENT == 2 )) && [[ $PREFIX == -* ]]; then
-        help=('-h:show the usage' '--help:show the usage' '--session:act on a mux session')
+        help=('-h:show the usage' '--help:show the usage' '--session:act on a mux session'
+            '--socket:talk to the Afterglow at this socket')
         _describe -t options 'option' help
         return
     fi
     if (( CURRENT == 2 )); then
-        _describe -t commands 'ctl command' commands
+        _describe -t commands 'ctl command' commands -- generic
         return
     fi
     # From here, words[1] is the ctl command.
@@ -240,7 +261,13 @@ _afterglow_ctl() {
         fi
         ;;
     esac
+    local socket='--socket[talk to this socket]:socket:_files'
     case $words[1] in
+    call) _arguments '*--arg[an argument]:NAME=VALUE:' '--timeout[seconds to wait for the answer]:seconds:' "$socket" \
+            '1:TARGET.FN:' ;;
+    list) _arguments "$socket" ;;
+    schema) _arguments "$socket" '1:target:' ;;
+    subscribe) _arguments "$socket" '1:TARGET.SIGNAL:' ;;
     ls) _arguments '--json[print JSON]' ;;
     run) _arguments -S $pane "${limits[@]}" '--json[print every field as JSON]' '*:command:' ;;
     wait)

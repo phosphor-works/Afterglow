@@ -60,7 +60,9 @@ Each byte other than a letter, a digit, `-`, `_` and `.` becomes `_`.
 The socket path has a limit of 107 bytes (see [limits](#limits)).
 
 Outside its panes, `afterglow ctl` and `aglow run` do not find a separate process.
-A client reaches it with its socket path, for example `AFTERGLOW_SOCKET=PATH afterglow ctl ls`.
+A client reaches it with its socket path, for example `afterglow ctl --socket PATH ls` or `AFTERGLOW_SOCKET=PATH afterglow ctl ls`.
+`--socket PATH` names a process, not a pane: the command acts on `--pane N`, else on the focused pane of that process.
+It comes before the command, and not with `--session`.
 `aglow run` refuses a socket on which a process of another user listens.
 `afterglow ctl` does not do this check.
 
@@ -247,7 +249,7 @@ The daemon answers only calls and subscriptions. It answers with the codes above
 | `NOT_AT_PROMPT` | `paste` with the option `prompt`, and the shell of the pane is not at a prompt with an empty command line. Nothing went to the pane. |
 | `LAST_PANE` | `close` with the option `endSession` false, when no other pane of the session runs a program. Nothing closed. |
 
-Outside a session pane, any phosphor-ipc client can also use the socket, for example Lambent's `lambentctl --socket "$AFTERGLOW_SOCKET" list`.
+Outside a session pane, the [generic commands](#generic-commands) of `afterglow ctl` and any other phosphor-ipc client also use the socket, for example `afterglow ctl list`.
 
 ### Session calls
 
@@ -393,6 +395,27 @@ It then writes on standard error how many panes kept their colors.
 A `*` after the pane ID marks the focused pane. `TAB` is the position of the tab from 0.
 `SHELL` is the [shell state](#shell-states). `TITLE` takes 30 cells. Afterglow cuts a longer title and pads a shorter one.
 `afterglow ctl ls --json` prints the [pane objects](#pane-object) of `listPanes`.
+
+### Generic commands
+
+`afterglow ctl` also has the generic commands of the suite's clients, as Lambent's `lambentctl` and the compositor's
+`phosphorctl` have them. They come from phosphor-ipc's `PhosphorIpcCli`. They reach any target of the socket, with no
+pane:
+
+| Command | What it does |
+| --- | --- |
+| `call TARGET.FN [--arg NAME=VALUE...] [--timeout SECONDS]` | Calls `FN` of `TARGET` and prints what it returns. It waits 2 seconds for the answer, and without a limit with `--timeout 0`. Events of the call go to standard error. |
+| `list` | Prints the targets of the socket, one on each line. |
+| `schema TARGET` | Prints the JSON Schema of `TARGET`. |
+| `subscribe TARGET.SIGNAL` | Prints the events of `SIGNAL` as JSON lines until it is interrupted. |
+
+They use the socket that the other commands use, or `--socket PATH`, before or after the command.
+They take no `--session` and no `--pane`.
+In a pane of a mux session, `$AFTERGLOW_SOCKET` is the socket of the mux daemon, which does not take these requests.
+There, give `--socket` with the socket of an Afterglow.
+
+Their exit status is that of the other commands: 1 for an error, such as no socket or an error of the target, and 2
+for a usage error. The suite's clients, such as `lambentctl`, have the same codes.
 
 ### Run a command and wait
 

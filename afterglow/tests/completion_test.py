@@ -190,7 +190,7 @@ def key_name_parses(name):
 
 
 def ctl_first_options(source):
-    """The options that runCtl in Ctl.cpp reads before the command: the usage and --session."""
+    """The options that runCtl in Ctl.cpp reads before the command: the usage, --session and --socket."""
     found = set(re.findall(r'args\[0\] == QLatin1String\("(-[^"]+)"\)', source))
     if '--session' not in found:
         raise SystemExit(f'FAIL: no --session in runCtl in {CTL}')
@@ -654,7 +654,14 @@ def mcp_cases(options):
     yield 'afterglow mcp --help -', lambda got: not got & options
 
 
-def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mux, open_project, ctl_first, source):
+# The options of the generic commands of afterglow ctl, which phosphor-ipc's PhosphorIpcCli reads
+# (libs/phosphor-ipc/src/cli in phosphor-libs). They take no --pane.
+GENERIC_OPTIONS = {'call': {'--arg', '--timeout', '--socket'}, 'list': {'--socket'}, 'schema': {'--socket'},
+                   'subscribe': {'--socket'}}
+
+
+def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mux, open_project, ctl_first, source,
+          generic):
     """(line, expected) pairs. A set is the exact result, a callable checks the result."""
     files = FILES
 
@@ -693,13 +700,28 @@ def cases(ctl_commands, paneless, actions, options, run, overlay, screenshot, mu
     yield from run_cases('afterglow', run)
     yield from mux_cases(*mux)
     yield from mcp_cases(mcp_options())
-    yield 'afterglow ctl ', set(ctl_commands)
+    if set(generic) != set(GENERIC_OPTIONS):
+        raise SystemExit(f'FAIL: GenericCommands in {CTL} are {sorted(generic)}, the test knows {sorted(GENERIC_OPTIONS)}')
+    yield 'afterglow ctl ', set(ctl_commands) | set(generic)
     yield 'afterglow ctl -', ctl_first
+    # --socket PATH comes first too, in place of --session: a file, then every command.
+    yield 'afterglow ctl --socket', {'--socket'}
+    yield 'afterglow ctl --socket ', files
+    yield 'afterglow ctl --socket /s ', set(ctl_commands) | set(generic)
+    yield 'afterglow ctl --socket /s -', set()
+    yield 'afterglow ctl --socket /s ls ', ctl('ls')
+    for command, offered in GENERIC_OPTIONS.items():
+        yield f'afterglow ctl {command} -', offered
+    yield 'afterglow ctl call --arg ', set()
+    yield 'afterglow ctl call --arg a=1 -', {'--arg', '--timeout', '--socket'}
+    yield 'afterglow ctl call --timeout 3 -', {'--arg', '--socket'}
+    yield 'afterglow ctl list --socket ', files
     # The word --session itself, at the cursor.
     yield 'afterglow ctl --session', {'--session'}
     # The name of a session, which nothing lists, then the command: the
     # usage comes only first.
     yield 'afterglow ctl --session ', set()
+    # The generic commands take no --session.
     yield 'afterglow ctl --session work ', set(ctl_commands)
     yield 'afterglow ctl --session work -', set()
     yield 'afterglow ctl --session work ls ', ctl('ls')
@@ -858,7 +880,8 @@ def main():
     source = CTL.read_text()
     sources = (string_list(source, 'Commands'), set(string_list(source, 'Paneless')), keybind_actions(),
                aglow_options(), run_options(), ctl_options(source, 'overlay'), ctl_options(source, 'screenshot'),
-               mux_commands(), ctl_options(source, 'open-project'), ctl_first_options(source), source)
+               mux_commands(), ctl_options(source, 'open-project'), ctl_first_options(source), source,
+               string_list(source, 'GenericCommands'))
     check_value_options()
     with tempfile.TemporaryDirectory(prefix='afterglow-completion-') as tmp:
         shells = Shells(Path(tmp))

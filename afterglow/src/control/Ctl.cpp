@@ -25,6 +25,7 @@
 #include <AfterglowVt/Terminal.h>
 #include <AfterglowVt/Unicode.h>
 #include <PhosphorIpc/IpcProtocol.h>
+#include <PhosphorIpcCli/PhosphorIpcCli.h>
 
 #include <QCoreApplication>
 #include <QRegularExpression>
@@ -57,7 +58,7 @@ namespace Afterglow {
 
 namespace {
 
-const char* const Usage = R"(Usage: afterglow ctl [--session NAME] <command> [options]
+const char* const Usage = R"(Usage: afterglow ctl [--session NAME | --socket PATH] <command> [options]
 
 Drives a running Afterglow (Control.enabled in the config). Commands act on
 --pane N, else $AFTERGLOW_PANE_ID (set in every pane), else the focused pane
@@ -72,6 +73,19 @@ work. get-text
 then reads no --selection or --last-visited-output: the window has them.
 For a session, split and new-tab prepare the program with the settings of
 the default config file, not the --config or -o of a running Afterglow.
+
+With --socket PATH, the commands go to the Afterglow at PATH, as with
+AFTERGLOW_SOCKET=PATH and no AFTERGLOW_PANE_ID: they act on --pane N, else
+its focused pane.
+
+The generic commands of the suite's clients (lambentctl, phosphorctl) reach
+any target of the socket. They take no --session or --pane:
+  call TARGET.FN [--arg NAME=VALUE...] [--timeout SECONDS]
+                                        call FN of TARGET and print what it returns
+  list                                  list the targets of the socket
+  schema TARGET                         print the JSON Schema of TARGET
+  subscribe TARGET.SIGNAL               print the events of SIGNAL as JSON lines
+                                        until interrupted
 
   ls [--json]                           list panes
   send-text [--raw] TEXT...             type TEXT (\n, \r, \t, \e, \\ and \xHH for U+00HH unless --raw)
@@ -228,6 +242,24 @@ QString pasteTooLong()
 /// The control target of the afterglow that runs this pane, else of the main
 /// one on this display, or of the mux daemon for a session (--session, or a
 /// session pane). Connects on the first use and reports its own errors.
+/// The socket of a command: --socket @p option when it is given, else
+/// $AFTERGLOW_SOCKET, else the socket of the display (findSocket). --socket
+/// names an Afterglow, not a pane: the lookup takes no AFTERGLOW_PANE_ID and
+/// no AFTERGLOW_SESSION with it.
+AfterglowProto::SocketLookup lookUpSocket(const QString& option)
+{
+    if (option.isEmpty())
+        return AfterglowProto::findSocket();
+    const std::string path = QFile::encodeName(option).toStdString();
+    return AfterglowProto::findSocket([&path](const char* name) -> const char* {
+        if (std::strcmp(name, "AFTERGLOW_SOCKET") == 0)
+            return path.c_str();
+        if (std::strcmp(name, "AFTERGLOW_PANE_ID") == 0 || std::strcmp(name, "AFTERGLOW_SESSION") == 0)
+            return nullptr;
+        return AfterglowProto::systemEnvironment(name);
+    });
+}
+
 class Client
 {
 public:
@@ -235,6 +267,11 @@ public:
     void useSession(QString name)
     {
         m_sessionName = std::move(name);
+    }
+    /// The calls go to the Afterglow at @p path (--socket).
+    void useSocket(QString path)
+    {
+        m_socketPath = std::move(path);
     }
     /// The calls go to the mux daemon, for a session. Connects first.
     bool toDaemon()
@@ -350,8 +387,9 @@ private:
             return true;
         if (!m_sessionName.isEmpty())
             return connectToDaemon();
-        // The afterglow that runs this pane, else the main one on the display.
-        const AfterglowProto::SocketLookup socket = AfterglowProto::findSocket();
+        // --socket, else the afterglow that runs this pane, else the main one
+        // on the display.
+        const AfterglowProto::SocketLookup socket = lookUpSocket(m_socketPath);
         if (socket.path.empty())
             return failed(QString::fromStdString(socket.error));
         const QString path = QFile::decodeName(QByteArray::fromStdString(socket.path));
@@ -513,6 +551,7 @@ private:
     bool m_own = false; ///< the socket of $AFTERGLOW_SOCKET
     qint64 m_pane = 0;
     QString m_sessionName; ///< --session
+    QString m_socketPath; ///< --socket
     bool m_daemon = false; ///< the calls go to the mux daemon
     bool m_failed = false; ///< no connection, or no session to act on: reported
     std::optional<InheritedEnvironment> m_environment; ///< sessionEnvironment()
@@ -730,6 +769,16 @@ std::optional<QString> stdinScopeError(const QString& scope)
 
 const QString NoCurrentDirectory = QStringLiteral("the current directory was removed, so give an absolute directory");
 
+/// The generic commands of the suite's clients, which PhosphorIpcCli runs
+/// (runGenericCommand). The completions offer them apart from Commands: they
+/// take no --session.
+const QStringList GenericCommands = {
+    QStringLiteral("call"),
+    QStringLiteral("list"),
+    QStringLiteral("schema"),
+    QStringLiteral("subscribe"),
+};
+
 const QStringList Commands = {
     QStringLiteral("ls"),
     QStringLiteral("run"),
@@ -793,6 +842,30 @@ void keepStandardDescriptors()
 
 } // namespace
 
+/// call, list, schema and subscribe: the generic commands of the suite's
+/// clients, from phosphor-ipc's PhosphorIpcCli, on the socket that the other
+/// commands use.
+int runGenericCommand(const QString& command, const QStringList& args, const std::optional<QString>& sessionName,
+                      const QString& socketOption)
+{
+    // The mux daemon answers only the calls of its own clients: list and
+    // schema it does not take, and a call must name a pane first.
+    if (sessionName)
+        return usage(QStringLiteral("%1 takes no --session").arg(command));
+    if (args.contains(QStringLiteral("--pane")))
+        return usage(QStringLiteral("%1 takes no --pane").arg(command));
+    const AfterglowProto::SocketLookup socket = lookUpSocket(socketOption);
+    if (socket.session && !args.contains(QStringLiteral("--socket")) && !args.contains(QStringLiteral("-s"))) {
+        return fail(QStringLiteral("in a pane of a mux session, $AFTERGLOW_SOCKET is the mux daemon's, which takes "
+                                   "no %1: give --socket PATH")
+                        .arg(command));
+    }
+    if (socket.path.empty() && !args.contains(QStringLiteral("--socket")) && !args.contains(QStringLiteral("-s")))
+        return fail(QString::fromStdString(socket.error));
+    return PhosphorIpcCli::runCommand(QStringLiteral("afterglow ctl"), command, args,
+                                      QFile::decodeName(QByteArray::fromStdString(socket.path)));
+}
+
 int runCtl(int argc, char** argv)
 {
     keepStandardDescriptors();
@@ -802,8 +875,24 @@ int runCtl(int argc, char** argv)
         std::fputs(Usage, args.isEmpty() ? stderr : stdout);
         return args.isEmpty() ? 2 : 0;
     }
-    // The session comes before the command: it says where the command goes.
+    // The session or the socket comes before the command: it says where the
+    // command goes.
     std::optional<QString> sessionName;
+    QString socketOption;
+    if (args[0] == QLatin1String("--socket")) {
+        if (args.size() < 2 || args[1].isEmpty())
+            return usage(QStringLiteral("--socket needs the path of a socket"));
+        // As for $AFTERGLOW_SOCKET: a relative path would follow the working
+        // directory.
+        if (!args[1].startsWith(QLatin1Char('/')))
+            return usage(QStringLiteral("--socket needs an absolute path: %1").arg(args[1]));
+        socketOption = args[1];
+        args.remove(0, 2);
+        if (args.isEmpty())
+            return usage(QStringLiteral("no command after --socket %1").arg(socketOption));
+        if (args[0] == QLatin1String("--session"))
+            return usage(QStringLiteral("--session and --socket are both given"));
+    }
     if (args[0] == QLatin1String("--session")) {
         // No name starts with -: the word is an option, as in --session --pane 3.
         if (args.size() < 2 || args[1].startsWith(QLatin1Char('-')))
@@ -818,8 +907,14 @@ int runCtl(int argc, char** argv)
             return usage(QStringLiteral("no command after --session %1").arg(*sessionName));
         if (args[0] == QLatin1String("--session"))
             return usage(QStringLiteral("--session is given more than once"));
+        if (args[0] == QLatin1String("--socket"))
+            return usage(QStringLiteral("--session and --socket are both given"));
     }
+    if (args[0] == QLatin1String("--socket"))
+        return usage(QStringLiteral("--socket is given more than once"));
     const QString command = args.takeFirst();
+    if (GenericCommands.contains(command))
+        return runGenericCommand(command, args, sessionName, socketOption);
     if (!Commands.contains(command))
         return usage(QStringLiteral("unknown command %1").arg(command));
 
@@ -1035,6 +1130,8 @@ int runCtl(int argc, char** argv)
         return usage(QStringLiteral("--pane needs a pane ID"));
     if (sessionName)
         client.useSession(*sessionName);
+    if (!socketOption.isEmpty())
+        client.useSocket(socketOption);
     // These act on no pane: a --pane given to them is a mistake.
     static const QStringList Paneless = {QStringLiteral("ls"),        QStringLiteral("watch"),
                                          QStringLiteral("scripts"),   QStringLiteral("open-directory"),
