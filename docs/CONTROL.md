@@ -247,7 +247,7 @@ The daemon answers only calls and subscriptions. It answers with the codes above
 | `NOT_AT_PROMPT` | `paste` with the option `prompt`, and the shell of the pane is not at a prompt with an empty command line. Nothing went to the pane. |
 | `LAST_PANE` | `close` with the option `endSession` false, when no other pane of the session runs a program. Nothing closed. |
 
-Outside a session pane, `phosphorctl` from the Phosphor shell can also use the socket, for example `phosphorctl --socket "$AFTERGLOW_SOCKET" list`.
+Outside a session pane, any phosphor-ipc client can also use the socket, for example Lambent's `lambentctl --socket "$AFTERGLOW_SOCKET" list`.
 
 ### Session calls
 

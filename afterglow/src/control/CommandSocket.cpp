@@ -243,7 +243,7 @@ void CommandApi::runEntry(const QString& token, const QStringList& args)
         return;
     }
     const auto dot = token.indexOf(QLatin1Char('.'));
-    // A client of the schema entry (phosphorctl) does not acknowledge.
+    // A client of the schema entry (lambentctl, or another phosphor-ipc client) does not acknowledge.
     m_socket.start(
         connectionId(), QString::fromStdString(*id),
         {token.left(dot), token.mid(dot + 1), args, {}, *target, std::nullopt, QStringLiteral("control"), {}},
