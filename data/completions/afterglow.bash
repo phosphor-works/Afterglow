@@ -13,6 +13,9 @@
 _afterglow_ctl_commands="ls run wait send-text paste get-text split move-pane detach-tab new-tab new-window focus close set-title
 set-tab-title resize send-key scroll signal notify scripts open-directory projects save-project open-project action
 watch overlay screenshot colors set-colors set-font-size set-opacity set-user-var signal-program window"
+# The generic commands of the suite's clients (PhosphorIpcCli). They take no
+# --session.
+_afterglow_ctl_generic="call list schema subscribe"
 # Key names that ctl send-key takes, of many more.
 _afterglow_keys="enter escape tab backspace space up down left right home end page_up page_down insert delete f1 f2 f3
 f4 f5 f6 f7 f8 f9 f10 f11 f12 ctrl+c ctrl+d ctrl+l ctrl+z"
@@ -104,19 +107,29 @@ _afterglow_ctl()
     # none is offered. With the cursor on the word --session itself, that
     # word is the one being completed.
     # In a pane of a session, the commands act on it as with --session.
-    local first=2 session=${AFTERGLOW_SESSION:+1}
+    # --socket PATH comes there too, in place of --session.
+    local first=2 session=${AFTERGLOW_SESSION:+1} sessionGiven=""
     if [[ ${words[2]} == --session ]] && ((cword > 2)); then
         ((cword == 3)) && return
-        first=4 session=1
+        first=4 session=1 sessionGiven=1
+    elif [[ ${words[2]} == --socket ]] && ((cword > 2)); then
+        if ((cword == 3)); then
+            _afterglow_files
+            return
+        fi
+        first=4
     fi
     local command=${words[first]} start=$((first + 1)) i j positional=0 text=""
     if ((cword == first)); then
         if [[ $cur == -* ]]; then
-            # The usage only comes first: after --session NAME a command follows.
-            ((first == 2)) && _afterglow_matching -h --help --session
+            # The usage only comes first: after --session NAME or --socket
+            # PATH a command follows.
+            ((first == 2)) && _afterglow_matching -h --help --session --socket
         else
             # shellcheck disable=SC2086 # the list splits into its words
             _afterglow_matching $_afterglow_ctl_commands
+            # shellcheck disable=SC2086 # the list splits into its words
+            [[ $sessionGiven ]] || _afterglow_matching $_afterglow_ctl_generic
         fi
         return
     fi
@@ -130,7 +143,7 @@ _afterglow_ctl()
             return
             ;;
         --pane | --cwd | --layout | --direction | --cells | --pages | --prompt | --env | --var | --stdin-text | --size | \
-            --timeout | --tail | --until | --pattern | --quiet-ms | --wait-text)
+            --timeout | --tail | --until | --pattern | --quiet-ms | --wait-text | --arg | --socket)
             ((i++))
             ;;
         --capture | --title | -w | --width | -h | --height | --position)
@@ -161,7 +174,11 @@ _afterglow_ctl()
     done
     case $prev in
     --pane | --layout | --cells | --pages | --prompt | --env | --var | --size | --timeout | --tail | --pattern | \
-        --quiet-ms | --wait-text) return ;;
+        --quiet-ms | --wait-text | --arg) return ;;
+    --socket)
+        _afterglow_files
+        return
+        ;;
     --until)
         _afterglow_matching finished text quiet closed
         return
@@ -248,6 +265,16 @@ _afterglow_ctl()
         esac
     fi
     case $command in
+    # The options of the generic commands: --arg comes again.
+    call)
+        _afterglow_unused --timeout --socket
+        _afterglow_matching --arg
+        return
+        ;;
+    list | schema | subscribe)
+        _afterglow_unused --socket
+        return
+        ;;
     ls) _afterglow_unused --json ;;
     run) _afterglow_unused $pane --timeout --tail --json ;;
     wait) _afterglow_unused $pane --until --pattern --quiet-ms --timeout --tail --json ;;

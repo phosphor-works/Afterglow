@@ -120,7 +120,11 @@ end
 
 function __afterglow_ctl
     set -l cur (commandline -ct)
-    set -l options -h\t'Show the usage' --help\t'Show the usage' --session\t'Act on a mux session'
+    set -l options -h\t'Show the usage' --help\t'Show the usage' --session\t'Act on a mux session' \
+        --socket\t'Talk to the Afterglow at this socket'
+    # The generic commands of the suite's clients (PhosphorIpcCli). They take no --session.
+    set -l generic call\t'Call a function of a target' list\t'List the targets of the socket' \
+        schema\t'Print the JSON Schema of a target' subscribe\t'Print the events of a signal'
     # --session NAME comes before the command. afterglow mux ls lists the
     # names, but a completion runs no program but aglow run --complete. In a
     # pane of a session, the commands act on it as with --session.
@@ -130,6 +134,14 @@ function __afterglow_ctl
         set -e argv[1..2]
         set session 1
         # The usage only comes first: a command follows.
+        set options
+        set generic
+    else if test "$argv[1]" = --socket
+        if not set -q argv[2]
+            __fish_complete_path "$cur"
+            return
+        end
+        set -e argv[1..2]
         set options
     end
     if not set -q argv[1]
@@ -153,6 +165,7 @@ function __afterglow_ctl
                 open-project\t'Open a saved project' action\t'Run a keybind action or start a script command' \
                 watch\t'Print events' overlay\t'Run a command over the pane and print its result' \
                 screenshot\t'Save the pane, its tab or its window as PNG'
+            __afterglow_print $generic
         end
         return
     end
@@ -170,12 +183,13 @@ function __afterglow_ctl
                     complete -C (string join ' ' -- $rest "$cur")
                 end
                 return
-            case --pane --cwd --layout --direction --cells --pages --prompt --env --var --stdin-text --size --timeout --tail --until --pattern --quiet-ms --wait-text --capture --title -w --width -h --height --position
+            case --pane --cwd --layout --direction --cells --pages --prompt --env --var --stdin-text --size --timeout --tail --until --pattern --quiet-ms --wait-text --arg --socket --capture --title -w --width -h --height --position
                 # The options after --layout are those of overlay. Elsewhere they are no option of ctl.
                 if test $command = overlay; or not contains -- $argv[$i] --capture --title -w --width -h --height --position
                     if test $i -eq $n
                         # The cursor is at the option's value.
                         test $argv[$i] = --cwd; and __fish_complete_directories "$cur"
+                        test $argv[$i] = --socket; and __fish_complete_path "$cur"
                         test $argv[$i] = --capture; and __afterglow_print stdout file none
                         test $argv[$i] = --direction; and __afterglow_print left right up down
                         test $argv[$i] = --until; and __afterglow_print finished text quiet closed
@@ -244,6 +258,19 @@ function __afterglow_ctl
         end
     end
     set -l offer
+    # The options of the generic commands: --arg comes again.
+    switch $command
+        case call
+            set -a offer --arg\t'An argument, NAME=VALUE'
+            contains -- --timeout $argv; or set -a offer --timeout\t'Seconds to wait for the answer'
+            contains -- --socket $argv; or set -a offer --socket\t'Talk to this socket'
+            __afterglow_print $offer
+            return
+        case list schema subscribe
+            contains -- --socket $argv; or set -a offer --socket\t'Talk to this socket'
+            __afterglow_print $offer
+            return
+    end
     # set-colors --all sets every pane: no --pane with it.
     if not contains -- $command ls watch scripts projects open-directory open-project new-window
         contains -- --pane $argv; or begin; test $command = set-colors; and contains -- --all $argv; end

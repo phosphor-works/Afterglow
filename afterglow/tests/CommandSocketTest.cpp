@@ -3102,6 +3102,118 @@ TEST(MuxCommandsLine, TheWindowRefusesWhatItCannotPassOn)
 
 } // namespace
 
+/// The generic commands of afterglow ctl (call, list, schema, subscribe) and
+/// its --socket, against the socket of the test. Only $AFTERGLOW_SOCKET or
+/// --socket reaches it: the environment has no display and no pane.
+class CtlGenericTest : public CommandSocketTest
+{
+protected:
+    struct Result
+    {
+        int status = -1;
+        QString out;
+        QString err;
+    };
+
+    /// afterglow ctl @p args, with $AFTERGLOW_SOCKET at the test's socket
+    /// unless @p viaEnvironment is false.
+    Result ctl(const QStringList& args, bool viaEnvironment = true, const QStringList& extraEnvironment = {})
+    {
+        QProcessEnvironment env = isolatedEnvironment(m_runtime);
+        if (viaEnvironment)
+            env.insert(QStringLiteral("AFTERGLOW_SOCKET"), socketPath());
+        for (const QString& entry : extraEnvironment)
+            env.insert(entry.section(QLatin1Char('='), 0, 0), entry.section(QLatin1Char('='), 1));
+        QProcess process;
+        process.setProcessEnvironment(env);
+        process.setWorkingDirectory(m_dir.path());
+        process.start(QStringLiteral(AFTERGLOW_BINARY), QStringList{QStringLiteral("ctl")} + args);
+        EXPECT_TRUE(process.waitForStarted());
+        process.closeWriteChannel();
+        // The router of this process answers while the client waits.
+        const bool ended = waitFor(
+            [&process] {
+                return process.state() == QProcess::NotRunning;
+            },
+            15000);
+        EXPECT_TRUE(ended) << qPrintable(args.join(QLatin1Char(' ')));
+        if (!ended) {
+            process.kill();
+            process.waitForFinished();
+        }
+        return {process.exitCode(), QString::fromUtf8(process.readAllStandardOutput()),
+                QString::fromUtf8(process.readAllStandardError())};
+    }
+
+    QString expectedTargets()
+    {
+        QStringList targets = m_instance->router().listTargets();
+        targets.sort();
+        return targets.join(QLatin1Char('\n'));
+    }
+
+    static QString sorted(const QString& lines)
+    {
+        QStringList list = lines.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        list.sort();
+        return list.join(QLatin1Char('\n'));
+    }
+};
+
+TEST_F(CtlGenericTest, ListsAndDescribesTheTargetsOfTheSocket)
+{
+    ASSERT_TRUE(start(R"({"Control": {"enabled": true}, "Scripts": {"enabled": true}})"));
+    ASSERT_FALSE(expectedTargets().isEmpty());
+    Result r = ctl({QStringLiteral("list")});
+    EXPECT_EQ(r.status, 0) << qPrintable(r.err);
+    EXPECT_EQ(sorted(r.out), expectedTargets());
+    const QString target = expectedTargets().section(QLatin1Char('\n'), 0, 0);
+    r = ctl({QStringLiteral("schema"), target});
+    EXPECT_EQ(r.status, 0) << qPrintable(r.err);
+    EXPECT_TRUE(r.out.trimmed().startsWith(QLatin1Char('{'))) << qPrintable(r.out);
+    // A target that the socket does not have is an error of the server.
+    r = ctl({QStringLiteral("call"), QStringLiteral("no-such-target.fn")});
+    EXPECT_EQ(r.status, 1) << qPrintable(r.err);
+    EXPECT_TRUE(r.err.startsWith(QStringLiteral("afterglow ctl call: "))) << qPrintable(r.err);
+}
+
+TEST_F(CtlGenericTest, SocketOptionNamesTheProcess)
+{
+    ASSERT_TRUE(start(R"({"Control": {"enabled": true}, "Scripts": {"enabled": true}})"));
+    // Before the command, and after it as the suite's clients take it.
+    Result r = ctl({QStringLiteral("--socket"), socketPath(), QStringLiteral("list")}, false);
+    EXPECT_EQ(r.status, 0) << qPrintable(r.err);
+    EXPECT_EQ(sorted(r.out), expectedTargets());
+    r = ctl({QStringLiteral("list"), QStringLiteral("--socket"), socketPath()}, false);
+    EXPECT_EQ(r.status, 0) << qPrintable(r.err);
+    // A relative path would follow the working directory.
+    r = ctl({QStringLiteral("--socket"), QStringLiteral("relative.sock"), QStringLiteral("ls")}, false);
+    EXPECT_EQ(r.status, 2);
+    r = ctl({QStringLiteral("--socket"), socketPath(), QStringLiteral("--session"), QStringLiteral("work"),
+             QStringLiteral("ls")},
+            false);
+    EXPECT_EQ(r.status, 2);
+}
+
+TEST_F(CtlGenericTest, RefusesWhatTheGenericCommandsDoNotTake)
+{
+    ASSERT_TRUE(start());
+    // No socket: no $AFTERGLOW_SOCKET, and no Afterglow on the display.
+    Result r = ctl({QStringLiteral("list")}, false);
+    EXPECT_EQ(r.status, 1) << qPrintable(r.err);
+    // Usage errors, with the status of the other commands.
+    r = ctl({QStringLiteral("--session"), QStringLiteral("work"), QStringLiteral("list")});
+    EXPECT_EQ(r.status, 2) << qPrintable(r.err);
+    r = ctl({QStringLiteral("list"), QStringLiteral("--pane"), QStringLiteral("3")});
+    EXPECT_EQ(r.status, 2) << qPrintable(r.err);
+    r = ctl({QStringLiteral("frobnicate")});
+    EXPECT_EQ(r.status, 2) << qPrintable(r.err);
+    // In a pane of a mux session, $AFTERGLOW_SOCKET is the daemon's.
+    r = ctl({QStringLiteral("list")}, true, {QStringLiteral("AFTERGLOW_SESSION=work")});
+    EXPECT_EQ(r.status, 1);
+    EXPECT_TRUE(r.err.contains(QStringLiteral("give --socket PATH"))) << qPrintable(r.err);
+}
+
 int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);
